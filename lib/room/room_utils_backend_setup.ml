@@ -135,29 +135,70 @@ let env_opt name =
   | Some value when String.trim value <> "" -> Some value
   | _ -> None
 
-let normalize_postgres_url url =
-  let uri = Uri.of_string url in
-  match Uri.host uri, Uri.port uri with
-  | Some host, Some 6543 when String.ends_with ~suffix:".pooler.supabase.com" host ->
-      let normalized = Uri.to_string (Uri.with_port uri (Some 5432)) in
-      Log.Backend.info
-        "Supabase transaction pooler detected in PostgreSQL URL; using session pooler port 5432 for prepared-statement compatibility";
-      normalized
-  | _ -> url
+let contains_substring haystack needle =
+  let haystack_len = String.length haystack in
+  let needle_len = String.length needle in
+  let rec loop idx =
+    if idx + needle_len > haystack_len then false
+    else if String.sub haystack idx needle_len = needle then true
+    else loop (idx + 1)
+  in
+  needle_len = 0 || loop 0
+
+let invalid_postgres_url_warned = Atomic.make false
+
+let warn_invalid_postgres_url_once ~env_name ~reason =
+  if Atomic.compare_and_set invalid_postgres_url_warned false true then
+    Log.Backend.warn
+      "Ignoring %s for PostgreSQL backend (%s). Falling back to filesystem until a valid postgres:// URL is configured."
+      env_name reason
+
+let normalize_postgres_url ~env_name url =
+  let trimmed = String.trim url in
+  let looks_like_unresolved_secret =
+    String.starts_with ~prefix:"{{" trimmed
+    || String.ends_with ~suffix:"}}" trimmed
+    || contains_substring trimmed "op://"
+  in
+  if looks_like_unresolved_secret then begin
+    warn_invalid_postgres_url_once ~env_name
+      ~reason:"unresolved secret placeholder";
+    None
+  end else
+    let uri = Uri.of_string trimmed in
+    match Uri.scheme uri with
+    | Some ("postgres" | "postgresql") ->
+        let normalized =
+          match Uri.host uri, Uri.port uri with
+          | Some host, Some 6543
+            when String.ends_with ~suffix:".pooler.supabase.com" host ->
+              Log.Backend.info
+                "Supabase transaction pooler detected in PostgreSQL URL; using session pooler port 5432 for prepared-statement compatibility";
+              Uri.to_string (Uri.with_port uri (Some 5432))
+          | _ -> trimmed
+        in
+        Some normalized
+    | Some scheme ->
+        warn_invalid_postgres_url_once ~env_name
+          ~reason:(Printf.sprintf "unsupported URI scheme %S" scheme);
+        None
+    | None ->
+        warn_invalid_postgres_url_once ~env_name
+          ~reason:"missing URI scheme";
+        None
 
 let postgres_url_from_env () =
-  let raw_url =
-    match env_opt "MASC_POSTGRES_URL" with
-  | Some _ as url -> url
-  | None -> (
-      match env_opt "DATABASE_URL" with
-      | Some _ as url -> url
-      | None -> (
-          match env_opt "SUPABASE_DB_URL" with
-          | Some _ as url -> url
-          | None -> env_opt "SB_PG_URL"))
+  let rec pick = function
+    | [] -> None
+    | env_name :: rest ->
+        (match env_opt env_name with
+         | None -> pick rest
+         | Some raw_url -> (
+             match normalize_postgres_url ~env_name raw_url with
+             | Some _ as url -> url
+             | None -> pick rest))
   in
-  Option.map normalize_postgres_url raw_url
+  pick [ "MASC_POSTGRES_URL"; "DATABASE_URL"; "SUPABASE_DB_URL"; "SB_PG_URL" ]
 
 (** Auto-detect best backend based on environment variables
     Priority order:
@@ -213,7 +254,14 @@ let backend_config_for base_path =
   in
   let backend_type =
     match storage_type with
-    | "postgres" | "postgresql" -> Backend.PostgresNative
+    | "postgres" | "postgresql" ->
+        if postgres_url <> None then Backend.PostgresNative
+        else begin
+          Log.Backend.warn
+            "MASC_STORAGE_TYPE=%s requested PostgreSQL backend but no valid PostgreSQL URL is configured; using filesystem backend instead"
+            storage_type;
+          Backend.FileSystem
+        end
     | "memory" -> Backend.Memory
     | _ -> Backend.FileSystem
   in

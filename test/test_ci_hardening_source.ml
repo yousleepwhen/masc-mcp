@@ -49,7 +49,10 @@ let test_health_and_ci_runner_diagnostics () =
     (file_contains_pattern "scripts/ci-run-tests.sh"
        "detected dune RPC/lock failure; retrying once with isolated build dir");
   check bool "ci runner tracks active build dir for diagnostics" true
-    (file_contains_pattern "scripts/ci-run-tests.sh" "ACTIVE_TEST_BUILD_DIR")
+    (file_contains_pattern "scripts/ci-run-tests.sh" "ACTIVE_TEST_BUILD_DIR");
+  check bool "server bootstrap reuses normalized postgres env detection" true
+    (file_contains_pattern "lib/server/server_runtime_bootstrap.ml"
+       "let has_pg = Room.postgres_url_from_env () <> None")
 
 let test_route_auth_contracts () =
   check bool "http command-plane units use tool auth" true
@@ -193,7 +196,10 @@ let test_dashboard_component_split_contracts () =
        "export function SwarmLivePanels");
   check bool "room backend setup normalizes postgres pooler url before connect" true
     (file_contains_pattern "lib/room/room_utils_backend_setup.ml"
-       "pooler.supabase.com")
+       "pooler.supabase.com");
+  check bool "room backend setup skips unresolved secret placeholders" true
+    (file_contains_pattern "lib/room/room_utils_backend_setup.ml"
+       "unresolved secret placeholder")
 
 let test_activity_surface_contracts () =
   check bool "activity tab exposes activity graph label" true

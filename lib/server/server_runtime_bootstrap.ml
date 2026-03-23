@@ -714,10 +714,7 @@ let run ~sw ~env ~host ~port ~base_path ~make_routes ~make_request_handler
         Safe_ops.get_env_float_logged "MASC_PG_INIT_TIMEOUT_SEC" ~default:10.0
       in
       let state =
-        let has_pg = match Sys.getenv_opt "MASC_POSTGRES_URL" with
-          | Some s when String.trim s <> "" -> true
-          | _ -> false
-        in
+        let has_pg = Room.postgres_url_from_env () <> None in
         if has_pg then
           (try
              Eio.Time.with_timeout_exn clock pg_init_timeout init_state

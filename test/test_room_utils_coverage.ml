@@ -308,6 +308,27 @@ let test_postgres_url_from_env_normalizes_supabase_pooler () =
       check (option string) "session pooler url" (Some expected_url)
         (Room_utils.postgres_url_from_env ()))
 
+let test_postgres_url_from_env_skips_unresolved_secret_placeholders () =
+  let unresolved = "{{ op://Personal/Supabase DB URL/credential }}" in
+  let fallback_url = "postgresql://postgres:secret@db.example.com:5432/postgres" in
+  with_envs
+    (pg_env_bindings ~masc_postgres_url:unresolved ~database_url:fallback_url ())
+    (fun () ->
+      check (option string) "fallback to next valid env after unresolved secret"
+        (Some fallback_url) (Room_utils.postgres_url_from_env ()))
+
+let test_backend_config_for_downgrades_explicit_postgres_without_valid_url () =
+  let unresolved = "{{ op://Personal/Supabase DB URL/credential }}" in
+  with_envs
+    (pg_env_bindings ~masc_storage_type:"postgres" ~masc_postgres_url:unresolved ())
+    (fun () ->
+      let cfg = Room_utils.backend_config_for "/tmp/test-room-utils-invalid-pg" in
+      check bool "invalid postgres url does not keep postgres backend" true
+        (match cfg.backend_type with
+         | Backend.FileSystem -> true
+         | _ -> false);
+      check (option string) "postgres url cleared" None cfg.postgres_url)
+
 (* ============================================================
    safe_filename Tests
    ============================================================ *)
@@ -543,6 +564,10 @@ let () =
       test_case "uses fallback pg url" `Quick test_backend_config_for_uses_fallback_pg_url;
       test_case "normalizes supabase pooler" `Quick
         test_postgres_url_from_env_normalizes_supabase_pooler;
+      test_case "skips unresolved secret placeholders" `Quick
+        test_postgres_url_from_env_skips_unresolved_secret_placeholders;
+      test_case "downgrades explicit postgres without valid url" `Quick
+        test_backend_config_for_downgrades_explicit_postgres_without_valid_url;
     ];
     "safe_filename", [
       test_case "normal" `Quick test_safe_filename_normal;
