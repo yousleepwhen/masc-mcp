@@ -149,6 +149,33 @@ let explicit_metadata : (string * metadata) list =
       { default_metadata with readonly = Some true; idempotent = Some true } );
     ( "masc_chain_run_get",
       { default_metadata with readonly = Some true; idempotent = Some true } );
+    ( "masc_safe_download",
+      {
+        (hidden_active
+           "Inspect-first download wrapper. Defaults to mode=inspect; execute writes only under .masc/downloads."
+           ~allow_direct_call_when_hidden:true)
+        with readonly = Some false;
+             destructive = Some false;
+             idempotent = Some false;
+      } );
+    ( "masc_safe_git_clone",
+      {
+        (hidden_active
+           "Inspect-first shallow clone wrapper. Defaults to mode=inspect; execute clones only under .masc/external/repos."
+           ~allow_direct_call_when_hidden:true)
+        with readonly = Some false;
+             destructive = Some false;
+             idempotent = Some false;
+      } );
+    ( "masc_safe_git_pull",
+      {
+        (hidden_active
+           "Inspect-first ff-only pull wrapper. Defaults to mode=inspect; execute is restricted to .worktrees and .masc/external/repos."
+           ~allow_direct_call_when_hidden:true)
+        with readonly = Some false;
+             destructive = Some false;
+             idempotent = Some false;
+      } );
   ]
 
 (** {1 Public MCP Surface}
@@ -351,10 +378,25 @@ let metadata_to_fields name =
       ("tier", `String (tier_to_string (tool_tier name)));
     ]
   in
+  let with_safety =
+    base
+    @
+    (match meta.readonly with
+    | Some value -> [ ("readonly", `Bool value) ]
+    | None -> [])
+    @
+    (match meta.destructive with
+    | Some value -> [ ("destructive", `Bool value) ]
+    | None -> [])
+    @
+    (match meta.idempotent with
+    | Some value -> [ ("idempotent", `Bool value) ]
+    | None -> [])
+  in
   let with_canonical =
     match meta.canonical_name with
-    | Some canonical_name -> ("canonicalName", `String canonical_name) :: base
-    | None -> base
+    | Some canonical_name -> ("canonicalName", `String canonical_name) :: with_safety
+    | None -> with_safety
   in
   let with_replacement =
     match meta.replacement with

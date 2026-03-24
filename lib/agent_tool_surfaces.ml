@@ -47,6 +47,9 @@ let spawned_agent_public_tool_names : string list =
     "masc_add_task";
     "masc_heartbeat";
     "masc_messages";
+    "masc_safe_download";
+    "masc_safe_git_clone";
+    "masc_safe_git_pull";
     "masc_worktree_create";
     "masc_worktree_remove";
     "masc_worktree_list";
@@ -99,6 +102,9 @@ let mdal_auditable_tool_names : string list =
     "masc_code_search";
     "masc_code_symbols";
     "masc_code_read";
+    "masc_safe_download";
+    "masc_safe_git_clone";
+    "masc_safe_git_pull";
     "masc_worktree_create";
     "masc_worktree_list";
     "masc_worktree_remove";

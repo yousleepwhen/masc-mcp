@@ -161,6 +161,7 @@ type module_tag =
   | Mod_autoresearch
   | Mod_research
   | Mod_model_catalog
+  | Mod_safe_wrapper
   | Mod_shard
   | Mod_fire_task
 

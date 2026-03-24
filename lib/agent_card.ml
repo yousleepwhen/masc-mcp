@@ -296,20 +296,42 @@ let now_iso8601 () : string =
 
 (** Build A2A skills dynamically from MCP tool schemas.
 
-    Returns a single "masc" skill covering all tools. *)
+    Returns the generic "masc" skill plus curated wrapper-family skills. *)
 let skills_from_tools (schemas : Types.tool_schema list) : skill list =
   let count = List.length schemas in
   if count = 0 then []
   else
-    [{
-      id = "masc";
-      name = "MASC";
-      description = Some "Multi-Agent Streaming Coordination tools";
-      tags = ["masc"];
-      input_modes = ["application/json"];
-      output_modes = ["application/json"; "text/plain"];
-      tool_count = count;
-    }]
+    let generic_skill =
+      {
+        id = "masc";
+        name = "MASC";
+        description = Some "Multi-Agent Streaming Coordination tools";
+        tags = [ "masc" ];
+        input_modes = [ "application/json" ];
+        output_modes = [ "application/json"; "text/plain" ];
+        tool_count = count;
+      }
+    in
+    let wrapper_skills =
+      Safe_wrapper_catalog.families
+      |> List.map (fun (family : Safe_wrapper_catalog.wrapper_family) ->
+             {
+               id = family.id;
+               name = family.label;
+               description =
+                 Some
+                   (match family.disabled_reason with
+                   | Some reason ->
+                       family.description ^ " Disabled: " ^ reason
+                   | None -> family.description);
+               tags =
+                 [ "masc"; "safe-wrapper"; Safe_wrapper_catalog.status_to_string family.status ];
+               input_modes = [ "application/json" ];
+               output_modes = [ "application/json"; "text/plain" ];
+               tool_count = List.length family.tool_names;
+             })
+    in
+    generic_skill :: wrapper_skills
 
 let runtime_supported_interfaces ~host ~port =
   let base_url = Printf.sprintf "http://%s:%d" host port in

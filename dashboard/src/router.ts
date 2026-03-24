@@ -133,7 +133,7 @@ function parseSegments(
   if ((segments[0] === 'operations' || segments[0] === 'command') && segments[1]) {
     const nextParams = { ...params }
     const second = decodeSafe(segments[1])
-    if (second === 'intervene' || second === 'command' || second === 'tools') {
+    if (second === 'intervene' || second === 'command' || second === 'tools' || second === 'platform') {
       nextParams.section = second
     } else if (COMMAND_SURFACE_SEGMENTS.has(second)) {
       nextParams.section = 'command'

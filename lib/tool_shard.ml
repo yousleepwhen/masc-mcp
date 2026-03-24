@@ -182,7 +182,8 @@ let coding_keeper_bridge_tools : Types.tool_schema list = [
 
 let coding_workspace_tool_names : string list =
   [ "masc_worktree_create"; "masc_worktree_list"; "masc_code_search";
-    "masc_code_symbols"; "masc_code_read" ]
+    "masc_code_symbols"; "masc_code_read";
+    "masc_safe_download"; "masc_safe_git_clone"; "masc_safe_git_pull" ]
 
 let coding_workspace_tools : Types.tool_schema list =
   select_named_schemas coding_workspace_tool_names

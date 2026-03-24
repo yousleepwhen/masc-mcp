@@ -467,12 +467,18 @@ let test_masc_skills_have_names () =
 
 let test_masc_skills_expected_count () =
   let count = List.length (dynamic_skills ()) in
-  check int "single masc skill" 1 count
+  check bool "generic + wrapper family skills" true (count >= 4)
+
+let test_masc_skills_include_wrapper_families () =
+  let ids = List.map (fun (s : Agent_card.skill) -> s.id) (dynamic_skills ()) in
+  check bool "has safe_remote_fetch" true (List.mem "safe_remote_fetch" ids);
+  check bool "has safe_repo_sync" true (List.mem "safe_repo_sync" ids);
+  check bool "has vision_inspect" true (List.mem "vision_inspect" ids)
 
 let test_masc_skill_id_is_masc () =
   match dynamic_skills () with
-  | [ skill ] -> check string "skill id" "masc" skill.id
-  | _ -> fail "expected one masc skill"
+  | skill :: _ -> check string "generic skill id" "masc" skill.id
+  | [] -> fail "expected at least one skill"
 
 let test_masc_skills_mime_types () =
   let all_mime = List.for_all (fun (s : Agent_card.skill) ->
@@ -488,10 +494,10 @@ let test_masc_skills_have_tags () =
   check bool "all have tags" true all_have_tags
 
 let test_masc_skills_have_tool_count () =
-  let all_positive = List.for_all (fun (s : Agent_card.skill) ->
-    s.tool_count > 0
+  let all_nonnegative = List.for_all (fun (s : Agent_card.skill) ->
+    s.tool_count >= 0
   ) (dynamic_skills ()) in
-  check bool "all have positive tool_count" true all_positive
+  check bool "all have non-negative tool_count" true all_nonnegative
 
 (* ============================================================
    Now ISO8601 Tests
@@ -635,6 +641,8 @@ let () =
       test_case "unique ids" `Quick test_masc_skills_unique_ids;
       test_case "have names" `Quick test_masc_skills_have_names;
       test_case "expected count" `Quick test_masc_skills_expected_count;
+      test_case "include wrapper families" `Quick
+        test_masc_skills_include_wrapper_families;
       test_case "skill id is masc" `Quick test_masc_skill_id_is_masc;
       test_case "MIME types" `Quick test_masc_skills_mime_types;
       test_case "have tags" `Quick test_masc_skills_have_tags;

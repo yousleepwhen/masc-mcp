@@ -14,6 +14,7 @@ let dashboard_tools_http_json ?actor (config : Room.config) : Yojson.Safe.t =
   `Assoc
     [
       ("generated_at", `String (Types.now_iso ()));
+      ("safe_wrapper_catalog", Safe_wrapper_catalog.catalog_json ());
       ("tool_inventory", Tool_misc.tool_inventory_json ctx ~include_hidden:true ~include_deprecated:true);
       ("tool_usage", Tool_unified.summary_report ());
     ]

@@ -34,6 +34,7 @@ let raw_schemas : tool_schema list =
   @ Tool_cache.schemas
   @ Tool_run.schemas
   @ Tool_code.schemas
+  @ Tool_safe_wrapper.schemas
   @ Tool_code_write.schemas
   @ Tool_library.schemas
   @ Tool_audit.schemas

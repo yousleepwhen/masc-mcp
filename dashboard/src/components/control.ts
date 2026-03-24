@@ -6,12 +6,13 @@ import { route } from '../router'
 import { Ops } from './ops'
 import { Command } from './command'
 import { Governance } from './governance'
+import { Platform } from './platform'
 
-type OperationsSection = 'intervene' | 'warroom' | 'governance'
+type OperationsSection = 'intervene' | 'warroom' | 'governance' | 'platform'
 
 function currentSection(): OperationsSection {
   const section = route.value.params.section
-  if (section === 'warroom' || section === 'governance') return section
+  if (section === 'warroom' || section === 'governance' || section === 'platform') return section
   return 'intervene'
 }
 
@@ -23,6 +24,8 @@ export function Operations() {
       <div class="transition-opacity duration-300">
         ${section === 'governance'
           ? html`<${Governance} />`
+          : section === 'platform'
+            ? html`<${Platform} />`
           : section === 'warroom'
             ? html`<${Command} />`
             : html`<${Ops} />`}

@@ -29,6 +29,7 @@
    board_listener
    capability_registry
    bounded
+   safe_wrapper_catalog
    cache_eio
    cascade_inference
    env_config
@@ -91,6 +92,7 @@
    dashboard_http_mdal
    dashboard_http_autoresearch
    dashboard_provider_runs
+   dashboard_platform
    proactive_refresh
    server_dashboard_http
    server_dashboard_http_core
@@ -348,6 +350,7 @@
    team_session_plan
    tool_team_session_schemas
    tool_heartbeat
+   tool_safe_wrapper
    tool_encryption
    tool_auth
    tool_hat

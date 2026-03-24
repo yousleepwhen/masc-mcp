@@ -298,6 +298,9 @@ export interface DashboardToolInventoryItem {
   canonicalName?: string | null
   replacement?: string | null
   reason?: string | null
+  readonly?: boolean
+  destructive?: boolean
+  idempotent?: boolean
 }
 
 export interface SurfaceSummaryEntry {
@@ -329,8 +332,28 @@ export interface ToolMetricsResponse {
 
 export interface DashboardToolsResponse {
   generated_at?: string
+  safe_wrapper_catalog?: SafeWrapperCatalogResponse
   tool_inventory: DashboardToolInventoryResponse
   tool_usage: ToolMetricsResponse
+}
+
+export interface SafeWrapperFamily {
+  id: string
+  label: string
+  description: string
+  tool_names: string[]
+  tool_count: number
+  default_mode: string
+  mutating: boolean
+  confirm_required: boolean
+  status: string
+  disabled_reason?: string | null
+  surfaces: string[]
+}
+
+export interface SafeWrapperCatalogResponse {
+  generated_at?: string
+  families: SafeWrapperFamily[]
 }
 
 export function fetchToolMetrics(): Promise<ToolMetricsResponse> {
@@ -339,6 +362,98 @@ export function fetchToolMetrics(): Promise<ToolMetricsResponse> {
 
 export function fetchDashboardTools(): Promise<DashboardToolsResponse> {
   return get('/api/v1/dashboard/tools')
+}
+
+export interface DashboardPlatformPathEntry {
+  key: string
+  label: string
+  path: string
+  exists: boolean
+  is_directory: boolean
+  size_bytes?: number | null
+  modified_at?: string | null
+}
+
+export interface DashboardPlatformConfigInventory {
+  count: number
+  files: DashboardPlatformPathEntry[]
+}
+
+export interface DashboardPlatformRuntimeParam {
+  key: string
+  current: unknown
+  default: unknown
+  has_override: boolean
+}
+
+export interface DashboardPlatformRuntimeSurface {
+  id: string
+  description: string
+  risk: string
+  param_keys: string[]
+}
+
+export interface DashboardPlatformProviderProbe {
+  provider: string
+  status: string
+  available: boolean
+  endpoint_url?: string | null
+  default_model?: string | null
+  latency_ms?: number | null
+  error?: string | null
+  runtime_blocker?: string | null
+  sample_source: string
+  sampled_at: string
+}
+
+export interface DashboardPlatformProviderCard {
+  provider: string
+  kind: string
+  runtime_kind: string
+  auth_kind: string
+  status: string
+  available: boolean
+  supports_single_agent_run: boolean
+  default_model?: string | null
+  models: string[]
+  source: string
+  endpoint_url?: string | null
+  note?: string | null
+  current_probe: DashboardPlatformProviderProbe
+  history_summary: {
+    provider: string
+    sample_count: number
+    avg_latency_ms?: number | null
+    last_status?: string | null
+    last_error?: string | null
+    last_runtime_blocker?: string | null
+    last_sample_at?: string | null
+  }
+}
+
+export interface DashboardPlatformProviders {
+  inventory: Record<string, unknown>
+  model_catalog_status: Record<string, unknown>
+  local_runtime_status: Record<string, unknown>
+  local_runtime_verify: Record<string, unknown>
+  providers: DashboardPlatformProviderCard[]
+  recent_samples: DashboardPlatformProviderProbe[]
+}
+
+export interface DashboardPlatformResponse {
+  generated_at?: string
+  paths: DashboardPlatformPathEntry[]
+  config_inventory: DashboardPlatformConfigInventory
+  runtime_params: {
+    parameters: DashboardPlatformRuntimeParam[]
+    surfaces: DashboardPlatformRuntimeSurface[]
+  }
+  providers: DashboardPlatformProviders
+  notes: SafeWrapperCatalogResponse
+}
+
+export function fetchDashboardPlatform(): Promise<DashboardPlatformResponse> {
+  return get('/api/v1/dashboard/platform')
 }
 
 // --- Individual resource fetchers (selective SSE-driven refresh) ---

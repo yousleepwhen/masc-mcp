@@ -7,6 +7,7 @@ export type SurfaceSectionId =
   | 'activity'
   | 'board'
   | 'governance'
+  | 'platform'
   | 'evidence'
   | 'planning'
   | 'worktrees'
@@ -153,6 +154,12 @@ export const DASHBOARD_SECTION_ITEMS: Record<NonHomeTabId, DashboardSectionNavIt
       label: '거버넌스',
       description: '의사결정 기록 및 판결 흐름 제어입니다.',
       params: { section: 'governance' },
+    },
+    {
+      id: 'platform',
+      label: '플랫폼',
+      description: 'config 경로, provider 연결, probe 메트릭을 봅니다.',
+      params: { section: 'platform' },
     },
   ],
   workspace: [

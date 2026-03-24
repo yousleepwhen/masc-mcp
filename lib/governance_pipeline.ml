@@ -96,10 +96,25 @@ let transition_action input =
   | _ -> None
 
 let assess_risk ~tool_name ~input =
+  let mode_is_execute () =
+    match input with
+    | `Assoc fields -> (
+        match List.assoc_opt "mode" fields with
+        | Some (`String mode) ->
+            String.equal (String.lowercase_ascii (String.trim mode)) "execute"
+        | _ -> false)
+    | _ -> false
+  in
   (* Check explicit overrides first *)
   match List.assoc_opt tool_name risk_overrides with
   | Some level -> level
   | None ->
+      if
+        List.mem tool_name
+          [ "masc_safe_download"; "masc_safe_git_clone"; "masc_safe_git_pull" ]
+      then
+        if mode_is_execute () then High else Low
+      else
       if String.equal tool_name "masc_transition" then
         match transition_action input with
         | Some action -> classify_name action

@@ -4,6 +4,7 @@ import { html } from 'htm/preact'
 import { useEffect } from 'preact/hooks'
 import { Card } from '../common/card'
 import { ToolMetrics } from '../tool-metrics'
+import { SafeWrapperCatalog } from './safe-wrapper-catalog'
 import {
   toolsData,
   toolsLoading,
@@ -20,6 +21,7 @@ export function Tools() {
   const error = toolsError.value
   const inventory = data?.tool_inventory.tools ?? []
   const usage = data?.tool_usage ?? null
+  const wrapperFamilies = data?.safe_wrapper_catalog?.families ?? []
 
   useEffect(() => {
     if (!toolsData.value && !toolsLoading.value) {
@@ -30,6 +32,7 @@ export function Tools() {
   return html`
     <div>
       <${Card} title="시스템 도구 목록" class="section mb-4">
+        <${SafeWrapperCatalog} families=${wrapperFamilies} />
         <div class="mb-4">
           <p class="text-[12px] text-[var(--text-muted)] leading-relaxed">
             ${showFullInventory.value
