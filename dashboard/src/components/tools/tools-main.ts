@@ -14,6 +14,7 @@ import {
 } from './tool-state'
 import { ToolSummaryView } from './tool-summary-view'
 import { FullInventoryView } from './tool-full-inventory'
+import { PromptRegistryPanel } from './prompt-registry-panel'
 
 export function Tools() {
   const data = toolsData.value
@@ -67,6 +68,7 @@ export function Tools() {
           : null}
         <${ToolMetrics} />
       <//>
+      <${PromptRegistryPanel} />
       ${data?.generated_at
         ? html`<div class="flex flex-wrap gap-x-3 gap-y-2 mt-3 text-[var(--text-muted)] text-[12px]">
             <span>생성 시각: ${data.generated_at}</span>

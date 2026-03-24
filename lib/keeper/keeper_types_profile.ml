@@ -150,7 +150,6 @@ let resolve_allowed_models ~explicit_allowed_models ~seed_allowed_models ~models
     dedupe_keep_order models
 
 let canonical_room_scope = function
-  | "all" -> "all"
   | _ -> "current"
 
 let canonical_scope_kind = function
@@ -172,10 +171,14 @@ let canonical_voice_channel = function
   | _ -> "voice_text"
 
 let default_voice_enabled_for _name =
-  (* Voice enabled for all keepers when voice_config.json is present *)
-  match Voice_config.load () with
-  | Ok _ -> true
-  | Error _ -> false
+  (* Pure tests may parse keeper metadata without an Eio context. In that
+     case, treat voice as disabled rather than failing metadata decoding. *)
+  try
+    match Voice_config.load () with
+    | Ok _ -> true
+    | Error _ -> false
+  with
+  | Effect.Unhandled _ -> false
 
 let default_voice_channel_for name =
   if default_voice_enabled_for name then "voice_text" else "text_only"
@@ -351,7 +354,9 @@ let profile_defaults_of_toml (doc : Keeper_toml_loader.toml_doc)
          policy_shell_mode =
            str "policy_shell_mode"
            |> Option.map canonical_policy_shell_mode;
-         room_scope = str "room_scope";
+         room_scope =
+           str "room_scope"
+           |> Option.map canonical_room_scope;
          scope_kind = str "scope_kind";
          trigger_mode =
            str "trigger_mode"

@@ -48,6 +48,13 @@ let add_routes router =
          let json = activity_graph_http_json ~state req in
          Http.Response.json (Yojson.Safe.to_string json) reqd
        ) request reqd)
+  |> Http.Router.get "/api/v1/activity/swimlane" (fun request reqd ->
+       with_public_read (fun state req reqd ->
+         let room_id = query_param req "room_id" in
+         let limit = int_query_param req "limit" ~default:500 |> clamp ~min_v:1 ~max_v:2000 in
+         let json = Activity_graph.agent_spans_json state.Mcp_server.room_config ?room_id ~limit () in
+         Http.Response.json (Yojson.Safe.to_string json) reqd
+       ) request reqd)
   |> Http.Router.get "/api/v1/governance/cases" (fun request reqd ->
        with_public_read (fun state req reqd ->
          let base_path = state.Mcp_server.room_config.base_path in
@@ -338,6 +345,9 @@ let add_routes router =
                let result = match action with
                  | "clear" ->
                    Prompt_registry.clear_prompt_override key;
+                   (try Prompt_registry.persist_overrides
+                          state.Mcp_server.room_config.base_path
+                    with _ -> ());
                    Ok "override cleared"
                  | "set" | _ ->
                    let value = Yojson.Safe.Util.(member "value" args |> to_string_option)
@@ -358,6 +368,7 @@ let add_routes router =
                      ("message", `String msg);
                      ("key", `String key);
                      ("source", `String (Prompt_registry.prompt_source key));
+                     ("effective", `String (Prompt_registry.get_prompt key));
                    ]))
                | Error msg ->
                  respond_json_with_cors ~status:`Bad_request request reqd

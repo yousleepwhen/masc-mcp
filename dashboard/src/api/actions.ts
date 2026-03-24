@@ -280,11 +280,23 @@ export async function fetchGoals(): Promise<import('../types').Goal[]> {
 
 // --- Activity Graph ---
 
-export async function fetchActivityGraph(): Promise<import('../types').ActivityGraphResponse | null> {
+export async function fetchActivityGraph(since?: string): Promise<import('../types').ActivityGraphResponse | null> {
   try {
-    const resp = await fetchWithTimeout('/api/v1/activity/graph', {}, 10000)
+    const params = since ? `?since=${since}` : ''
+    const resp = await fetchWithTimeout(`/api/v1/activity/graph${params}`, {}, 10000)
     if (!resp.ok) return null
     return (await resp.json()) as import('../types').ActivityGraphResponse
+  } catch {
+    return null
+  }
+}
+
+export async function fetchSwimlane(since?: string): Promise<import('../types').SwimlaneResponse | null> {
+  try {
+    const params = since ? `?since=${since}` : ''
+    const resp = await fetchWithTimeout(`/api/v1/activity/swimlane${params}`, {}, 10000)
+    if (!resp.ok) return null
+    return (await resp.json()) as import('../types').SwimlaneResponse
   } catch {
     return null
   }
