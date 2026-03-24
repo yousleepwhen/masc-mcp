@@ -462,7 +462,7 @@ let start_operator_digest_refresh_loop ~state ~sw ~clock =
     try
       let sessions =
         if Room.is_initialized config then
-          Team_session_store.list_sessions ~limit:50 config
+          dashboard_active_or_recent_sessions config
         else
           []
       in

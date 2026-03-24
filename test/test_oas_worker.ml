@@ -493,9 +493,6 @@ let test_case_brief_submit_accepts_evidence_refs_array () =
 (* ================================================================ *)
 (* Keeper checkpoint boundary tests                                  *)
 (* ================================================================ *)
-(* ================================================================ *)
-(* Keeper checkpoint boundary tests                                  *)
-(* ================================================================ *)
 
 let make_keeper_meta ?(name = "keeper-checkpoint-test")
     ?(trace_id = "trace-keeper-checkpoint") () =
@@ -768,12 +765,6 @@ let () =
         test_governance_status_after_petition;
       Alcotest.test_case "case brief accepts evidence_refs array" `Quick
         test_case_brief_submit_accepts_evidence_refs_array;
-    ];
-    "keeper_checkpoint_boundary", [
-      Alcotest.test_case "prefers OAS checkpoint over legacy" `Quick
-        test_keeper_checkpoint_prefers_oas_checkpoint;
-      Alcotest.test_case "legacy fallback still works" `Quick
-        test_keeper_checkpoint_legacy_fallback;
     ];
     "keeper_checkpoint_boundary", [
       Alcotest.test_case "OAS store roundtrip" `Quick
