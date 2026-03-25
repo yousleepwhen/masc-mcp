@@ -262,9 +262,9 @@ initiative_post_ttl_hours = 24
       in
       Alcotest.(check bool) "trigger_mode canonicalized so not flagged as override" false
         (List.mem "coordination.trigger_mode" override_fields);
-      (* profile_defaults_of_toml canonicalizes legacy TOML room_scope values
-         like "all" to "current", so this field should not remain overridden. *)
-      Alcotest.(check bool) "room_scope canonicalized so not flagged" false
+      (* canonical_room_scope always returns "current", so TOML "all"
+         is canonicalized to "current" matching live meta — no override. *)
+      Alcotest.(check bool) "room_scope canonicalized, no override" false
         (List.mem "coordination.room_scope" override_fields);
       Alcotest.(check bool) "override field proactive" true
         (List.mem "proactive.enabled" override_fields);
@@ -287,6 +287,8 @@ initiative_post_ttl_hours = 24
         json |> member "prompt" |> member "system_prompt_blocks"
         |> member "world" |> member "source" |> to_string
       in
+      (* Prompt source varies by env: "file" when prompts/ dir exists,
+         "default"/"missing" otherwise. Accept any valid source. *)
       Alcotest.(check bool) "prompt block source surfaced" true
         (String.length prompt_source > 0);
       let effective_system_prompt =
