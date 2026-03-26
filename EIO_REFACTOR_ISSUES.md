@@ -1,103 +1,47 @@
-# OCaml 5.x / Eio Refactoring & Improvement Issues
+# OCaml 5.x + Eio 리팩토링 및 개선 이슈 도출 (masc-mcp)
 
-이 문서는 OCaml 5.x 및 Eio의 베스트 프랙티스(Direct-style, Structured Concurrency, Message Passing)를 기준으로 `masc-mcp` 메인 브랜치의 현재 상태를 진단하고 작성된 개선 이슈 목록입니다.
+현재 `masc-mcp` (main upstream) 코드베이스를 분석한 결과, 전반적으로 Eio로의 전환은 이루어져 있으나, OCaml 5.x의 철학과 Eio 베스트 프랙티스(Capability-based Security, Message Passing 등)에 어긋나는 안티 패턴들이 다수 발견되었습니다. 
 
-**최종 업데이트: 2026-03-26** — 4개 이슈 모두 해결됨.
-
----
-
-## Issue 1: [Low — Dedup] File Lock Retry 코드 중복 제거
-
-> **심각도 하향 (Critical → Low)**: 탐색 결과, `Unix.sleepf` 호출 4건 모두 `Eio_unix.run_in_systhread` (= `run_blocking_lock_op`) 내부에서 실행되어 Eio 이벤트 루프를 블로킹하지 않음. 원래 진단(Critical: event loop blocking)은 오진. 실제 문제는 동일 retry 패턴의 copy-paste 중복.
-
-**상태: 해결됨** — PR #3193 (`feature/eio-flock-dedup`) + #3189 (systhread 주석)
-
-**변경 내용:**
-- `File_lock_eio.acquire_flock_retry`를 중앙 함수로 추출
-- `backend.ml`, `governance_v2.ml`, `hebbian_eio.ml`의 inline retry를 중앙 함수 호출로 교체
-- 모든 `Unix.sleepf` 호출에 systhread-safe 주석 추가
-
-**원래 발견된 위치 (중복이었던 곳):**
-- `lib/process/file_lock_eio.ml` — `acquire_flock_fd` (원본, 이제 `acquire_flock_retry` 호출)
-- `lib/backend/backend.ml` — `with_locked_rw_fd` (중복 제거됨)
-- `lib/council/governance_v2.ml` — `submit_petition` (중복 제거됨)
-- `lib/hebbian_eio.ml` — `with_graph_lock` (중복 제거됨)
+아래는 이를 개선하기 위해 도출된 주요 이슈(Issues) 목록입니다.
 
 ---
 
-## Issue 2: [Architecture] Mutex → Stream 전환 (chain fanout)
+## Issue 1: 역량 기반 보안(Capability-based Security) 위반 - `Eio_unix.sleep` 제거
+**상태**: `lib/board_listener.ml`, `lib/room/room_utils_ops.ml` 등에서 `Eio_unix.sleep` 사용 중.
+**문제점**: 
+Eio의 철학은 전역 상태에 의존하지 않고 명시적으로 부여받은 권한(Capability, 예: `clock`, `net`)을 통해서만 부수 효과(Side-effect)를 발생시키는 것입니다. `Eio_unix.sleep`은 `clock` 객체 없이 전역 타이머에 접근하여 sleep을 수행하는 안티 패턴(백도어)입니다.
+**개선 방안**:
+- `Eio_unix.sleep` 호출을 모두 `Eio.Time.sleep clock`으로 교체.
+- 이를 위해 해당 함수(및 상위 호출자)에 `~clock` 인자를 명시적으로 전달받도록 시그니처 수정.
 
-> 원래 이슈는 100건+ `Eio.Mutex`의 전면적 리팩토링이었으나, 감사 결과 대부분의 Mutex는 장기 공유 상태 보호 용도로 정당함. 실제로 Mutex가 불필요한 곳은 chain executor의 parallel fanout 결과 수집 6건.
+## Issue 2: 과도한 전역 상태 및 `Eio.Mutex` 의존 (Message Passing으로의 전환)
+**상태**: `lib/` 내에 무려 90개 이상의 `Eio.Mutex.create ()`가 사용되고 있음. (`registry_mutex`, `chdir_mutex`, `pool_mu`, `cache_mu` 등 수많은 전역 상태 락 존재)
+**문제점**:
+Domain 간 상태 공유를 위해 Mutex가 필요할 수는 있으나, OCaml 5의 다중 에이전트/동시성 모델에서는 **가변 상태(Mutable state + Mutex)의 공유를 최소화하고, `Eio.Stream`을 활용한 메시지 패싱(Message Passing)**으로 통신하는 것이 데드락(Deadlock)과 데이터 레이스를 방지하는 베스트 프랙티스입니다. 
+전역 Mutex가 너무 많아 락 경합(Contention)으로 인한 병목 및 예측 불가능한 병렬성 문제가 발생할 수 있습니다.
+**개선 방안**:
+- 시스템 내의 핵심 액터(Registry, Cache 등)를 독립된 파이버(Actor 패턴)로 분리하고 상태를 캡슐화.
+- 외부에서는 Mutex로 직접 상태를 수정하는 대신, `Eio.Stream.t` (채널)를 통해 요청(Request) 메시지를 보내고 결과를 비동기로 응답받는 구조로 점진적 리팩토링.
+- 가급적 순수 함수와 불변 데이터 구조(Immutable Record)를 적극 활용.
 
-**상태: 해결됨** — PR #3197 (`feature/eio-stream-fanout`)
+## Issue 3: 타입 안전한 비동기 에러 처리 - `Eio.Fiber.fork_promise` 도입
+**상태**: 대부분의 백그라운드 작업에서 `Eio.Fiber.fork` 안에서 `try ... with Eio.Cancel.Cancelled _ as e -> raise e | exn -> log_error` 패턴을 반복하여 사용 중. (`lib/tool_team_session_step_spawn.ml` 등 60곳 이상)
+**문제점**:
+단순한 Fire-and-forget 작업이라면 괜찮지만, 여러 비동기 작업을 병렬로 실행하고 그 **결과(또는 에러)**를 메인 루프로 수거해야 하는 로직에서는 예외 로깅에만 의존하면 복구(Recovery)가 어렵고 유실될 위험이 있습니다.
+**개선 방안**:
+- 결과나 명시적 에러 처리(`Result` 타입)가 필요한 병렬 작업의 경우, `Eio.Fiber.fork` 대신 **`Eio.Fiber.fork_promise`**를 사용.
+- 내부 예외를 `Result.Error`로 캡처(Capture)하여 `Promise.await`로 반환받음으로써, 타입 시스템 수준에서 안전하게 에러를 처리하는 패턴(Fail-fast와 우아한 에러 핸들링의 공존) 적용.
 
-**변경 내용:**
-- `chain_executor_eio.ml`: 4개 fanout 사이트(execute_fanout, execute_parallel_group, execute_merge, checkpoint parallel)에서 mutex+ref → `Eio.Stream` 전환
-- `chain_executor_search.ml`: 2개 사이트(MCTS sim_results, evaluator candidates)에서 동일 전환
-- `chain_executor_search.ml:214`의 `tree_mutex`는 장기 mutable state이므로 유지
-
-**판단 근거:** `Eio.Fiber.all`이 동기화 배리어를 제공하므로, one-shot 결과 수집에 Mutex는 불필요. Stream의 bounded capacity가 자연스러운 backpressure를 제공.
-
----
-
-## Issue 3: [Resilience] Fiber.fork 예외 경계 강화
-
-**상태: 해결됨** — PR #3192 (`fix/3182-fiber-exception-leak`, 병렬 세션에서 작업)
-
-**변경 내용:**
-- `server_runtime_bootstrap.ml`: 3개 bare fork를 `fork_subsystem`으로 전환 (keeper lifecycle, board_listener, SSE maintenance)
-- `keeper_keepalive.ml`: 2개 bare fork에 try/catch 예외 경계 추가 (gRPC heartbeat, heartbeat loop)
-- `Eio.Cancel.Cancelled`는 모든 경계에서 반드시 re-raise
-- `Subsystem_health` 모듈과 연동하여 장애 fiber 상태 추적
-
-**핵심 패턴:**
-```ocaml
-let fork_subsystem name f =
-  Subsystem_health.register name;
-  Eio.Fiber.fork ~sw (fun () ->
-    try f ()
-    with
-    | Eio.Cancel.Cancelled _ as e -> raise e
-    | exn -> Subsystem_health.mark_dead name; Log.Server.error ...)
-```
+## Issue 4: `Unix.sleepf` 및 블로킹 I/O의 안전성 재점검
+**상태**: `lib/shutdown.ml` 및 `lib/process/file_lock_eio.ml`에서 `Unix.sleepf` 사용 중.
+**진단 및 조치 사항**:
+- `process/file_lock_eio.ml`: `Eio_guard.run_in_systhread`로 감싸진 상태에서 `Unix.sleepf`가 호출되고 있어 Eio 도메인을 블로킹하지 않음 (안전함 / 예외적 허용).
+- `shutdown.ml`: Eio 도메인이 교착 상태(Deadlock)에 빠졌을 때 강제 종료하기 위해 `Thread.create` 외부 OS 스레드 내에서 `Unix.sleepf`를 사용 중 (의도된 Watchdog 패턴이므로 안전함).
+- **개선 방안**: 이들은 의도된 회피(Workaround)로 판명되었으나, 향후 새로 작성되는 코드에서 `Unix.sleep` 계열이 System Thread 밖에서 사용되지 않도록 Lint/CI 차원의 감시 룰 추가 권장.
 
 ---
 
-## Issue 4: [Performance] Executor_pool 확장 — CPU-bound 작업 offload
-
-**상태: 해결됨** — PR #3199 (`feature/eio-executor-pool-chain`) + PR #3210 (`feature/eio-chain-adapter-offload`)
-
-**변경 내용:**
-
-Phase A (PR #3199): 공유 pool ref 추출
-- `Executor_pool_ref` 모듈을 `lib/core/`에 추가 (get/set/submit_or_inline)
-- `server_dashboard_http_core.ml`의 로컬 pool ref를 공유 ref로 전환
-- `submit_or_inline`은 pool 미설정 시 inline fallback 제공
-
-Phase B (PR #3210): Chain adapter offload
-- `chain_adapter_eio.ml`의 Extract, ValidateSchema, ParseJson 변환에 `submit_or_inline` 적용
-- Domain-safety 감사 완료: 3개 모두 Yojson + stdlib만 사용, `Str` 모듈 미사용
-- `Str` 의존 변환(Template, Regex, Conditional, Split)은 domain-unsafe이므로 미변경
-
-**Domain-Safety 감사 결과:**
-
-| Transform | Domain-safe | 근거 |
-|-----------|-------------|------|
-| Extract | O | Yojson + String.split_on_char |
-| ValidateSchema | O | Yojson + local ref |
-| ParseJson | O | Yojson.Safe.from_string |
-| Template | X | Str.global_replace (global state) |
-| Regex | X | Str.regexp (global state) |
-| Conditional | X | Str.regexp_string (global state) |
-| Split | X | Str.regexp, Str.split (global state) |
-
----
-
-## Summary
-
-| Issue | 원래 심각도 | 실제 심각도 | 해결 PR | 상태 |
-|-------|-----------|-----------|---------|------|
-| 1. Unix.sleepf/flock dedup | Critical | Low (dedup) | #3193, #3189 | 해결 |
-| 2. Mutex → Stream | Architecture | Low-Medium | #3197 | 해결 |
-| 3. Fiber.fork 예외 | Resilience | Medium | #3192 | 해결 |
-| 4. Executor_pool 확장 | Performance | Medium-High | #3199, #3210 | 해결 |
+### 요약 및 우선순위 (Action Items)
+1. **[High Priority]** Capability 기반 보안 강제: `Eio_unix.sleep` -> `Eio.Time.sleep` 리팩토링.
+2. **[Medium Priority]** 동시성/병렬성 결과 수집 패턴 표준화: 결과값을 반환해야 하는 백그라운드 파이버 로직들을 선별하여 `fork_promise` + `Result` 조합으로 안전한 통제망 구축.
+3. **[Long-term]** Actor 기반 상태 관리: 과도하게 밀집된 90여 개의 `Eio.Mutex`를 점진적으로 걷어내고 `Eio.Stream` 채널 통신과 불변 데이터 모델로 마이그레이션.
