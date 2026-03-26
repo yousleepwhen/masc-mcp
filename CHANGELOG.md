@@ -3,6 +3,32 @@
 
 ## [Unreleased]
 
+## [2.154.0] - 2026-03-26
+
+### Added
+- **Small model collaboration benchmark** — 9B x 4 vs 35B x 1 comparison framework (#3369).
+- **Dashboard markdown renderer** — headings, lists, mermaid diagram support (#3368).
+- **Dashboard overview freshness strip** — visual data staleness indicator (#3339).
+- **Governance empty state guidance** — contextual help when no governance events exist (#3346).
+
+### Changed
+- **Prompt frontmatter auto-discovery** — prompts loaded from markdown frontmatter instead of hardcoded paths (#3336).
+- **OAS agent_sdk floor** — bumped to 0.92.0 (#3359).
+- **Dashboard harness-health theme** — aligned to CSS variable tokens (#3340).
+
+### Fixed
+- **CI test stability** — resolved 3 test failure groups: safe_ops non-Assoc JSON, agent coverage Eio context, team session step routing (#3356).
+- **Eio-dependent test wrapping** — moved create_state inside Eio_main.run for dashboard and MCP server tests (#3349, #3344).
+- **Room-truth test isolation** — seed execution cache and force filesystem backend to prevent proactive guard and PG auto-detect interference (#3366, #3367).
+- **Board PG test cleanup** — added setup/teardown lifecycle (#3362).
+- **cohttp-eio FD leak** — migrated remaining call sites to closing client wrapper (#3361).
+- **Dashboard PG config** — cached readonly config with semaphore guard (#3350).
+- **Keeper config API** — removed blocking bootstrap_runtime call (#3345).
+- **Error boundary retry border** — restored missing border style (#3338).
+- **Health baseline** — synced ratchet counts with current main (#3348).
+- **OAS pin SHA in CI cache** — prevents stale opam cache hits (#3352).
+- **Room-truth PG query** — skip is_initialized in command fiber, cache-first with eliminated repeated mkdir_p (#3351, #3353).
+
 ## [2.150.0] - 2026-03-26
 
 ### Added
