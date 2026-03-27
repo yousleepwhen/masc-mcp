@@ -1045,14 +1045,14 @@ let test_keeper_dispatch_auxiliary_surfaces_smoke () =
       in
       check_removed_tool "resident autonomy removed" "masc_keeper_autonomy"
         (`Assoc [ ("name", `String "resident-demo") ]);
-       check_removed_tool "resident autonomy set removed" "masc_keeper_autonomy"
-         (`Assoc
-           [
-             ("name", `String "resident-demo");
-             ("level", `String "L1_Reactive");
-           ]);
-       check_removed_tool "resident goals removed" "masc_keeper_goals"
-         (`Assoc [ ("name", `String "resident-demo") ]);
+      check_removed_tool "resident autonomy set removed" "masc_keeper_autonomy"
+        (`Assoc
+          [
+            ("name", `String "resident-demo");
+            ("level", `String "L1_Reactive");
+          ]);
+      check_removed_tool "resident goals removed" "masc_keeper_goals"
+        (`Assoc [ ("name", `String "resident-demo") ]);
       let ok, trajectory_body =
         dispatch "masc_keeper_trajectory"
           (`Assoc [ ("name", `String "resident-demo"); ("limit", `Int 5) ])
