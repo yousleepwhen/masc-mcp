@@ -739,6 +739,12 @@ let test_masc_tool_admin_update_schema () =
       | None -> Alcotest.fail "masc_tool_admin_update missing properties"
 
 (* ============================================================ *)
+(* 13. Cache Tool Tests                                          *)
+(* ============================================================ *)
+
+(* cache tools removed from MCP surface in #3640 *)
+
+(* ============================================================ *)
 (* 14. Handover Tool Tests                                       *)
 (* ============================================================ *)
 
@@ -903,6 +909,8 @@ let test_masc_walph_status_schema () =
       | Some props ->
           Alcotest.(check bool) "has agent_name" true (List.mem_assoc "agent_name" props)
       | None -> Alcotest.fail "masc_walph_status missing properties"
+
+(* hat tools removed from MCP surface in #3640 *)
 
 (* ============================================================ *)
 (* 19. Bounded Run Tool Tests                                    *)
@@ -1125,6 +1133,7 @@ let () =
       Alcotest.test_case "team-session-step-spawn-batch" `Quick
         test_masc_team_session_step_spawn_batch_schema;
     ];
+    (* cache_tools: removed from MCP surface in #3640 *)
     "handover_tools", [
       Alcotest.test_case "handover_create" `Quick test_masc_handover_create_schema;
       Alcotest.test_case "handover_list" `Quick test_masc_handover_list_schema;
@@ -1152,6 +1161,7 @@ let () =
       Alcotest.test_case "walph_natural" `Quick test_masc_walph_natural_schema;
       Alcotest.test_case "walph_status" `Quick test_masc_walph_status_schema;
     ];
+    (* hat_tools: removed from MCP surface in #3640 *)
     "bounded_run", [
       Alcotest.test_case "bounded_run" `Quick test_masc_bounded_run_schema;
     ];
