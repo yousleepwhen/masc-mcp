@@ -156,12 +156,24 @@ let run_snippet_validation (ctx : _ context) (state : state) ~attempt_index
        (Yojson.Safe.pretty_to_string (validator_result_to_json validation)));
   (code_path, validation)
 
+let validate_target_file target_file =
+  if not (Filename.is_relative target_file) then
+    Error (Printf.sprintf "absolute target_file rejected: %s" target_file)
+  else
+    let normalized = Filename.concat "." target_file in
+    let segments = String.split_on_char '/' normalized in
+    if List.mem ".." segments then
+      Error (Printf.sprintf "path traversal rejected: %s" target_file)
+    else Ok ()
+
 let absolute_target_path working_dir target_file =
-  if Filename.is_relative target_file then Filename.concat working_dir target_file
-  else target_file
+  Filename.concat working_dir target_file
 
 let run_repo_validation (ctx : _ context) (state : state) ~attempt_index
     ~(target_file : string) ~(code : string) =
+  (match validate_target_file target_file with
+   | Error msg -> failwith msg
+   | Ok () -> ());
   let target_path = absolute_target_path state.working_dir target_file in
   let original = Tool_repair_loop_storage.maybe_read_file target_path in
   let code_path =
