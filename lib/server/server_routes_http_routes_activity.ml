@@ -389,29 +389,36 @@ let add_routes ~sw ~clock router =
                |> Option.value ~default:"dashboard" in
              let submit_petition _ctx petition_args =
                let open Yojson.Safe.Util in
-               let title = member "title" petition_args |> to_string in
-               let origin = member "origin" petition_args |> to_string in
-               let subject_type = member "subject_type" petition_args |> to_string in
-               let risk_class_str = member "risk_class" petition_args |> to_string in
+               let title = member "title" petition_args |> to_string_option
+                 |> Option.value ~default:"param change" in
+               let subject_type = member "subject_type" petition_args |> to_string_option
+                 |> Option.value ~default:"param_change" in
+               let risk_class_str = member "risk_class" petition_args |> to_string_option
+                 |> Option.value ~default:"" in
                let risk_class = match risk_class_str with
                  | "high" -> Council.Governance_v2.High
-                 | _ -> Council.Governance_v2.Low in
+                 | "low" | "medium" | _ -> Council.Governance_v2.Low in
                let raw_action = member "requested_action" petition_args in
                let requested_action = match raw_action with
                  | `Null -> None
                  | action ->
-                   Some Council.Governance_v2.{
-                     action_type = member "action_type" action |> to_string_option
-                       |> Option.value ~default:"set_param";
-                     target_type = member "target_type" action |> to_string_option;
-                     target_id = member "target_id" action |> to_string_option;
-                     payload = (match member "payload" action with
-                       | `Null -> None | p -> Some p);
-                   } in
-               let source_refs = member "source_refs" petition_args
-                 |> to_list |> List.map to_string in
+                   let action_type = member "action_type" action |> to_string_option in
+                   (match action_type with
+                    | None -> None
+                    | Some at ->
+                      Some Council.Governance_v2.{
+                        action_type = at;
+                        target_type = member "target_type" action |> to_string_option;
+                        target_id = member "target_id" action |> to_string_option;
+                        payload = (match member "payload" action with
+                          | `Null -> None | p -> Some p);
+                      })
+               in
+               let source_refs = match member "source_refs" petition_args with
+                 | `List xs -> List.filter_map to_string_option xs
+                 | _ -> [] in
                match Council.Governance_v2.submit_petition base_path
-                 ~title ~origin ~subject_type ~risk_class
+                 ~title ~origin:"dashboard" ~subject_type ~risk_class
                  ~requested_action ~source_refs ~created_by:actor with
                | Ok result ->
                  (true, Printf.sprintf "Governance petition created: %s" result.case_.id)
