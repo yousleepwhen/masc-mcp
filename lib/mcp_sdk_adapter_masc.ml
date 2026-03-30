@@ -42,10 +42,10 @@ let make_context ?mcp_session_id () : Handler.context =
     | None -> ());
     Ok ()
   in
-  let send_log level message =
+  let send_log (level : MP.Logging.log_level) message =
     let params =
       `Assoc [
-        ("level", `String level);
+        ("level", `String (MP.Logging.log_level_to_string level));
         ("data", `String message);
       ]
     in

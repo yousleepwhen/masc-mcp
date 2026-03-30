@@ -289,7 +289,7 @@ let create_keeper (ctx : _ context) (p : parsed_args) : tool_result =
            (false, e)
          | Ok () ->
            Log.Keeper.debug "create_keeper: metadata written for name=%s trace_id=%s"
-             p.name meta.trace_id;
+             p.name meta.runtime.trace_id;
            Progress.Tracker.step tracker ~message:"Starting keepalive loop" ();
            Log.Keeper.info "create_keeper: starting keepalive for name=%s" p.name;
            start_keepalive ctx meta;
@@ -301,7 +301,7 @@ let create_keeper (ctx : _ context) (p : parsed_args) : tool_result =
                 Tool_shard.set_agent_shards p.name shard_names
             | Some [] | None -> ());
            Progress.Tracker.complete tracker ~message:"Keeper created" ();
-           Log.Keeper.info "create_keeper: completed for name=%s trace_id=%s" p.name meta.trace_id;
+           Log.Keeper.info "create_keeper: completed for name=%s trace_id=%s" p.name meta.runtime.trace_id;
            let json = `Assoc [
              ("name", `String meta.name);
              ("agent_name", `String meta.agent_name);
