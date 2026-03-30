@@ -4,11 +4,13 @@ open Agent_sdk
 open Alcotest
 open Masc_mcp
 
-let make_test_meta ?(name = "test-keeper") () : Keeper_types.keeper_meta =
+let make_test_meta ?(name = "test-keeper") ?(tool_allowlist = []) ()
+    : Keeper_types.keeper_meta =
   match Keeper_types.meta_of_json
     (`Assoc [("name", `String name); ("agent_name", `String name);
              ("trace_id", `String "test-trace-001");
-             ("allowed_paths", `List [`String "*"])]) with
+             ("allowed_paths", `List [`String "*"]);
+             ("tool_allowlist", `List (List.map (fun s -> `String s) tool_allowlist))]) with
   | Ok meta -> meta
   | Error e -> failwith (Printf.sprintf "make_test_meta failed: %s" e)
 
@@ -240,7 +242,14 @@ let make_research_meta () : Keeper_types.keeper_meta =
     (`Assoc [("name", `String "test-researcher");
              ("agent_name", `String "test-researcher");
              ("trace_id", `String "test-trace-research");
-             ("soul_profile", `String "research")]) with
+             ("soul_profile", `String "research");
+             ("tool_allowlist",
+               `List
+                 [
+                   `String "masc_autoresearch_cycle";
+                   `String "masc_autoresearch_start";
+                   `String "masc_autoresearch_status";
+                 ])]) with
   | Ok meta -> meta
   | Error e -> failwith (Printf.sprintf "make_research_meta failed: %s" e)
 
@@ -255,13 +264,13 @@ let test_research_keeper_has_autoresearch_tools () =
   check bool "has status" true has_status
 
 let test_non_research_keeper_has_autoresearch () =
-  (* Mode removal: all keepers get all tools unconditionally *)
+  (* masc_* autoresearch tools are not exposed without explicit allowlist. *)
   let meta = make_test_meta () in
   let allowed = Keeper_exec_tools.keeper_allowed_tool_names meta in
   let has_any = List.exists (fun n ->
     String.length n > 18
     && String.sub n 0 18 = "masc_autoresearch_") allowed in
-  check bool "has autoresearch tools" true has_any
+  check bool "has autoresearch tools" false has_any
 
 let test_research_model_tools_include_autoresearch () =
   let meta = make_research_meta () in
