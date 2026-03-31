@@ -12,24 +12,41 @@ type tool_result = Keeper_types.tool_result
 
 include Keeper_status_bridge
 
+let resolve_config (ctx : _ Keeper_types.context) name : Room.config =
+  match Keeper_registry.find_by_name name with
+  | Some entry when entry.base_path <> ctx.config.base_path ->
+      { ctx.config with base_path = entry.base_path }
+  | _ -> ctx.config
+
 (* Re-export handle_keeper_status from the detail module *)
 let handle_keeper_status = Keeper_status_detail.handle_keeper_status
 
 let handle_keeper_list ctx args : tool_result =
   let limit = max 0 (get_int args "limit" 50) in
   let detailed = get_bool args "detailed" false in
-  let dir = keeper_dir ctx.config in
-  match Safe_ops.list_dir_safe dir with
-  | Error e -> (false, "❌ " ^ e)
-  | Ok files ->
-    let keeper_names =
-      files
-      |> List.filter (fun f -> Filename.check_suffix f ".json")
-      |> List.map Filename.remove_extension
-      |> List.filter validate_name
-      |> List.sort String.compare
-      |> take limit
-    in
+  (* Prefer registry for keeper names — avoids base_path mismatch
+     when the caller's config points to a different directory.
+     Fall back to filesystem scan if registry is empty. *)
+  let registry_names =
+    Keeper_registry.all ()
+    |> List.map (fun (e : Keeper_registry.registry_entry) -> e.name)
+    |> List.sort_uniq String.compare
+  in
+  let keeper_names =
+    if registry_names <> [] then
+      take limit registry_names
+    else
+      let dir = keeper_dir ctx.config in
+      match Safe_ops.list_dir_safe dir with
+      | Error _ -> []
+      | Ok files ->
+        files
+        |> List.filter (fun f -> Filename.check_suffix f ".json")
+        |> List.map Filename.remove_extension
+        |> List.filter validate_name
+        |> List.sort String.compare
+        |> take limit
+  in
     if not detailed then
       let json = `Assoc [
         ("count", `Int (List.length keeper_names));
@@ -40,7 +57,8 @@ let handle_keeper_list ctx args : tool_result =
       let now_ts = Time_compat.now () in
       let keepers =
         List.filter_map (fun name ->
-          match read_meta ctx.config name with
+          let config = resolve_config ctx name in
+          match read_meta config name with
           | Error _ -> None
           | Ok None -> None
           | Ok (Some m) ->
@@ -61,8 +79,8 @@ let handle_keeper_list ctx args : tool_result =
             let (compact_ratio_gate, compact_message_gate, compact_token_gate) =
               compaction_policy_of_keeper m
             in
-	            let metrics_store = keeper_metrics_store ctx.config m.name in
-	            let metrics_path = keeper_metrics_path ctx.config m.name in
+	            let metrics_store = keeper_metrics_store config m.name in
+	            let metrics_path = keeper_metrics_path config m.name in
 	            let metrics_window_lines =
 	              let dated = Dated_jsonl.read_recent_lines metrics_store 120 in
 	              if dated <> [] then dated
@@ -91,7 +109,7 @@ let handle_keeper_list ctx args : tool_result =
 	            in
             let memory_bank_summary =
               read_keeper_memory_summary
-                ctx.config
+                config
                 ~name:m.name
                 ~max_bytes:120000
                 ~max_lines:180
@@ -177,7 +195,7 @@ let handle_keeper_list ctx args : tool_result =
               ("will", if String.trim m.will = "" then `Null else `String m.will);
               ("needs", if String.trim m.needs = "" then `Null else `String m.needs);
               ("desires", if String.trim m.desires = "" then `Null else `String m.desires);
-              ("keepalive_running", `Bool (runtime_keepalive_running ctx.config m));
+              ("keepalive_running", `Bool (runtime_keepalive_running config m));
               ("active_model", `String active_model);
               ("next_model_hint", Json_util.string_opt_to_json next_model_hint);
               ("keeper_age_s", `Float keeper_age_s);
@@ -237,13 +255,13 @@ let handle_keeper_list ctx args : tool_result =
               ("autonomous_action_count", `Int m.runtime.autonomous_action_count);
               ("active_team_session_id",
                 Json_util.string_opt_to_json m.active_team_session_id);
-              ("team_session_state", team_session_state_json ctx.config m);
+              ("team_session_state", team_session_state_json config m);
               ("last_team_session_started_at",
                 if String.trim m.last_team_session_started_at = "" then `Null
                 else `String m.last_team_session_started_at);
               ("team_session_start_count_total",
                 `Int m.team_session_start_count_total);
-              ("team_session_bridge", team_session_bridge_json ctx.config m);
+              ("team_session_bridge", team_session_bridge_json config m);
               ("memory_note_count", `Int memory_bank_summary.total_notes);
               ("memory_top_kind",
                 Json_util.string_opt_to_json memory_bank_summary.top_kind);
@@ -254,15 +272,15 @@ let handle_keeper_list ctx args : tool_result =
 	              ("metrics_overview", metrics_summary_to_json metrics_overview);
 	              ("memory_bank", memory_summary_to_json memory_bank_summary);
               ("storage_paths", `Assoc [
-                ("meta", `String (keeper_meta_path ctx.config m.name));
+                ("meta", `String (keeper_meta_path config m.name));
                 ("metrics", `String (Dated_jsonl.base_dir metrics_store));
                 ("metrics_single_file", `String metrics_path);
-                ("memory_bank", `String (keeper_memory_bank_path ctx.config m.name));
-                ("policy", `String (keeper_policy_log_path ctx.config m.name));
-                ("feedback", `String (keeper_feedback_log_path ctx.config m.name));
-                ("dataset_export", `String (keeper_dataset_export_path ctx.config m.name));
-                ("session_dir", `String (keeper_session_dir ctx.config m.runtime.trace_id));
-                ("history", `String (keeper_history_path ctx.config m.runtime.trace_id));
+                ("memory_bank", `String (keeper_memory_bank_path config m.name));
+                ("policy", `String (keeper_policy_log_path config m.name));
+                ("feedback", `String (keeper_feedback_log_path config m.name));
+                ("dataset_export", `String (keeper_dataset_export_path config m.name));
+                ("session_dir", `String (keeper_session_dir config m.runtime.trace_id));
+                ("history", `String (keeper_history_path config m.runtime.trace_id));
               ]);
             ])
         ) keeper_names
@@ -278,12 +296,13 @@ let handle_keeper_trajectory ctx args : tool_result =
   if not (validate_name name) then
     (false, "invalid keeper name")
   else
-    match read_meta ctx.config name with
+    let config = resolve_config ctx name in
+    match read_meta config name with
     | Error e -> (false, "read error: " ^ e)
     | Ok None -> (false, Printf.sprintf "keeper not found: %s" name)
     | Ok (Some m) ->
       let limit = get_int args "limit" 20 in
-      let masc_root = Filename.concat ctx.config.base_path ".masc" in
+      let masc_root = Filename.concat config.base_path ".masc" in
       let entries =
         Trajectory.read_entries ~masc_root ~keeper_name:m.name ~trace_id:m.runtime.trace_id
       in
@@ -314,12 +333,13 @@ let handle_keeper_eval ctx args : tool_result =
   if not (validate_name name) then
     (false, "invalid keeper name")
   else
-    match read_meta ctx.config name with
+    let config = resolve_config ctx name in
+    match read_meta config name with
     | Error e -> (false, "read error: " ^ e)
     | Ok None -> (false, Printf.sprintf "keeper not found: %s" name)
     | Ok (Some m) ->
       let scenario_file = get_string_opt args "scenario_file" in
-      let masc_root = Filename.concat ctx.config.base_path ".masc" in
+      let masc_root = Filename.concat config.base_path ".masc" in
       let entries =
         Trajectory.read_entries ~masc_root ~keeper_name:m.name ~trace_id:m.runtime.trace_id
       in

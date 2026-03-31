@@ -24,6 +24,16 @@ type 'a context = 'a Keeper_types.context = {
 
 type tool_result = Keeper_types.tool_result
 
+(** Resolve the correct config for a keeper tool call.
+    Dashboard sessions may have a different base_path than the keeper
+    was registered with.  Look up the keeper's actual base_path from
+    the registry and override ctx.config when they differ. *)
+let resolve_config_for_keeper (ctx : _ context) name : Room.config =
+  match Keeper_registry.find_by_name name with
+  | Some entry when entry.base_path <> ctx.config.base_path ->
+      { ctx.config with base_path = entry.base_path }
+  | _ -> ctx.config
+
 let schemas = Keeper_types.schemas
 
 type text_cache = {
@@ -226,7 +236,8 @@ let handle_keeper_status ctx args : tool_result =
 
 let ensure_keeper_exists ctx args =
   let name = get_string args "name" "" in
-  match read_meta ctx.config name with
+  let config = resolve_config_for_keeper ctx name in
+  match read_meta config name with
   | Ok (Some _) -> Ok ()
   | Ok None -> Error (Printf.sprintf "❌ keeper not found: %s" name)
   | Error err -> Error (Printf.sprintf "❌ %s" err)
@@ -265,7 +276,8 @@ let handle_keeper_msg_stream ~on_text_delta ctx args : tool_result =
 
 let resolve_keeper_meta ctx args =
   let name = get_string args "name" "" in
-  match read_meta ctx.config name with
+  let config = resolve_config_for_keeper ctx name in
+  match read_meta config name with
   | Ok (Some meta) -> Ok meta
   | Ok None -> Error (Printf.sprintf "❌ keeper not found: %s" name)
   | Error err -> Error (Printf.sprintf "❌ %s" err)
@@ -381,7 +393,9 @@ let handle_keeper_down ctx args : tool_result =
 
 let keeper_rows_json ctx names =
   names
-  |> List.filter_map (keeper_list_row_json ~runtime_class:"keeper" ctx.config)
+  |> List.filter_map (fun name ->
+    let config = resolve_config_for_keeper ctx name in
+    keeper_list_row_json ~runtime_class:"keeper" config name)
 
 let handle_keeper_list ctx args : tool_result =
   let limit = max 0 (get_int args "limit" 50) in
@@ -390,8 +404,15 @@ let handle_keeper_list ctx args : tool_result =
   let body =
     cached_text_by_key _keeper_list_cache ~key:cache_key
       ~ttl_s:(keeper_list_cache_ttl_s ()) (fun () ->
+        (* Prefer registry names to avoid base_path mismatch *)
+        let registry_names =
+          Keeper_registry.all ()
+          |> List.map (fun (e : Keeper_registry.registry_entry) -> e.name)
+          |> List.sort_uniq String.compare
+        in
         let names =
-          keeper_names ctx.config
+          (if registry_names <> [] then registry_names
+           else keeper_names ctx.config)
           |> take limit
         in
         let rows = keeper_rows_json ctx names in
