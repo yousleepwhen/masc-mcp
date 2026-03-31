@@ -486,15 +486,20 @@ let test_oas_worker_capability_threading_contracts () =
        "?raw_trace ~proof_ref ?contract ~sw")
 
 let test_team_session_spawn_tool_contracts () =
+  (* Spawn uses Worker_runtime + deps-injected execution.
+     Verify key structural invariants after #4092/#4175 refactor. *)
   check bool "team session spawn uses Worker_runtime.run_worker" true
     (file_contains_pattern "lib/tool_team_session_step_spawn.ml"
        "Worker_runtime.run_worker");
   check bool "team session spawn branches on local spawn agents" true
     (file_contains_pattern "lib/tool_team_session_step_spawn.ml"
-       "if deps.is_local_spawn_agent prepared.spec.spawn_agent");
-  check bool "team session spawn contract uses scoped tool names" true
+       "deps.is_local_spawn_agent prepared.spec.spawn_agent");
+  check bool "team session spawn derives local worker tool names from bridge" true
     (file_contains_pattern "lib/tool_team_session_step_spawn.ml"
-       "supported_local_worker_tool_names");
+       "Team_session_oas_bridge.supported_local_worker_tool_names");
+  check bool "team session spawn passes allowed_tools to worker" true
+    (file_contains_pattern "lib/tool_team_session_step_spawn.ml"
+       "~allowed_tools:local_worker_tool_names");
   check bool "team session bridge exposes scoped local worker tools" true
     (file_contains_pattern "lib/team_session/team_session_oas_bridge.ml"
        "supported_local_worker_tool_names_for_scope")
