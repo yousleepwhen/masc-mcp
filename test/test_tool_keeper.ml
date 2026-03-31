@@ -1445,9 +1445,10 @@ let test_keeper_up_persists_allowed_paths_to_status_policy () =
   Eio_main.run @@ fun env ->
   Eio.Switch.run @@ fun sw ->
   let base_dir = temp_dir () in
+  let keeper_name = "sangsu-allowed-paths-" ^ string_of_int (int_of_float (Unix.gettimeofday () *. 1000.0) mod 100_000) in
   Fun.protect
     ~finally:(fun () ->
-      Masc_mcp.Keeper_keepalive.stop_keepalive "sangsu";
+      Masc_mcp.Keeper_keepalive.stop_keepalive keeper_name;
       rm_rf base_dir)
     (fun () ->
       let config = Masc_mcp.Room.default_config base_dir in
@@ -1465,7 +1466,7 @@ let test_keeper_up_persists_allowed_paths_to_status_policy () =
         dispatch "masc_keeper_up"
           (`Assoc
             [
-              ("name", `String "sangsu");
+              ("name", `String keeper_name);
               ("goal", `String "Stay available");
               ("allowed_paths", `List (List.map (fun path -> `String path) allowed_paths));
               ("proactive_enabled", `Bool false);
@@ -1476,7 +1477,7 @@ let test_keeper_up_persists_allowed_paths_to_status_policy () =
         dispatch "masc_keeper_status"
           (`Assoc
             [
-              ("name", `String "sangsu");
+              ("name", `String keeper_name);
               ("include_history_tail", `Bool false);
               ("include_compaction_history", `Bool false);
               ("include_context", `Bool false);
