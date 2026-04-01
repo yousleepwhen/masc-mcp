@@ -70,16 +70,22 @@ let register_sse_conn ~session_id ~info =
       Hashtbl.replace sse_conn_by_session session_id info)
 
 let stop_sse_session session_id =
-  Eio.Mutex.use_rw ~protect:true registry_mutex (fun () ->
-      match Hashtbl.find_opt sse_conn_by_session session_id with
-      | None -> ()
-      | Some info ->
-          Hashtbl.remove sse_conn_by_session session_id;
-          Hashtbl.remove sse_connect_guard_by_session session_id;
-          close_sse_conn info)
+  let info =
+    Eio.Mutex.use_rw ~protect:true registry_mutex (fun () ->
+        match Hashtbl.find_opt sse_conn_by_session session_id with
+        | None -> None
+        | Some conn ->
+            Hashtbl.remove sse_conn_by_session session_id;
+            (* Do NOT remove sse_connect_guard_by_session here to preserve rate limiting
+               state for immediate reconnects. Stale guards are reaped by [reap_stale_guards]. *)
+            Some conn)
+  in
+  match info with
+  | None -> ()
+  | Some conn -> close_sse_conn conn
 
 let is_active_sse_session session_id =
-  Eio.Mutex.use_rw ~protect:true registry_mutex (fun () ->
+  Eio.Mutex.use_ro registry_mutex (fun () ->
       Hashtbl.mem sse_conn_by_session session_id)
 
 let reap_stale_guards () =
