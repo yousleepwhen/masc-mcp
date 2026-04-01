@@ -5,7 +5,7 @@
     - rate_tracker type
     - create_tracker function
     - get_timestamps / set_timestamps
-    - Atomic helpers: get_burst_used, set_burst_used, incr_burst_used
+    - Rate-tracker helpers: get_burst_used, set_burst_used, incr_burst_used
     - McpSessionStore: generate_id, to_json
     - extract_mcp_session_id
 *)

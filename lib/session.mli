@@ -43,7 +43,7 @@ type registry = {
 (** Create a new session registry with optional rate-limit config. *)
 val create : ?config:rate_limit_config -> unit -> registry
 
-(** Run a critical section under the registry's mutex. *)
+(** Run a critical section under the registry's mutex (Eio_guard-safe). *)
 val with_lock : registry -> (unit -> 'a) -> 'a
 
 (** {1 Agent Sessions} *)
@@ -54,8 +54,8 @@ val register : registry -> agent_name:string -> session
 (** Unregister an agent session (mutex-protected). *)
 val unregister : registry -> agent_name:string -> unit
 
-(** Unregister synchronously without extra mutex layer.
-    Safe in single-fiber Eio context. *)
+(** Unregister synchronously — uses registry mutex.
+    Requires an active Eio runtime. *)
 val unregister_sync : registry -> agent_name:string -> unit
 
 (** Update the activity timestamp and optionally the listening flag. *)
@@ -66,6 +66,16 @@ val update_activity :
 
 (** Create an empty rate tracker. *)
 val create_tracker : unit -> rate_tracker
+
+(** Direct mutable field accessors for rate tracker.
+    All access is serialized via registry.lock (Eio.Mutex);
+    these helpers perform plain, non-atomic reads/writes. *)
+
+val get_burst_used : rate_tracker -> int
+val set_burst_used : rate_tracker -> int -> unit
+val incr_burst_used : rate_tracker -> unit
+val get_last_burst_reset : rate_tracker -> float
+val set_last_burst_reset : rate_tracker -> float -> unit
 
 (** Get timestamps for a given rate-limit category. *)
 val get_timestamps : rate_tracker -> rate_limit_category -> float list

@@ -45,10 +45,11 @@ let create ?(config = default_rate_limit) () = {
 }
 
 (** Run a critical section with mutex protection.
-    Uses Eio.Mutex.use_rw for safe lock management - automatically
-    releases lock even on exceptions, preventing deadlocks. *)
+    Uses Eio_guard.with_mutex so the lock is acquired only when the
+    Eio runtime is active; before that, the function runs unprotected
+    (safe because OCaml is single-threaded at module-init / test time). *)
 let with_lock registry f =
-  Eio.Mutex.use_rw ~protect:true registry.lock (fun () -> f ())
+  Eio_guard.with_mutex registry.lock (fun () -> f ())
 
 (** Register a new session *)
 let register registry ~agent_name =
@@ -76,8 +77,9 @@ let unregister registry ~agent_name =
   )
 
 (** Unregister agent synchronously — uses registry mutex for safety.
-    Prefer [unregister] for standard usage; this variant for bootstrap/shutdown
-    paths where the caller may not be in an Eio fiber context. *)
+    Prefer [unregister] for standard usage; this variant exists for
+    bootstrap/shutdown paths.  Note: requires an active Eio runtime
+    because [with_lock] delegates to [Eio.Mutex.use_rw]. *)
 let unregister_sync (registry : registry) ~agent_name =
   with_lock registry (fun () ->
     Hashtbl.remove registry.sessions agent_name;
@@ -106,8 +108,9 @@ let create_tracker () = {
 }
 
 (** Direct mutable field accessors for rate tracker.
-    All access is serialized via registry.lock (Eio.Mutex),
-    so plain reads/writes are safe without atomic operations. *)
+    All access is serialized via registry.lock (Eio.Mutex);
+    these helpers perform plain, non-atomic reads/writes and must not be
+    treated as atomic primitives. *)
 let get_burst_used (tracker : rate_tracker) = tracker.burst_used
 
 let set_burst_used (tracker : rate_tracker) v = tracker.burst_used <- v
@@ -149,7 +152,7 @@ let check_rate_limit_ex registry ~agent_name ~category ~role =
           t
     in
 
-    (* Reset burst if a minute has passed - atomic compare-and-set *)
+    (* Reset burst if a minute has passed *)
     let last_reset = get_last_burst_reset tracker in
     if now -. last_reset > 60.0 then begin
       set_burst_used tracker 0;
@@ -172,10 +175,10 @@ let check_rate_limit_ex registry ~agent_name ~category ~role =
     let current = List.length recent in
 
     if current >= limit then begin
-      (* Check if burst is available - using atomic read/increment *)
+      (* Check if burst is available *)
       let burst = get_burst_used tracker in
       if burst < registry.config.burst_allowed then begin
-        incr_burst_used tracker;  (* Atomic increment *)
+        incr_burst_used tracker;
         set_timestamps tracker category (now :: recent);
         (true, 0)  (* Burst allowed *)
       end else begin
@@ -218,7 +221,7 @@ let get_rate_limit_status registry ~agent_name ~role =
       ]
     in
 
-    let burst = get_burst_used tracker in  (* Atomic read *)
+    let burst = get_burst_used tracker in
     `Assoc [
       ("agent", `String agent_name);
       ("role", `String (agent_role_to_string role));
@@ -443,8 +446,9 @@ let restore_from_disk registry ~agents_path =
 (* ============================================ *)
 
 (** MCP Session ID store - separate from agent sessions.
-    All access is serialized via [store_mutex] (Eio.Mutex)
-    for fiber-safe concurrent access. *)
+    All access is serialized via [store_mutex] using [Eio_guard]
+    for fiber-safe concurrent access.  Before [Eio_guard.enable],
+    operations run without locking (safe for tests and module init). *)
 module McpSessionStore = struct
   type mcp_session = {
     id: string;
@@ -468,9 +472,9 @@ module McpSessionStore = struct
     done;
     Printf.sprintf "mcp_%s" (Buffer.contents buf)
 
-  (** Create new MCP session — mutex-protected *)
+  (** Create new MCP session — mutex-protected (Eio_guard-safe). *)
   let create ?agent_name () : mcp_session =
-    Eio.Mutex.use_rw ~protect:true store_mutex (fun () ->
+    Eio_guard.with_mutex store_mutex (fun () ->
       let now = Time_compat.now () in
       let session = {
         id = generate_id ();
@@ -483,9 +487,9 @@ module McpSessionStore = struct
       Hashtbl.add sessions session.id session;
       session)
 
-  (** Get MCP session by ID — mutex-protected *)
+  (** Get MCP session by ID — mutex-protected (Eio_guard-safe). *)
   let get (session_id : string) : mcp_session option =
-    Eio.Mutex.use_rw ~protect:true store_mutex (fun () ->
+    Eio_guard.with_mutex store_mutex (fun () ->
       match Hashtbl.find_opt sessions session_id with
       | None -> None
       | Some session ->
@@ -493,9 +497,9 @@ module McpSessionStore = struct
         session.request_count <- session.request_count + 1;
         Some session)
 
-  (** Cleanup stale MCP sessions — mutex-protected *)
+  (** Cleanup stale MCP sessions — mutex-protected (Eio_guard-safe). *)
   let cleanup_stale () : int =
-    Eio.Mutex.use_rw ~protect:true store_mutex (fun () ->
+    Eio_guard.with_mutex store_mutex (fun () ->
       let now = Time_compat.now () in
       let stale = Hashtbl.fold (fun id session acc ->
         if now -. session.last_activity > !max_age then id :: acc else acc
@@ -514,14 +518,14 @@ module McpSessionStore = struct
       ("metadata", `Assoc (List.map (fun (k, v) -> (k, `String v)) s.metadata));
     ]
 
-  (** List all MCP sessions — mutex-protected *)
+  (** List all MCP sessions — mutex-protected (Eio_guard-safe). *)
   let list_all () : mcp_session list =
-    Eio.Mutex.use_ro store_mutex (fun () ->
+    Eio_guard.with_mutex_ro store_mutex (fun () ->
       Hashtbl.fold (fun _ s acc -> s :: acc) sessions [])
 
-  (** Remove session — mutex-protected *)
+  (** Remove session — mutex-protected (Eio_guard-safe). *)
   let remove (id : string) : bool =
-    Eio.Mutex.use_rw ~protect:true store_mutex (fun () ->
+    Eio_guard.with_mutex store_mutex (fun () ->
       if Hashtbl.mem sessions id then begin
         Hashtbl.remove sessions id;
         true
