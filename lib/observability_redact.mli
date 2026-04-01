@@ -11,6 +11,10 @@ val redact_preview : ?max_len:int -> string -> string
 (** Truncate to [max_len] (default 200) and strip known sensitive patterns.
     Result is safe for storage in proof/dashboard/metrics. *)
 
+val preview_of_json : ?max_len:int -> Yojson.Safe.t -> string
+(** Serialize JSON with sensitive fields redacted, then truncate.
+    Combines [redact_json_value] + [redact_preview]. *)
+
 val redact_tool_input : tool_name:string -> Yojson.Safe.t -> string option
 (** Produce a redacted preview of tool input JSON.
     Returns [None] for tools on the deny list (auth, encryption, etc.). *)

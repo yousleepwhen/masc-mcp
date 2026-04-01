@@ -154,25 +154,17 @@ let entry_of_json_r (json : Yojson.Safe.t) : (audit_entry, string) result =
     let trace_id = Safe_ops.json_string_opt "trace_id" json in
     Ok { timestamp; agent_id; action; room_id; details; outcome; cost_estimate; token_count; trace_id }
   with Eio.Cancel.Cancelled _ as e -> raise e | exn ->
-    (* Redact details field to prevent sensitive content leaking into logs *)
-    let redacted = match json with
-      | `Assoc fields ->
-        let safe_fields = List.filter_map (fun (k, v) ->
-          if k = "details" then Some (k, `String "<redacted>")
-          else Some (k, v)
-        ) fields in
-        `Assoc safe_fields
-      | _ -> `String "<non-object>"
-    in
-    let snippet = preview (Yojson.Safe.to_string redacted) in
-    Error (Printf.sprintf "%s | json: %s" (Printexc.to_string exn) snippet)
+    (* Use shared redaction to prevent any sensitive field leaking into logs.
+       Exn string only — json snippet deferred to callers that actually log. *)
+    Error (Printexc.to_string exn)
 
 (** Lenient wrapper: logs warning and returns option for backward compat *)
 let entry_of_json (json : Yojson.Safe.t) : audit_entry option =
   match entry_of_json_r json with
   | Ok entry -> Some entry
   | Error reason ->
-      Log.Misc.warn "audit_log: entry parse failed: %s" reason;
+      let snippet = Observability_redact.preview_of_json json in
+      Log.Misc.warn "audit_log: entry parse failed: %s | json: %s" reason snippet;
       None
 
 (** {1 File Operations} *)
@@ -210,7 +202,10 @@ let parse_entries (jsons : Yojson.Safe.t list) : audit_entry list =
     | Error reason ->
         incr err_count;
         if !err_count <= max_logged_errors then
-          Log.Misc.error "audit_log: corrupt entry (#%d): %s" !err_count reason
+          (* Only serialize/redact JSON for entries we actually log *)
+          let snippet = Observability_redact.preview_of_json json in
+          Log.Misc.error "audit_log: corrupt entry (#%d): %s | json: %s"
+            !err_count reason snippet
   ) jsons;
   if !err_count > 0 then
     Log.Misc.error "audit_log: %d/%d entries failed to parse (possible corruption)%s"
@@ -244,7 +239,7 @@ let read_entries ?(n = 10_000) (config : config) : audit_entry list =
                 incr invalid_count;
                 if !invalid_count <= max_logged_errors then
                   Log.Misc.warn "audit_log: invalid JSON line (#%d): %s | line: %s"
-                    !invalid_count msg (preview ~max_len:100 line);
+                    !invalid_count msg (Observability_redact.redact_preview ~max_len:100 line);
                 None) in
       if !invalid_count > 0 then
         Log.Misc.warn "audit_log: %d invalid JSON line(s) in legacy audit log%s"
@@ -315,9 +310,9 @@ let log_cancel_task config ~agent_id ~room_id ~task_id ~reason ?cost_estimate ?t
 
 let log_broadcast config ~agent_id ~room_id ~message_preview ?cost_estimate ?token_count () =
   (* Truncate message for privacy/size *)
-  let preview = preview ~max_len:100 message_preview in
+  let msg_preview = preview ~max_len:100 message_preview in
   log_action config ~agent_id ~action:Broadcast ~room_id
-    ~details:(`Assoc [("preview", `String preview)])
+    ~details:(`Assoc [("preview", `String msg_preview)])
     ?cost_estimate ?token_count ~outcome:Success ()
 
 let log_suspend config ~agent_id ~target_agent ~reason ~rooms_affected ?cost_estimate ?token_count () =
