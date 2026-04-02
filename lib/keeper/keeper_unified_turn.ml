@@ -28,6 +28,17 @@ let string_contains_substring_ci ~(needle : string) (haystack : string) : bool =
     ~needle:(String.lowercase_ascii needle)
     (String.lowercase_ascii haystack)
 
+let find_substring ~(needle : string) (haystack : string) : int option =
+  let needle_len = String.length needle in
+  let hay_len = String.length haystack in
+  let rec loop i =
+    if needle_len = 0 then Some 0
+    else if i + needle_len > hay_len then None
+    else if String.sub haystack i needle_len = needle then Some i
+    else loop (i + 1)
+  in
+  loop 0
+
 (** Detect transient TCP/TLS errors that warrant a single immediate retry.
     These patterns match OAS cascade error messages for connection-level failures. *)
 let transient_error_patterns =
@@ -38,6 +49,58 @@ let is_transient_network_error (msg : string) : bool =
   List.exists
     (fun needle -> string_contains_substring ~needle msg)
     transient_error_patterns
+
+let context_overflow_anchor = "available context size ("
+
+let context_overflow_limit (msg : string) : int option =
+  let lowered = String.lowercase_ascii msg in
+  match find_substring ~needle:context_overflow_anchor lowered with
+  | None -> None
+  | Some anchor_idx ->
+      let start_idx = anchor_idx + String.length context_overflow_anchor in
+      let rec consume_digits idx =
+        if idx >= String.length lowered then idx
+        else
+          match lowered.[idx] with
+          | '0' .. '9' -> consume_digits (idx + 1)
+          | _ -> idx
+      in
+      let end_idx = consume_digits start_idx in
+      if end_idx = start_idx then None
+      else
+        String.sub lowered start_idx (end_idx - start_idx)
+        |> int_of_string_opt
+
+let recover_context_overflow_retry
+    ~(meta : keeper_meta)
+    ~(base_dir : string)
+    ~(primary_max_context : int)
+    ~(error : string) : int option =
+  match context_overflow_limit error with
+  | None -> None
+  | Some actual_limit ->
+      let retry_max_context =
+        if primary_max_context <= 0 then actual_limit
+        else min primary_max_context actual_limit
+      in
+      let model = Keeper_exec_context.checkpoint_model_of_meta meta in
+      match
+        Keeper_exec_context.recover_latest_checkpoint_for_overflow_retry
+          ~base_dir ~meta ~model
+          ~primary_model_max_tokens:retry_max_context
+      with
+      | Some recovery ->
+          Log.Keeper.warn
+            "%s: context overflow retry prepared with compacted checkpoint (%d->%d tokens, max_context=%d, generation=%d)"
+            meta.name recovery.compaction.before_tokens
+            recovery.compaction.after_tokens
+            retry_max_context recovery.turn_generation;
+          Some retry_max_context
+      | None ->
+          Log.Keeper.warn
+            "%s: context overflow detected but checkpoint recovery was unavailable: %s"
+            meta.name (short_preview error);
+          None
 
 let decision_channel_of_observation
     (observation : Keeper_world_observation.world_observation) : string =
@@ -570,9 +633,9 @@ let run_unified_turn ~(config : Room.config) ~(meta : keeper_meta)
       (* 5. Run via OAS Agent.run() with transient-error retry *)
       let run_result, latency_ms =
         Keeper_exec_context.timed (fun () ->
-          let do_run () =
+          let do_run ~max_context =
             Keeper_agent_run.run_turn ~config ~meta ~base_dir
-              ~max_context:primary_max_context ~build_turn_prompt
+              ~max_context ~build_turn_prompt
               ~user_message ~cascade_name:"keeper_unified"
               ~generation ~max_turns
               ~history_user_source:"world_state_prompt"
@@ -581,14 +644,22 @@ let run_unified_turn ~(config : Room.config) ~(meta : keeper_meta)
               ~max_cost_usd
               ()
           in
-          match do_run () with
+          match do_run ~max_context:primary_max_context with
           | Ok _ as ok -> ok
           | Error e when is_transient_network_error e ->
               Log.Keeper.warn "%s: transient network error, retrying once: %s"
                 meta.name (short_preview e);
               Eio.Fiber.yield ();
-              do_run ()
-          | Error _ as err -> err)
+              do_run ~max_context:primary_max_context
+          | Error e -> (
+              match
+                recover_context_overflow_retry ~meta ~base_dir
+                  ~primary_max_context ~error:e
+              with
+              | Some retry_max_context ->
+                  Eio.Fiber.yield ();
+                  do_run ~max_context:retry_max_context
+              | None -> Error e))
       in
       match run_result with
       | Error e ->
