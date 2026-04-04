@@ -84,8 +84,7 @@ let test_find_tool_existing () =
                "masc_team_session_step"; "masc_team_session_finalize";
                "masc_team_session_list";
                "masc_team_session_events";
-               "masc_team_session_prove";
-               "masc_runtime_verify"; "masc_observe_swarm";
+               "masc_runtime_verify";
                "masc_operator_snapshot"; "masc_operator_digest";
                "masc_operator_action"; "masc_operator_confirm";
                "masc_voice_speak"; "masc_voice_agent";
@@ -267,18 +266,6 @@ let test_masc_surface_audit_schema () =
             (List.mem_assoc "surface_id" props)
       | None -> Alcotest.fail "masc_surface_audit missing properties"
 
-let test_masc_collaboration_evidence_schema () =
-  match find_tool "masc_collaboration_evidence" with
-  | None -> Alcotest.fail "masc_collaboration_evidence not found"
-  | Some schema ->
-      match get_json_assoc "properties" schema.input_schema with
-      | Some props ->
-          Alcotest.(check bool) "has session_id" true
-            (List.mem_assoc "session_id" props);
-          Alcotest.(check bool) "has room_id" true
-            (List.mem_assoc "room_id" props)
-      | None -> Alcotest.fail "masc_collaboration_evidence missing properties"
-
 let test_masc_operator_action_schema () =
   match find_tool "masc_operator_action" with
   | None -> Alcotest.fail "masc_operator_action not found"
@@ -377,60 +364,8 @@ let test_hidden_operator_judgment_schemas_are_local_only () =
            Masc_mcp.Tool_operator.remote_schemas)
   | None -> Alcotest.fail "hidden operator judgment write schema not found"
 
-let test_masc_room_strategy_get_schema () =
-  match find_tool "masc_room_strategy_get" with
-  | None -> Alcotest.fail "masc_room_strategy_get not found"
-  | Some _ -> ()
-
-let test_masc_room_strategy_set_schema () =
-  match find_tool "masc_room_strategy_set" with
-  | None -> Alcotest.fail "masc_room_strategy_set not found"
-  | Some schema ->
-      match get_json_assoc "properties" schema.input_schema with
-      | Some props ->
-          Alcotest.(check bool) "has search_strategy_default" true
-            (List.mem_assoc "search_strategy_default" props);
-          Alcotest.(check bool) "has speculation_enabled" true
-            (List.mem_assoc "speculation_enabled" props);
-          Alcotest.(check bool) "has speculation_budget" true
-            (List.mem_assoc "speculation_budget" props)
-      | None -> Alcotest.fail "masc_room_strategy_set missing properties"
-
-
-
-
 (* ============================================================ *)
-(* 5. Portal Tool Tests                                          *)
-(* ============================================================ *)
-
-let test_masc_portal_open_schema () =
-  match find_tool "masc_portal_open" with
-  | None -> Alcotest.fail "masc_portal_open not found"
-  | Some schema ->
-      Alcotest.(check bool) "has portal description" true
-        (String.length schema.description > 20)
-
-let test_masc_portal_send_schema () =
-  match find_tool "masc_portal_send" with
-  | None -> Alcotest.fail "masc_portal_send not found"
-  | Some schema ->
-      match get_json_assoc "properties" schema.input_schema with
-      | Some props ->
-          Alcotest.(check bool) "has message" true (List.mem_assoc "message" props)
-      | None -> Alcotest.fail "masc_portal_send missing properties"
-
-let test_masc_portal_close_schema () =
-  match find_tool "masc_portal_close" with
-  | None -> Alcotest.fail "masc_portal_close not found"
-  | Some _ -> ()
-
-let test_masc_portal_status_schema () =
-  match find_tool "masc_portal_status" with
-  | None -> Alcotest.fail "masc_portal_status not found"
-  | Some _ -> ()
-
-(* ============================================================ *)
-(* 6. Worktree Tool Tests                                        *)
+(* 5. Worktree Tool Tests                                        *)
 (* ============================================================ *)
 
 let test_masc_worktree_create_schema () =
@@ -453,7 +388,7 @@ let test_masc_worktree_list_schema () =
   | Some _ -> ()
 
 (* ============================================================ *)
-(* 7. Agent Capability Tool Tests                                *)
+(* 6. Agent Capability Tool Tests                                *)
 (* ============================================================ *)
 
 let test_masc_agents_schema () =
@@ -471,17 +406,8 @@ let test_masc_register_capabilities_schema () =
           Alcotest.(check bool) "has capabilities" true (List.mem_assoc "capabilities" props)
       | None -> Alcotest.fail "masc_register_capabilities missing properties"
 
-let test_masc_find_by_capability_schema () =
-  match find_tool "masc_find_by_capability" with
-  | None -> Alcotest.fail "masc_find_by_capability not found"
-  | Some schema ->
-      match get_json_assoc "properties" schema.input_schema with
-      | Some props ->
-          Alcotest.(check bool) "has capability" true (List.mem_assoc "capability" props)
-      | None -> Alcotest.fail "masc_find_by_capability missing properties"
-
 (* ============================================================ *)
-(* 8. Plan Tool Tests                                            *)
+(* 7. Plan Tool Tests                                            *)
 (* ============================================================ *)
 
 let test_masc_plan_init_schema () =
@@ -539,34 +465,6 @@ let test_masc_auth_create_token_schema () =
           Alcotest.(check bool) "has agent_name" true (List.mem_assoc "agent_name" props)
       | None -> Alcotest.fail "masc_auth_create_token missing properties"
 
-(* ============================================================ *)
-(* 11. A2A Tool Tests                                            *)
-(* ============================================================ *)
-
-let test_masc_a2a_discover_schema () =
-  match find_tool "masc_a2a_discover" with
-  | None -> Alcotest.fail "masc_a2a_discover not found"
-  | Some _ -> ()
-
-let test_masc_a2a_delegate_schema () =
-  match find_tool "masc_a2a_delegate" with
-  | None -> Alcotest.fail "masc_a2a_delegate not found"
-  | Some schema ->
-      match get_json_assoc "properties" schema.input_schema with
-      | Some props ->
-          Alcotest.(check bool) "has target_agent" true (List.mem_assoc "target_agent" props);
-          Alcotest.(check bool) "has message" true (List.mem_assoc "message" props)
-      | None -> Alcotest.fail "masc_a2a_delegate missing properties"
-
-let test_masc_a2a_subscribe_schema () =
-  match find_tool "masc_a2a_subscribe" with
-  | None -> Alcotest.fail "masc_a2a_subscribe not found"
-  | Some schema ->
-      match get_json_assoc "properties" schema.input_schema with
-      | Some props ->
-          Alcotest.(check bool) "has events" true (List.mem_assoc "events" props)
-      | None -> Alcotest.fail "masc_a2a_subscribe missing properties"
-
 let test_masc_poll_events_schema () =
   match find_tool "masc_poll_events" with
   | None -> Alcotest.fail "masc_poll_events not found"
@@ -620,17 +518,6 @@ let test_masc_runtime_verify_schema () =
           Alcotest.(check bool) "has expected_ctx" true
             (List.mem_assoc "expected_ctx" props)
       | None -> Alcotest.fail "masc_runtime_verify missing properties"
-
-let test_masc_observe_swarm_schema () =
-  match find_tool "masc_observe_swarm" with
-  | None -> Alcotest.fail "masc_observe_swarm not found"
-  | Some schema ->
-      match get_json_assoc "properties" schema.input_schema with
-      | Some props ->
-          Alcotest.(check bool) "has run_id" true (List.mem_assoc "run_id" props);
-          Alcotest.(check bool) "has operation_id" true
-            (List.mem_assoc "operation_id" props)
-      | None -> Alcotest.fail "masc_observe_swarm missing properties"
 
 let test_masc_team_session_step_spawn_selection_note_schema () =
   match find_tool "masc_team_session_step" with
@@ -825,37 +712,6 @@ let test_masc_dispatch_tick_schema () =
           Alcotest.(check bool) "has detachment_id" true (List.mem_assoc "detachment_id" props)
       | None -> Alcotest.fail "masc_dispatch_tick missing properties"
 
-let test_masc_detachment_list_schema () =
-  match find_tool "masc_detachment_list" with
-  | None -> Alcotest.fail "masc_detachment_list not found"
-  | Some schema ->
-      match get_json_assoc "properties" schema.input_schema with
-      | Some props ->
-          Alcotest.(check bool) "has operation_id" true (List.mem_assoc "operation_id" props);
-          Alcotest.(check bool) "has detachment_id" true (List.mem_assoc "detachment_id" props)
-      | None -> Alcotest.fail "masc_detachment_list missing properties"
-
-let test_masc_detachment_status_schema () =
-  match find_tool "masc_detachment_status" with
-  | None -> Alcotest.fail "masc_detachment_status not found"
-  | Some schema ->
-      match get_json_assoc "properties" schema.input_schema with
-      | Some props ->
-          Alcotest.(check bool) "has detachment_id" true (List.mem_assoc "detachment_id" props)
-      | None -> Alcotest.fail "masc_detachment_status missing properties"
-
-let test_masc_operation_start_schema () =
-  match find_tool "masc_operation_start" with
-  | None -> Alcotest.fail "masc_operation_start not found"
-  | Some schema ->
-      match get_json_assoc "properties" schema.input_schema with
-      | Some props ->
-          Alcotest.(check bool) "has workload_template" true
-            (List.mem_assoc "workload_template" props);
-          Alcotest.(check bool) "has workload_profile" true
-            (List.mem_assoc "workload_profile" props)
-      | None -> Alcotest.fail "masc_operation_start missing properties"
-
 let test_masc_team_session_start_schema () =
   match find_tool "masc_team_session_start" with
   | None -> Alcotest.fail "masc_team_session_start not found"
@@ -900,40 +756,6 @@ let test_masc_get_metrics_schema () =
   match find_tool "masc_get_metrics" with
   | None -> Alcotest.fail "masc_get_metrics not found"
   | Some _ -> ()
-
-let test_masc_transport_status_schema () =
-  match find_tool "masc_transport_status" with
-  | None -> Alcotest.fail "masc_transport_status not found"
-  | Some _ -> ()
-
-let test_masc_websocket_discovery_schema () =
-  match find_tool "masc_websocket_discovery" with
-  | None -> Alcotest.fail "masc_websocket_discovery not found"
-  | Some _ -> ()
-
-let test_masc_webrtc_offer_schema () =
-  match find_tool "masc_webrtc_offer" with
-  | None -> Alcotest.fail "masc_webrtc_offer not found"
-  | Some schema ->
-      match get_json_assoc "properties" schema.input_schema with
-      | Some props ->
-          Alcotest.(check bool) "has agent_name" true
-            (List.mem_assoc "agent_name" props);
-          Alcotest.(check bool) "has ice_candidates" true
-            (List.mem_assoc "ice_candidates" props)
-      | None -> Alcotest.fail "masc_webrtc_offer missing properties"
-
-let test_masc_webrtc_answer_schema () =
-  match find_tool "masc_webrtc_answer" with
-  | None -> Alcotest.fail "masc_webrtc_answer not found"
-  | Some schema ->
-      match get_json_assoc "properties" schema.input_schema with
-      | Some props ->
-          Alcotest.(check bool) "has offer_id" true
-            (List.mem_assoc "offer_id" props);
-          Alcotest.(check bool) "has agent_name" true
-            (List.mem_assoc "agent_name" props)
-      | None -> Alcotest.fail "masc_webrtc_answer missing properties"
 
 (* ============================================================ *)
 (* 21. Edge Case Tests                                           *)
@@ -1013,22 +835,12 @@ let () =
       Alcotest.test_case "masc_operator_snapshot" `Quick test_masc_operator_snapshot_schema;
       Alcotest.test_case "masc_operator_digest" `Quick test_masc_operator_digest_schema;
       Alcotest.test_case "masc_surface_audit" `Quick test_masc_surface_audit_schema;
-      Alcotest.test_case "masc_collaboration_evidence" `Quick
-        test_masc_collaboration_evidence_schema;
       Alcotest.test_case "masc_operator_action" `Quick test_masc_operator_action_schema;
       Alcotest.test_case "remote_operator_action_strict" `Quick
         test_remote_operator_action_schema_is_strict;
       Alcotest.test_case "masc_operator_confirm" `Quick test_masc_operator_confirm_schema;
       Alcotest.test_case "hidden_operator_judgment_local_only" `Quick
         test_hidden_operator_judgment_schemas_are_local_only;
-      Alcotest.test_case "masc_room_strategy_get" `Quick test_masc_room_strategy_get_schema;
-      Alcotest.test_case "masc_room_strategy_set" `Quick test_masc_room_strategy_set_schema;
-    ];
-    "portal_tools", [
-      Alcotest.test_case "portal_open" `Quick test_masc_portal_open_schema;
-      Alcotest.test_case "portal_send" `Quick test_masc_portal_send_schema;
-      Alcotest.test_case "portal_close" `Quick test_masc_portal_close_schema;
-      Alcotest.test_case "portal_status" `Quick test_masc_portal_status_schema;
     ];
     "worktree_tools", [
       Alcotest.test_case "worktree_create" `Quick test_masc_worktree_create_schema;
@@ -1038,7 +850,6 @@ let () =
     "agent_tools", [
       Alcotest.test_case "agents" `Quick test_masc_agents_schema;
       Alcotest.test_case "register_capabilities" `Quick test_masc_register_capabilities_schema;
-      Alcotest.test_case "find_by_capability" `Quick test_masc_find_by_capability_schema;
     ];
     "plan_tools", [
       Alcotest.test_case "plan_init" `Quick test_masc_plan_init_schema;
@@ -1054,9 +865,6 @@ let () =
       Alcotest.test_case "auth_create_token" `Quick test_masc_auth_create_token_schema;
     ];
     "a2a_tools", [
-      Alcotest.test_case "a2a_discover" `Quick test_masc_a2a_discover_schema;
-      Alcotest.test_case "a2a_delegate" `Quick test_masc_a2a_delegate_schema;
-      Alcotest.test_case "a2a_subscribe" `Quick test_masc_a2a_subscribe_schema;
       Alcotest.test_case "poll_events" `Quick test_masc_poll_events_schema;
       Alcotest.test_case "heartbeat_result" `Quick test_masc_heartbeat_result_schema;
     ];
@@ -1103,12 +911,8 @@ let () =
         test_legacy_mitosis_tools_removed;
     ];
     "command_plane_tools", [
-      Alcotest.test_case "operation_start" `Quick test_masc_operation_start_schema;
       Alcotest.test_case "team_session_start" `Quick test_masc_team_session_start_schema;
       Alcotest.test_case "dispatch_tick" `Quick test_masc_dispatch_tick_schema;
-      Alcotest.test_case "detachment_list" `Quick test_masc_detachment_list_schema;
-      Alcotest.test_case "detachment_status" `Quick test_masc_detachment_status_schema;
-      Alcotest.test_case "observe_swarm" `Quick test_masc_observe_swarm_schema;
     ];
     "bounded_run", [
       Alcotest.test_case "bounded_run" `Quick test_masc_bounded_run_schema;
@@ -1117,12 +921,6 @@ let () =
       Alcotest.test_case "dashboard" `Quick test_masc_dashboard_schema;
       Alcotest.test_case "agent_fitness" `Quick test_masc_agent_fitness_schema;
       Alcotest.test_case "get_metrics" `Quick test_masc_get_metrics_schema;
-    ];
-    "transport_tools", [
-      Alcotest.test_case "transport_status" `Quick test_masc_transport_status_schema;
-      Alcotest.test_case "websocket_discovery" `Quick test_masc_websocket_discovery_schema;
-      Alcotest.test_case "webrtc_offer" `Quick test_masc_webrtc_offer_schema;
-      Alcotest.test_case "webrtc_answer" `Quick test_masc_webrtc_answer_schema;
     ];
     "edge_cases", [
       Alcotest.test_case "description_not_short" `Quick test_description_not_too_short;

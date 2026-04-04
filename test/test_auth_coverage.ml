@@ -181,23 +181,8 @@ let test_permission_for_tool_status () =
   | Some Types.CanReadState -> ()
   | _ -> fail "expected CanReadState"
 
-let test_permission_for_tool_transport_status () =
-  match Auth.permission_for_tool "masc_transport_status" with
-  | Some Types.CanReadState -> ()
-  | _ -> fail "expected CanReadState"
-
-let test_permission_for_tool_websocket_discovery () =
-  match Auth.permission_for_tool "masc_websocket_discovery" with
-  | Some Types.CanReadState -> ()
-  | _ -> fail "expected CanReadState"
-
 let test_permission_for_tool_runtime_verify () =
   match Auth.permission_for_tool "masc_runtime_verify" with
-  | Some Types.CanReadState -> ()
-  | _ -> fail "expected CanReadState"
-
-let test_permission_for_tool_observe_swarm () =
-  match Auth.permission_for_tool "masc_observe_swarm" with
   | Some Types.CanReadState -> ()
   | _ -> fail "expected CanReadState"
 
@@ -236,16 +221,6 @@ let test_permission_for_tool_broadcast () =
   | Some Types.CanBroadcast -> ()
   | _ -> fail "expected CanBroadcast"
 
-let test_permission_for_tool_webrtc_offer () =
-  match Auth.permission_for_tool "masc_webrtc_offer" with
-  | Some Types.CanBroadcast -> ()
-  | _ -> fail "expected CanBroadcast"
-
-let test_permission_for_tool_webrtc_answer () =
-  match Auth.permission_for_tool "masc_webrtc_answer" with
-  | Some Types.CanBroadcast -> ()
-  | _ -> fail "expected CanBroadcast"
-
 let test_permission_for_tool_board_list () =
   match Auth.permission_for_tool "masc_board_list" with
   | Some Types.CanReadState -> ()
@@ -255,11 +230,6 @@ let test_permission_for_tool_board_post () =
   match Auth.permission_for_tool "masc_board_post" with
   | Some Types.CanBroadcast -> ()
   | _ -> fail "expected CanBroadcast"
-
-let test_permission_for_tool_board_reclassify () =
-  match Auth.permission_for_tool "masc_board_reclassify" with
-  | Some Types.CanAdmin -> ()
-  | _ -> fail "expected CanAdmin"
 
 let test_permission_for_tool_board_delete () =
   match Auth.permission_for_tool "masc_board_delete" with
@@ -449,11 +419,6 @@ let test_permission_for_tool_help () =
   | Some Types.CanReadState -> ()
   | _ -> fail "expected CanReadState"
 
-let test_permission_for_keeper_tool_catalog () =
-  match Auth.permission_for_tool "masc_keeper_tool_catalog" with
-  | Some Types.CanReadState -> ()
-  | _ -> fail "expected CanReadState"
-
 let test_permission_for_tool_list () =
   match Auth.permission_for_tool "masc_tool_list" with
   | Some Types.CanReadState -> ()
@@ -481,11 +446,6 @@ let test_permission_for_tool_operator_digest () =
 
 let test_permission_for_tool_surface_audit () =
   match Auth.permission_for_tool "masc_surface_audit" with
-  | Some Types.CanReadState -> ()
-  | _ -> fail "expected CanReadState"
-
-let test_permission_for_tool_collaboration_evidence () =
-  match Auth.permission_for_tool "masc_collaboration_evidence" with
   | Some Types.CanReadState -> ()
   | _ -> fail "expected CanReadState"
 
@@ -721,8 +681,6 @@ let () =
       test_case "join" `Quick test_permission_for_tool_join;
       test_case "leave" `Quick test_permission_for_tool_leave;
       test_case "status" `Quick test_permission_for_tool_status;
-      test_case "transport_status" `Quick test_permission_for_tool_transport_status;
-      test_case "websocket_discovery" `Quick test_permission_for_tool_websocket_discovery;
       test_case "who" `Quick test_permission_for_tool_who;
       test_case "tasks" `Quick test_permission_for_tool_tasks;
       test_case "add_task" `Quick test_permission_for_tool_add_task;
@@ -730,11 +688,8 @@ let () =
       test_case "claim_next" `Quick test_permission_for_tool_claim_next;
       test_case "done" `Quick test_permission_for_tool_done;
       test_case "broadcast" `Quick test_permission_for_tool_broadcast;
-      test_case "webrtc_offer" `Quick test_permission_for_tool_webrtc_offer;
-      test_case "webrtc_answer" `Quick test_permission_for_tool_webrtc_answer;
       test_case "board_list" `Quick test_permission_for_tool_board_list;
       test_case "board_post" `Quick test_permission_for_tool_board_post;
-      test_case "board_reclassify" `Quick test_permission_for_tool_board_reclassify;
       test_case "board_delete" `Quick test_permission_for_tool_board_delete;
       test_case "portal_open" `Quick test_permission_for_tool_portal_open;
       test_case "portal_send" `Quick test_permission_for_tool_portal_send;
@@ -746,19 +701,15 @@ let () =
       test_case "auth_status" `Quick test_permission_for_tool_auth_status;
       test_case "tool_stats" `Quick test_permission_for_tool_stats;
       test_case "tool_help" `Quick test_permission_for_tool_help;
-      test_case "keeper_tool_catalog" `Quick test_permission_for_keeper_tool_catalog;
       test_case "tool_list" `Quick test_permission_for_tool_list;
       test_case "tool_grant" `Quick test_permission_for_tool_grant;
       test_case "tool_revoke" `Quick test_permission_for_tool_revoke;
       test_case "tool_admin_snapshot" `Quick test_permission_for_tool_admin_snapshot;
       test_case "tool_admin_update" `Quick test_permission_for_tool_admin_update;
       test_case "runtime_verify" `Quick test_permission_for_tool_runtime_verify;
-      test_case "observe_swarm" `Quick test_permission_for_tool_observe_swarm;
       test_case "operator_snapshot" `Quick test_permission_for_tool_operator_snapshot;
       test_case "operator_digest" `Quick test_permission_for_tool_operator_digest;
       test_case "surface_audit" `Quick test_permission_for_tool_surface_audit;
-      test_case "collaboration_evidence" `Quick
-        test_permission_for_tool_collaboration_evidence;
       test_case "operator_action" `Quick test_permission_for_tool_operator_action;
       test_case "operator_confirm" `Quick test_permission_for_tool_operator_confirm;
       test_case "voice_sessions" `Quick test_permission_for_tool_voice_sessions;

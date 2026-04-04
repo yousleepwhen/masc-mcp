@@ -71,8 +71,6 @@ let strict_success_names =
     "masc_keeper_down";
     "masc_keeper_list";
     "masc_leave";
-    "masc_library_add";
-    "masc_library_list";
     "masc_messages";
     "masc_plan_get";
     "masc_plan_init";
@@ -82,15 +80,11 @@ let strict_success_names =
     "masc_status";
     "masc_tool_help";
     "masc_transition";
-    "masc_transport_status";
     "masc_verify_auto";
     "masc_verify_pending";
     "masc_verify_request";
     "masc_verify_status";
     "masc_verify_submit";
-    "masc_websocket_discovery";
-    "masc_webrtc_answer";
-    "masc_webrtc_offer";
     "masc_who";
     "masc_workflow_guide";
     "masc_worktree_create";

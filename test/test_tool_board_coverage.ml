@@ -415,12 +415,10 @@ let test_dispatch_reclassify_dry_run () =
             ~meta_json:(`Assoc [ ("source", `String "keeper_board_post") ]) ());
   let ok, body = dispatch "masc_board_reclassify"
     (make_args [("dry_run", `Bool true)]) in
-  Alcotest.(check bool) "reclassify ok" true ok;
-  let json = Yojson.Safe.from_string body in
-  Alcotest.(check bool) "dry_run true" true
-    Yojson.Safe.Util.(json |> member "dry_run" |> to_bool);
-  Alcotest.(check int) "changed zero" 0
-    Yojson.Safe.Util.(json |> member "changed" |> to_int)
+  Alcotest.(check bool) "reclassify pruned" false ok;
+  Alcotest.(check bool) "unknown tool" true
+    (try ignore (Str.search_forward (Str.regexp_string "Unknown tool") body 0); true
+     with Not_found -> false)
 
 let test_dispatch_delete_success () =
   Eio_main.run @@ fun env ->
@@ -623,11 +621,10 @@ let test_dispatch_migrate_without_pg () =
   Eio_main.run @@ fun env ->
   Fs_compat.set_fs (Eio.Stdenv.fs env);
   cleanup ();
-  (* Default backend is JSONL, so migrate should fail *)
   let ok, body = dispatch "masc_board_migrate" (make_args []) in
-  Alcotest.(check bool) "migrate without pg fails" false ok;
-  Alcotest.(check bool) "error mentions pg" true
-    (try ignore (Str.search_forward (Str.regexp_string "PostgreSQL") body 0); true
+  Alcotest.(check bool) "migrate pruned" false ok;
+  Alcotest.(check bool) "unknown tool" true
+    (try ignore (Str.search_forward (Str.regexp_string "Unknown tool") body 0); true
      with Not_found -> false)
 
 (** {2 Group 8: Tool Schema Definitions} *)
@@ -636,7 +633,7 @@ let test_tools_count () =
   Eio_main.run @@ fun env ->
   Fs_compat.set_fs (Eio.Stdenv.fs env);
   cleanup ();
-  Alcotest.(check int) "13 tool schemas" 13 (List.length Tool_board.tools)
+  Alcotest.(check int) "11 tool schemas" 11 (List.length Tool_board.tools)
 
 let test_tools_names_unique () =
   Eio_main.run @@ fun env ->

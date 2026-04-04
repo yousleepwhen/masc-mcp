@@ -296,8 +296,8 @@ let () = test "dispatch_archive_view" (fun () ->
   let ctx = make_test_ctx () in
   let args = `Assoc [("limit", `Int 10)] in
   match Tool_task.dispatch ctx ~name:"masc_archive_view" ~args with
-  | Some (success, _result) -> assert success
-  | None -> failwith "dispatch returned None"
+  | Some _ -> failwith "dispatch should return None"
+  | None -> ()
 )
 
 (* Test batch_add_tasks *)
