@@ -16,17 +16,17 @@ let test_public_visible_surface_hides_deprecated_aliases () =
   check bool "public contains masc_transition" true
     (List.mem "masc_transition" names)
 
-let test_public_visible_surface_includes_voice_tools () =
+let test_public_visible_surface_hides_voice_tools () =
   let names =
     Lib.Capability_registry.visible_public_tool_schemas_from
       Lib.Config.raw_all_tool_schemas
     |> List.map (fun (schema : Types.tool_schema) -> schema.name)
   in
-  check bool "public contains masc_voice_agent" true
+  check bool "public hides masc_voice_agent" false
     (List.mem "masc_voice_agent" names);
-  check bool "public contains masc_voice_speak" true
+  check bool "public hides masc_voice_speak" false
     (List.mem "masc_voice_speak" names);
-  check bool "public contains masc_voice_ping_pong" true
+  check bool "public hides masc_voice_ping_pong" false
     (List.mem "masc_voice_ping_pong" names)
 
 let test_board_post_capability_merges_public_and_keeper_projections () =
@@ -81,7 +81,11 @@ let test_spawned_agent_surface_stays_curated () =
     (List.mem "mcp__masc__masc_team_session_step" names);
   (* voice tools were pruned from spawned_agent surface in #4999 *)
   check bool "no voice agent in spawned surface" false
-    (List.mem "mcp__masc__masc_voice_agent" names)
+    (List.mem "mcp__masc__masc_voice_agent" names);
+  check bool "no voice speak in spawned surface" false
+    (List.mem "mcp__masc__masc_voice_speak" names);
+  check bool "no voice ping_pong in spawned surface" false
+    (List.mem "mcp__masc__masc_voice_ping_pong" names)
 
 let test_privileged_keeper_surface_is_split () =
   check bool "keeper_bash privileged" true
@@ -102,8 +106,8 @@ let () =
         [
           test_case "public surface hides deprecated aliases" `Quick
             test_public_visible_surface_hides_deprecated_aliases;
-          test_case "public surface includes voice tools" `Quick
-            test_public_visible_surface_includes_voice_tools;
+          test_case "public surface hides voice tools" `Quick
+            test_public_visible_surface_hides_voice_tools;
           test_case "board capability merges public and keeper projections"
             `Quick
             test_board_post_capability_merges_public_and_keeper_projections;
