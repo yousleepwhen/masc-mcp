@@ -158,8 +158,8 @@ let explicit_metadata : (string * metadata) list =
     ("masc_tool_help", readonly_tool);
     ("masc_keeper_list", readonly_tool);
     ("masc_keeper_status", readonly_tool);
-    ("masc_transport_status", readonly_tool);
-    ("masc_websocket_discovery", readonly_tool);
+    ("masc_transport_status", deprecated "pruned from surfaces in #4999");
+    ("masc_websocket_discovery", deprecated "pruned from surfaces in #4999");
     ("masc_plan_get", readonly_tool);
     ("masc_worktree_list", readonly_tool);
     ( "masc_set_room",
@@ -202,6 +202,31 @@ let explicit_metadata : (string * metadata) list =
       destructive_tool );
     ( "masc_operation_pause",
       { default_metadata with destructive = Some false } );
+    (* Pruned from all surfaces in #4999. Schemas retained for backward compat;
+       handlers may still be invoked by in-flight keeper sessions. Ref: #5039. *)
+    ("masc_episode_flush", deprecated "pruned from surfaces in #4999");
+    ("masc_episode_list", deprecated "pruned from surfaces in #4999");
+    ("masc_portal_open", deprecated "pruned from surfaces in #4999");
+    ("masc_portal_send", deprecated "pruned from surfaces in #4999");
+    ("masc_portal_close", deprecated "pruned from surfaces in #4999");
+    ("masc_portal_status", deprecated "pruned from surfaces in #4999");
+    ("masc_a2a_discover", deprecated "pruned from surfaces in #4999");
+    ("masc_a2a_query_skill", deprecated "pruned from surfaces in #4999");
+    ("masc_a2a_delegate", deprecated "pruned from surfaces in #4999");
+    ("masc_a2a_subscribe", deprecated "pruned from surfaces in #4999");
+    ("masc_a2a_unsubscribe", deprecated "pruned from surfaces in #4999");
+    ("masc_board_migrate", deprecated "pruned from surfaces in #4999");
+    ("masc_board_reclassify", deprecated "pruned from surfaces in #4999");
+    ("masc_voice_ping_pong", deprecated "pruned from surfaces in #4999");
+    ("masc_voice_speak", deprecated "pruned from surfaces in #4999");
+    ("masc_voice_session_start", deprecated "pruned from surfaces in #4999");
+    ("masc_voice_session_end", deprecated "pruned from surfaces in #4999");
+    ("masc_voice_sessions", deprecated "pruned from surfaces in #4999");
+    ("masc_voice_agent", deprecated "pruned from surfaces in #4999");
+    ("masc_voice_conference_start", deprecated "pruned from surfaces in #4999");
+    ("masc_voice_conference_end", deprecated "pruned from surfaces in #4999");
+    ("masc_webrtc_offer", deprecated "pruned from surfaces in #4999");
+    ("masc_webrtc_answer", deprecated "pruned from surfaces in #4999");
   ]
 
 (* ================================================================ *)
