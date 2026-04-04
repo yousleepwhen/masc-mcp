@@ -155,23 +155,16 @@ let spawned_agent_surface_tools =
     "masc_task_history"; "masc_broadcast"; "masc_join"; "masc_leave";
     "masc_who"; "masc_agent_update"; "masc_add_task"; "masc_heartbeat";
     "masc_messages";
-    "masc_voice_agent"; "masc_voice_sessions"; "masc_voice_speak";
-    "masc_voice_session_start"; "masc_voice_session_end";
-    "masc_voice_conference_start"; "masc_voice_conference_end";
-    "masc_voice_ping_pong";
     "masc_worktree_create"; "masc_worktree_remove"; "masc_worktree_list";
     "masc_handover_create"; "masc_handover_list"; "masc_handover_claim";
     "masc_handover_get";
     "masc_board_list"; "masc_board_post"; "masc_board_comment";
     "masc_board_vote"; "masc_board_get";
     "masc_tool_help"; "masc_web_search";
-    "masc_portal_open"; "masc_portal_send"; "masc_portal_status";
     "masc_team_session_start"; "masc_team_session_step";
     "masc_team_session_status"; "masc_team_session_events";
     "masc_team_session_finalize"; "masc_team_session_stop";
     "masc_team_session_report"; "masc_team_session_list";
-    "masc_a2a_delegate"; "masc_a2a_subscribe";
-    "masc_a2a_discover"; "masc_a2a_query_skill"; "masc_a2a_unsubscribe";
     "masc_poll_events"; "masc_spawn";
     "masc_note_add";
     (* Phase 2: surface SSOT *)
@@ -179,9 +172,6 @@ let spawned_agent_surface_tools =
     "masc_code_shell"; "masc_code_write";
     "masc_deliver";
     "masc_plan_clear_task"; "masc_plan_get_task";
-    "masc_portal_close";
-    "masc_room_strategy_get"; "masc_room_strategy_set";
-    "masc_team_session_compare"; "masc_team_session_prove";
     "masc_update_priority";
     "masc_verify_handoff"; "masc_workflow_guide";
   ]
