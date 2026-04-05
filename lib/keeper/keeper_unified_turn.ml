@@ -10,43 +10,10 @@ open Keeper_types
 open Keeper_exec_context
 module Social = Keeper_social_model
 
-let substring_matches_at ~(needle : string) (haystack : string) start_idx =
-  let needle_len = String.length needle in
-  let rec loop offset =
-    if offset = needle_len then true
-    else if haystack.[start_idx + offset] <> needle.[offset] then false
-    else loop (offset + 1)
-  in
-  loop 0
-
-let string_contains_substring ~(needle : string) (haystack : string) : bool =
-  let needle_len = String.length needle in
-  let hay_len = String.length haystack in
-  if needle_len = 0 then true
-  else if needle_len > hay_len then false
-  else
-    let rec loop i =
-      if i + needle_len > hay_len then false
-      else if substring_matches_at ~needle haystack i then true
-      else loop (i + 1)
-    in
-    loop 0
-
 let string_contains_substring_ci ~(needle : string) (haystack : string) : bool =
-  string_contains_substring
+  Keeper_agent_run.string_contains_substring
     ~needle:(String.lowercase_ascii needle)
     (String.lowercase_ascii haystack)
-
-let find_substring ~(needle : string) (haystack : string) : int option =
-  let needle_len = String.length needle in
-  let hay_len = String.length haystack in
-  let rec loop i =
-    if needle_len = 0 then Some 0
-    else if i + needle_len > hay_len then None
-    else if substring_matches_at ~needle haystack i then Some i
-    else loop (i + 1)
-  in
-  loop 0
 
 (** Detect transient TCP/TLS errors that warrant retry with short backoff.
     These patterns match OAS cascade error messages for connection-level failures. *)
@@ -56,7 +23,7 @@ let transient_error_patterns =
 
 let is_transient_network_error (msg : string) : bool =
   List.exists
-    (fun needle -> string_contains_substring ~needle msg)
+    (fun needle -> Keeper_agent_run.string_contains_substring ~needle msg)
     transient_error_patterns
 
 (** Max transient retries (excluding the initial attempt).  Total attempts
@@ -70,137 +37,9 @@ let max_transient_retries = 2
 let transient_backoff_sec (attempt : int) : float =
   Float.min 4.0 (1.0 *. Float.of_int (1 lsl (attempt - 1)))
 
-let context_overflow_anchor = "available context size ("
-let input_budget_exceeded_anchor = "input token budget exceeded:"
-
-let is_ascii_whitespace = function
-  | ' ' | '\n' | '\r' | '\t' -> true
-  | _ -> false
-
-let skip_ascii_whitespace (text : string) idx =
-  let rec loop i =
-    if i >= String.length text then i
-    else if is_ascii_whitespace text.[i] then loop (i + 1)
-    else i
-  in
-  loop idx
-
-let int_run_from (text : string) start_idx : (int * int) option =
-  let rec consume_digits idx =
-    if idx >= String.length text then idx
-    else
-      match text.[idx] with
-      | '0' .. '9' -> consume_digits (idx + 1)
-      | _ -> idx
-  in
-  let end_idx = consume_digits start_idx in
-  if end_idx = start_idx then None
-  else
-    String.sub text start_idx (end_idx - start_idx)
-    |> int_of_string_opt
-    |> Option.map (fun value -> (value, end_idx))
-
-let parse_available_context_limit (msg : string) : int option =
-  match find_substring ~needle:context_overflow_anchor msg with
-  | None -> None
-  | Some anchor_idx ->
-      let start_idx = anchor_idx + String.length context_overflow_anchor in
-      int_run_from msg start_idx |> Option.map fst
-
-let parse_input_budget_exceeded_limit (msg : string) : int option =
-  match find_substring ~needle:input_budget_exceeded_anchor msg with
-  | None -> None
-  | Some anchor_idx ->
-      let used_start =
-        skip_ascii_whitespace msg
-          (anchor_idx + String.length input_budget_exceeded_anchor)
-      in
-      match int_run_from msg used_start with
-      | None -> None
-      | Some (_, used_end) ->
-          let slash_idx = skip_ascii_whitespace msg used_end in
-          if slash_idx >= String.length msg || msg.[slash_idx] <> '/' then None
-          else
-            let limit_start =
-              skip_ascii_whitespace msg (slash_idx + 1)
-            in
-            int_run_from msg limit_start |> Option.map fst
-
-let context_overflow_limit (msg : string) : int option =
-  let lowered = String.lowercase_ascii msg in
-  match parse_available_context_limit lowered with
-  | Some limit -> Some limit
-  | None -> parse_input_budget_exceeded_limit lowered
-
-let should_attempt_context_overflow_retry (msg : string) : bool =
-  Option.is_some (context_overflow_limit msg)
-
-type overflow_retry_plan = {
-  retry_max_context : int;
-  retry_generation : int;
-}
-
-let overflow_retry_history_budget
-    ~(available_context : int)
-    ~(system_prompt : string)
-    ~(user_message : string) : int =
-  let prompt_tokens =
-    let estimated =
-      Agent_sdk.Context_reducer.estimate_char_tokens system_prompt
-      + Agent_sdk.Context_reducer.estimate_char_tokens user_message
-    in
-    (* Use 20% safety buffer for prompt estimation errors (#5053).
-       Ceiling-based to avoid truncation erasing the buffer. *)
-    if estimated <= 0 then estimated
-    else estimated + ((estimated + 4) / 5)
-  in
-  let prompt_reserve = max 1024 prompt_tokens in
-  let tool_reserve =
-    Keeper_config.keeper_retry_max_tools_per_turn () * 220
-  in
-  let safety_reserve = 1024 in
-  max 256 (available_context - (prompt_reserve + tool_reserve + safety_reserve))
-
-let recover_context_overflow_retry
-    ~(meta : keeper_meta)
-    ~(base_dir : string)
-    ~(primary_max_context : int)
-    ~(system_prompt : string)
-    ~(user_message : string)
-    ~(error : string) : overflow_retry_plan option =
-  match context_overflow_limit error with
-  | None -> None
-  | Some actual_limit ->
-      let retry_max_context =
-        if primary_max_context <= 0 then actual_limit
-        else min primary_max_context actual_limit
-      in
-      let retry_history_budget =
-        overflow_retry_history_budget ~available_context:retry_max_context
-          ~system_prompt ~user_message
-      in
-      let model = Keeper_exec_context.checkpoint_model_of_meta meta in
-      match
-        Keeper_exec_context.recover_latest_checkpoint_for_overflow_retry
-          ~base_dir ~meta ~model
-          ~primary_model_max_tokens:retry_history_budget
-      with
-      | Some recovery ->
-          Log.Keeper.warn
-            "%s: context overflow retry prepared with compacted checkpoint (%d->%d tokens, max_context=%d, history_budget=%d, generation=%d)"
-            meta.name recovery.compaction.before_tokens
-            recovery.compaction.after_tokens
-            retry_max_context retry_history_budget recovery.turn_generation;
-          Some
-            {
-              retry_max_context;
-              retry_generation = recovery.turn_generation;
-            }
-      | None ->
-          Log.Keeper.warn
-            "%s: context overflow detected but checkpoint recovery was unavailable: %s"
-            meta.name (short_preview error);
-          None
+let context_overflow_limit = Keeper_agent_run.context_overflow_limit
+let should_attempt_context_overflow_retry = Keeper_agent_run.should_attempt_context_overflow_retry
+let overflow_retry_history_budget = Keeper_agent_run.overflow_retry_history_budget
 
 let decision_channel_of_observation
     (observation : Keeper_world_observation.world_observation) : string =
@@ -878,8 +717,7 @@ let run_unified_turn ~(config : Room.config) ~(meta : keeper_meta)
               ()
           in
           let rec retry_loop ~run_meta ~max_context ~run_generation
-              ~attempt ~is_retry
-              ~overflow_retry_used =
+              ~attempt ~is_retry =
             match do_run ~run_meta ~max_context ~run_generation ~is_retry with
             | Ok _ as ok -> ok
             | Error e when is_transient_network_error e
@@ -893,34 +731,12 @@ let run_unified_turn ~(config : Room.config) ~(meta : keeper_meta)
                 Eio.Time.sleep (Eio_context.get_clock ()) delay;
                 retry_loop ~run_meta ~max_context ~run_generation
                   ~attempt:(attempt + 1)
-                  ~is_retry:true ~overflow_retry_used
-            | Error e when (not overflow_retry_used)
-                           && should_attempt_context_overflow_retry e -> (
-                match
-                  recover_context_overflow_retry ~meta ~base_dir
-                    ~primary_max_context ~system_prompt ~user_message ~error:e
-                with
-                | Some retry_plan ->
-                    let retry_meta =
-                      if retry_plan.retry_generation = run_meta.runtime.generation
-                      then run_meta
-                      else
-                        map_runtime
-                          (fun rt ->
-                            { rt with generation = retry_plan.retry_generation })
-                          run_meta
-                    in
-                    Eio.Fiber.yield ();
-                    retry_loop ~run_meta:retry_meta
-                      ~max_context:retry_plan.retry_max_context
-                      ~run_generation:retry_plan.retry_generation ~attempt:1
-                      ~is_retry:true ~overflow_retry_used:true
-                | None -> Error e)
+                  ~is_retry:true
             | Error e -> Error e
           in
           retry_loop ~run_meta:meta ~max_context:primary_max_context
             ~run_generation:generation ~attempt:1
-            ~is_retry:false ~overflow_retry_used:false)
+            ~is_retry:false)
       in
       match run_result with
       | Error e ->

@@ -415,6 +415,20 @@ let test_keeper_oas_cleanup_contracts () =
     (file_contains_pattern "lib/tool_compact.ml"
        "OAS-backed compaction pipeline")
 
+let test_keeper_overflow_retry_contracts () =
+  check bool "keeper agent run detects overflow retry candidates" true
+    (file_contains_pattern "lib/keeper/keeper_agent_run.ml"
+       "should_attempt_context_overflow_retry");
+  check bool "keeper agent run routes overflow through checkpoint recovery" true
+    (file_contains_pattern "lib/keeper/keeper_agent_run.ml"
+       "recover_context_overflow_retry");
+  check bool "keeper agent run marks overflow replays as retries" true
+    (file_contains_pattern "lib/keeper/keeper_agent_run.ml"
+       "~is_retry:true");
+  check bool "keeper turn still delegates direct turns through keeper agent run" true
+    (file_contains_pattern "lib/keeper/keeper_turn.ml"
+       "Keeper_agent_run.run_turn");
+
 let test_dashboard_executor_pool_contracts () =
   check bool "dashboard runtime support defines executor pool helper" true
     (file_contains_pattern "lib/server/server_dashboard_http_runtime_support.ml"
@@ -725,10 +739,12 @@ let () =
            test_case "mission briefing memory guard contracts" `Quick
              test_mission_briefing_memory_guard_contracts;
            test_case "activity surface contracts" `Quick test_activity_surface_contracts;
-           test_case "local review script contracts" `Quick test_local_review_script_contracts;
-           test_case "keeper oas cleanup contracts" `Quick test_keeper_oas_cleanup_contracts;
-           test_case "dashboard executor pool contracts" `Quick
-             test_dashboard_executor_pool_contracts;
+            test_case "local review script contracts" `Quick test_local_review_script_contracts;
+            test_case "keeper oas cleanup contracts" `Quick test_keeper_oas_cleanup_contracts;
+            test_case "keeper overflow retry contracts" `Quick
+              test_keeper_overflow_retry_contracts;
+            test_case "dashboard executor pool contracts" `Quick
+              test_dashboard_executor_pool_contracts;
            test_case "transport route contracts" `Quick
              test_transport_route_contracts;
            test_case "transport health contracts" `Quick
