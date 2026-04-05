@@ -185,6 +185,22 @@ let test_default_local_fallback_label () =
      let plen = String.length suffix in
      slen >= plen && String.sub label (slen - plen) plen = suffix)
 
+let test_endpoint_url_for_canonical_name_cloud () =
+  let claude_url = Option.get (Adapter.endpoint_url_for_canonical_name "claude-api") in
+  check string "claude endpoint" "https://api.anthropic.com" claude_url;
+  let codex_url = Option.get (Adapter.endpoint_url_for_canonical_name "codex-api") in
+  check string "codex endpoint" "https://api.openai.com" codex_url
+
+let test_endpoint_url_for_canonical_name_alias () =
+  let anthropic = Option.get (Adapter.endpoint_url_for_canonical_name "anthropic") in
+  check string "anthropic alias" "https://api.anthropic.com" anthropic;
+  let openai = Option.get (Adapter.endpoint_url_for_canonical_name "openai") in
+  check string "openai alias" "https://api.openai.com" openai
+
+let test_endpoint_url_for_canonical_name_unknown () =
+  check (option string) "unknown returns None" None
+    (Adapter.endpoint_url_for_canonical_name "nonexistent")
+
 let test_stt_request_mcp_rejected () =
   let endpoint : Masc_mcp.Voice_config.endpoint =
     { id = "test-mcp-stt"; kind = Voice_mcp;
@@ -232,6 +248,12 @@ let () =
             test_is_local_provider_cloud;
           test_case "default_local_fallback_label" `Quick
             test_default_local_fallback_label;
+          test_case "endpoint_url cloud providers" `Quick
+            test_endpoint_url_for_canonical_name_cloud;
+          test_case "endpoint_url aliases" `Quick
+            test_endpoint_url_for_canonical_name_alias;
+          test_case "endpoint_url unknown" `Quick
+            test_endpoint_url_for_canonical_name_unknown;
         ] );
       ( "stt",
         [
