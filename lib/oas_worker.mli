@@ -105,7 +105,6 @@ val run_named :
   ?working_context:Yojson.Safe.t ->
   ?cache_system_prompt:bool ->
   ?yield_on_tool:bool ->
-  ?max_input_tokens:int ->
   ?compact_ratio:float ->
   ?sw:Eio.Switch.t ->
   ?net:[ `Generic | `Unix ] Eio.Net.ty Eio.Resource.t ->
