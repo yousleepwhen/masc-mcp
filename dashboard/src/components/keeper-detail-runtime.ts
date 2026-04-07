@@ -14,7 +14,6 @@ import { operatorSnapshot } from '../operator-store'
 import {
   allowlistEmptyState,
   auditMetadataState,
-  linkedRuntimeState,
   observedToolsEmptyState,
   openToolsInventory,
   toolAuditStateLabel,
@@ -69,14 +68,19 @@ function keeperTopTools(keeper: Keeper): string[] {
 export function resolveKeeperCurrentTaskLabel(
   keeper: Keeper | null | undefined,
 ): string {
-  const runtimeState = linkedRuntimeState(keeper)
   if (!keeper) return 'unlinked'
-  if (runtimeState === 'offline') return 'offline'
   if (!keeper.agent) return 'not_collected'
   if (typeof keeper.agent.current_task === 'string' && keeper.agent.current_task.trim() !== '') {
     return keeper.agent.current_task
   }
   return 'unassigned'
+}
+
+export function resolveKeeperSkillRouteLabel(
+  keeper: Keeper | null | undefined,
+): string {
+  if (!keeper) return 'unlinked'
+  return keeper.skill_primary?.trim() ? keeper.skill_primary : 'not_collected'
 }
 
 // ── Shared row component ─────────────────────────────────
@@ -400,11 +404,8 @@ export function KeeperNeighborhood({ keeper }: { keeper: Keeper }) {
   const allowlistFallback = toolAuditStateLabel(allowlistEmptyState(keeper))
   const observedFallback = toolAuditStateLabel(observedToolsEmptyState(keeper, auditSource))
   const metadataFallback = toolAuditStateLabel(auditMetadataState(keeper, auditSource))
-  const runtimeState = linkedRuntimeState(keeper)
   const currentTaskLabel = resolveKeeperCurrentTaskLabel(keeper)
-  const skillRouteLabel =
-    keeper.skill_primary
-    ?? (runtimeState === 'offline' ? 'offline' : 'not_collected')
+  const skillRouteLabel = resolveKeeperSkillRouteLabel(keeper)
   const policyLoading = toolPolicy.source === 'loading'
   const policyError = toolPolicy.source === 'error'
   const policyEditable = toolPolicy.source === 'keeper_config'
@@ -429,12 +430,14 @@ export function KeeperNeighborhood({ keeper }: { keeper: Keeper }) {
 
   return html`
     <div class="flex flex-col gap-1.5">
+      <span class="mt-0.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">런타임 스냅샷</span>
       <${SignalRow} label="프로젝트 범위" value=${namespaceName} />
       <${SignalRow} label="프로젝트" value=${project} />
       ${clusterVisible ? html`<${SignalRow} label="클러스터" value=${clusterRaw} />` : null}
       <${SignalRow} label="현재 태스크" value=${currentTaskLabel} />
       <${SignalRow} label="스킬 경로" value=${skillRouteLabel} />
       <${SignalRow} label="컨텍스트 출처" value=${keeper.context_source ?? keeper.context?.source ?? '-'} />
+      <span class="mt-3 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">도구 정책</span>
       <${SignalRow} label="도구 정책" value=${toolPolicyLabel} />
       <${SignalRow} label="정책 소스" value=${toolPolicy.source} />
       <${SignalRow} label="허용 도구 수" value=${allowedToolCountLabel} />
@@ -492,6 +495,7 @@ export function KeeperNeighborhood({ keeper }: { keeper: Keeper }) {
           />
         `}
 
+      <span class="mt-3 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">도구 감사</span>
       <${ToolSection}
         title="관측된 도구"
         description="최근 실행에서 감지된 도구"

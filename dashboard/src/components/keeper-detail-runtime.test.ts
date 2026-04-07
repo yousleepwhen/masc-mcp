@@ -9,6 +9,7 @@ import {
   RuntimeSignals,
   resolveAllowlistPreview,
   resolveKeeperCurrentTaskLabel,
+  resolveKeeperSkillRouteLabel,
 } from './keeper-detail-runtime'
 import {
   resolveKeeperObservedToolAudit,
@@ -206,6 +207,19 @@ describe('resolveKeeperCurrentTaskLabel', () => {
     expect(resolveKeeperCurrentTaskLabel(keeper)).toBe('unassigned')
   })
 
+  it('does not replace a missing task with offline just because the keeper is stopped', () => {
+    const keeper: Keeper = {
+      name: 'sangsu',
+      status: 'offline',
+      agent: {
+        name: 'keeper-sangsu-agent',
+        current_task: null,
+      },
+    }
+
+    expect(resolveKeeperCurrentTaskLabel(keeper)).toBe('unassigned')
+  })
+
   it('treats an empty current task string as unassigned', () => {
     const keeper: Keeper = {
       name: 'sangsu',
@@ -230,6 +244,31 @@ describe('resolveKeeperCurrentTaskLabel', () => {
     }
 
     expect(resolveKeeperCurrentTaskLabel(keeper)).toBe('not_collected')
+  })
+})
+
+describe('resolveKeeperSkillRouteLabel', () => {
+  it('shows the primary skill route when available', () => {
+    expect(resolveKeeperSkillRouteLabel({
+      name: 'sangsu',
+      status: 'active',
+      skill_primary: 'task/keeper/research',
+    })).toBe('task/keeper/research')
+  })
+
+  it('treats blank skill routes as not_collected', () => {
+    expect(resolveKeeperSkillRouteLabel({
+      name: 'sangsu',
+      status: 'active',
+      skill_primary: '   ',
+    })).toBe('not_collected')
+  })
+
+  it('does not surface offline as a skill-route fallback', () => {
+    expect(resolveKeeperSkillRouteLabel({
+      name: 'sangsu',
+      status: 'offline',
+    })).toBe('not_collected')
   })
 })
 

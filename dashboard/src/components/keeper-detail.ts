@@ -642,7 +642,7 @@ export function KeeperDetailOverlay() {
             <${RuntimeSignals} keeper=${keeper} />
           </details>
 
-          <${SectionCard} title="도구 정책 & 감사">
+          <${SectionCard} title="런타임 · 도구 정책 · 감사">
             <${KeeperNeighborhood} keeper=${keeper} />
           <//>
 
