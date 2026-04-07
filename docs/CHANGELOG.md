@@ -2,16 +2,63 @@
 
 ## [Unreleased]
 
+### Added
+- **Transport_bridge module type** -- unified provider interface for transport abstraction. (#5726)
+- **KeeperTurnCycle TLA+ spec** -- 7-state turn execution model for formal verification. (#5728)
+
 ### Fixed
 - **cascade.json model IDs** -- replace `glm:auto` / `ollama:auto` with concrete model IDs (`glm:glm-5.1`, `ollama:qwen3.5:9b-nvfp4`) to fix 3,371+ "model not found" errors. (#5741)
+- **Transport registry seal** -- seal registry after bootstrap for fiber safety. (#5735)
+- **Cascade key names** -- use correct `keeper_unified_models` and `ollama:auto` in cascade config. (#5727)
+- **Cascade model split** -- split cascade models: glm as default, ollama per-keeper. (#5724)
+
+### Changed
+- **Room claim/transition** -- flatten `claim_task_r` and `transition_task_r` using let* bindings. (#5725)
 
 ## [2.257.0] - 2026-04-07
+
+### Added
+- **Ollama first-class local adapter** -- add Ollama as a first-class local provider. (#5707)
+- **TLA+ formal verification models** -- add formal verification models for OAS bridge and MASC ecosystem. (#5715)
+- **TLA+ trace validation** -- QCheck PBT + TLC runner infrastructure. (#5720)
+- **Inference telemetry** -- record inference telemetry to decisions.jsonl and costs.jsonl. (#5714)
+- **Context lifecycle TLA+ spec** -- multi-keeper isolation tests. (#5716)
+- **Gate-Connector protocol spec** -- draft specification and OCaml sketch. (#5710)
+
+### Fixed
+- **Model ID resolve** -- fix model ID in oas_worker_exec failsafe path. (#5721)
+- **Cascade concrete ollama model** -- raise retry tool cap. (#5722)
+- **Retry autoboot** -- retry autoboot for keepers that fail initial startup. (#5718)
+- **Idle rules** -- add idle rules to prevent tool call repetition. (#5719)
+- **Dashboard pipeline stage colors** -- align colors and add scheduled_autonomous CSS. (#5706)
+- **Boring consecutive turns** -- persist boring_consecutive_turns across run_turn calls. (#5693)
+- **Cumulative input token budget** -- remove cumulative budget, retry on TokenBudgetExceeded. (#5677)
+- **Dashboard phase strip colors** -- fix event label rendering. (#5683)
+- **Dashboard transient stages** -- handle transient pipeline stages and nullish event labels. (#5700)
+- **Keeper workspace path** -- add workspace path and PR workflow to capabilities prompt. (#5674)
+- **System prompt** -- include [STATE] template in system prompt. (#5676)
+- **Heartbeat snapshot** -- report actual usage instead of hardcoded zeros. (#5703)
+
+### Changed
+- **Keeper exec_tools split** -- refactor god file into focused modules. (#5708)
+- **Dashboard activity graph** -- slim down activity graph, keeper detail, and overview. (#5699)
+- **Room step execution** -- flatten using let* Result bind. (#5694)
+- **PR workflow** -- flatten using Result bind. (#5682)
+- **Server handle_post_mcp** -- flatten using let* Result bind. (#5690)
+- **Dashboard SupervisorDiagnosticsPanel** -- extract to separate file. (#5689)
+- **Dashboard recent activity** -- merge into profile, consolidate KPI hints, fix debug section. (#5678)
+- **Dashboard duplicate tools** -- remove duplicate "윈도우 상위 도구" from KeeperNeighborhood. (#5692)
+- **Collaboration module references** -- remove OAS boundary violation references. (#5705)
+- **OAS agent_sdk pin** -- bump to >= 0.112.0 (ollama auto-resolve). (#5709)
 
 ### Removed
 - **Collaboration module references** -- OAS boundary violation cleanup. Delete team_context_oas_adapter, dashboard_collaboration_evidence, related tests/harness/routes (-1916 lines).
 
-### Changed
-- **OAS agent_sdk pin** -- bump to >= 0.111.0 (Collaboration.t removed, collaboration_context opaque JSON).
+### Infrastructure
+- **Dev-dashboard Makefile** -- add target for Vite HMR proxy. (#5691)
+- **Cascade.json migration** -- migrate to ollama + simplify 40 entries to default_models. (#5685)
+- **Worktree branch handling** -- use -B (force-branch) for stale branches. (#5688)
+- **PBT verification** -- property-based verification for compaction-budget fix. (#5713)
 
 ## [2.256.0] - 2026-04-07
 
