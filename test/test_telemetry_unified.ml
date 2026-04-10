@@ -40,6 +40,11 @@ let write_raw_jsonl_rows dir rows =
   in
   Fs_compat.append_file path content
 
+let write_raw_jsonl_lines dir lines =
+  let path = today_jsonl_path dir in
+  let content = String.concat "\n" lines ^ "\n" in
+  Fs_compat.append_file path content
+
 (* ── Source roundtrip ────────────────────────────── *)
 
 let test_source_roundtrip () =
@@ -58,6 +63,32 @@ let test_source_of_string_unknown () =
 
 let masc_root dir = Filename.concat dir ".masc"
 
+let assoc_string key = function
+  | `Assoc fields -> (
+      match List.assoc_opt key fields with
+      | Some (`String value) -> value
+      | _ -> "")
+  | _ -> ""
+
+let assoc_int key = function
+  | `Assoc fields -> (
+      match List.assoc_opt key fields with
+      | Some (`Int value) -> value
+      | _ -> -1)
+  | _ -> -1
+
+let assoc_list key = function
+  | `Assoc fields -> (
+      match List.assoc_opt key fields with
+      | Some (`List items) -> items
+      | _ -> [])
+  | _ -> []
+
+let find_source_row json source_name =
+  assoc_list "sources" json
+  |> List.find_opt (fun row ->
+         String.equal (assoc_string "source" row) source_name)
+
 let test_empty_returns_empty () =
   Eio_main.run @@ fun env ->
   Fs_compat.set_fs (Eio.Stdenv.fs env);
@@ -74,7 +105,14 @@ let test_summary_empty () =
   | `Assoc fields ->
     let total = match List.assoc_opt "total_entries" fields with
       | Some (`Int n) -> n | _ -> -1 in
-    Alcotest.(check int) "zero total" 0 total
+    Alcotest.(check int) "zero total" 0 total;
+    Alcotest.(check string) "top-level status stays ok" "ok"
+      (assoc_string "status" json);
+    (match find_source_row json "agent_event" with
+     | Some row ->
+         Alcotest.(check string) "missing source is explicit" "missing"
+           (assoc_string "status" row)
+     | None -> Alcotest.fail "expected agent_event source row")
   | _ -> Alcotest.fail "expected Assoc"
 
 (* ── Single source read ──────────────────────────── *)
@@ -101,6 +139,23 @@ let test_agent_event_source () =
       | Some (`String s) -> s | _ -> "" in
     Alcotest.(check string) "tagged as agent_event" "agent_event" source
   | _ -> Alcotest.fail "expected Assoc"
+
+let test_agent_event_source_skips_malformed_lines () =
+  Eio_main.run @@ fun env ->
+  Fs_compat.set_fs (Eio.Stdenv.fs env);
+  let dir = tmpdir "telem_agent_event_malformed" in
+  let telemetry_dir = Filename.concat dir ".masc/telemetry" in
+  Fs_compat.mkdir_p telemetry_dir;
+  write_raw_jsonl_lines telemetry_dir
+    [
+      {|{"timestamp":1000.0,"event":"good"}|};
+      "not-json";
+    ];
+  let entries =
+    Telemetry_unified.read_unified ~base_path:dir ~masc_root:(masc_root dir)
+      ~sources:[Telemetry_unified.Agent_event] ()
+  in
+  Alcotest.(check int) "malformed line skipped" 1 (List.length entries)
 
 (* ── Keeper metrics discovery ────────────────────── *)
 
@@ -189,7 +244,12 @@ let test_summary_with_data () =
   | `Assoc fields ->
     let total = match List.assoc_opt "total_entries" fields with
       | Some (`Int n) -> n | _ -> -1 in
-    Alcotest.(check bool) "at least 1 entry" true (total >= 1)
+    Alcotest.(check bool) "at least 1 entry" true (total >= 1);
+    (match find_source_row json "agent_event" with
+     | Some row ->
+         Alcotest.(check string) "existing source is ok" "ok"
+           (assoc_string "status" row)
+     | None -> Alcotest.fail "expected agent_event source row")
   | _ -> Alcotest.fail "expected Assoc"
 
 let test_summary_counts_all_entries_beyond_recent_cap () =
@@ -250,6 +310,28 @@ let test_cluster_keeper_metrics () =
   in
   Alcotest.(check int) "cluster keeper metric found" 1 (List.length entries)
 
+let test_summary_marks_non_directory_source_degraded () =
+  Eio_main.run @@ fun env ->
+  Fs_compat.set_fs (Eio.Stdenv.fs env);
+  let dir = tmpdir "telem_degraded_source" in
+  let bad_path = Filename.concat dir ".masc/telemetry" in
+  Fs_compat.mkdir_p (Filename.dirname bad_path);
+  Fs_compat.save_file bad_path "not-a-directory";
+  let summary =
+    Telemetry_unified.summary_json ~base_path:dir ~masc_root:(masc_root dir) ()
+  in
+  Alcotest.(check string) "top-level degraded" "degraded"
+    (assoc_string "status" summary);
+  Alcotest.(check int) "one degraded source" 1
+    (assoc_int "degraded_source_count" summary);
+  match find_source_row summary "agent_event" with
+  | Some row ->
+      Alcotest.(check string) "source status degraded" "degraded"
+        (assoc_string "status" row);
+      Alcotest.(check bool) "error mentions directory" true
+        (String.length (assoc_string "error" row) > 0)
+  | None -> Alcotest.fail "expected agent_event source row"
+
 (* ── Runner ──────────────────────────────────────── *)
 
 let () =
@@ -264,6 +346,8 @@ let () =
         [
           Alcotest.test_case "empty base" `Quick test_empty_returns_empty;
           Alcotest.test_case "agent events" `Quick test_agent_event_source;
+          Alcotest.test_case "agent events skip malformed lines" `Quick
+            test_agent_event_source_skips_malformed_lines;
           Alcotest.test_case "keeper metrics" `Quick test_keeper_metrics_per_keeper;
           Alcotest.test_case "sorted newest first" `Quick test_sorted_newest_first;
           Alcotest.test_case "n limits output" `Quick test_n_limits_output;
@@ -274,6 +358,8 @@ let () =
           Alcotest.test_case "with data" `Quick test_summary_with_data;
           Alcotest.test_case "counts all rows beyond recent cap" `Quick
             test_summary_counts_all_entries_beyond_recent_cap;
+          Alcotest.test_case "non-directory source is degraded" `Quick
+            test_summary_marks_non_directory_source_degraded;
         ] );
       ( "cluster",
         [
