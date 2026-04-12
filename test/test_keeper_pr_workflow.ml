@@ -756,28 +756,23 @@ let assert_branch_switch_allowed config cmd label =
     true (error <> "branch_switch_blocked" && has_status)
 
 let assert_branch_switch_blocked config cmd label =
-  let shared_repo_rel = "workspace/yousleepwhen/oas" in
+  (* Use "readonly" preset so write_enabled=false.  Post-#6678 playground
+     containment resolves cwd inside the playground, making in_playground=true.
+     The branch-switch guard fires when NOT (write_enabled AND in_playground),
+     so a read-only preset triggers the block even inside the playground. *)
   let project_root = Keeper_alerting_path.project_root_of_config config in
-  let shared_repo_abs = Filename.concat project_root shared_repo_rel in
-  Fs_compat.mkdir_p shared_repo_abs;
-  (* Since #6678 keeper_bash resolves cwd under the playground root,
-     create the directory there too so the guard reaches the
-     branch_switch_blocked check instead of failing with cwd_not_directory. *)
-  let playground_repo_abs =
-    Filename.concat project_root
-      (Filename.concat
-         (Filename.concat Playground_paths.all_playgrounds_prefix "test-keeper")
-         shared_repo_rel)
+  let playground_repo =
+    Filename.concat
+      (Filename.concat Playground_paths.all_playgrounds_prefix "test-keeper")
+      "repos/oas"
   in
+  let playground_repo_abs = Filename.concat project_root playground_repo in
   Fs_compat.mkdir_p playground_repo_abs;
-  let meta =
-    { (make_meta_with_preset "delivery") with
-      allowed_paths = [ shared_repo_rel ^ "/" ] }
-  in
+  let meta = make_meta_with_preset "messaging" in
   let args =
     `Assoc
       [ "cmd", `String cmd
-      ; "cwd", `String shared_repo_rel
+      ; "cwd", `String playground_repo
       ]
   in
   let result = call_tool config meta "keeper_bash" args in
