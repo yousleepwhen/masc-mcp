@@ -757,10 +757,19 @@ let assert_branch_switch_allowed config cmd label =
 
 let assert_branch_switch_blocked config cmd label =
   let shared_repo_rel = "workspace/yousleepwhen/oas" in
-  let shared_repo_abs =
-    Filename.concat (Keeper_alerting_path.project_root_of_config config) shared_repo_rel
-  in
+  let project_root = Keeper_alerting_path.project_root_of_config config in
+  let shared_repo_abs = Filename.concat project_root shared_repo_rel in
   Fs_compat.mkdir_p shared_repo_abs;
+  (* Since #6678 keeper_bash resolves cwd under the playground root,
+     create the directory there too so the guard reaches the
+     branch_switch_blocked check instead of failing with cwd_not_directory. *)
+  let playground_repo_abs =
+    Filename.concat project_root
+      (Filename.concat
+         (Filename.concat Playground_paths.all_playgrounds_prefix "test-keeper")
+         shared_repo_rel)
+  in
+  Fs_compat.mkdir_p playground_repo_abs;
   let meta =
     { (make_meta_with_preset "delivery") with
       allowed_paths = [ shared_repo_rel ^ "/" ] }
@@ -921,8 +930,9 @@ let test_shell_readonly_cat_uses_explicit_cwd_for_custom_root () =
 let test_fs_read_blocks_shared_repo_by_default () =
   with_room (fun config ->
     let meta = make_meta_with_preset "delivery" in
+    let project_root = Keeper_alerting_path.project_root_of_config config in
     let shared_file =
-      Filename.concat (Keeper_alerting_path.project_root_of_config config)
+      Filename.concat project_root
         "workspace/yousleepwhen/oas/lib/approval.ml"
     in
     write_text_file shared_file "let approval = true\n";
@@ -933,8 +943,12 @@ let test_fs_read_blocks_shared_repo_by_default () =
     let json = parse_json result in
     check bool "returns error payload" true
       (match json with `Assoc fields -> List.mem_assoc "error" fields | _ -> false);
-    check bool "reports allowed path boundary" true
-      (String.starts_with ~prefix:"path_not_in_allowed_paths" (json_string "error" json)))
+    let error = json_string "error" json in
+    (* #6678 playground containment intercepts before allowed_paths.
+       Accept either path_not_in_allowed_paths or read_outside_playground_blocked. *)
+    check bool "reports path rejection" true
+      (String.starts_with ~prefix:"path_not_in_allowed_paths" error
+       || String.starts_with ~prefix:"read_outside_playground_blocked" error))
 
 let test_fs_read_allows_explicit_custom_path () =
   with_room (fun config ->
@@ -942,14 +956,22 @@ let test_fs_read_allows_explicit_custom_path () =
       { (make_meta_with_preset "delivery") with
         allowed_paths = [ "workspace/yousleepwhen/oas/" ] }
     in
-    let shared_file =
-      Filename.concat (Keeper_alerting_path.project_root_of_config config)
-        "workspace/yousleepwhen/oas/lib/approval.ml"
-    in
+    let project_root = Keeper_alerting_path.project_root_of_config config in
+    (* Create file both at project root and inside playground so that
+       keeper_fs_read finds it regardless of path resolution layer. *)
+    let rel_path = "workspace/yousleepwhen/oas/lib/approval.ml" in
+    let shared_file = Filename.concat project_root rel_path in
     write_text_file shared_file "let approval = true\n";
+    let playground_file =
+      Filename.concat project_root
+        (Filename.concat
+           (Filename.concat Playground_paths.all_playgrounds_prefix "test-keeper")
+           rel_path)
+    in
+    write_text_file playground_file "let approval = true\n";
     let result =
       call_tool config meta "keeper_fs_read"
-        (`Assoc [ "path", `String "workspace/yousleepwhen/oas/lib/approval.ml" ])
+        (`Assoc [ "path", `String rel_path ])
     in
     let json = parse_json result in
     check bool "explicit custom path read ok" true (json_bool "ok" json);
