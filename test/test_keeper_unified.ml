@@ -662,7 +662,7 @@ let test_world_prompt_distinguishes_playground_and_worktree () =
      server-root `.worktrees/` form. *)
   check bool "world prompt names worktree workflow inside playground" true
     (contains_substring prompt
-       "Repo worktrees live *inside* your playground clone");
+       "must live *inside* your playground clone");
   check bool "world prompt names canonical playground-rooted worktree path" true
     (contains_substring prompt
        ".masc/playground/{your-name}/repos/<REPO_NAME>/.worktrees/<branch-or-task>/")

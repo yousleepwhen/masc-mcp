@@ -6,12 +6,11 @@
 module SM = Keeper_state_machine
 
 let enabled_cache =
-  Eio.Lazy.from_fun ~cancel:`Protect (fun () ->
-    match Sys.getenv_opt "MASC_TLA_TRACE" with
+  lazy (match Sys.getenv_opt "MASC_TLA_TRACE" with
     | Some ("1" | "true" | "yes") -> true
     | _ -> false)
 
-let enabled () = Eio.Lazy.force enabled_cache
+let enabled () = Lazy.force enabled_cache
 
 let trace_path ~base_path ~keeper_name =
   Filename.concat
