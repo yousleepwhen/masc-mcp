@@ -769,10 +769,12 @@ let assert_branch_switch_blocked config cmd label =
   let playground_repo_abs = Filename.concat project_root playground_repo in
   Fs_compat.mkdir_p playground_repo_abs;
   let meta = make_meta_with_preset "messaging" in
+  (* cwd is relative to the playground root — the system prepends
+     .masc/playground/<keeper>/ automatically, so just pass repos/oas. *)
   let args =
     `Assoc
       [ "cmd", `String cmd
-      ; "cwd", `String playground_repo
+      ; "cwd", `String "repos/oas"
       ]
   in
   let result = call_tool config meta "keeper_bash" args in
