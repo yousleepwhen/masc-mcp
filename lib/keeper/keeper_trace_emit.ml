@@ -27,7 +27,7 @@ let emit_transition
     ~(conditions_after : SM.conditions)
     ~(restart_count : int)
   =
-  if not (Eio.Lazy.force enabled_cache) then ()
+  if not (Lazy.force enabled_cache) then ()
   else
     let json = `Assoc [
       "seq", `Int seq;
