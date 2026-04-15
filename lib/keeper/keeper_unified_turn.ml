@@ -320,7 +320,7 @@ let context_overflow_event_of_error
         }
 
 let pause_keeper_for_overflow
-    ~(config : Room.config)
+    ~(config : Coord.config)
     ~(meta : keeper_meta)
     ~(reason : string) : keeper_meta =
   let paused_meta =
@@ -573,7 +573,7 @@ let decision_id ~(meta : keeper_meta) ~(ts : float) ~(suffix_seed : string) : st
     (String.sub digest 0 8)
 
 let append_decision_record
-    ~(config : Room.config)
+    ~(config : Coord.config)
     ~(meta : keeper_meta)
     ~(observation : Keeper_world_observation.world_observation)
     ~(latency_ms : int)
@@ -839,6 +839,7 @@ let update_metrics_from_result (meta : keeper_meta) ~(latency_ms : int)
     ?(is_autonomous_turn = true)
     ?(update_proactive_rt = true)
     ?social_state
+    ?social_transition_reason
     (result : Keeper_agent_run.run_result) : keeper_meta =
   let now_ts = Time_compat.now () in
   let surface_model_used = Keeper_agent_run.surface_model_used result in
@@ -1014,6 +1015,10 @@ let update_metrics_from_result (meta : keeper_meta) ~(latency_ms : int)
          then now_iso ()
          else rt.last_autonomous_action_at);
       last_speech_act = Social.speech_act_to_string social_state.speech_act;
+      last_social_transition_reason =
+        (match social_transition_reason with
+         | Some reason -> String.trim reason
+         | None -> rt.last_social_transition_reason);
       last_active_desire =
         Option.value ~default:"" social_state.active_desire;
       last_current_intention =
@@ -1029,7 +1034,7 @@ let update_metrics_from_result (meta : keeper_meta) ~(latency_ms : int)
     };
   }
 
-let append_metrics_snapshot ~(config : Room.config) ~(meta : keeper_meta)
+let append_metrics_snapshot ~(config : Coord.config) ~(meta : keeper_meta)
     ~(observation : Keeper_world_observation.world_observation)
     ~(result : Keeper_agent_run.run_result) ~(latency_ms : int)
     ~(turn_cost : float)
@@ -1225,7 +1230,8 @@ let broadcast_lifecycle_events ~(name : string)
 
 let update_metrics_from_failure (meta : keeper_meta) ~(latency_ms : int)
     ~(observation : Keeper_world_observation.world_observation)
-    ~(reason : string) ?(is_transient = false) ?social_state () : keeper_meta =
+    ~(reason : string) ?(is_transient = false) ?social_state
+    ?social_transition_reason () : keeper_meta =
   ignore is_transient; (* Param retained for caller compatibility; no longer
                           used internally after zombie-fix #5594. *)
   let now_ts = Time_compat.now () in
@@ -1275,6 +1281,10 @@ let update_metrics_from_failure (meta : keeper_meta) ~(latency_ms : int)
          | Some (state : Social.social_state) ->
              Social.speech_act_to_string state.speech_act
          | None -> meta.runtime.last_speech_act);
+      last_social_transition_reason =
+        (match social_transition_reason with
+         | Some value -> String.trim value
+         | None -> meta.runtime.last_social_transition_reason);
       last_active_desire =
         (match social_state with
          | Some (state : Social.social_state) ->
@@ -1298,7 +1308,7 @@ let update_metrics_from_failure (meta : keeper_meta) ~(latency_ms : int)
     };
   }
 
-let run_keeper_cycle ~(config : Room.config) ~(meta : keeper_meta)
+let run_keeper_cycle ~(config : Coord.config) ~(meta : keeper_meta)
     ~(observation : Keeper_world_observation.world_observation)
     ~(generation : int)
     ?(channel : Keeper_world_observation.keeper_cycle_channel = Scheduled_autonomous)
@@ -1354,7 +1364,7 @@ let run_keeper_cycle ~(config : Room.config) ~(meta : keeper_meta)
       let base_dir = session_base_dir config in
       (* Ensure session dir tree for filesystem fallback (issue #3019) *)
       Keeper_types.mkdir_p (Filename.concat base_dir (Keeper_id.Trace_id.to_string meta.runtime.trace_id));
-      let masc_root = Room.masc_root_dir config in
+      let masc_root = Coord.masc_root_dir config in
       let trajectory_acc =
         Trajectory.create_accumulator
           ~masc_root
@@ -1774,7 +1784,7 @@ let run_keeper_cycle ~(config : Room.config) ~(meta : keeper_meta)
                " (transient, cooldown preserved)"
              else "")
             (short_preview e_str);
-          let social_state =
+          let social_state, social_transition_reason =
             Social.derive_failure_state ~meta ~observation
               ~previous_state:previous_social_state ~reason:e_str
           in
@@ -1789,7 +1799,11 @@ let run_keeper_cycle ~(config : Room.config) ~(meta : keeper_meta)
               ~latency_ms
               ~observation
               ~reason:e_str
-              ~is_transient ~social_state ()
+              ~is_transient
+              ~social_state
+              ~social_transition_reason:
+                (Social.transition_reason_to_string social_transition_reason)
+              ()
           in
           if is_ambiguous_partial then begin
             (* Manual reconcile blocker removed. Previously, a partial commit
@@ -1868,7 +1882,7 @@ let run_keeper_cycle ~(config : Room.config) ~(meta : keeper_meta)
           let explicit_accountability_claim =
             Social.extract_accountability_claim result
           in
-          let result, social_state =
+          let result, social_state, social_transition_reason =
             Social.apply_to_result ~meta ~observation
               ~previous_state:previous_social_state result
           in
@@ -1914,6 +1928,8 @@ let run_keeper_cycle ~(config : Room.config) ~(meta : keeper_meta)
             update_metrics_from_result lifecycle.updated_meta ~latency_ms
               ~observation
               ~social_state
+              ~social_transition_reason:
+                (Social.transition_reason_to_string social_transition_reason)
               ~update_proactive_rt:true
               result
           in
