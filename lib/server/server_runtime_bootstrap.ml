@@ -42,16 +42,7 @@ let project_root_from_executable () =
     in
     walk_up (Filename.dirname exe)
 
-let dedupe_keep_order items =
-  let seen = Hashtbl.create (List.length items) in
-  List.filter
-    (fun item ->
-      if Hashtbl.mem seen item then
-        false
-      else (
-        Hashtbl.add seen item ();
-        true))
-    items
+let dedupe_keep_order = Json_util.dedupe_keep_order
 
 let versioned_config_root_candidates () =
   let cwd_candidate = Filename.concat (Sys.getcwd ()) "config" in

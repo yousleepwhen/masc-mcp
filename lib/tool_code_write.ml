@@ -55,15 +55,7 @@ let git_common_root path =
   | Unix.Unix_error _ -> None
   | Sys_error _ -> None
 
-let dedupe_keep_order paths =
-  let seen = Hashtbl.create (List.length paths) in
-  List.filter
-    (fun path ->
-      if Hashtbl.mem seen path then false
-      else (
-        Hashtbl.replace seen path ();
-        true))
-    paths
+let dedupe_keep_order = Json_util.dedupe_keep_order
 
 let allowed_worktree_prefixes config =
   [ git_common_root config.Room.base_path;
