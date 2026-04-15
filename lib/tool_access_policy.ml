@@ -14,16 +14,7 @@ type t = {
   deny : selector;
 }
 
-let dedupe_keep_order names =
-  let seen = Hashtbl.create (max 16 (List.length names)) in
-  let rec loop acc = function
-    | [] -> List.rev acc
-    | name :: rest when Hashtbl.mem seen name -> loop acc rest
-    | name :: rest ->
-        Hashtbl.replace seen name ();
-        loop (name :: acc) rest
-  in
-  loop [] names
+let dedupe_keep_order = Json_util.dedupe_keep_order
 
 let normalize_names names =
   names

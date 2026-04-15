@@ -97,12 +97,15 @@ let home_dir_opt () =
   raw_value_opt "HOME" |> trim_opt
 
 (** Log a deprecation warning when a legacy env var is set.
-    Called once per legacy var at startup/first-read. *)
-let deprecation_warned = Hashtbl.create 8
+    Called once per legacy var at startup/first-read.
+    Uses an atomic reference to an immutable StringSet for thread-safe
+    deduplication without mutable Hashtbl. *)
+let deprecation_warned : string list Atomic.t = Atomic.make []
 
 let warn_deprecated ~old_name ~new_name =
-  if not (Hashtbl.mem deprecation_warned old_name) then begin
-    Hashtbl.replace deprecation_warned old_name true;
+  let warned = Atomic.get deprecation_warned in
+  if not (List.mem old_name warned) then begin
+    Atomic.set deprecation_warned (old_name :: warned);
     Log.Misc.warn "env %s is deprecated; use %s instead. Support will be removed in a future release."
       old_name new_name
   end
