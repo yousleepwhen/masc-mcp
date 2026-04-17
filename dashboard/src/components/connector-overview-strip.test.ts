@@ -5,6 +5,7 @@ import { html } from 'htm/preact'
 import {
   ConnectorOverviewStrip,
   ConnectorBulkActions,
+  deriveMascPaths,
   _testResetBulkInflight,
   _testResetStripMemory,
   _testSetStripMemory,
@@ -383,5 +384,68 @@ describe('stripMemory pure helpers', () => {
       60_000,
     )
     expect(dropped).toEqual([])
+  })
+})
+
+describe('ConnectorOverviewStrip row-level icons + paths strip', () => {
+  let container: HTMLElement
+  beforeEach(() => {
+    container = document.createElement('div')
+    document.body.appendChild(container)
+    _testResetBulkInflight()
+  })
+  afterEach(() => {
+    document.body.removeChild(container)
+  })
+
+  it('renders row-level config and guide icon buttons', () => {
+    render(
+      html`<${ConnectorOverviewStrip}
+        connectors=${[] as GateConnectorInfo[]}
+        keepers=${[] as GateKeeperInfo[]}
+        renderExpandedDetail=${noopDetail}
+      />`,
+      container,
+    )
+    const row = container.querySelector('[data-connector-row="imessage"]')!
+    expect(row.querySelector('[data-row-action="config"]')).not.toBeNull()
+    expect(row.querySelector('[data-row-action="guide"]')).not.toBeNull()
+  })
+
+  it('mounts the Paths strip panel', () => {
+    render(
+      html`<${ConnectorOverviewStrip}
+        connectors=${[] as GateConnectorInfo[]}
+        keepers=${[] as GateKeeperInfo[]}
+        renderExpandedDetail=${noopDetail}
+      />`,
+      container,
+    )
+    expect(container.querySelector('[data-panel="connector-paths-strip"]')).not.toBeNull()
+  })
+})
+
+describe('deriveMascPaths', () => {
+  it('falls back to repo-relative paths when no connector has names_path', () => {
+    const paths = deriveMascPaths([])
+    expect(paths.connectorsDir).toBeNull()
+    expect(paths.logsDir).toBeNull()
+    expect(paths.keepersDir).toBe('config/keepers/')
+    expect(paths.sidecarsDir).toBe('sidecars/')
+  })
+
+  it('derives connectors + logs dir from names_path pattern', () => {
+    const c = mkConnector({
+      names_path: '/Users/alice/.masc/connectors/discord/names.json',
+    } as never)
+    const paths = deriveMascPaths([c])
+    expect(paths.connectorsDir).toBe('/Users/alice/.masc/connectors/')
+    expect(paths.logsDir).toBe('/Users/alice/.masc/logs/')
+  })
+
+  it('falls back when names_path is non-standard', () => {
+    const c = mkConnector({ names_path: '/somewhere/else/names.json' } as never)
+    const paths = deriveMascPaths([c])
+    expect(paths.connectorsDir).toBeNull()
   })
 })
