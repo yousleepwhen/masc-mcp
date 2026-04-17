@@ -212,7 +212,7 @@ let native_event_to_json (evt : Agent_sdk.Event_bus.event) : Yojson.Safe.t optio
             ("agent_name", `String agent_name);
             ("task_id", `String task_id);
             ("error", `String (Agent_sdk.Error.to_string error));
-            ("elapsed", `Float elapsed);
+            ("elapsed_s", `Float elapsed);
           ]
       in
       Some (wrap ~event_type:"agent_failed" ~payload ~agent_name ~task_id ())
@@ -233,11 +233,11 @@ let native_event_to_json (evt : Agent_sdk.Event_bus.event) : Yojson.Safe.t optio
           [
             ("from_agent", `String from_agent);
             ("to_agent", `String to_agent);
-            ("elapsed", `Float elapsed);
+            ("elapsed_s", `Float elapsed);
           ]
       in
       Some (wrap ~event_type:"handoff_completed" ~payload
-              ~agent_name:to_agent ())
+              ~agent_name:from_agent ())
   | Agent_sdk.Event_bus.ElicitationCompleted _ ->
     None  (* Internal; no SSE relay needed *)
   | Agent_sdk.Event_bus.ContextOverflowImminent
