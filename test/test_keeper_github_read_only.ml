@@ -333,7 +333,10 @@ let test_keeper_bash_still_opens_boundary () =
    exemption semantics so the next rename does not silently drift. *)
 let test_masc_coordination_aliases_bypass_boundary () =
   let check_pair name =
-    Alcotest.(check bool) (name ^ " is mutating") false
+    let expected_ro = Tool_dispatch.is_read_only name in
+    Alcotest.(check bool)
+      (Printf.sprintf "%s read-only classification" name)
+      expected_ro
       (is_ro ~tool_name:name ~input:(`Assoc []));
     Alcotest.(check bool) (name ^ " bypasses boundary") true
       (is_boundary_exempt ~tool_name:name ~input:(`Assoc []))
