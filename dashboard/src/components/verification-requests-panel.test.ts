@@ -242,6 +242,43 @@ describe('VerificationRequestsPanel', () => {
       expect(empty.textContent).toContain('1 items')
     })
   })
+
+  it('shows legacy-rows hint when pre-fix rows have no details', () => {
+    // Legacy row: no task_title, no contract, no evidence, no verdict_reason.
+    const legacy = makeRequest({
+      request_id: 'req-legacy',
+      status: 'approved',
+    })
+    // Fresh row written after the fix: has task_title.
+    const fresh = makeRequest({
+      request_id: 'req-fresh',
+      status: 'approved',
+      task_title: 'Fix FD leak',
+    })
+    setData([legacy, fresh])
+    render(html`<${VerificationRequestsPanel} />`)
+
+    fireEvent.click(screen.getByTestId('filter-chip-all'))
+
+    const body = document.body.innerHTML
+    expect(body).toContain('검증 계약이 없는 이전 요청')
+    expect(body).toContain('1건')
+  })
+
+  it('hides legacy-rows hint when every row has at least one detail', () => {
+    const fresh = makeRequest({
+      request_id: 'req-fresh',
+      status: 'approved',
+      task_title: 'Fix FD leak',
+    })
+    setData([fresh])
+    render(html`<${VerificationRequestsPanel} />`)
+
+    fireEvent.click(screen.getByTestId('filter-chip-all'))
+
+    const body = document.body.innerHTML
+    expect(body).not.toContain('검증 계약이 없는 이전 요청')
+  })
 })
 
 // ── filterVerificationRequests pure helper ─────────────

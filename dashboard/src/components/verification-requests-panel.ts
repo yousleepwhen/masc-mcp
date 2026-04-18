@@ -503,6 +503,19 @@ export function VerificationRequestsPanel() {
   const pendingCount = rows.filter((r) => r.status === 'pending').length
   const showNoPendingHint = rows.length > 0 && pendingCount === 0
 
+  // Legacy-row hint: rows written before the submit-pipeline fix carry no
+  // task_title / contract / evidence / verdict_reason, so their 세부 cell
+  // is locked to "—". Surface the reason once, globally, rather than making
+  // the operator guess which rows are pre-fix.
+  const legacyRowCount = rows.filter(
+    (r) =>
+      r.task_title === '' &&
+      r.completion_contract.length === 0 &&
+      r.required_evidence.length === 0 &&
+      r.verdict_reason === '',
+  ).length
+  const showLegacyRowsHint = legacyRowCount > 0
+
   return html`
     <div class="flex flex-col gap-4">
       <div class="flex items-center gap-3 flex-wrap">
@@ -565,6 +578,19 @@ export function VerificationRequestsPanel() {
             >
               검증 대기(pending) 요청이 없어 액션 컬럼이 비어 있습니다. 승인/반려 버튼은
               <code class="text-[var(--text-strong)]">pending</code> 상태에서만 표시됩니다.
+            </div>
+          `
+        : null}
+
+      ${showLegacyRowsHint
+        ? html`
+            <div
+              role="note"
+              class="rounded border border-[var(--card-border)] bg-[var(--bg-panel)] px-3 py-2 text-[11px] text-[var(--text-muted)]"
+            >
+              검증 계약이 없는 이전 요청(${legacyRowCount}건)은 세부 컬럼이
+              <code class="text-[var(--text-strong)]">—</code>로 표시됩니다.
+              새 요청부터는 Task Title / completion contract / evidence 가 자동으로 기록됩니다.
             </div>
           `
         : null}
