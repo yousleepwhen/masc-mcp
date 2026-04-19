@@ -161,12 +161,10 @@ let test_dashboard_mission_projection () =
         |> List.find (fun row ->
                row |> member "agent_name" |> to_string = "llama-local-alpha")
       in
-      check bool "attention_queue present" true (attention_queue <> []);
-      (* Team_session_store removed — session-derived attention items
-         (spawn_failure_present, local64_role_gap, routing_escalation_present)
-         no longer appear. The top item is now pending_confirm_waiting. *)
-      check string "top attention kind" "pending_confirm_waiting"
-        (attention_queue |> List.hd |> member "kind" |> to_string);
+      (* Root-target incidents are now internal operator signals, not
+         public attention-queue items. *)
+      check bool "attention_queue empty for root-target incident" true
+        (attention_queue = []);
       check bool "mission summary trims paused" true
         (summary |> member "paused" = `Null);
       check bool "mission summary trims active_agents" true
