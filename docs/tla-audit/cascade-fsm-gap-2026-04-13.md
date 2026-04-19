@@ -193,7 +193,9 @@ transitions. Nothing connects them: "cascade exhausted" -> "retry with
 backoff" -> "still exhausted" -> "keeper Failing" -> "eventual recovery
 when providers come back".
 
-**Proposed addition**: A `CascadeKeeperRecovery.tla` spec that models:
+**Implemented addition (2026-04-19)**: `specs/boundary/CascadeKeeperRecovery.tla`
+now models the following and is swept through both `scripts/tla-check.sh` and
+`make -C specs check-all`:
 - A keeper running repeated turns.
 - Each turn invokes the cascade (2 providers).
 - Both providers can fail simultaneously (environment action).
@@ -385,7 +387,7 @@ be unhealthy at the same time. However:
 
 | Priority | Spec | Description |
 |----------|------|-------------|
-| P0 | `CascadeKeeperRecovery.tla` | Composed model: cascade exhaustion -> keeper retry loop -> Failing -> recovery when providers come back. The missing link between cascade specs and keeper lifecycle specs. |
+| P0 | `CascadeKeeperRecovery.tla` | Landed boundary model: cascade exhaustion -> keeper retry loop -> Failing -> recovery when providers come back. Keep it in the canonical clean/buggy sweep. |
 | P1 | `CascadeLiveness-liveness.cfg` | Enable liveness checking (SpecLive + EventualTermination) in the cfg. Currently only safety invariants are checked by default. |
 | P1 | `CascadeFSMDecision.tla` | Formal model of cascade_fsm.ml `decide` function. Verify exhaustive coverage, no unreachable states, and correct Accept vs Exhausted partitioning. |
 | P2 | Extend CascadeExhaustion | Add CorrelatedFailure action + verify diagnostic accuracy under simultaneous provider error. |

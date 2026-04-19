@@ -317,9 +317,13 @@ ManualReconcileClearable ==
 
 This is a direct encoding of "no one-way traps for non-terminal states."
 
-### P4: New spec — KeeperRecoveryOrchestration.tla (MEDIUM PRIORITY)
+### P4: KeeperRecoveryOrchestration.tla (landed after this audit)
 
-A dedicated spec for the keepalive recovery path that models:
+Update (2026-04-19): this model now lives at
+`specs/boundary/KeeperRecoveryOrchestration.tla` with a clean/buggy cfg pair,
+and it is swept by both `scripts/tla-check.sh` and `make -C specs check-all`.
+
+A dedicated spec for the keepalive recovery path models:
 
 - Variables: `data_record_state` (pending/cleared/absent), `fsm_manual_reconcile`,
   `fsm_turn_healthy`, `fsm_heartbeat_healthy`, `phase`
@@ -349,7 +353,7 @@ This catches any future spec-code divergence mechanically.
 | `TurnSucceeded` divergence (TLA+ clears manual_reconcile, OCaml does not) | Hid the one-way trap from liveness checking | P1: Align spec with code |
 | No `ManualReconcileCleared` fairness assumption | Liveness property held trivially | P1: Add WF_vars |
 | No condition-clearing coverage property | No detection of one-way traps | P3: Add ManualReconcileClearable |
-| No recovery orchestration spec | Multi-event sequences untested by TLC | P4: New KeeperRecoveryOrchestration.tla |
+| Recovery orchestration spec is now present in `specs/boundary/` | Keep multi-event recovery sequences in the canonical TLC sweep | P4: Keep `KeeperRecoveryOrchestration.tla` aligned with code/docs |
 | 108 unit tests cover FSM in isolation, not callers | Caller bugs invisible to FSM tests | Integration tests for recovery sequences |
 
 The root cause is a spec-code divergence in a single line (`manual_reconcile_required' = FALSE`

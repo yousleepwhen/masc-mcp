@@ -92,7 +92,7 @@ check-buggy:
 	  cfgtag=$$(basename "$$cfg" .cfg); \
 	  tla="$$dir/$$bugbase.tla"; \
 	  if [ ! -f "$$tla" ]; then echo "SKIP $$cfg (no .tla)"; continue; fi; \
-	  skip=0; for kb in $(KNOWN_BUGGY_NO_VIOLATION); do [ "$$bugbase" = "$$kb" ] && skip=1; done; \
+	  skip=0; for kb in $(if $(strip $(KNOWN_BUGGY_NO_VIOLATION)),$(KNOWN_BUGGY_NO_VIOLATION),__none__); do [ "$$bugbase" = "$$kb" ] && skip=1; done; \
 	  if [ $$skip -eq 1 ]; then printf "SKIP %-40s (KNOWN_BUGGY_NO_VIOLATION)\n" "$$bugbase (buggy)"; continue; fi; \
 	  printf "CHECK %-40s " "$$cfgtag (buggy)"; \
 	  $(TLC) -config "$$cfg" "$$tla" > /tmp/tlc-$$cfgtag.log 2>&1; \
@@ -105,28 +105,28 @@ check-buggy:
 
 check-bug-models:
 	@$(MAKE) --no-print-directory \
-	  CLEAN_CFGS="$$(find bug-models/ -name '*.cfg' ! -name '*-buggy*.cfg' | sort)" \
-	  BUGGY_CFGS="$$(find bug-models/ -name '*-buggy*.cfg' | sort)" check-all
+	  CLEAN_CFGS="$$(find bug-models/ -name '*.cfg' ! -name '*-buggy*.cfg' | sort | tr '\n' ' ')" \
+	  BUGGY_CFGS="$$(find bug-models/ -name '*-buggy*.cfg' | sort | tr '\n' ' ')" check-all
 
 check-keeper:
 	@$(MAKE) --no-print-directory \
-	  CLEAN_CFGS="$$(find keeper-state-machine/ -name '*.cfg' ! -name '*-buggy*.cfg' | sort)" \
-	  BUGGY_CFGS="$$(find keeper-state-machine/ -name '*-buggy*.cfg' | sort)" check-all
+	  CLEAN_CFGS="$$(find keeper-state-machine/ -name '*.cfg' ! -name '*-buggy*.cfg' | sort | tr '\n' ' ')" \
+	  BUGGY_CFGS="$$(find keeper-state-machine/ -name '*-buggy*.cfg' | sort | tr '\n' ' ')" check-all
 
 check-ecosystem:
 	@$(MAKE) --no-print-directory \
-	  CLEAN_CFGS="$$(find masc-ecosystem/ -name '*.cfg' ! -name '*-buggy*.cfg' | sort)" \
+	  CLEAN_CFGS="$$(find masc-ecosystem/ -name '*.cfg' ! -name '*-buggy*.cfg' | sort | tr '\n' ' ')" \
 	  BUGGY_CFGS="" check-all
 
 check-boundary:
 	@$(MAKE) --no-print-directory \
-	  CLEAN_CFGS="$$(find boundary/ -name '*.cfg' ! -name '*-buggy*.cfg' | sort)" \
-	  BUGGY_CFGS="$$(find boundary/ -name '*-buggy*.cfg' | sort)" check-all
+	  CLEAN_CFGS="$$(find boundary/ -name '*.cfg' ! -name '*-buggy*.cfg' | sort | tr '\n' ' ')" \
+	  BUGGY_CFGS="$$(find boundary/ -name '*-buggy*.cfg' | sort | tr '\n' ' ')" check-all
 
 check-closure:
 	@$(MAKE) --no-print-directory \
-	  CLEAN_CFGS="$$(find closure/ -name '*.cfg' ! -name '*-buggy*.cfg' | sort)" \
-	  BUGGY_CFGS="$$(find closure/ -name '*-buggy*.cfg' | sort)" check-all
+	  CLEAN_CFGS="$$(find closure/ -name '*.cfg' ! -name '*-buggy*.cfg' | sort | tr '\n' ' ')" \
+	  BUGGY_CFGS="$$(find closure/ -name '*-buggy*.cfg' | sort | tr '\n' ' ')" check-all
 
 list:
 	@echo "Clean specs ($(words $(CLEAN_CFGS))):"; \

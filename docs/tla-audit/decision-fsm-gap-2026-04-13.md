@@ -170,9 +170,12 @@ BugScopeOnlySkipsTimerUpdate ==
 
 The clean model would always set `update_proactive_rt' = TRUE`. The buggy model would gate it on `~is_scope_only_reactive`. The `TimerNeverFrozen` liveness property would be violated in the buggy model because after a scope-only reactive turn, `proactive_last_ts` never advances, and the scheduling decision remains stuck.
 
-## Proposed Spec: KeeperTurnScheduler.tla
+## Implemented Spec: KeeperTurnScheduler.tla
 
-A new spec dedicated to the scheduling decision layer:
+Update (2026-04-19): the scheduling model proposed in this audit now exists as
+`specs/boundary/KeeperTurnScheduler.tla` with a clean/buggy cfg pair. Both the
+canonical local sweep (`scripts/tla-check.sh`) and CI (`make -C specs check-all`)
+pick it up through the boundary-spec discovery path.
 
 **Scope**: Models the `unified_turn_decision` function and its interaction with `update_metrics_from_result`'s proactive timer update. Sits between KeeperStateMachine (provides Running phase) and KeeperTurnCycle (consumes the "should run" decision).
 
@@ -180,10 +183,10 @@ A new spec dedicated to the scheduling decision layer:
 
 **Key insight**: Bug #3 is a cross-domain feedback bug (turn completion side-effect -> scheduling decision input). The spec must model *both* the decision and the post-turn update in a single module to capture this coupling.
 
-**Files to create** (future work, not in this audit):
-- `specs/keeper-state-machine/KeeperTurnScheduler.tla` - clean model
-- `specs/keeper-state-machine/KeeperTurnScheduler.cfg` - clean config
-- `specs/keeper-state-machine/KeeperTurnScheduler-buggy.cfg` - buggy config (scope_only freeze)
+**Files now present**:
+- `specs/boundary/KeeperTurnScheduler.tla` - clean model
+- `specs/boundary/KeeperTurnScheduler.cfg` - clean config
+- `specs/boundary/KeeperTurnScheduler-buggy.cfg` - buggy config (scope_only freeze)
 
 ## Summary
 
@@ -193,6 +196,6 @@ A new spec dedicated to the scheduling decision layer:
 | KeeperWorkPipeline | No | No | No |
 | KeeperTurnCycle | No | No | No |
 | KeeperStateMachine | No | No | No |
-| **KeeperTurnScheduler (proposed)** | **Yes** | **Yes** | **Yes** |
+| **KeeperTurnScheduler** | **Yes** | **Yes** | **Yes** |
 
-The proactive timer scheduling decision is the single most impactful unspecified deterministic logic in the keeper system. It gates all autonomous behavior, yet has no formal model. Bug #3 is a concrete example of a defect class (cross-domain feedback corruption) that the current spec portfolio structurally cannot detect.
+The proactive timer scheduling decision was the single most impactful unspecified deterministic logic in the keeper system at audit time. That gap is now covered by `KeeperTurnScheduler`, and Bug #3 is now part of the boundary sweep instead of a purely hypothetical defect class.

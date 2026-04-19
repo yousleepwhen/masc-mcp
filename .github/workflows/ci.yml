@@ -625,6 +625,7 @@ jobs:
 
       - name: Run TLA+ model checking
         run: make -C specs check-all
+        # specs/Makefile auto-discovers clean/buggy cfg pairs, including specs/boundary/*
 
   ci-gate:
     name: CI Gate

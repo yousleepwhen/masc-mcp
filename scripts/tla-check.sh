@@ -137,8 +137,26 @@ run_tlc "$REPO_ROOT/specs/keeper-state-machine" "KeeperCompositeLifecycle.tla"
 run_tlc_buggy "$REPO_ROOT/specs/keeper-state-machine" "KeeperCompositeLifecycle.tla"
 run_tlc "$REPO_ROOT/specs/keeper-state-machine" "KeeperCircuitBreaker.tla"
 run_tlc_buggy "$REPO_ROOT/specs/keeper-state-machine" "KeeperCircuitBreaker.tla"
-run_tlc "$REPO_ROOT/specs/boundary" "KeeperContinueGate.tla"
-run_tlc_buggy "$REPO_ROOT/specs/boundary" "KeeperContinueGate.tla"
+
+# ── boundary ───────────────────────────────────────────────────
+# Cross-domain boundary specs use the same clean/buggy pair pattern
+# as bug-models. Discover them automatically so new boundary specs do
+# not require one more hard-coded line in the canonical local sweep.
+BOUNDARY_DIR="$REPO_ROOT/specs/boundary"
+if [ -d "$BOUNDARY_DIR" ]; then
+  for tla_path in "$BOUNDARY_DIR"/*.tla; do
+    [ -e "$tla_path" ] || continue
+    [ -L "$tla_path" ] && continue
+    tla_name="$(basename "$tla_path")"
+    base="${tla_name%.tla}"
+    if [ -f "$BOUNDARY_DIR/${base}.cfg" ]; then
+      run_tlc "$BOUNDARY_DIR" "$tla_name"
+    fi
+    if [ -f "$BOUNDARY_DIR/${base}-buggy.cfg" ]; then
+      run_tlc_buggy "$BOUNDARY_DIR" "$tla_name"
+    fi
+  done
+fi
 
 # Optional: run TraceSpec if --trace flag provided
 if [ "${1:-}" = "--trace" ]; then
