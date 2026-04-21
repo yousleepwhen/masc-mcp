@@ -151,10 +151,43 @@ let reset_cascade_counters_for_test () =
 (* ================================================================ *)
 
 (** Map provider_kind to cascade-label prefix (e.g. "claude", "gemini").
-    Uses OAS provider resolution so endpoint-distinct providers such as
-    [glm] and [glm-coding] remain distinguishable. *)
+    Uses local endpoint-aware resolution so endpoint-distinct providers such as
+    [glm] and [glm-coding] remain distinguishable even on older OAS pins. *)
+let normalize_url value =
+  let trimmed = String.trim value in
+  if String.length trimmed > 1 && trimmed.[String.length trimmed - 1] = '/' then
+    String.sub trimmed 0 (String.length trimmed - 1)
+  else trimmed
+
 let provider_name_of_config (cfg : Llm_provider.Provider_config.t) =
-  Llm_provider.Provider_registry.provider_name_of_config cfg
+  match cfg.kind with
+  | Anthropic -> "claude"
+  | Gemini -> "gemini"
+  | Glm ->
+      if Llm_provider.Zai_catalog.is_coding_base_url cfg.base_url then "glm-coding"
+      else "glm"
+  | Claude_code -> "claude_code"
+  | Gemini_cli -> "gemini_cli"
+  | Codex_cli -> "codex_cli"
+  | Ollama -> "ollama"
+  | OpenAI_compat ->
+      if Llm_provider.Provider_config.is_local cfg then "llama"
+      else
+        let base_url = normalize_url cfg.base_url in
+        match
+          Provider_adapter.direct_adapters
+          |> List.find_opt (fun (adapter : Provider_adapter.adapter) ->
+                 adapter.runtime_kind = Provider_adapter.Direct_api
+                 &&
+                 match adapter.endpoint_url with
+                 | Some endpoint_url ->
+                     String.equal (normalize_url endpoint_url) base_url
+                 | None -> false)
+        with
+        | Some { canonical_name; _ }
+          when String.equal canonical_name Provider_adapter.cn_openrouter ->
+            "openrouter"
+        | _ -> "openai"
 
 let display_provider_name_of_config (cfg : Llm_provider.Provider_config.t) =
   Provider_adapter.display_provider_name (provider_name_of_config cfg)
