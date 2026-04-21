@@ -360,7 +360,6 @@ let codex_cli_prompt_preflight ~(config : Oas_worker_exec.config) ~(goal : strin
         ~context_reducer:config.context_reducer
         ~tiered_memory:None
         ~turn_params:Oas.Hooks.default_turn_params
-        ~tiered_memory:None
     in
     let req_config =
       match String.trim config.system_prompt with
@@ -461,20 +460,13 @@ let sdk_error_to_cascade_outcome (err : Oas.Error.sdk_error)
         Llm_provider.Http_client.HttpError { code = 404; body = message }
       | Llm_provider.Retry.ServerError { status; message } ->
         Llm_provider.Http_client.HttpError { code = status; body = message }
-      | Llm_provider.Retry.NotFound _ ->
-        Llm_provider.Http_client.HttpError
-          { code = 404; body = "resource not found" }
       | Llm_provider.Retry.AuthError { message } ->
         Llm_provider.Http_client.HttpError { code = 401; body = message }
-      | Llm_provider.Retry.NotFound { message } ->
-        Llm_provider.Http_client.HttpError { code = 404; body = message }
       | Llm_provider.Retry.Overloaded { message } ->
         Llm_provider.Http_client.HttpError { code = 529; body = message }
       | Llm_provider.Retry.NetworkError { message }
       | Llm_provider.Retry.Timeout { message } ->
         Llm_provider.Http_client.NetworkError { message }
-      | Llm_provider.Retry.NotFound { message } ->
-        Llm_provider.Http_client.HttpError { code = 404; body = message }
     in
     Some (Cascade_fsm.Call_err http_err)
   (* Model-capability errors: the next provider may handle these.
@@ -600,9 +592,7 @@ let sdk_error_is_hard_quota (err : Oas.Error.sdk_error) : bool =
      | Llm_provider.Retry.RateLimited _
      | Llm_provider.Retry.NotFound _
      | Llm_provider.Retry.AuthError _
-     | Llm_provider.Retry.NotFound _
      | Llm_provider.Retry.InvalidRequest _
-     | Llm_provider.Retry.NotFound _
      | Llm_provider.Retry.ContextOverflow _
      | Llm_provider.Retry.Timeout _ ->
        false)
