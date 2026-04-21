@@ -151,10 +151,10 @@ let reset_cascade_counters_for_test () =
 (* ================================================================ *)
 
 (** Map provider_kind to cascade-label prefix (e.g. "claude", "gemini").
-    Uses OAS provider resolution so endpoint-distinct providers such as
-    [glm] and [glm-coding] remain distinguishable. *)
+    Reuse Provider_adapter's best-effort cascade-prefix SSOT instead of
+    relying on unreleased Provider_registry helpers. *)
 let provider_name_of_config (cfg : Llm_provider.Provider_config.t) =
-  Llm_provider.Provider_registry.provider_name_of_config cfg
+  Provider_adapter.cascade_prefix_of_provider_kind cfg.kind
 
 let display_provider_name_of_config (cfg : Llm_provider.Provider_config.t) =
   Provider_adapter.display_provider_name (provider_name_of_config cfg)
