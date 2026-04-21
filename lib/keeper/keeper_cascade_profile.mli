@@ -69,6 +69,17 @@ val canonicalize : string -> string
     back to {!default_name} (previously they passed through unchanged,
     letting typos and dead profile names create ghost metric labels). *)
 
+val normalize_declared_name : string -> string
+(** Normalizes only the keeper-side implicit default and legacy aliases.
+
+    Semantics:
+    - blank/whitespace -> {!default_name}
+    - known legacy alias -> canonical known name
+    - unknown nonblank name -> preserved (trimmed)
+
+    This lets runtime-authoritative catalogs accept dynamic profile names
+    without using the compile-time variant inventory as the source of truth. *)
+
 (** {1 cascade.json key helpers} *)
 
 val models_key_t : t -> string

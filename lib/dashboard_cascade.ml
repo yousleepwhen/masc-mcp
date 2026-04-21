@@ -2,7 +2,6 @@
 
 module CC = Cascade_config
 module Health = Cascade_health_tracker
-module StringSet = Set.Make (String)
 
 (* ── Shared helpers ─────────────────────────────────── *)
 
@@ -24,28 +23,20 @@ let source_to_string = function
 
 (* ── Config projection ──────────────────────────────── *)
 
-(** Profiles to surface in the dashboard.
-
-    We don't try to enumerate every possible profile name the loader might
-    accept — the dashboard cares about the profiles that keepers actively use,
-    plus a few standard ones. Listing them explicitly avoids loading the raw
-    JSON and reimplementing key-name heuristics.
-
-    Keepers run through [Keeper_cascade_profile.canonicalize], so any unknown
-    keeper [cascade_name] from the registry also shows up below by virtue of
-    being included in [keeper_profiles]. *)
-let standard_profiles = Keeper_cascade_profile.known_cascades
-
-let profile_json ~config_path name =
-  let defaults = Cascade_runtime.default_model_strings ~cascade_name:name in
-  let (_models, trace) =
-    CC.resolve_model_strings_with_trace ?config_path ~name ~defaults ()
-  in
-  `Assoc [
-    ("name", `String name);
-    ("source", `String (source_to_string trace.source));
-    ("candidates", `List (List.map candidate_to_json trace.candidates));
-  ]
+let profile_json name =
+  match Cascade_catalog_runtime.resolve_selection_trace ~name () with
+  | Ok trace ->
+      Some
+        (`Assoc [
+           ("name", `String name);
+           ("source", `String (source_to_string trace.source));
+           ("candidates", `List (List.map candidate_to_json trace.candidates));
+         ])
+  | Error detail ->
+      Log.Keeper.warn
+        "dashboard cascade config: skipping profile %s: %s"
+        name detail;
+      None
 
 (* Two-column contract consumed by the dashboard's "Keeper → Cascade
    Mapping" table:
@@ -76,19 +67,6 @@ let keeper_profile_json (entry : Keeper_registry.registry_entry) : Yojson.Safe.t
 
 let config_json () =
   let config_path = Cascade_runtime.cascade_config_path () in
-  let seen = ref StringSet.empty in
-  let add_profile acc name =
-    let canonical = Keeper_cascade_profile.canonicalize name in
-    if StringSet.mem canonical !seen then acc
-    else begin
-      seen := StringSet.add canonical !seen;
-      profile_json ~config_path canonical :: acc
-    end
-  in
-  (* Start with the standard profiles, then append any runtime-drifted
-     keeper cascade_name values (e.g. a keeper TOML pointing at a
-     non-standard profile). Both paths go through [add_profile] so
-     duplicates are filtered by canonical name. *)
   let keeper_entries =
     (* Issue #8619: was [with _ -> []] which silently swallowed
        Eio.Cancel.Cancelled. Re-raise cancellation; only fall back
@@ -99,17 +77,15 @@ let config_json () =
     | Eio.Cancel.Cancelled _ as e -> raise e
     | _ -> []
   in
-  let acc_after_standard =
-    List.fold_left add_profile [] standard_profiles
+  let profiles =
+    match Cascade_catalog_runtime.known_profile_names () with
+    | Ok names -> List.filter_map profile_json names
+    | Error detail ->
+        Log.Keeper.warn
+          "dashboard cascade config: validated catalog unavailable: %s"
+          detail;
+        []
   in
-  let acc_after_keepers =
-    List.fold_left
-      (fun acc (e : Keeper_registry.registry_entry) ->
-         add_profile acc e.meta.cascade_name)
-      acc_after_standard
-      keeper_entries
-  in
-  let profiles = List.rev acc_after_keepers in
   `Assoc [
     ("updated_at", `String (now_iso ()));
     ("config_path",

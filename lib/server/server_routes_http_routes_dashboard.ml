@@ -13,32 +13,13 @@ module Keeper_stream = Server_routes_http_keeper_stream
 module Keeper_api = Server_dashboard_http_keeper_api
 
 let available_cascade_profiles () : string list =
-  let config_path = Cascade_runtime.cascade_config_path () in
-  match config_path with
-  | None -> ["default"]
-  | Some path ->
-    (match Yojson.Safe.from_file path with
-     | `Assoc fields ->
-       let from_keys =
-         List.filter_map (fun (k, _) ->
-           if String.length k > 7
-              && String.sub k (String.length k - 7) 7 = "_models"
-           then Some (String.sub k 0 (String.length k - 7))
-           else None
-         ) fields
-       in
-       let with_default =
-         if List.mem "default" from_keys then from_keys
-         else "default" :: from_keys
-       in
-       List.sort_uniq String.compare with_default
-     | _ -> ["default"]
-     | exception Yojson.Json_error msg ->
-       Log.Keeper.warn "cascade config parse error: %s" msg;
-       ["default"]
-     | exception Sys_error msg ->
-       Log.Keeper.warn "cascade config read error: %s" msg;
-       ["default"])
+  match Cascade_catalog_runtime.known_profile_names () with
+  | Ok profiles -> profiles
+  | Error detail ->
+      Log.Keeper.warn
+        "available_cascade_profiles: validated runtime snapshot unavailable: %s"
+        detail;
+      []
 
 (** Broadcast handler: parse JSON body, extract "message" string field, and
     relay via Coord.broadcast.  Error responses are encoded through Yojson so
