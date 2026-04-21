@@ -681,28 +681,29 @@ let test_sdk_error_is_hard_quota_preserves_rate_limited_detection () =
   Alcotest.(check bool) "existing RateLimited hard quota still works" true
     (Oas_worker_named.sdk_error_is_hard_quota err)
 
-let test_sdk_error_is_hard_quota_keeps_not_found_false () =
+let test_sdk_error_is_hard_quota_keeps_not_found_style_invalid_request_false () =
   let err =
     Oas.Error.Api
-      (Llm_provider.Retry.NotFound
+      (Llm_provider.Retry.InvalidRequest
          { message = "model endpoint not found" })
   in
-  Alcotest.(check bool) "NotFound stays non-hard-quota" false
+  Alcotest.(check bool) "not-found InvalidRequest stays non-hard-quota" false
     (Oas_worker_named.sdk_error_is_hard_quota err)
 
-let test_sdk_error_to_cascade_outcome_maps_not_found_to_404 () =
+let test_sdk_error_to_cascade_outcome_maps_not_found_style_invalid_request_to_404 () =
   let err =
     Oas.Error.Api
-      (Llm_provider.Retry.NotFound
-         { message = "provider resource missing" })
+      (Llm_provider.Retry.InvalidRequest
+         { message = "provider resource missing: not found" })
   in
   match Oas_worker_named.sdk_error_to_cascade_outcome err with
   | Some
       (Cascade_fsm.Call_err
          (Llm_provider.Http_client.HttpError
-            { code = 404; body = "provider resource missing" })) -> ()
+            { code = 404; body = "provider resource missing: not found" })) -> ()
   | outcome ->
-      Alcotest.failf "expected Some (Call_err (HttpError 404)) for NotFound, got %s"
+      Alcotest.failf
+        "expected Some (Call_err (HttpError 404)) for not-found InvalidRequest, got %s"
          (match outcome with
           | Some (Cascade_fsm.Call_err _) -> "some-call-err"
            | Some (Cascade_fsm.Accept_rejected _) -> "some-accept-rejected"
@@ -2590,10 +2591,12 @@ let () =
         test_sdk_error_is_hard_quota_keeps_transient_network_errors_false;
       Alcotest.test_case "sdk_error_is_hard_quota preserves RateLimited detection" `Quick
         test_sdk_error_is_hard_quota_preserves_rate_limited_detection;
-      Alcotest.test_case "sdk_error_is_hard_quota keeps NotFound false" `Quick
-        test_sdk_error_is_hard_quota_keeps_not_found_false;
-      Alcotest.test_case "sdk_error_to_cascade_outcome maps NotFound to 404" `Quick
-        test_sdk_error_to_cascade_outcome_maps_not_found_to_404;
+      Alcotest.test_case
+        "sdk_error_is_hard_quota keeps not-found InvalidRequest false" `Quick
+        test_sdk_error_is_hard_quota_keeps_not_found_style_invalid_request_false;
+      Alcotest.test_case
+        "sdk_error_to_cascade_outcome maps not-found InvalidRequest to 404" `Quick
+        test_sdk_error_to_cascade_outcome_maps_not_found_style_invalid_request_to_404;
       Alcotest.test_case "Moonshot auth errors include configured env hint" `Quick
         test_enrich_sdk_error_for_moonshot_auth_includes_env_hint;
       Alcotest.test_case "OpenAI-compatible 404 errors include endpoint hint" `Quick
