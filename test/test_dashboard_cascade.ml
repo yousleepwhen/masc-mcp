@@ -18,15 +18,52 @@ let to_list_opt = function
   | `List xs -> Some xs
   | _ -> None
 
-let with_dashboard_snapshot f =
+let write_file path contents =
+  let oc = open_out path in
+  Fun.protect
+    ~finally:(fun () -> close_out_noerr oc)
+    (fun () -> output_string oc contents)
+
+let with_temp_config_root contents f =
+  let dir = Filename.temp_file "dashboard-cascade-" "" in
+  Sys.remove dir;
+  Unix.mkdir dir 0o755;
+  let cascade_path = Filename.concat dir "cascade.json" in
+  write_file cascade_path contents;
+  let prev_config_dir = Sys.getenv_opt "MASC_CONFIG_DIR" in
+  Fun.protect
+    ~finally:(fun () ->
+      (match prev_config_dir with
+       | Some value -> Unix.putenv "MASC_CONFIG_DIR" value
+       | None -> Unix.putenv "MASC_CONFIG_DIR" "");
+      Masc_mcp.Config_dir_resolver.reset ();
+      (try Sys.remove cascade_path with _ -> ());
+      try Unix.rmdir dir with _ -> ())
+    (fun () ->
+      Unix.putenv "MASC_CONFIG_DIR" dir;
+      Masc_mcp.Config_dir_resolver.reset ();
+      f cascade_path)
+
+let profile_names json =
+  match member "profiles" json with
+  | `List profiles ->
+    List.filter_map
+      (fun profile ->
+        match member "name" profile with
+        | `String name -> Some name
+        | _ -> None)
+      profiles
+  | _ -> []
+
+let with_dashboard_snapshot ?(source_path = "/tmp/dashboard-cascade-test.json")
+    ?(profile_names = [ Masc_mcp.Keeper_config.default_cascade_name ])
+    f =
   Masc_mcp.Cascade_catalog_runtime.reset_cache_for_tests ();
   Masc_mcp.Cascade_catalog_runtime.install_snapshot_for_tests
-    ~source_path:"/tmp/dashboard-cascade-test.json"
-    ~profile_names:[ Masc_mcp.Keeper_config.default_cascade_name ];
+    ~source_path ~profile_names;
   Fun.protect
     ~finally:Masc_mcp.Cascade_catalog_runtime.reset_cache_for_tests
     f
-
 (* ── config_json ───────────────────────────────────── *)
 
 let test_config_shape () =
@@ -80,6 +117,37 @@ let test_config_candidate_shape () =
          match member k c with
          | `Null -> fail (Printf.sprintf "candidate.%s missing" k)
          | _ -> ()) fields)
+
+let test_config_uses_validated_snapshot () =
+  with_temp_config_root
+    {|
+      {
+        "default_models": ["ollama:qwen3.5:35b-a3b-nvfp4"],
+        "custom_live_models": ["ollama:qwen3.5:35b-a3b-nvfp4"],
+        "governance_judge_models": ["ollama:qwen3.5:35b-a3b-nvfp4"],
+        "governance_judge_keeper_assignable": false,
+        "tool_rerank_temperature": 0.0,
+        "tool_rerank_max_tokens": 200,
+        "tool_rerank_keeper_assignable": false
+      }
+    |}
+    (fun cascade_path ->
+      with_dashboard_snapshot
+        ~source_path:cascade_path
+        ~profile_names:
+          [ "custom_live"
+          ; "governance_judge"
+          ; "tool_rerank"
+          ]
+      @@ fun () ->
+      let j = Masc_mcp.Dashboard_cascade.config_json () in
+      let names = profile_names j in
+      check (list string) "uses validated snapshot profile set"
+        [ "custom_live"; "governance_judge"; "tool_rerank" ]
+        names;
+      check (option string) "config_path reflects active root"
+        (Some cascade_path)
+        Yojson.Safe.Util.(j |> member "config_path" |> to_string_option))
 
 (* ── health_json ───────────────────────────────────── *)
 
@@ -281,6 +349,7 @@ let () =
       test_case "top-level shape" `Quick test_config_shape;
       test_case "profile shape" `Quick test_config_profile_shape;
       test_case "candidate shape" `Quick test_config_candidate_shape;
+      test_case "uses validated snapshot catalog" `Quick test_config_uses_validated_snapshot;
     ];
     "health_json", [
       test_case "top-level shape" `Quick test_health_shape;

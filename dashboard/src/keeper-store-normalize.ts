@@ -226,6 +226,7 @@ function normalizeMetricsSeries(raw: unknown): KeeperMetricPoint[] {
           cache_n: asNumber(rawTimings.cache_n) ?? null,
         } : null,
         reasoning_tokens: asNumber(rawTel.reasoning_tokens) ?? null,
+        peak_memory_gb: asNumber(rawTel.peak_memory_gb) ?? null,
         request_latency_ms: asNumber(rawTel.request_latency_ms) ?? 0,
       } : null
       const cascadeObj = isRecord(item.cascade) ? item.cascade : null
@@ -376,7 +377,9 @@ export function normalizeKeepers(raw: unknown): Keeper[] {
         model,
         primary_model: asString(row.primary_model),
         active_model: asString(row.active_model),
+        active_model_label: asString(row.active_model_label) ?? null,
         last_model_used: asString(row.last_model_used),
+        last_model_used_label: asString(row.last_model_used_label) ?? null,
         next_model_hint: asString(row.next_model_hint) ?? null,
         status: normalizeKeeperAgentStatus(statusRaw),
         presence_keepalive:

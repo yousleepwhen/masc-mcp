@@ -163,7 +163,7 @@ export function fetchDashboardConfig(): Promise<DashboardConfigResponse> {
 }
 
 export function fetchDashboardNamespaceTruth(opts?: AbortableRequestOptions): Promise<DashboardNamespaceTruthResponse> {
-  return get('/api/v1/dashboard/namespace-truth', {
+  return get('/api/v1/dashboard/project-snapshot', {
     timeoutMs: NAMESPACE_TRUTH_GET_TIMEOUT_MS,
     signal: opts?.signal,
   })
@@ -483,6 +483,9 @@ export interface DashboardRuntimeModelMetric {
   avg_tok_per_sec?: number | null
   p50_tok_per_sec?: number | null
   p95_tok_per_sec?: number | null
+  prompt_avg_tok_per_sec?: number | null
+  prompt_p50_tok_per_sec?: number | null
+  prompt_p95_tok_per_sec?: number | null
   /**
    * Hardware decode rate (eval_count / eval_duration from Ollama) aggregated
    * across the telemetry window. Distinct from `avg_tok_per_sec` which is
@@ -493,6 +496,7 @@ export interface DashboardRuntimeModelMetric {
   hw_decode_avg_tok_per_sec?: number | null
   hw_decode_p50_tok_per_sec?: number | null
   hw_decode_p95_tok_per_sec?: number | null
+  max_peak_memory_gb?: number | null
   /**
    * Fraction [0.0, 1.0] of turns in the window where the model received
    * think=true. Reflects the Keeper_turn_intent adaptive classifier decision
@@ -520,6 +524,8 @@ export interface DashboardRuntimeModelMetric {
     input_tokens: number
     output_tokens: number
     latency_ms: number
+    prompt_tok_per_sec?: number | null
+    peak_memory_gb?: number | null
     cost_usd: number
     tools_count: number
   }> | null
@@ -597,9 +603,13 @@ function decodeRuntimeModelMetric(raw: unknown): DashboardRuntimeModelMetric | n
     avg_tok_per_sec: asNumber(raw.avg_tok_per_sec) ?? null,
     p50_tok_per_sec: asNumber(raw.p50_tok_per_sec) ?? null,
     p95_tok_per_sec: asNumber(raw.p95_tok_per_sec) ?? null,
+    prompt_avg_tok_per_sec: asNumber(raw.prompt_avg_tok_per_sec) ?? null,
+    prompt_p50_tok_per_sec: asNumber(raw.prompt_p50_tok_per_sec) ?? null,
+    prompt_p95_tok_per_sec: asNumber(raw.prompt_p95_tok_per_sec) ?? null,
     hw_decode_avg_tok_per_sec: asNumber(raw.hw_decode_avg_tok_per_sec) ?? null,
     hw_decode_p50_tok_per_sec: asNumber(raw.hw_decode_p50_tok_per_sec) ?? null,
     hw_decode_p95_tok_per_sec: asNumber(raw.hw_decode_p95_tok_per_sec) ?? null,
+    max_peak_memory_gb: asNumber(raw.max_peak_memory_gb) ?? null,
     thinking_fraction: asNumber(raw.thinking_fraction) ?? null,
     avg_latency_ms: asNumber(raw.avg_latency_ms) ?? null,
     p50_latency_ms: asNumber(raw.p50_latency_ms) ?? null,
@@ -628,6 +638,8 @@ function decodeRuntimeModelMetric(raw: unknown): DashboardRuntimeModelMetric | n
             input_tokens: asNumber(r.input_tokens) ?? 0,
             output_tokens: asNumber(r.output_tokens) ?? 0,
             latency_ms: asNumber(r.latency_ms) ?? 0,
+            prompt_tok_per_sec: asNumber(r.prompt_tok_per_sec) ?? null,
+            peak_memory_gb: asNumber(r.peak_memory_gb) ?? null,
             cost_usd: asNumber(r.cost_usd) ?? 0,
             tools_count: asNumber(r.tools_count) ?? 0,
           }))
@@ -1026,6 +1038,7 @@ function normalizeRuntimeBlockerClass(value: unknown): KeeperConfig['runtime']['
     case 'turn_timeout_after_queue_wait':
     case 'turn_timeout':
     case 'completion_contract_violation':
+    case 'cascade_exhausted':
       return blockerClass
     default:
       return null
@@ -1100,6 +1113,8 @@ function normalizeKeeperConfig(raw: unknown, requestedName: string): KeeperConfi
     execution: {
       models: normalizeStringList(execution.models),
       active_model: asNullableString(execution.active_model) ?? '',
+      active_model_label: asNullableString(execution.active_model_label),
+      last_model_used_label: asNullableString(execution.last_model_used_label),
       verify: asLooseBoolean(execution.verify),
     },
     compaction: {
@@ -1152,6 +1167,8 @@ function normalizeKeeperConfig(raw: unknown, requestedName: string): KeeperConfi
       presence_keepalive: asLooseBoolean(runtime.presence_keepalive),
       presence_keepalive_sec: asInt(runtime.presence_keepalive_sec) ?? 0,
       runtime_blocker_class: normalizeRuntimeBlockerClass(runtime.runtime_blocker_class),
+      active_model_label: asNullableString(runtime.active_model_label),
+      last_model_used_label: asNullableString(runtime.last_model_used_label),
       runtime_blocker_summary: asNullableString(runtime.runtime_blocker_summary),
       runtime_blocker_continue_gate:
         typeof runtime.runtime_blocker_continue_gate === 'boolean'

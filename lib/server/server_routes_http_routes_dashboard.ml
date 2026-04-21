@@ -21,6 +21,39 @@ let available_cascade_profiles () : string list =
         detail;
       []
 
+let invalid_profiles_of_rejection_json (json : Yojson.Safe.t)
+    : (string * string list) list =
+  let open Yojson.Safe.Util in
+  match member "profiles" json with
+  | `List profiles ->
+      List.filter_map
+        (fun profile ->
+          match member "name" profile with
+          | `String name ->
+              let errors =
+                match member "errors" profile with
+                | `List values ->
+                    List.filter_map
+                      (function `String value -> Some value | _ -> None)
+                      values
+                | _ -> []
+              in
+              Some (name, errors)
+          | _ -> None)
+        profiles
+  | _ -> []
+
+let invalid_cascade_profiles () : (string * string list) list =
+  let invalid_of_rejection rejection =
+    Cascade_catalog_runtime.rejection_to_yojson rejection
+    |> invalid_profiles_of_rejection_json
+  in
+  match Cascade_catalog_runtime.inspect_active () with
+  | Ok (Cascade_catalog_runtime.Validated _) -> []
+  | Ok (Cascade_catalog_runtime.Serving_last_known_good { rejected_update; _ }) ->
+      invalid_of_rejection rejected_update
+  | Error rejection -> invalid_of_rejection rejection
+
 (** Broadcast handler: parse JSON body, extract "message" string field, and
     relay via Coord.broadcast.  Error responses are encoded through Yojson so
     exception messages cannot break JSON framing via embedded quotes. *)
@@ -283,6 +316,11 @@ let rec add_routes ~sw ~clock router =
                  (Yojson.Safe.to_string (`Assoc [("ok", `Bool false); ("error", `String "Invalid JSON body")])) reqd
            )
          ) request reqd)
+  |> Http.Router.get "/api/v1/dashboard/project-snapshot" (fun request reqd ->
+       with_public_read (fun state req reqd ->
+         let json = dashboard_namespace_truth_http_json ~state ~sw ~clock req in
+         Http.Response.json ~compress:true ~request:req (Yojson.Safe.to_string json) reqd
+       ) request reqd)
   |> Http.Router.get "/api/v1/dashboard/namespace-truth" (fun request reqd ->
        with_public_read (fun state req reqd ->
          let json = dashboard_namespace_truth_http_json ~state ~sw ~clock req in
@@ -951,6 +989,16 @@ and add_autoresearch_routes router =
                  reqd
              | Some name, Some cascade ->
                let known = available_cascade_profiles () in
+               let invalid = invalid_cascade_profiles () in
+               (match List.assoc_opt cascade invalid with
+                | Some reasons ->
+                  Http.Response.json ~status:`Conflict ~request:req
+                    (Printf.sprintf
+                       {|{"ok":false,"error":"cascade %s is invalid in active cascade.json: %s"}|}
+                       (String.escaped cascade)
+                       (String.escaped (String.concat " | " reasons)))
+                    reqd
+                | None ->
                if not (List.mem cascade known) then
                  Http.Response.json ~status:`Bad_request ~request:req
                    (Printf.sprintf
@@ -979,6 +1027,6 @@ and add_autoresearch_routes router =
                      (Printf.sprintf
                        {|{"ok":true,"keeper":"%s","cascade_name":"%s","source":"toml"}|}
                        (String.escaped name) (String.escaped cascade))
-                     reqd
+                     reqd)
          )
        ) request reqd)

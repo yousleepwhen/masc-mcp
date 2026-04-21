@@ -1040,7 +1040,12 @@ let test_work_discovery_nudge_uses_registered_keeper_tool_schemas () =
     (source_file_contains "lib/keeper/keeper_agent_run.ml" "`keeper_task_claim` {}");
   check bool "bash tool uses cmd field" true
     (source_file_contains "lib/keeper/keeper_agent_run.ml" "`keeper_bash` { cmd:");
-  check bool "tool-less runtime path is explicit" true
+  check bool "worktree tool uses task_id schema" true
+    (source_file_contains "lib/keeper/keeper_agent_run.ml"
+       "`masc_worktree_create` { task_id:");
+  check bool "legacy worktree branch_name schema removed" false
+    (source_file_contains "lib/keeper/keeper_agent_run.ml" "branch_name:");
+  check bool "tool-less runtime escape hatch removed from nudge" false
     (source_file_contains "lib/keeper/keeper_agent_run.ml" "NO_TOOL_CHANNEL")
 
 (* ---------- Config tests ---------- *)
@@ -1102,6 +1107,19 @@ let sample_ctx_composition ?(system_prompt = "You are a keeper.")
     ~history_messages:[]
     ~actual_input_tokens
 
+let sample_tool_surface () : KAR.tool_surface_metrics =
+  {
+    turn_lane = "text_only";
+    visible_tool_count = 0;
+    tool_gate_enabled = false;
+    tool_surface_fallback_used = false;
+    config_root = "";
+    cascade_config_path = None;
+    gemini_mcp_disabled = false;
+    approval_mode_effective = None;
+    approval_mode_derived = false;
+  }
+
 let make_run_result ~text ~tools ~model ~input_tok ~output_tok
     ?trace_ref
     ?run_validation
@@ -1123,6 +1141,7 @@ let make_run_result ~text ~tools ~model ~input_tok ~output_tok
     run_validation;
     stop_reason = Masc_mcp.Oas_worker.Completed;
     inference_telemetry = None;
+    tool_surface = sample_tool_surface ();
   }
 
 let test_prompt_metrics_fingerprint_is_deterministic () =
@@ -2390,7 +2409,7 @@ let test_required_tool_contract_violation_detected () =
     Agent_sdk.Error.Agent
       (CompletionContractViolation
          {
-           contract = "require_tool_use";
+           contract = Agent_sdk.Completion_contract_id.Require_tool_use;
            reason =
              "required tool contract unsatisfied: tool_choice requested tool use, but the model returned no ToolUse block";
          })
@@ -2431,7 +2450,7 @@ let test_auto_recoverable_turn_error_excludes_required_tool_contract_violation (
     Agent_sdk.Error.Agent
       (CompletionContractViolation
          {
-           contract = "require_tool_use";
+           contract = Agent_sdk.Completion_contract_id.Require_tool_use;
            reason =
              "required tool contract unsatisfied: tool_choice requested tool use, but the model returned no ToolUse block";
          })

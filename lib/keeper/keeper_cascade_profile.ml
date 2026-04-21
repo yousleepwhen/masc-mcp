@@ -10,6 +10,7 @@ type t =
   | Keeper_unified
   | Sangsu
   | Local_only
+  | Local_mlx_vlm_qwen36
   | Local_recovery
   | Tool_rerank
   | Nick0cave
@@ -26,6 +27,7 @@ let to_string = function
   | Keeper_unified -> "keeper_unified"
   | Sangsu -> "sangsu"
   | Local_only -> "local_only"
+  | Local_mlx_vlm_qwen36 -> "local_mlx_vlm_qwen36"
   | Local_recovery -> "local_recovery"
   | Tool_rerank -> "tool_rerank"
   | Nick0cave -> "nick0cave"
@@ -38,7 +40,8 @@ let to_string = function
   | Resilient_breaker -> "resilient_breaker"
 
 let all =
-  [ Default; Keeper_unified; Sangsu; Local_only; Local_recovery; Tool_rerank;
+  [ Default; Keeper_unified; Sangsu; Local_only; Local_mlx_vlm_qwen36;
+    Local_recovery; Tool_rerank;
     Nick0cave; Capacity_queue_trio; Vendor_mix_balanced; Cost_tier_ladder;
     Oauth_cli_rotate; Quality_sticky_glm51; Tool_use_strict; Resilient_breaker ]
 
@@ -64,6 +67,7 @@ let of_string_opt (raw : string) : t option =
   | "keeper_turn" | "keeper_reply" -> Some default
   | "sangsu" -> Some Sangsu
   | "local_only" -> Some Local_only
+  | "local_mlx_vlm_qwen36" -> Some Local_mlx_vlm_qwen36
   | "local_recovery" -> Some Local_recovery
   | "tool_rerank" -> Some Tool_rerank
   | "nick0cave" -> Some Nick0cave
@@ -81,7 +85,65 @@ let canonical (raw : string) : t =
   | Some t -> t
   | None -> default
 
-let canonicalize (raw : string) : string = to_string (canonical raw)
+let catalog_entries ?config_path () =
+  let path_opt =
+    match config_path with
+    | Some path -> Some path
+    | None -> Config_dir_resolver.cascade_path_opt ()
+  in
+  match path_opt with
+  | None -> None
+  | Some path -> (
+      match Cascade_config_loader.load_catalog ~config_path:path with
+      | Ok entries -> Some entries
+      | Error _ -> None)
+
+let catalog_names ?config_path () =
+  match catalog_entries ?config_path () with
+  | Some entries ->
+      List.map (fun (entry : Cascade_config_loader.catalog_entry) -> entry.name)
+        entries
+  | None -> []
+
+let is_system_only_cascade raw =
+  let name = String.trim raw in
+  match catalog_entries () with
+  | None -> false
+  | Some entries ->
+      List.exists
+        (fun (entry : Cascade_config_loader.catalog_entry) ->
+          String.equal entry.name name && not entry.keeper_assignable)
+        entries
+
+let keeper_catalog_names ?config_path () =
+  match catalog_entries ?config_path () with
+  | Some entries ->
+      entries
+      |> List.filter_map
+           (fun (entry : Cascade_config_loader.catalog_entry) ->
+             if entry.keeper_assignable then Some entry.name else None)
+  | None -> []
+
+let system_catalog_names ?config_path () =
+  match catalog_entries ?config_path () with
+  | Some entries ->
+      entries
+      |> List.filter_map
+           (fun (entry : Cascade_config_loader.catalog_entry) ->
+             if entry.keeper_assignable then None else Some entry.name)
+  | None -> []
+
+let canonicalize_with_catalog ~catalog raw =
+  match String.trim raw with
+  | "" -> default_name
+  | trimmed -> (
+      match of_string_opt trimmed with
+      | Some profile -> to_string profile
+      | None ->
+          if List.mem trimmed catalog then trimmed else default_name)
+
+let canonicalize (raw : string) : string =
+  canonicalize_with_catalog ~catalog:(catalog_names ()) raw
 
 let normalize_declared_name (raw : string) : string =
   let trimmed = String.trim raw in
@@ -94,6 +156,6 @@ let models_key_t t = to_string t ^ "_models"
 let temperature_key_t t = to_string t ^ "_temperature"
 let max_tokens_key_t t = to_string t ^ "_max_tokens"
 
-let models_key name = models_key_t (canonical name)
-let temperature_key name = temperature_key_t (canonical name)
-let max_tokens_key name = max_tokens_key_t (canonical name)
+let models_key name = canonicalize name ^ "_models"
+let temperature_key name = canonicalize name ^ "_temperature"
+let max_tokens_key name = canonicalize name ^ "_max_tokens"
