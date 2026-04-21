@@ -162,6 +162,8 @@ let string_of_provider_kind
   | Glm -> cn_glm
   | Claude_code -> cn_claude
   | Codex_cli -> cn_codex
+  | Kimi -> "kimi-api"
+  | Kimi_cli -> "kimi"
 
 (** Single source of truth for all provider/runtime adapters.
     Simple names ([claude], [codex], [gemini]) are CLI runtimes.
@@ -1094,6 +1096,7 @@ let auth_env_keys_of_provider_kind (kind : Llm_provider.Provider_config.provider
   | Llm_provider.Provider_config.Kimi -> kimi_api_key_envs
   | Llm_provider.Provider_config.Glm -> [ "ZAI_API_KEY" ]
   | Llm_provider.Provider_config.OpenAI_compat -> [ "OPENAI_API_KEY" ]
+  | Llm_provider.Provider_config.Kimi -> [ "MOONSHOT_API_KEY"; "KIMI_API_KEY" ]
   | Llm_provider.Provider_config.Gemini -> [ google_cloud_project_env; google_cloud_location_env ]
   | Llm_provider.Provider_config.Gemini_cli
   | Llm_provider.Provider_config.Kimi_cli
