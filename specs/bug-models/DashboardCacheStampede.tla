@@ -8,13 +8,13 @@
 \*   - poll-retry only activates for Computing{stale=None}
 \*   - Result: permanent zombie slot returning stale data forever
 \*
-\* Actual code (verified 2026-04-20):
+\* Actual code (verified 2026-04-21):
 \*   lib/dashboard/dashboard_cache.ml:60   let maybe_evict map
-\*   lib/dashboard/dashboard_cache.ml:134  let get_or_compute_eio
-\*   lib/dashboard/dashboard_cache.ml:216  | Eio.Cancel.Cancelled _ as e -> ...
+\*   lib/dashboard/dashboard_cache.ml:148  let get_or_compute_eio
+\*   lib/dashboard/dashboard_cache.ml:100  | Eio.Cancel.Cancelled _ -> ...
 \*
 \* (Path drift: lib/dashboard_cache.ml -> lib/dashboard/dashboard_cache.ml.
-\*  Line drift: 265 -> 216. Recorded for cross-reference.)
+\*  Line drift: 134 -> 148, 216 -> 100. Recorded for cross-reference.)
 
 EXTENDS Naturals
 
