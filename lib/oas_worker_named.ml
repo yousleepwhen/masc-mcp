@@ -360,7 +360,6 @@ let codex_cli_prompt_preflight ~(config : Oas_worker_exec.config) ~(goal : strin
         ~context_reducer:config.context_reducer
         ~tiered_memory:None
         ~turn_params:Oas.Hooks.default_turn_params
-        ~tiered_memory:None
     in
     let req_config =
       match String.trim config.system_prompt with
@@ -446,20 +445,20 @@ let with_codex_cli_preflight ~(scope : string) ~(config : Oas_worker_exec.config
     API-level errors and model-capability-dependent agent errors are
     cascadeable (a different provider may succeed).  Structural agent
     errors (budget, idle, exit) are not — they would recur on any model. *)
+let api_error_message_looks_like_not_found (message : string) =
+  String_util.contains_substring_ci message "not found"
+
 let sdk_error_to_cascade_outcome (err : Oas.Error.sdk_error)
     : Cascade_fsm.provider_outcome option =
   match err with
   | Oas.Error.Api api_err ->
-<<<<<<< HEAD
-    let http_err = match[@warning "-8"] api_err with
-||||||| parent of 594cafd21 (fix: avoid Retry.NotFound pin drift)
     let fallback_message = Llm_provider.Retry.error_message api_err in
-    let http_err = match api_err with
-=======
-    let http_err = match api_err with
->>>>>>> 594cafd21 (fix: avoid Retry.NotFound pin drift)
+    let http_err = match[@warning "-11"] api_err with
       | Llm_provider.Retry.InvalidRequest { message } ->
-        Llm_provider.Http_client.HttpError { code = 400; body = message }
+        let code =
+          if api_error_message_looks_like_not_found message then 404 else 400
+        in
+        Llm_provider.Http_client.HttpError { code; body = message }
       | Llm_provider.Retry.ContextOverflow { message; _ } ->
         Llm_provider.Http_client.HttpError { code = 400; body = message }
       | Llm_provider.Retry.RateLimited { message; _ } ->
@@ -468,30 +467,22 @@ let sdk_error_to_cascade_outcome (err : Oas.Error.sdk_error)
         Llm_provider.Http_client.HttpError { code = 404; body = message }
       | Llm_provider.Retry.ServerError { status; message } ->
         Llm_provider.Http_client.HttpError { code = status; body = message }
-      | Llm_provider.Retry.NotFound _ ->
-        Llm_provider.Http_client.HttpError
-          { code = 404; body = "resource not found" }
       | Llm_provider.Retry.AuthError { message } ->
         Llm_provider.Http_client.HttpError { code = 401; body = message }
-      | Llm_provider.Retry.NotFound { message } ->
-        Llm_provider.Http_client.HttpError { code = 404; body = message }
       | Llm_provider.Retry.Overloaded { message } ->
         Llm_provider.Http_client.HttpError { code = 529; body = message }
       | Llm_provider.Retry.NetworkError { message }
       | Llm_provider.Retry.Timeout { message } ->
         Llm_provider.Http_client.NetworkError { message }
-<<<<<<< HEAD
-      | Llm_provider.Retry.NotFound { message } ->
-        Llm_provider.Http_client.HttpError { code = 404; body = message }
-||||||| parent of 594cafd21 (fix: avoid Retry.NotFound pin drift)
+      | Llm_provider.Retry.NotFound _ ->
+        Llm_provider.Http_client.HttpError
+          { code = 404; body = fallback_message }
       | _ ->
         let code =
           if api_error_message_looks_like_not_found fallback_message then 404
           else 500
         in
         Llm_provider.Http_client.HttpError { code; body = fallback_message }
-=======
->>>>>>> 594cafd21 (fix: avoid Retry.NotFound pin drift)
     in
     Some (Cascade_fsm.Call_err http_err)
   (* Model-capability errors: the next provider may handle these.
@@ -582,6 +573,20 @@ let enrich_sdk_error ~cascade_name
            message =
              append_hint message openai_compat_not_found_hint_marker detail;
          })
+  | Oas.Error.Api (Llm_provider.Retry.InvalidRequest { message })
+    when provider_cfg.kind = Llm_provider.Provider_config.OpenAI_compat
+         && String_util.contains_substring_ci message "not found" ->
+    let detail =
+      Printf.sprintf "base_url=%s request_path=%s endpoint=%s"
+        provider_cfg.base_url provider_cfg.request_path
+        (provider_cfg.base_url ^ provider_cfg.request_path)
+    in
+    Oas.Error.Api
+      (Llm_provider.Retry.InvalidRequest
+         {
+           message =
+             append_hint message openai_compat_not_found_hint_marker detail;
+         })
   | _ -> err
 
 let cli_wrapped_hard_quota_indicators = [
@@ -589,8 +594,8 @@ let cli_wrapped_hard_quota_indicators = [
   "quota_exhausted";
   "exhausted your capacity on this model";
   "quota will reset after";
-  "\"api_error_status\":429";
   "you've hit your limit";
+  "\"api_error_status\":429";
   "resets apr ";
 ]
 
@@ -602,22 +607,18 @@ let message_looks_like_cli_wrapped_hard_quota (message : string) : bool =
 let sdk_error_is_hard_quota (err : Oas.Error.sdk_error) : bool =
   match err with
   | Oas.Error.Api api_err ->
-    Llm_provider.Retry.is_hard_quota api_err
-    ||
-    (match[@warning "-8"] api_err with
+    let wrapped_hard_quota =
+      match api_err with
      | Llm_provider.Retry.NetworkError { message }
      | Llm_provider.Retry.Overloaded { message }
+     | Llm_provider.Retry.RateLimited { message; _ }
      | Llm_provider.Retry.ServerError { message; _ } ->
        message_looks_like_cli_wrapped_hard_quota message
-     | Llm_provider.Retry.RateLimited _
-     | Llm_provider.Retry.NotFound _
-     | Llm_provider.Retry.AuthError _
-     | Llm_provider.Retry.NotFound _
-     | Llm_provider.Retry.InvalidRequest _
-     | Llm_provider.Retry.NotFound _
-     | Llm_provider.Retry.ContextOverflow _
-     | Llm_provider.Retry.Timeout _ ->
-       false)
+     | _ ->
+       message_looks_like_cli_wrapped_hard_quota
+         (Llm_provider.Retry.error_message api_err)
+    in
+    Llm_provider.Retry.is_hard_quota api_err || wrapped_hard_quota
   | _ -> false
 
 (** Run a single Agent.run() call with MASC-driven cascade model fallback.
