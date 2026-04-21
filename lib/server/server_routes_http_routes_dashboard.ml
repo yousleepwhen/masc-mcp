@@ -12,50 +12,47 @@ module Runtime = Server_routes_http_runtime
 module Keeper_stream = Server_routes_http_keeper_stream
 module Keeper_api = Server_dashboard_http_keeper_api
 
-type cascade_profile_gate = {
-  valid_profiles : string list;
-  invalid_profiles : (string * string list) list;
-}
-
-let cascade_profile_gate () : cascade_profile_gate =
-  let config_path = Cascade_runtime.cascade_config_path () in
-  let keeper_profiles =
-    Keeper_cascade_profile.keeper_catalog_names ?config_path ()
-    |> List.sort_uniq String.compare
-  in
-  let invalid_profiles =
-    match config_path with
-    | None -> []
-    | Some path ->
-        Cascade_catalog_validator.error_messages_by_profile
-          ~config_path:path
-  in
-  let invalid_names = List.map fst invalid_profiles in
+let available_cascade_profiles () : string list =
   match Cascade_catalog_runtime.known_profile_names () with
-  | Ok validated_profiles ->
-      let valid_profiles =
-        let filtered =
-          keeper_profiles
-          |> List.filter (fun profile -> List.mem profile validated_profiles)
-        in
-        if filtered = [] then validated_profiles else filtered
-      in
-      { valid_profiles; invalid_profiles }
+  | Ok profiles -> profiles
   | Error detail ->
       Log.Keeper.warn
-        "cascade_profile_gate: validated runtime snapshot unavailable: %s"
+        "available_cascade_profiles: validated runtime snapshot unavailable: %s"
         detail;
-      let valid_profiles =
-        keeper_profiles
-        |> List.filter (fun profile -> not (List.mem profile invalid_names))
-      in
-      { valid_profiles; invalid_profiles }
+      []
 
-let available_cascade_profiles () : string list =
-  (cascade_profile_gate ()).valid_profiles
+let invalid_profiles_of_rejection_json (json : Yojson.Safe.t)
+    : (string * string list) list =
+  let open Yojson.Safe.Util in
+  match member "profiles" json with
+  | `List profiles ->
+      List.filter_map
+        (fun profile ->
+          match member "name" profile with
+          | `String name ->
+              let errors =
+                match member "errors" profile with
+                | `List values ->
+                    List.filter_map
+                      (function `String value -> Some value | _ -> None)
+                      values
+                | _ -> []
+              in
+              Some (name, errors)
+          | _ -> None)
+        profiles
+  | _ -> []
 
 let invalid_cascade_profiles () : (string * string list) list =
-  (cascade_profile_gate ()).invalid_profiles
+  let invalid_of_rejection rejection =
+    Cascade_catalog_runtime.rejection_to_yojson rejection
+    |> invalid_profiles_of_rejection_json
+  in
+  match Cascade_catalog_runtime.inspect_active () with
+  | Ok (Cascade_catalog_runtime.Validated _) -> []
+  | Ok (Cascade_catalog_runtime.Serving_last_known_good { rejected_update; _ }) ->
+      invalid_of_rejection rejected_update
+  | Error rejection -> invalid_of_rejection rejection
 
 (** Broadcast handler: parse JSON body, extract "message" string field, and
     relay via Coord.broadcast.  Error responses are encoded through Yojson so

@@ -2,7 +2,6 @@
 
 module CC = Cascade_config
 module Health = Cascade_health_tracker
-module StringSet = Set.Make (String)
 
 (* ── Shared helpers ─────────────────────────────────── *)
 
@@ -29,37 +28,20 @@ let source_to_string = function
 
 (* ── Config projection ──────────────────────────────── *)
 
-(** Profiles to surface in the dashboard.
-
-    When the validated runtime snapshot is unavailable (for example
-    before first successful validation), fall back to the active
-    [cascade.json] catalog so the dashboard still renders a best-effort
-    raw projection instead of failing hard. *)
-let live_profiles ?config_path () =
-  Keeper_cascade_profile.catalog_names ?config_path ()
-
-let profile_json_of_trace name (trace : CC.selection_trace) =
-  `Assoc [
-    ("name", `String name);
-    ("source", `String (source_to_string trace.source));
-    ("candidates", `List (List.map candidate_to_json trace.candidates));
-  ]
-
-let profile_json_runtime name =
+let profile_json name =
   match Cascade_catalog_runtime.resolve_selection_trace ~name () with
-  | Ok trace -> Some (profile_json_of_trace name trace)
+  | Ok trace ->
+      Some
+        (`Assoc [
+           ("name", `String name);
+           ("source", `String (source_to_string trace.source));
+           ("candidates", `List (List.map candidate_to_json trace.candidates));
+         ])
   | Error detail ->
       Log.Keeper.warn
         "dashboard cascade config: skipping profile %s: %s"
         name detail;
       None
-
-let profile_json_raw ~config_path name =
-  let defaults = Cascade_runtime.default_model_strings ~cascade_name:name in
-  let (_models, trace) =
-    CC.resolve_model_strings_with_trace ?config_path ~name ~defaults ()
-  in
-  profile_json_of_trace name trace
 
 (* Two-column contract consumed by the dashboard's "Keeper → Cascade
    Mapping" table:
@@ -88,14 +70,6 @@ let keeper_profile_json (entry : Keeper_registry.registry_entry) : Yojson.Safe.t
        ~keeper:entry.name
        ~cascade_name:entry.meta.cascade_name)
 
-let invalid_name_set = function
-  | None -> StringSet.empty
-  | Some path ->
-      Cascade_catalog_validator.error_messages_by_profile ~config_path:path
-      |> List.fold_left
-           (fun acc (name, _reasons) -> StringSet.add name acc)
-           StringSet.empty
-
 let config_json () =
   let config_path = Cascade_runtime.cascade_config_path () in
   let keeper_entries =
@@ -110,33 +84,12 @@ let config_json () =
   in
   let profiles =
     match Cascade_catalog_runtime.known_profile_names () with
-    | Ok names -> List.filter_map profile_json_runtime names
+    | Ok names -> List.filter_map profile_json names
     | Error detail ->
         Log.Keeper.warn
           "dashboard cascade config: validated catalog unavailable: %s"
           detail;
-        let invalid_names = invalid_name_set config_path in
-        let seen = ref StringSet.empty in
-        let add_profile_name acc name =
-          let canonical = Keeper_cascade_profile.canonicalize name in
-          if StringSet.mem canonical invalid_names || StringSet.mem canonical !seen
-          then acc
-          else (
-            seen := StringSet.add canonical !seen;
-            canonical :: acc)
-        in
-        let acc_after_catalog =
-          List.fold_left add_profile_name [] (live_profiles ?config_path ())
-        in
-        let names =
-          List.fold_left
-            (fun acc (e : Keeper_registry.registry_entry) ->
-               add_profile_name acc e.meta.cascade_name)
-            acc_after_catalog
-            keeper_entries
-          |> List.rev
-        in
-        List.map (profile_json_raw ~config_path) names
+        []
   in
   `Assoc [
     ("updated_at", `String (now_iso ()));

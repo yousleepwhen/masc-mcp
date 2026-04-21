@@ -614,7 +614,7 @@ let make_checkpoint ?(model = "") () : Oas.Checkpoint.t =
     top_k = None;
     min_p = None;
     enable_thinking = None;
-    response_format = Oas.Types.Off;
+    response_format = Agent_sdk.Types.Off;
     thinking_budget = None;
     cache_system_prompt = false;
     max_input_tokens = None;

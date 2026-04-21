@@ -55,11 +55,12 @@ let profile_names json =
         profiles
   | _ -> []
 
-let with_dashboard_snapshot f =
+let with_dashboard_snapshot ?(source_path = "/tmp/dashboard-cascade-test.json")
+    ?(profile_names = [ Masc_mcp.Keeper_config.default_cascade_name ])
+    f =
   Masc_mcp.Cascade_catalog_runtime.reset_cache_for_tests ();
   Masc_mcp.Cascade_catalog_runtime.install_snapshot_for_tests
-    ~source_path:"/tmp/dashboard-cascade-test.json"
-    ~profile_names:[ Masc_mcp.Keeper_config.default_cascade_name ];
+    ~source_path ~profile_names;
   Fun.protect
     ~finally:Masc_mcp.Cascade_catalog_runtime.reset_cache_for_tests
     f
@@ -117,7 +118,7 @@ let test_config_candidate_shape () =
          | `Null -> fail (Printf.sprintf "candidate.%s missing" k)
          | _ -> ()) fields)
 
-let test_config_uses_live_catalog () =
+let test_config_uses_validated_snapshot () =
   with_temp_config_root
     {|
       {
@@ -131,14 +132,19 @@ let test_config_uses_live_catalog () =
       }
     |}
     (fun cascade_path ->
+      with_dashboard_snapshot
+        ~source_path:cascade_path
+        ~profile_names:
+          [ "custom_live"
+          ; "governance_judge"
+          ; "tool_rerank"
+          ]
+      @@ fun () ->
       let j = Masc_mcp.Dashboard_cascade.config_json () in
       let names = profile_names j in
-      check bool "includes dynamic live profile" true
-        (List.mem "custom_live" names);
-      check bool "includes system-only live profile" true
-        (List.mem "governance_judge" names);
-      check bool "includes profiles declared by non-model schema keys" true
-        (List.mem "tool_rerank" names);
+      check (list string) "uses validated snapshot profile set"
+        [ "custom_live"; "governance_judge"; "tool_rerank" ]
+        names;
       check (option string) "config_path reflects active root"
         (Some cascade_path)
         Yojson.Safe.Util.(j |> member "config_path" |> to_string_option))
@@ -343,7 +349,7 @@ let () =
       test_case "top-level shape" `Quick test_config_shape;
       test_case "profile shape" `Quick test_config_profile_shape;
       test_case "candidate shape" `Quick test_config_candidate_shape;
-      test_case "uses live config catalog" `Quick test_config_uses_live_catalog;
+      test_case "uses validated snapshot catalog" `Quick test_config_uses_validated_snapshot;
     ];
     "health_json", [
       test_case "top-level shape" `Quick test_health_shape;
