@@ -506,7 +506,10 @@ module Kimi_cli_transport_local = struct
     if content = [] then
       Error
         (Llm_provider.Http_client.NetworkError
-           { message = "no messages parsed from kimi output" })
+           {
+             message = "no messages parsed from kimi output";
+             kind = Llm_provider.Http_client.Unknown;
+           })
     else
       Ok
         {
@@ -603,7 +606,7 @@ module Kimi_cli_transport_local = struct
           int_of_string_opt raw
 
   let classify_cli_error = function
-    | Error (Llm_provider.Http_client.NetworkError { message }) as err -> (
+    | Error (Llm_provider.Http_client.NetworkError { message; _ }) as err -> (
         match exit_code_of_message message with
         | Some 1 ->
             Error

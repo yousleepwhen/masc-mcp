@@ -28,7 +28,10 @@ let decide ~accept_on_exhaustion ~is_last outcome =
         last_err =
           Some
             (Llm_provider.Http_client.NetworkError
-               { message = "slot full, cascading to next provider" });
+               {
+                 message = "slot full, cascading to next provider";
+                 kind = Llm_provider.Http_client.Unknown;
+               });
       }
   | Accept_rejected { response; reason } ->
     if is_last && accept_on_exhaustion then
@@ -57,13 +60,16 @@ let format_exhausted_error last_err =
     | Some (Llm_provider.Http_client.AcceptRejected { reason }) -> reason
     | Some (Llm_provider.Http_client.CliTransportRequired { kind }) ->
       Printf.sprintf "%s provider requires a CLI transport" kind
-    | Some (Llm_provider.Http_client.NetworkError { message }) -> message
+    | Some (Llm_provider.Http_client.NetworkError { message; _ }) -> message
     | None -> "No providers available"
   in
   match last_err with
   | Some (Llm_provider.Http_client.AcceptRejected _ as err) -> err
   | _ ->
     Llm_provider.Http_client.NetworkError
-      { message = Printf.sprintf "All models failed: %s" msg }
+      {
+        message = Printf.sprintf "All models failed: %s" msg;
+        kind = Llm_provider.Http_client.Unknown;
+      }
 
 (* ── Inline tests ───────────────────────────────── *)
