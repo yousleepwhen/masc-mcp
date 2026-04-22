@@ -656,14 +656,17 @@ let handle_goal_verify (ctx : context) args =
                     | Ok policy -> policy
                     | Error _ -> None
                   in
-                  emit_goal_event ctx ~goal_id ~event_type:"goal_vote"
-                    ~payload:
-                      (`Assoc
-                        [
-                          ( "vote",
-                            Goal_verification.goal_verification_vote_to_yojson
-                              (List.hd (List.rev request.votes)) );
-                        ]);
+                  (match List.rev request.votes with
+                   | latest_vote :: _ ->
+                       emit_goal_event ctx ~goal_id ~event_type:"goal_vote"
+                         ~payload:
+                           (`Assoc
+                             [
+                               ( "vote",
+                                 Goal_verification.goal_verification_vote_to_yojson
+                                   latest_vote );
+                             ])
+                   | [] -> ());
                   let finalize ~phase ~event_status =
                     match
                       update_goal_phase ctx goal ~phase ?note
