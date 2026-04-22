@@ -11,4 +11,4 @@ val is_allowed : string -> bool
 val confirm_required : string -> bool
 val pipeline : Oas.Approval.t
 val evaluate_action :
-  action_type:string -> agent_name:string -> turn:int -> Oas.Approval.decision
+  action_type:string -> agent_name:string -> turn:int -> Oas.Hooks.approval_decision

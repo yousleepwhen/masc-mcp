@@ -11,10 +11,12 @@ type http_context = {
   include_configured : bool;
 }
 
-val context_from_env : unit -> http_context option
+val context_from_env :
+  ?include_configured:bool -> allow_legacy_accept:bool -> unit -> http_context
 val make_http_context :
-  ?allow_legacy_accept:bool -> ?include_configured:bool ->
-  string -> http_context
+  ?include_configured:bool ->
+  base_url:string -> host:string ->
+  allow_legacy_accept:bool -> unit -> http_context
 val normalize_advertised_host : string -> string
 val transport_status_json : http_context -> Yojson.Safe.t
-val websocket_discovery_json : unit -> Yojson.Safe.t
+val websocket_discovery_json : http_context -> Yojson.Safe.t

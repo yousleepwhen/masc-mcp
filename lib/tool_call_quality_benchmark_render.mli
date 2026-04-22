@@ -8,4 +8,6 @@ val benchmark_summary_to_yojson : Tool_call_quality_benchmark_types.benchmark_su
 val case_score_to_yojson : Tool_call_quality_benchmark_types.case_score -> Yojson.Safe.t
 val json_check_to_yojson : Tool_call_quality_benchmark_types.json_check -> Yojson.Safe.t
 val summary_row_to_yojson : Tool_call_quality_benchmark_types.summary_row -> Yojson.Safe.t
-val summary_rows_to_csv : Tool_call_quality_benchmark_types.summary_row list -> string
+val summary_rows_to_csv :
+  view:Tool_call_quality_benchmark_types.summary_view ->
+  Tool_call_quality_benchmark_types.benchmark_summary -> string

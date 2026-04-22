@@ -9,4 +9,4 @@ type context = {
 
 type tool_result = bool * string
 
-val fetch_models_at : string -> string list
+val fetch_models_at : string -> (string * string list, string) result
