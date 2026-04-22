@@ -21,10 +21,94 @@
 
     All text/vision models support function calling.
     glm-5.1 supports reasoning (reasoning_content field). *)
+type model_resolution_provenance =
+  | Explicit_input
+  | Alias of string
+  | Env_default of string
+  | Hardcoded_default
+  | Discovery
+  | Unresolved_auto
+
+type model_resolution = {
+  requested_model_id : string;
+  resolved_model_id : string;
+  provenance : model_resolution_provenance;
+}
+
+type provider_default_spec = {
+  env_var : string;
+  hardcoded_default : string option;
+}
+
+let env_value_opt ?(getenv = Sys.getenv_opt) var =
+  match getenv var with
+  | Some v ->
+      let trimmed = String.trim v in
+      if String.equal trimmed "" then None else Some trimmed
+  | None -> None
+
 let env_or default var =
-  match Sys.getenv_opt var with
-  | Some v when String.trim v <> "" -> String.trim v
-  | _ -> default
+  match env_value_opt var with
+  | Some value -> value
+  | None -> default
+
+let provider_default_spec = function
+  | "glm" ->
+      Some { env_var = "ZAI_DEFAULT_MODEL"; hardcoded_default = Some "glm-5.1" }
+  | "glm-coding" ->
+      Some
+        { env_var = "ZAI_CODING_DEFAULT_MODEL"; hardcoded_default = Some "glm-5.1" }
+  | "llama" | "ollama" ->
+      Some { env_var = "OLLAMA_DEFAULT_MODEL"; hardcoded_default = None }
+  | "gemini" | "gemini_cli" ->
+      Some
+        {
+          env_var = "GEMINI_DEFAULT_MODEL";
+          hardcoded_default = Some "gemini-3-flash-preview";
+        }
+  | "claude" ->
+      Some
+        {
+          env_var = "ANTHROPIC_DEFAULT_MODEL";
+          hardcoded_default = Some "claude-sonnet-4-6-20250514";
+        }
+  | "openai" ->
+      Some { env_var = "OPENAI_DEFAULT_MODEL"; hardcoded_default = Some "gpt-4.1" }
+  | "openrouter" ->
+      Some { env_var = "OPENROUTER_DEFAULT_MODEL"; hardcoded_default = None }
+  | "kimi" ->
+      Some
+        {
+          env_var = "MOONSHOT_DEFAULT_MODEL";
+          hardcoded_default = Some "kimi-k2.5";
+        }
+  | _ -> None
+
+let explicit_resolution requested_model_id resolved_model_id =
+  { requested_model_id; resolved_model_id; provenance = Explicit_input }
+
+let default_resolution ?getenv provider_name ~requested_model_id =
+  match provider_default_spec provider_name with
+  | Some { env_var; hardcoded_default } -> (
+      match env_value_opt ?getenv env_var with
+      | Some resolved_model_id ->
+          { requested_model_id; resolved_model_id; provenance = Env_default env_var }
+      | None -> (
+          match hardcoded_default with
+          | Some resolved_model_id ->
+              { requested_model_id; resolved_model_id; provenance = Hardcoded_default }
+          | None ->
+              {
+                requested_model_id;
+                resolved_model_id = requested_model_id;
+                provenance = Unresolved_auto;
+              }))
+  | None ->
+      {
+        requested_model_id;
+        resolved_model_id = requested_model_id;
+        provenance = Unresolved_auto;
+      }
 
 let csv_items raw =
   raw
@@ -93,15 +177,41 @@ let codex_cli_auto_models () =
 let claude_code_auto_models () =
   env_csv_or [ "auto" ] "MASC_CLAUDE_CODE_AUTO_MODELS"
 
+let resolve_glm_model ?getenv model_id =
+  let default_model = default_resolution ?getenv "glm" ~requested_model_id:model_id in
+  let resolved_model_id =
+    Llm_provider.Zai_catalog.resolve_glm_alias
+      ~default_model:default_model.resolved_model_id
+      model_id
+  in
+  if String.equal model_id "auto" then
+    { default_model with resolved_model_id }
+  else if String.equal resolved_model_id model_id then
+    explicit_resolution model_id resolved_model_id
+  else
+    { requested_model_id = model_id; resolved_model_id; provenance = Alias model_id }
+
+let resolve_glm_coding_model ?getenv model_id =
+  let default_model =
+    default_resolution ?getenv "glm-coding" ~requested_model_id:model_id
+  in
+  let resolved_model_id =
+    Llm_provider.Zai_catalog.resolve_glm_coding_alias
+      ~default_model:default_model.resolved_model_id
+      model_id
+  in
+  if String.equal model_id "auto" then
+    { default_model with resolved_model_id }
+  else if String.equal resolved_model_id model_id then
+    explicit_resolution model_id resolved_model_id
+  else
+    { requested_model_id = model_id; resolved_model_id; provenance = Alias model_id }
+
 let resolve_glm_model_id model_id =
-  Llm_provider.Zai_catalog.resolve_glm_alias
-    ~default_model:(env_or "glm-5.1" "ZAI_DEFAULT_MODEL")
-    model_id
+  (resolve_glm_model model_id).resolved_model_id
 
 let resolve_glm_coding_model_id model_id =
-  Llm_provider.Zai_catalog.resolve_glm_coding_alias
-    ~default_model:(env_or "glm-5.1" "ZAI_CODING_DEFAULT_MODEL")
-    model_id
+  (resolve_glm_coding_model model_id).resolved_model_id
 
 let resolve_kimi_model_id model_id =
   let normalized = String.trim model_id |> String.lowercase_ascii in
@@ -122,19 +232,30 @@ let resolve_kimi_model_id model_id =
     which returns models from the last endpoint probe.  Callers should
     resolve the model_id before invoking [Llm_provider.Discovery.endpoint_for_model]
     to avoid routing mismatches. *)
-let resolve_auto_model_id provider_name model_id =
+let resolve_auto_model
+    ?getenv
+    ?(discover = Llm_provider.Discovery.first_discovered_model_id)
+    provider_name model_id =
   match provider_name with
   | "llama" | "ollama" ->
     (* Local providers: "auto" resolved earlier via Discovery in
        cascade_config.ml.  If still "auto" here, try discovery then env var. *)
-    if model_id = "auto" then
-      match Llm_provider.Discovery.first_discovered_model_id () with
-      | Some id -> id
-      | None -> env_or model_id "OLLAMA_DEFAULT_MODEL"
-    else model_id
-  | "glm" -> resolve_glm_model_id model_id
-  | "glm-coding" -> resolve_glm_coding_model_id model_id
-  | "kimi" -> resolve_kimi_model_id model_id
+    if String.equal model_id "auto" then
+      match discover () with
+      | Some resolved_model_id ->
+          { requested_model_id = model_id; resolved_model_id; provenance = Discovery }
+      | None -> default_resolution ?getenv provider_name ~requested_model_id:model_id
+    else explicit_resolution model_id model_id
+  | "glm" -> resolve_glm_model ?getenv model_id
+  | "glm-coding" -> resolve_glm_coding_model ?getenv model_id
+  | "kimi" ->
+    let normalized = String.trim model_id |> String.lowercase_ascii in
+    (match normalized with
+     | "auto" -> default_resolution ?getenv provider_name ~requested_model_id:model_id
+     | "kimi-for-coding" ->
+         let resolved_model_id = resolve_kimi_model_id model_id in
+         { requested_model_id = model_id; resolved_model_id; provenance = Alias model_id }
+     | _ -> explicit_resolution model_id (String.trim model_id))
   | "gemini" | "gemini_cli" ->
     (* Default bumped from gemini-2.5-flash to gemini-3-flash-preview on
        2026-04-16 (PR C Cadd follow-up). Capabilities are inherited via
@@ -152,18 +273,28 @@ let resolve_auto_model_id provider_name model_id =
        fleet call 429'd with `MODEL_CAPACITY_EXHAUSTED`. Mapping to
        `gemini-3-flash-preview` (higher quota, 1M context, tool calls)
        restores throughput. *)
-    if model_id = "auto" then env_or "gemini-3-flash-preview" "GEMINI_DEFAULT_MODEL"
-    else model_id
+    if String.equal model_id "auto" then
+      default_resolution ?getenv provider_name ~requested_model_id:model_id
+    else explicit_resolution model_id model_id
   | "claude" ->
-    if model_id = "auto" then env_or "claude-sonnet-4-6-20250514" "ANTHROPIC_DEFAULT_MODEL"
-    else model_id
+    if String.equal model_id "auto" then
+      default_resolution ?getenv provider_name ~requested_model_id:model_id
+    else explicit_resolution model_id model_id
   | "openai" ->
-    if model_id = "auto" then env_or "gpt-4.1" "OPENAI_DEFAULT_MODEL"
-    else model_id
+    if String.equal model_id "auto" then
+      default_resolution ?getenv provider_name ~requested_model_id:model_id
+    else explicit_resolution model_id model_id
   | "openrouter" ->
-    if model_id = "auto" then env_or model_id "OPENROUTER_DEFAULT_MODEL"
-    else model_id
-  | _ -> model_id
+    if String.equal model_id "auto" then
+      default_resolution ?getenv provider_name ~requested_model_id:model_id
+    else explicit_resolution model_id model_id
+  | _ ->
+    if String.equal model_id "auto" then
+      { requested_model_id = model_id; resolved_model_id = model_id; provenance = Unresolved_auto }
+    else explicit_resolution model_id model_id
+
+let resolve_auto_model_id provider_name model_id =
+  (resolve_auto_model provider_name model_id).resolved_model_id
 
 let parse_custom_model model_id =
   match String.index_opt model_id '@' with
@@ -173,7 +304,7 @@ let parse_custom_model model_id =
     (model, url)
   | None ->
     let url =
-      match Sys.getenv_opt "CUSTOM_LLM_BASE_URL" with
+      match env_value_opt "CUSTOM_LLM_BASE_URL" with
       | Some u -> u
       | None -> Llm_provider.Discovery.default_endpoint
     in
