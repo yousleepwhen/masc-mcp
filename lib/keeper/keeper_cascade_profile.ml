@@ -1,10 +1,10 @@
 (** See {!Keeper_cascade_profile} interface for rationale. *)
 
-(** SSOT variant. Adding a new cascade profile is a compile-time event:
+(** Typed compatibility inventory. Adding a new entry is a compile-time event:
     add a variant here, then exhaustive [match] sites flag every consumer
-    that needs to handle it. Personal/playground-only cascades must NOT
-    be added here — they live in
-    [$MASC_BASE_PATH/.masc/playground/.../cascade.json] only. *)
+    that needs to handle it. Personal/playground-only cascades must NOT be
+    added here — they live in [$MASC_BASE_PATH/.masc/playground/.../cascade.json]
+    only. *)
 type t =
   | Default
   | Keeper_unified
@@ -46,9 +46,9 @@ let all =
     Oauth_cli_rotate; Quality_sticky_glm51; Tool_use_strict; Resilient_breaker ]
 
 (** All known cascade profile names, derived from the variant. Consumers
-    that still operate on strings can use this list; new code should
-    take {!t} directly. *)
-let known_cascades = List.map to_string all
+    that still operate on strings can use this typed inventory; live-catalog
+    surfaces must use [catalog_names] / [keeper_catalog_names] instead. *)
+let typed_inventory_names = List.map to_string all
 
 let default = Keeper_unified
 let default_name = to_string default

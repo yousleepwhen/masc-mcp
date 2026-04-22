@@ -2,11 +2,10 @@ open Alcotest
 
 module Profile = Masc_mcp.Keeper_cascade_profile
 
-(* Names that must round-trip [of_string_opt] -> [to_string] without
-   collapsing to default. Pre-2026-04-17 only the first 6 worked; the
-   rest silently fell back to Keeper_unified, so cascade.json presets
-   like vendor_mix_balanced were dead config. *)
-let active_names =
+(* Typed inventory names that must round-trip [of_string_opt] -> [to_string]
+   without collapsing to default. The live repo or per-user catalog may expose
+   a narrower set; [resolve_live*] handles that runtime view separately. *)
+let typed_inventory_names_expected =
   [ "default";
     "keeper_unified";
     "sangsu";
@@ -46,14 +45,14 @@ let test_round_trip () =
     (fun name ->
       let canon = Profile.canonicalize name in
       check string ("round-trip " ^ name) name canon)
-    active_names
+    typed_inventory_names_expected
 
-let test_known_cascades_covers_active () =
+let test_typed_inventory_names_cover_inventory () =
   List.iter
     (fun name ->
-      let listed = List.mem name Profile.known_cascades in
-      check bool ("known_cascades contains " ^ name) true listed)
-    active_names
+      let listed = List.mem name Profile.typed_inventory_names in
+      check bool ("typed_inventory_names contains " ^ name) true listed)
+    typed_inventory_names_expected
 
 let test_legacy_aliases_collapse_to_keeper_unified () =
   let aliases = [ "oas-keeper_unified"; "coding_first"; "oas-coding_first";
@@ -130,6 +129,30 @@ let test_resolve_live_with_catalog_requires_active_membership () =
         "keeper_unified"
         (Profile.resolve_live_with_catalog ~catalog "missing_profile"))
 
+let test_runtime_required_profile_names_follow_live_catalog () =
+  with_temp_config
+    {|
+      {
+        "default_models": ["ollama:qwen3.5:35b-a3b-nvfp4"],
+        "custom_live_models": ["ollama:qwen3.5:35b-a3b-nvfp4"],
+        "tool_rerank_temperature": 0.0,
+        "tool_rerank_max_tokens": 200,
+        "tool_rerank_keeper_assignable": false
+      }
+    |}
+    (fun path ->
+      check (list string) "runtime-required names follow active catalog plus reserved system profiles"
+        [ "custom_live"; "default"; "governance_judge"; "operator_judge"; "tool_rerank" ]
+        (Masc_mcp.Cascade_catalog_runtime.runtime_required_profile_names
+           ~config_path:path ()))
+
+let test_runtime_required_profile_names_missing_path_is_conservative () =
+  let missing = Filename.concat (Filename.get_temp_dir_name ()) "missing-cascade.json" in
+  check (list string) "missing config path falls back to minimal runtime set"
+    [ "governance_judge"; "keeper_unified"; "operator_judge" ]
+    (Masc_mcp.Cascade_catalog_runtime.runtime_required_profile_names
+       ~config_path:missing ())
+
 let test_catalog_read_failures_do_not_fallback_to_hardcoded_names () =
   let missing = Filename.concat (Filename.get_temp_dir_name ()) "missing-cascade.json" in
   check (list string) "catalog_names stays empty on read failure"
@@ -145,13 +168,18 @@ let test_catalog_read_failures_do_not_fallback_to_hardcoded_names () =
 let () =
   run "keeper_cascade_profile"
     [ ( "ssot",
-        [ test_case "active names round-trip" `Quick test_round_trip;
-          test_case "known_cascades covers active" `Quick test_known_cascades_covers_active;
+        [ test_case "typed inventory names round-trip" `Quick test_round_trip;
+          test_case "typed_inventory_names covers inventory" `Quick
+            test_typed_inventory_names_cover_inventory;
           test_case "legacy aliases collapse" `Quick test_legacy_aliases_collapse_to_keeper_unified;
           test_case "unknown falls back to default" `Quick test_unknown_falls_back_to_default;
           test_case "catalog_names follow live config" `Quick test_catalog_names_follow_live_config;
           test_case "resolve_live_with_catalog requires active membership" `Quick
             test_resolve_live_with_catalog_requires_active_membership;
+          test_case "runtime_required_profile_names follow live catalog" `Quick
+            test_runtime_required_profile_names_follow_live_catalog;
+          test_case "runtime_required_profile_names missing path is conservative" `Quick
+            test_runtime_required_profile_names_missing_path_is_conservative;
           test_case "catalog read failures stay empty" `Quick
             test_catalog_read_failures_do_not_fallback_to_hardcoded_names ] )
     ]

@@ -146,6 +146,15 @@ val runtime_required_profile_names :
   ?config_path:string ->
   unit ->
   string list
+(** Names the current runtime may legitimately reference.
+
+    When the active catalog is readable, this mirrors the live catalog names
+    and adds runtime-reserved system profiles such as dashboard judges. When
+    no active catalog can be resolved, it falls back conservatively to the
+    default keeper cascade plus those runtime-reserved profiles.
+
+    This is not the typed compatibility inventory; use
+    {!Keeper_cascade_profile.typed_inventory_names} for that. *)
 
 val install_snapshot_for_tests :
   source_path:string ->

@@ -461,36 +461,30 @@ let validate_profile_static ~config_path name : (profile_build, profile_rejectio
               candidates;
             }
 
+let runtime_reserved_profile_names =
+  [ "governance_judge"; "operator_judge" ]
+
 let runtime_required_profiles ~config_path =
-  let keepers_from_catalog =
-    match Cascade_config_loader.load_catalog ~config_path with
-    | Ok entries ->
-        List.filter_map
-          (fun (entry : Cascade_config_loader.catalog_entry) ->
-            if entry.keeper_assignable then Some entry.name else None)
-          entries
-    | Error _ -> []
+  let active_profiles = Keeper_cascade_profile.catalog_names ~config_path () in
+  let base_profiles =
+    if active_profiles = [] then
+      [ Keeper_cascade_profile.default_name ]
+    else
+      active_profiles
   in
   List.sort_uniq String.compare
-    (Keeper_cascade_profile.known_cascades
-    @ keepers_from_catalog
-    @ [ "governance_judge"; "operator_judge" ])
+    (base_profiles @ runtime_reserved_profile_names)
 
 let runtime_required_profile_names ?config_path () =
-  let config_path =
-    match config_path with
-    | Some path -> path
-    | None -> (
-        match config_path_opt () with
-        | Some path -> path
-        | None -> "")
-  in
-  if String.equal config_path "" then
-    Keeper_cascade_profile.known_cascades
-    @ [ "governance_judge"; "operator_judge" ]
-    |> List.sort_uniq String.compare
-  else
-    runtime_required_profiles ~config_path
+  match config_path with
+  | Some path -> runtime_required_profiles ~config_path:path
+  | None -> (
+      match config_path_opt () with
+      | Some path -> runtime_required_profiles ~config_path:path
+      | None ->
+          List.sort_uniq String.compare
+            (Keeper_cascade_profile.default_name
+            :: runtime_reserved_profile_names))
 
 let validate_path_result ~config_path =
   let checked_at = Unix.gettimeofday () in

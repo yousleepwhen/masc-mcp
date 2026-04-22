@@ -184,7 +184,7 @@ Enumerated fields only accept the values below. The loader rejects invalid input
 | `shared_memory_scope` | `disabled`, `room` |
 | `tool_preset` | `minimal`, `social`, `messaging`, `coding`, `research`, `delivery`, `full` |
 | `social_model` | `bdi_speech_v1`, `magentic_ledger_v1` (non-public: rejected when passed via tool args; TOML-only) |
-| `cascade_name` | any `<name>` such that `<name>_models` exists in `cascade.json` (e.g. `keeper_unified`, `nick0cave`) |
+| `cascade_name` | any `<name>` surfaced by the active cascade catalog (e.g. `keeper_unified`, `custom_live`) |
 
 ### Sandbox + Shared Memory Example
 

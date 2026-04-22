@@ -1,16 +1,25 @@
-(** Canonical keeper cascade profile names and legacy alias normalization.
+(** Typed keeper cascade compatibility inventory and legacy alias normalization.
 
     Keepers historically used stringly-typed cascade names in TOML, runtime
-    metadata, telemetry labels, and cascade.json lookups. This module is the
-    SSOT for the active keeper cascade profile and the legacy aliases that must
-    continue to resolve to it. *)
+    metadata, telemetry labels, and cascade lookups. This module is the SSOT
+    for the typed compatibility inventory used by exhaustive matches and the
+    legacy aliases that must continue to resolve.
 
-(** SSOT for valid cascade profiles in repo [config/cascade.json].
+    The active runtime catalog is schema-driven via
+    {!Cascade_config_loader.load_catalog} / {!Cascade_catalog_runtime}; do not
+    treat this module's variant inventory as the live repo or per-user catalog.
+ *)
 
-    Adding a new profile is a compile-time event: add a variant here
-    and every exhaustive [match] across the codebase flags the consumer
-    sites that need to handle it. Personal/playground-only cascades
-    must NOT be added here — they live in
+(** Typed compatibility inventory for keeper-facing cascade labels.
+
+    Adding a new inventory entry is a compile-time event: add a variant here
+    and every exhaustive [match] across the codebase flags the consumer sites
+    that need to handle it. This inventory is intentionally wider than the
+    checked-in repo seed in [config/cascade.toml]/[config/cascade.json]:
+    compatibility names may remain typed here even when they are absent from
+    the active catalog.
+
+    Personal/playground-only cascades must NOT be added here — they live in
     [$MASC_BASE_PATH/.masc/playground/.../cascade.json].
 
     @since 0.9.5 *)
@@ -22,11 +31,11 @@ type t =
   | Local_mlx_vlm_qwen36
   | Local_recovery
   | Tool_rerank
-  (* v1 active catalog (2026-04-17): keepers route through these via
-     [config/cascade.json] presets. Adding a profile here unlocks lookup
-     for [<name>_models]/[<name>_temperature]/[<name>_max_tokens] keys.
-     Without the variant, [canonicalize] silently collapses the name to
-     [Keeper_unified] and the runtime never reads the user's preset. *)
+  (* Historical/compatibility inventory entries. These names may be absent
+     from the checked-in repo seed, but keepers can still reference them via
+     legacy state or a live local catalog. Keeping them typed prevents
+     compile-time-only call sites from silently collapsing them to the
+     default. *)
   | Nick0cave
   | Capacity_queue_trio
   | Vendor_mix_balanced
@@ -59,10 +68,10 @@ val default : t
 val default_name : string
 (** [default_name = to_string default = "keeper_unified"]. *)
 
-val known_cascades : string list
-(** [known_cascades = List.map to_string all]. Provided for consumers
-    that still operate on strings (cascade.json key prefixes, metric
-    label allow-list); new code should take {!t} directly. *)
+val typed_inventory_names : string list
+(** [typed_inventory_names = List.map to_string all]. This is the typed
+    compatibility inventory, not the active runtime catalog. Use
+    {!catalog_names} / {!keeper_catalog_names} for live catalog views. *)
 
 val catalog_names : ?config_path:string -> unit -> string list
 (** Live profile catalog discovered from the active [cascade.json].

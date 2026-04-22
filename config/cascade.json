@@ -1,5 +1,5 @@
 {
-  "_comment": "Known keeper-facing cascade profiles remain typed in lib/keeper/keeper_cascade_profile.ml. Live catalog discovery is schema-driven via lib/cascade/cascade_config_loader.ml: any recognized {name}_* cascade key participates in the catalog, and optional {name}_keeper_assignable=false marks system-only profiles that stay visible/editable but must not be assignable to keepers. Personal/playground-only cascades belong in $MASC_BASE_PATH/.masc/playground/<persona>/.../cascade.json, not in this repo config.",
+  "_comment": "Legacy alias normalization and the typed compatibility inventory live in lib/keeper/keeper_cascade_profile.ml. Active catalog discovery is schema-driven via lib/cascade/cascade_config_loader.ml: any recognized {name}_* cascade key participates in the catalog, and optional {name}_keeper_assignable=false marks system-only profiles that stay visible/editable but must not be assignable to keepers. Personal/playground-only cascades belong in $MASC_BASE_PATH/.masc/playground/<persona>/.../cascade.json, not in this repo config.",
   "default_models": [
     { "model": "glm-coding:glm-5.1", "weight": 50 },
     { "model": "ollama:qwen3.5:35b-a3b-nvfp4", "weight": 30 },
