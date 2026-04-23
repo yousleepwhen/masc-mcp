@@ -84,6 +84,7 @@ let build_communication_section ~sessions ~recent_messages ~metadata_gaps
         value <> "" && value <> "unknown")
   in
   let metadata_evidence = evidence_of_metadata_gaps ~section:Communication metadata_gaps in
+  let metadata_evidence = evidence_of_metadata_gaps ~section:Communication metadata_gaps in
   let positive_signal =
     recent_message_count > 0 || broadcast_total > 0 || portal_total > 0
   in
@@ -150,6 +151,7 @@ let build_alignment_section ~sessions ~agents ~metadata_gaps =
         if String.equal (string_field "goal" json) "unassigned" then acc else acc + 1)
       0 sessions
   in
+  let metadata_evidence = evidence_of_metadata_gaps ~section:Alignment metadata_gaps in
   let metadata_evidence = evidence_of_metadata_gaps ~section:Alignment metadata_gaps in
   let evidence =
     []

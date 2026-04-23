@@ -1510,9 +1510,9 @@ let cancel_task_r config ~agent_name ~task_id ~reason : string Types.masc_result
                  else agent);
                let msg =
                  if reason = ""
-                 then Printf.sprintf "🚫 Cancelled %s" task_id
-                 else Printf.sprintf "🚫 Cancelled %s - %s" task_id reason
-               in
+               then Printf.sprintf "🚫 Cancelled %s" task_id
+               else Printf.sprintf "🚫 Cancelled %s - %s" task_id reason
+              in
                let _ = broadcast config ~from_agent:agent_name ~content:msg in
                emit_task_activity
                  config
