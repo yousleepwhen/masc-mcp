@@ -334,8 +334,12 @@ module KeeperKeepalive = struct
       turn budget keeps scheduled-autonomous and reactive channels aligned
       with the timeout heuristic.
 
+      Defaults lowered (masc-mcp#9753): base 90, per_1k 1.0, per_turn 20.0.
+      A hard cap at 60% of turn_timeout_sec ensures headroom for retries.
+
       At 262K context, 15 turns/call:
-        120 + 393 + min(15,40)×30 = 120+393+450 = 963
+        90 + 262 + min(15,40)×20 = 90+262+300 = 652
+        capped at 60% of 1200s = 720s
 
       Env: [MASC_KEEPER_OAS_TIMEOUT_SEC]. Default: adaptive.
       Range: [30, turn_timeout_sec]. *)
@@ -386,25 +390,31 @@ module KeeperKeepalive = struct
     match oas_timeout_sec_override with
     | Some v -> v
     | None ->
-      let base = 120.0 in
+      let base = 90.0 in
       let per_1k =
-        get_float ~default:1.5 "MASC_KEEPER_OAS_TIMEOUT_PER_1K"
+        get_float ~default:1.0 "MASC_KEEPER_OAS_TIMEOUT_PER_1K"
       in
       let per_turn =
-        get_float ~default:30.0 "MASC_KEEPER_OAS_TIMEOUT_PER_TURN"
+        get_float ~default:20.0 "MASC_KEEPER_OAS_TIMEOUT_PER_TURN"
       in
       let context_time = Float.of_int max_context /. 1000.0 *. per_1k in
       (* Cap at 40 effective turns even if the configured per-call turn
          budget is higher. This is a deliberate safety cap: with
-         per_turn=30s, 40 turns alone consume 1200s — the entire
-         turn_timeout_sec budget. Users pushing beyond 40 turns should
-         instead raise turn_timeout_sec or split the work. *)
+         per_turn=20s, 40 turns alone consume 800s — well under the
+         turn_timeout_sec budget. *)
       let effective_turns =
         Float.of_int (min max_turns 40)
       in
       let turn_time = effective_turns *. per_turn in
+      (* Hard cap: OAS timeout never exceeds 60% of the total turn
+         timeout, leaving 40% headroom for retries, I/O, and scheduler
+         jitter. See masc-mcp#9753. *)
+      let max_oas_budget =
+        turn_timeout_sec *.
+          get_float ~default:0.60 "MASC_KEEPER_OAS_TIMEOUT_MAX_TURN_RATIO"
+      in
       Float.max 30.0
-        (Float.min turn_timeout_sec (base +. context_time +. turn_time))
+        (Float.min max_oas_budget (base +. context_time +. turn_time))
 
   let oas_timeout_for_context ~(max_context : int) : float =
     oas_timeout_for_context_with_turn_budget ~max_context

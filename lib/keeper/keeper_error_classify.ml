@@ -57,6 +57,15 @@ let is_structural_oas_timeout_message message =
   string_contains_substring ~needle:"(budget=" lower
   || string_contains_substring ~needle:"turn wall-clock budget exhausted" lower
 
+(** [true] when the error is a pure OAS call timeout (not turn-budget
+    exhaustion).  These are eligible for same-turn retry with a shortened
+    timeout to recover from cold-start or transient congestion. *)
+let is_retryable_oas_timeout (err : Oas.Error.sdk_error) : bool =
+  match err with
+  | Oas.Error.Api (Timeout { message }) ->
+      not (is_structural_oas_timeout_message message)
+  | _ -> false
+
 let is_transient_network_error (err : Oas.Error.sdk_error) : bool =
   match err with
   | Oas.Error.Api (NetworkError _) -> true
@@ -177,6 +186,8 @@ let degraded_retry_after_recoverable_error
      || String.equal normalized_effective
           Keeper_config.local_recovery_cascade_name
   then None
+  else if is_retryable_oas_timeout err then
+    local_recovery_retry "oas_call_timeout"
   else if Oas_worker_named.sdk_error_is_hard_quota err then
     local_recovery_retry "hard_quota"
   else
@@ -300,10 +311,20 @@ let classify_post_commit_failure
     transiently (e.g. TCP keepalive expiry across all backends). *)
 let max_transient_retries = 2
 
+(** Max OAS timeout retries within the same turn.  Timeout is treated
+    separately from transient network error because the retry uses a
+    shortened timeout to preserve remaining turn budget. *)
+let max_timeout_retries = 1
+
 (** Exponential backoff delay for transient retry [attempt] (1-indexed).
     Delays: 1s, 2s — total wait 3s before giving up. *)
 let transient_backoff_sec (attempt : int) : float =
   Float.min 4.0 (1.0 *. Float.of_int (1 lsl (attempt - 1)))
+
+(** Backoff delay for timeout retry [attempt] (1-indexed).
+    Delays: 3s, 6s, capped at 10s. *)
+let timeout_backoff_sec (attempt : int) : float =
+  Float.min 10.0 (3.0 *. Float.of_int (1 lsl (attempt - 1)))
 
 (** [true] when a structured error indicates context overflow. *)
 let is_context_overflow (err : Oas.Error.sdk_error) : bool =

@@ -455,11 +455,20 @@ let prompt_for_facts facts_json =
   | Ok value -> value
   | Error _ -> Prompt_registry.get_prompt "dashboard.governance_judge"
 
+let governance_judge_cold_start_ref = Atomic.make true
+
 let compute_judgments
     ~(masc_tools : Types.tool_schema list)
     ~(dispatch : name:string -> args:Yojson.Safe.t -> bool * string)
     ~build_facts =
-  let timeout_s = Float.of_int Env_config.Inference.dashboard_governance_judge_timeout_seconds in
+  let is_cold_start = Atomic.exchange governance_judge_cold_start_ref false in
+  let timeout_s =
+    Float.of_int
+      (if is_cold_start then
+         Env_config.Inference.dashboard_governance_judge_cold_start_timeout_seconds
+       else
+         Env_config.Inference.dashboard_governance_judge_warm_timeout_seconds)
+  in
   match
     (* build_facts() is moved inside the bridge so a deadlock in
        get_agents_status is bounded by [timeout_s]
@@ -473,7 +482,12 @@ let compute_judgments
         ()
     )
   with
-  | Error err -> Error (Oas.Error.to_string err)
+  | Error err ->
+      (match err with
+       | Oas.Error.Api (Oas.Error.Timeout _) ->
+           Atomic.set governance_judge_cold_start_ref true
+       | _ -> ());
+      Error (Oas.Error.to_string err)
   | Ok result -> (
       let response = result.Oas_worker.response in
       try

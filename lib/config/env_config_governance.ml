@@ -18,25 +18,28 @@ module Inference = struct
       (get_int ~default:timeout_seconds_int "MASC_OPERATOR_JUDGE_TIMEOUT_SEC")
 
   (** Dashboard governance judge timeout (seconds).
-      Reads [MASC_DASHBOARD_GOVERNANCE_JUDGE_TIMEOUT_SEC] when set; otherwise
-      falls back to a 60s default that gives glm-5-turbo room for cold-start.
+      Two-tier: cold-start (first call after boot or previous timeout)
+      gets 180s for MLX/GLM model load + first token; warm calls get 90s.
+      The dedicated [MASC_DASHBOARD_GOVERNANCE_JUDGE_TIMEOUT_SEC] overrides
+      both tiers when set.
       Floored at 5 seconds.
 
-      Previously this silently used the global 30s inference timeout with no
-      override path, so the judge flapped offline whenever the upstream model
-      took longer than 30s — see dashboard "Timeout: Execution timed out
-      after 30.0s" reports. Now operators can raise/lower via env var, and
-      the default is high enough that one slow turn no longer marks the
-      judge offline. *)
-  let dashboard_governance_judge_timeout_seconds =
+      Previously: max(60, 30) = 60s, which repeatedly timed out on cold-start.
+      Now: 180s default covers MLX model load + first token generation.
+      See masc-mcp#9753. *)
+  let dashboard_governance_judge_cold_start_timeout_seconds =
     let dedicated =
       get_int ~default:0 "MASC_DASHBOARD_GOVERNANCE_JUDGE_TIMEOUT_SEC"
     in
-    let chosen =
-      if dedicated > 0 then dedicated
-      else max 60 timeout_seconds_int
+    if dedicated > 0 then max 5 dedicated
+    else max 5 (get_int ~default:180 "MASC_DASHBOARD_GOVERNANCE_JUDGE_COLD_START_SEC")
+
+  let dashboard_governance_judge_warm_timeout_seconds =
+    let dedicated =
+      get_int ~default:0 "MASC_DASHBOARD_GOVERNANCE_JUDGE_TIMEOUT_SEC"
     in
-    max 5 chosen
+    if dedicated > 0 then max 5 dedicated
+    else max 5 (get_int ~default:90 "MASC_DASHBOARD_GOVERNANCE_JUDGE_WARM_SEC")
 
   (** Enable inference response cache (L1+L2). *)
   let cache_enabled =

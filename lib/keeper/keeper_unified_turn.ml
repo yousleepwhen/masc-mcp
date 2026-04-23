@@ -212,8 +212,8 @@ let oas_timeout_guard_sec = 1.0
 
 let min_oas_timeout_budget_sec = 30.0
 
-let bounded_oas_timeout_for_turn_budget_with_turn_budget ~(max_context : int)
-    ~(max_turns : int)
+let bounded_oas_timeout_for_turn_budget_with_turn_budget
+    ?(shrink_ratio = 1.0) ~(max_context : int) ~(max_turns : int)
     ~(remaining_turn_budget_s : float) : float option =
   let usable_budget = remaining_turn_budget_s -. oas_timeout_guard_sec in
   if usable_budget < min_oas_timeout_budget_sec
@@ -224,7 +224,7 @@ let bounded_oas_timeout_for_turn_budget_with_turn_budget ~(max_context : int)
         ~max_context ~max_turns
     in
     Some
-      (Float.min adaptive_timeout usable_budget)
+      (Float.min (adaptive_timeout *. shrink_ratio) usable_budget)
 
 let bounded_oas_timeout_for_turn_budget ~(max_context : int)
     ~(remaining_turn_budget_s : float) : float option =
@@ -990,7 +990,9 @@ let run_keeper_cycle ~(config : Coord.config) ~(meta : keeper_meta)
               ~run_generation
               ~attempt ~is_retry
               ~overflow_retry_used
-              ~attempted_cascades =
+              ~attempted_cascades
+              ?(oas_timeout_shrink_ratio = 1.0)
+              =
             let mark_terminal_error err =
               if EC.is_cascade_exhausted_error err then
                 Keeper_registry.set_turn_cascade_state
@@ -1014,6 +1016,7 @@ let run_keeper_cycle ~(config : Coord.config) ~(meta : keeper_meta)
             let attempt_result =
               match
                 bounded_oas_timeout_for_turn_budget_with_turn_budget
+                  ~shrink_ratio:oas_timeout_shrink_ratio
                   ~max_turns
                   ~max_context:execution.max_context
                   ~remaining_turn_budget_s:(remaining_turn_budget_s ())
@@ -1161,6 +1164,28 @@ let run_keeper_cycle ~(config : Coord.config) ~(meta : keeper_meta)
                             ~overflow_retry_used
                             ~attempted_cascades:
                               (next_execution.cascade_name :: attempted_cascades))
+                  | None when EC.is_retryable_oas_timeout err
+                              && attempt <= EC.max_timeout_retries ->
+                      let delay = EC.timeout_backoff_sec attempt in
+                      Log.Keeper.warn
+                        "%s: OAS call timeout cascade=%s max_context=%d context_budget=%d primary_budget=%d requested_override=%s timeout_retry=%d/%d backoff=%.0fs shortened_timeout_ratio=0.7: %s"
+                        meta.name execution.cascade_name
+                        execution.max_context_resolution.effective_budget
+                        execution.max_context
+                        execution.max_context_resolution.primary_budget
+                        (match
+                           execution.max_context_resolution.requested_override
+                         with
+                         | Some requested -> string_of_int requested
+                         | None -> "none")
+                        attempt EC.max_timeout_retries delay
+                        (short_preview (Oas.Error.to_string err));
+                      Eio.Time.sleep clock delay;
+                      retry_loop ~run_meta ~execution ~run_generation
+                        ~attempt:(attempt + 1)
+                        ~is_retry:true ~overflow_retry_used
+                        ~attempted_cascades
+                        ~oas_timeout_shrink_ratio:0.7
                   | None when EC.is_transient_network_error err
                               && attempt <= EC.max_transient_retries ->
                       let delay = EC.transient_backoff_sec attempt in

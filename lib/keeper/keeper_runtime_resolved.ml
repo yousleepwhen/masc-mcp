@@ -142,12 +142,12 @@ let freeze_from_current () =
   let oas_timeout_per_1k =
     source_field
       "MASC_KEEPER_OAS_TIMEOUT_PER_1K"
-      (Env_config_core.get_float ~default:1.5 "MASC_KEEPER_OAS_TIMEOUT_PER_1K")
+      (Env_config_core.get_float ~default:1.0 "MASC_KEEPER_OAS_TIMEOUT_PER_1K")
   in
   let oas_timeout_per_turn =
     source_field
       "MASC_KEEPER_OAS_TIMEOUT_PER_TURN"
-      (Env_config_core.get_float ~default:30.0 "MASC_KEEPER_OAS_TIMEOUT_PER_TURN")
+      (Env_config_core.get_float ~default:20.0 "MASC_KEEPER_OAS_TIMEOUT_PER_TURN")
   in
   {
     bootstrap_max_active_keepers;
@@ -230,7 +230,7 @@ let oas_timeout_for_context_with_turn_budget ~(max_context : int)
   match runtime.oas_timeout_override_sec.value with
   | Some value -> value
   | None ->
-      let base = 120.0 in
+      let base = 90.0 in
       let context_time =
         Float.of_int max_context /. 1000.0 *. runtime.oas_timeout_per_1k.value
       in
@@ -238,8 +238,12 @@ let oas_timeout_for_context_with_turn_budget ~(max_context : int)
         Float.of_int (min max_turns 40)
       in
       let turn_time = effective_turns *. runtime.oas_timeout_per_turn.value in
+      (* Hard cap: OAS timeout never exceeds 60% of turn timeout. *)
+      let max_oas_budget =
+        runtime.turn_timeout_sec.value *. 0.60
+      in
       Float.max 30.0
-        (Float.min runtime.turn_timeout_sec.value (base +. context_time +. turn_time))
+        (Float.min max_oas_budget (base +. context_time +. turn_time))
 
 let oas_timeout_for_context ~(max_context : int) : float =
   oas_timeout_for_context_with_turn_budget ~max_context
