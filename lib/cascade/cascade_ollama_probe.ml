@@ -26,7 +26,7 @@ let cache_mutex = Eio.Mutex.create ()
 let now_default () = Unix.gettimeofday ()
 
 let cache_clear () =
-  Eio.Mutex.use_rw ~protect:false cache_mutex (fun () ->
+  Eio.Mutex.use_rw ~protect:true cache_mutex (fun () ->
       Hashtbl.clear cache)
 
 let cache_size () =
@@ -41,7 +41,7 @@ let cached_capacity ?now url =
       | _ -> None)
 
 let store_capacity ~url ~capacity ~now =
-  Eio.Mutex.use_rw ~protect:false cache_mutex (fun () ->
+  Eio.Mutex.use_rw ~protect:true cache_mutex (fun () ->
       Hashtbl.replace cache url { capacity; recorded_at = now })
 
 (* ── JSON parser ────────────────────────────────────────────── *)

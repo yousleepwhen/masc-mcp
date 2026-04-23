@@ -16,7 +16,7 @@ let record_sticky_choice ~keeper ~cascade ~provider ~ttl_ms ~now =
   if ttl_ms <= 0 then ()
   else
     let expires_at = now +. (float_of_int ttl_ms /. 1000.) in
-    Eio.Mutex.use_rw ~protect:false sticky_mutex (fun () ->
+    Eio.Mutex.use_rw ~protect:true sticky_mutex (fun () ->
         Hashtbl.replace sticky_table (keeper, cascade)
           { provider; expires_at })
 
@@ -27,7 +27,7 @@ let lookup_sticky ~keeper ~cascade ~now =
       | _ -> None)
 
 let clear_sticky () =
-  Eio.Mutex.use_rw ~protect:false sticky_mutex (fun () ->
+  Eio.Mutex.use_rw ~protect:true sticky_mutex (fun () ->
       Hashtbl.clear sticky_table)
 
 (* ── Round-robin ────────────────────────────────────────────────── *)
@@ -39,7 +39,7 @@ let get_or_create_cursor cascade =
   match Hashtbl.find_opt rr_table cascade with
   | Some a -> a
   | None ->
-    Eio.Mutex.use_rw ~protect:false rr_mutex (fun () ->
+    Eio.Mutex.use_rw ~protect:true rr_mutex (fun () ->
         match Hashtbl.find_opt rr_table cascade with
         | Some a -> a
         | None ->
@@ -61,7 +61,7 @@ let peek_round_robin ~cascade =
   | None -> 0
 
 let clear_round_robin () =
-  Eio.Mutex.use_rw ~protect:false rr_mutex (fun () ->
+  Eio.Mutex.use_rw ~protect:true rr_mutex (fun () ->
       Hashtbl.clear rr_table)
 
 (* ── Bulk ───────────────────────────────────────────────────────── *)
