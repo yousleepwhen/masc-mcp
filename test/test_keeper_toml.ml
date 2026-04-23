@@ -479,6 +479,41 @@ active_goal_ids = ["goal-runtime", "goal-masc-mcp"]
         (Some [ "goal-runtime"; "goal-masc-mcp" ])
         d.active_goal_ids
 
+let test_profile_tool_preset_source_marks_toml () =
+  let input = {|
+[keeper]
+tool_preset = "coding"
+|} in
+  match TL.parse_toml input with
+  | Error e -> fail e
+  | Ok doc ->
+    match KTP.profile_defaults_of_toml doc with
+    | Error e -> fail e
+    | Ok d ->
+      check (option string) "tool_preset" (Some "coding") d.tool_preset;
+      check (option string) "tool_preset_source" (Some "toml")
+        d.tool_preset_source
+
+let test_merge_tool_preset_source_tracks_winner () =
+  let base =
+    { KTP.empty_keeper_profile_defaults with
+      tool_preset = Some "research";
+      tool_preset_source = Some "persona";
+    }
+  in
+  let overlay =
+    { KTP.empty_keeper_profile_defaults with
+      tool_preset = Some "coding";
+      tool_preset_source = Some "toml";
+    }
+  in
+  let merged =
+    KTP.merge_keeper_profile_defaults ~agent_name:"source-test" ~base ~overlay
+  in
+  check (option string) "tool_preset" (Some "coding") merged.tool_preset;
+  check (option string) "tool_preset_source" (Some "toml")
+    merged.tool_preset_source
+
 let test_profile_rejects_invalid_git_identity_mode () =
   let input = {|
 [keeper]
@@ -1208,6 +1243,10 @@ let () =
         [
           test_case "minimal" `Quick test_profile_minimal;
           test_case "full" `Quick test_profile_full;
+          test_case "tool_preset source marks TOML" `Quick
+            test_profile_tool_preset_source_marks_toml;
+          test_case "tool_preset source tracks merge winner" `Quick
+            test_merge_tool_preset_source_tracks_winner;
           test_case "rejects invalid social_model" `Quick
             test_profile_rejects_invalid_social_model;
           test_case "rejects invalid git_identity_mode" `Quick
