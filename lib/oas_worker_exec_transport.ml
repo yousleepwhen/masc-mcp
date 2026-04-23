@@ -132,6 +132,32 @@ let upsert_http_header ~key ~value headers =
   in
   (key, value) :: retained
 
+let trim_nonempty value =
+  match value with
+  | Some raw ->
+      let trimmed = String.trim raw in
+      if String.equal trimmed "" then None else Some trimmed
+  | None -> None
+
+let first_nonempty_env names =
+  List.find_map (fun name -> Sys.getenv_opt name |> trim_nonempty) names
+
+let keeper_name_of_agent_name agent_name =
+  let prefix = "keeper-" in
+  let suffix = "-agent" in
+  let value = String.trim agent_name in
+  let vlen = String.length value in
+  let plen = String.length prefix in
+  let slen = String.length suffix in
+  if
+    vlen > plen + slen
+    && String.sub value 0 plen = prefix
+    && String.sub value (vlen - slen) slen = suffix
+  then
+    Some (String.sub value plen (vlen - plen - slen))
+  else
+    None
+
 let runtime_mcp_policy_with_masc_agent_name
     ~(agent_name : string)
     (policy : Llm_provider.Llm_transport.runtime_mcp_policy) =
@@ -143,13 +169,31 @@ let runtime_mcp_policy_with_masc_agent_name
         (function
           | Llm_provider.Llm_transport.Http_server ({ name; headers; _ } as server)
             when String.equal name "masc" ->
+              let headers =
+                upsert_http_header
+                  ~key:"x-masc-agent-name"
+                  ~value:agent_name headers
+              in
+              let headers =
+                match first_nonempty_env [ "MASC_INTERNAL_MCP_TOKEN" ] with
+                | Some token ->
+                    upsert_http_header
+                      ~key:"x-masc-internal-token"
+                      ~value:token headers
+                | None -> headers
+              in
+              let headers =
+                match keeper_name_of_agent_name agent_name with
+                | Some keeper_name ->
+                    upsert_http_header
+                      ~key:"x-masc-keeper-name"
+                      ~value:keeper_name headers
+                | None -> headers
+              in
               Llm_provider.Llm_transport.Http_server
                 {
                   server with
-                  headers =
-                    upsert_http_header
-                      ~key:"x-masc-agent-name"
-                      ~value:agent_name headers;
+                  headers;
                 }
           | server -> server)
         policy.servers
@@ -218,36 +262,19 @@ let trim_nonempty value =
 let first_nonempty_env names =
   List.find_map (fun name -> Sys.getenv_opt name |> trim_nonempty) names
 
-let bearer_token_headers token =
-  [ ("Authorization", "Bearer " ^ token) ]
-
-let fallback_public_mcp_headers () =
-  match first_nonempty_env [ "MASC_MCP_TOKEN" ] with
-  | Some token -> bearer_token_headers token
-  | None -> []
-
-let keeper_public_mcp_headers ~agent_name =
-  match Env_config_core.base_path_opt () with
-  | Some base_path -> (
-      match Auth.ensure_keeper_credential base_path ~agent_name with
-      | Ok (token, _) -> bearer_token_headers token
-      | Error err ->
-          Log.warn ~ctx:"oas_worker_exec"
-            "keeper MCP credential provisioning failed for %s: %s; falling back to MASC_MCP_TOKEN"
-            agent_name (Types.masc_error_to_string err);
-          fallback_public_mcp_headers ())
-  | None -> fallback_public_mcp_headers ()
-
-let public_mcp_runtime_policy_of_tool_names ?agent_name (tool_names : string list) :
+let public_mcp_runtime_policy_of_tool_names ?agent_name:_ (tool_names : string list) :
     Llm_provider.Llm_transport.runtime_mcp_policy option =
   let tool_names = dedupe_preserve_order tool_names in
   if not (tool_names_are_public_mcp tool_names) then
     None
   else
     let masc_headers =
-      match Option.bind agent_name trim_nonempty_string with
-      | Some agent_name -> keeper_public_mcp_headers ~agent_name
-      | None -> fallback_public_mcp_headers ()
+      match first_nonempty_env [ "MASC_INTERNAL_MCP_TOKEN" ] with
+      | Some token -> [ ("x-masc-internal-token", token) ]
+      | None ->
+          (match first_nonempty_env [ "MASC_MCP_TOKEN" ] with
+           | Some token -> [ ("Authorization", "Bearer " ^ token) ]
+           | None -> [])
     in
     Some
       {
@@ -627,16 +654,28 @@ module Kimi_cli_transport_local = struct
     String.length text >= prefix_len
     && String.sub text 0 prefix_len = prefix
 
+  let resumable_session_detail =
+    "kimi_cli session limit exceeded (exit 75). Resumable session available via -r."
+
+  let resume_hint_marker = "to resume this session:"
+  let resumable_session_public_marker = "resumable session available via -r."
+  let legacy_resumable_session_public_marker =
+    "the session is resumable with -r flag."
+
+  let is_resume_hint_line line =
+    let trimmed = String.trim line in
+    trimmed <> ""
+    && String_util.contains_substring_ci trimmed resume_hint_marker
+
   let should_log_stderr_line line =
     let trimmed = String.trim line in
     trimmed <> ""
-    && not (starts_with trimmed "To resume this session:")
+    && not (is_resume_hint_line trimmed)
 
   let on_stderr_line line =
     if should_log_stderr_line line then
       Llm_provider.Cli_common_subprocess.default_on_stderr_line
         ~name:"kimi" line
-
   let exit_code_of_message message =
     let prefix = "kimi exited with code " in
     if not (starts_with message prefix) then None
@@ -650,6 +689,29 @@ module Kimi_cli_transport_local = struct
             |> String.trim
           in
           int_of_string_opt raw
+
+  let text_looks_like_resumable_session text =
+    let trimmed = String.trim text in
+    let has_raw_resume_hint =
+      match exit_code_of_message trimmed with
+      | Some 75 -> is_resume_hint_line trimmed
+      | _ -> false
+    in
+    trimmed <> ""
+    &&
+    (has_raw_resume_hint
+    || String_util.contains_substring_ci trimmed resumable_session_public_marker
+    || String_util.contains_substring_ci trimmed legacy_resumable_session_public_marker)
+
+  let resumable_session_detail_of_text text =
+    if text_looks_like_resumable_session text then resumable_session_detail
+    else String.trim text
+
+  let resumable_session_exit_code_of_text text =
+    match exit_code_of_message text with
+    | Some 75 -> Some 75
+    | _ when text_looks_like_resumable_session text -> Some 75
+    | _ -> None
 
   let classify_cli_error = function
     | Error (Llm_provider.Http_client.NetworkError { message; _ }) as err -> (
@@ -667,12 +729,7 @@ module Kimi_cli_transport_local = struct
         | Some 75 ->
             Error
               (Llm_provider.Http_client.AcceptRejected
-                 {
-                   reason =
-                     "kimi_cli session limit exceeded (exit 75). "
-                     ^ "The session is resumable with -r flag. "
-                     ^ message;
-                 })
+                 { reason = resumable_session_detail })
         | _ -> err)
     | other -> other
 

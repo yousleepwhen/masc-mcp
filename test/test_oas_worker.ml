@@ -1367,16 +1367,20 @@ let test_classify_masc_internal_error_roundtrip () =
       (Oas_worker_named.Resumable_cli_session
          {
            cascade_name = "kimi_cli_keeper";
-           detail =
-             "kimi exited with code 75: \nTo resume this session: kimi -r ff37febe-2adb-4ac6-9dc6-cae23e672fbc";
+           detail = Oas_worker_exec.Kimi_cli_transport_local.resumable_session_detail;
            exit_code = Some 75;
          })
   in
   match Oas_worker_named.classify_masc_internal_error resumable_err with
   | Some (Oas_worker_named.Resumable_cli_session { cascade_name; detail; exit_code }) ->
       Alcotest.(check string) "resumable cascade" "kimi_cli_keeper" cascade_name;
-      Alcotest.(check bool) "resumable detail preserved" true
+      Alcotest.(check string) "resumable detail redacted"
+        Oas_worker_exec.Kimi_cli_transport_local.resumable_session_detail
+        detail;
+      Alcotest.(check bool) "resumable detail hides raw resume hint" false
         (contains_substring ~needle:"To resume this session:" detail);
+      Alcotest.(check bool) "resumable detail hides session token" false
+        (contains_substring ~needle:"kimi -r" detail);
       Alcotest.(check (option int)) "resumable exit code" (Some 75) exit_code
   | _ -> Alcotest.fail "expected structured resumable CLI session error"
 
@@ -1453,7 +1457,8 @@ let test_cascade_provider_labels_detect_kimi_from_model_and_base_url () =
 
 let test_resolve_tool_lane_for_codex_cli_public_tools_uses_runtime_mcp_policy () =
   with_env "MASC_HTTP_BASE_URL" "http://127.0.0.1:8935" @@ fun () ->
-  with_env "MASC_MCP_TOKEN" "shared-codex-token" @@ fun () ->
+  with_env "MASC_INTERNAL_MCP_TOKEN" "" @@ fun () ->
+  with_env "MASC_MCP_TOKEN" "" @@ fun () ->
   let tools =
     [ make_named_noop_tool "masc_status"; make_named_noop_tool "masc_tasks" ]
   in
@@ -1490,7 +1495,8 @@ let test_resolve_tool_lane_for_codex_cli_public_tools_uses_runtime_mcp_policy ()
 
 let test_resolve_tool_lane_for_codex_cli_public_tools_with_agent_name_strips_runtime_headers () =
   with_env "MASC_HTTP_BASE_URL" "http://127.0.0.1:8935" @@ fun () ->
-  with_env "MASC_MCP_TOKEN" "shared-codex-token" @@ fun () ->
+  with_env "MASC_INTERNAL_MCP_TOKEN" "" @@ fun () ->
+  with_env "MASC_MCP_TOKEN" "" @@ fun () ->
   let tools =
     [ make_named_noop_tool "masc_status"; make_named_noop_tool "masc_tasks" ]
   in
@@ -1729,6 +1735,9 @@ let test_runtime_mcp_policy_with_masc_agent_name_upserts_header () =
       Alcotest.(check (option string)) "masc header injected"
         (Some "keeper-sangsu-agent")
         (List.assoc_opt "x-masc-agent-name" masc_headers);
+      Alcotest.(check (option string)) "keeper name injected"
+        (Some "sangsu")
+        (List.assoc_opt "x-masc-keeper-name" masc_headers);
       Alcotest.(check (option string)) "masc auth preserved"
         (Some "Bearer token")
         (List.assoc_opt "Authorization" masc_headers);
@@ -1736,60 +1745,35 @@ let test_runtime_mcp_policy_with_masc_agent_name_upserts_header () =
         (List.assoc_opt "x-masc-agent-name" other_headers)
   | _ -> Alcotest.fail "expected both masc and other HTTP servers"
 
-let test_public_mcp_runtime_policy_of_tool_names_uses_keeper_bearer_token () =
-  let base_path = temp_dir "public_mcp_keeper_auth" in
-  Fun.protect
-    ~finally:(fun () -> cleanup_dir base_path)
-    (fun () ->
-      let shared_raw_token = "shared-codex-token" in
-      match
-        Auth.save_raw_token_credential base_path ~agent_name:"codex-mcp-client"
-          ~role:Types.Admin ~raw_token:shared_raw_token
-      with
-      | Error err -> Alcotest.fail (Types.masc_error_to_string err)
-      | Ok _ ->
-          with_env "MASC_BASE_PATH" base_path @@ fun () ->
-          with_env "MASC_MCP_TOKEN" shared_raw_token @@ fun () ->
-          with_env "MASC_HTTP_BASE_URL" "http://127.0.0.1:8935" @@ fun () ->
-          match
-            Oas_worker_exec.public_mcp_runtime_policy_of_tool_names
-              ~agent_name:"keeper-sangsu-agent" [ "masc_status" ]
-          with
-          | None -> Alcotest.fail "expected runtime MCP policy"
-          | Some policy ->
-              let masc_headers =
-                List.find_map
-                  (function
-                    | Llm_provider.Llm_transport.Http_server server
-                      when String.equal server.name "masc" -> Some server.headers
-                    | _ -> None)
-                  policy.servers
-              in
-              match Option.bind masc_headers (List.assoc_opt "Authorization") with
-              | None -> Alcotest.fail "expected keeper Authorization header"
-              | Some auth_header ->
-                  let prefix = "Bearer " in
-                  if not (String.starts_with ~prefix auth_header) then
-                    Alcotest.fail "expected Bearer auth header";
-                  let raw_token =
-                    String.sub auth_header (String.length prefix)
-                      (String.length auth_header - String.length prefix)
-                  in
-                  Alcotest.(check bool) "keeper token is not shared env token" true
-                    (raw_token <> shared_raw_token);
-                  match
-                    Auth.verify_token base_path
-                      ~agent_name:"keeper-sangsu-agent" ~token:raw_token
-                  with
-                  | Ok cred ->
-                      Alcotest.(check string) "keeper alias resolves minted credential"
-                        "sangsu" cred.agent_name
-                  | Error err ->
-                      Alcotest.fail
-                        (Printf.sprintf
-                           "expected keeper runtime bearer token to verify: %s"
-                           (Types.masc_error_to_string err)))
-
+let test_runtime_mcp_policy_with_masc_agent_name_prefers_internal_keeper_token () =
+  with_env "MASC_INTERNAL_MCP_TOKEN" "internal-keeper-token" (fun () ->
+      let policy =
+        {
+          Llm_provider.Llm_transport.empty_runtime_mcp_policy with
+          servers =
+            [
+              Llm_provider.Llm_transport.Http_server
+                { name = "masc"; url = "http://127.0.0.1:8947/mcp"; headers = [] };
+            ];
+          allowed_server_names = [ "masc" ];
+          allowed_tool_names = [ "masc_status" ];
+          strict = true;
+          disable_builtin_tools = true;
+        }
+      in
+      let updated =
+        Oas_worker_exec.runtime_mcp_policy_with_masc_agent_name
+          ~agent_name:"keeper-sangsu-agent" policy
+      in
+      match updated.servers with
+      | [ Llm_provider.Llm_transport.Http_server server ] ->
+          Alcotest.(check (option string)) "internal token injected"
+            (Some "internal-keeper-token")
+            (List.assoc_opt "x-masc-internal-token" server.headers);
+          Alcotest.(check (option string)) "keeper name injected"
+            (Some "sangsu")
+            (List.assoc_opt "x-masc-keeper-name" server.headers)
+      | _ -> Alcotest.fail "expected single masc runtime server")
 let test_runtime_mcp_policy_for_provider_skips_codex_cli_header_injection () =
   let policy =
     {
@@ -1924,11 +1908,35 @@ let test_kimi_cli_should_log_stderr_line_filters_resume_noise () =
     (should_log "   ");
   Alcotest.(check bool) "resume hint suppressed" false
     (should_log "To resume this session: kimi -r ff37febe");
+  Alcotest.(check bool) "case-insensitive resume hint suppressed" false
+    (should_log "  TO RESUME THIS SESSION: kimi -r ff37febe");
   Alcotest.(check bool) "unexpected stderr remains visible" true
     (should_log "fatal: kimi auth missing");
   Alcotest.(check bool) "other stderr guidance remains visible" true
     (should_log "warning: upstream endpoint is slow")
 
+let test_kimi_cli_classify_cli_error_redacts_resumable_session_detail () =
+  let raw_message =
+    "kimi exited with code 75: \nTo resume this session: kimi -r ff37febe-2adb-4ac6-9dc6-cae23e672fbc"
+  in
+  match
+    Oas_worker_exec.Kimi_cli_transport_local.classify_cli_error
+      (Error
+         (Llm_provider.Http_client.NetworkError
+            {
+              message = raw_message;
+              kind = Llm_provider.Http_client.Unknown;
+            }))
+  with
+  | Error (Llm_provider.Http_client.AcceptRejected { reason }) ->
+      Alcotest.(check string) "canonical detail"
+        Oas_worker_exec.Kimi_cli_transport_local.resumable_session_detail
+        reason;
+      Alcotest.(check bool) "raw resume hint removed" false
+        (contains_substring ~needle:"To resume this session:" reason);
+      Alcotest.(check bool) "raw session id removed" false
+        (contains_substring ~needle:"ff37febe-2adb-4ac6-9dc6-cae23e672fbc" reason)
+  | _ -> Alcotest.fail "expected resumable session to map to AcceptRejected"
 let test_codex_cli_prompt_preflight_uses_pipeline_context_window_fallback () =
   let provider_cfg = make_codex_cli_provider_cfg () in
   let config =
@@ -3216,8 +3224,8 @@ let () =
         test_kimi_mcp_config_json_of_policy_filters_to_allowed_servers;
       Alcotest.test_case "runtime MCP policy injects keeper agent header for masc server" `Quick
         test_runtime_mcp_policy_with_masc_agent_name_upserts_header;
-      Alcotest.test_case "public MCP policy auto-mints keeper bearer token" `Quick
-        test_public_mcp_runtime_policy_of_tool_names_uses_keeper_bearer_token;
+      Alcotest.test_case "runtime MCP policy injects internal keeper token when configured" `Quick
+        test_runtime_mcp_policy_with_masc_agent_name_prefers_internal_keeper_token;
       Alcotest.test_case "provider-aware runtime MCP policy skips codex_cli agent header injection" `Quick
         test_runtime_mcp_policy_for_provider_skips_codex_cli_header_injection;
       Alcotest.test_case "kimi request runtime MCP config is merged" `Quick
@@ -3230,6 +3238,8 @@ let () =
         test_kimi_cli_model_for_provider_keeps_explicit_model;
       Alcotest.test_case "kimi stderr resume noise is filtered" `Quick
         test_kimi_cli_should_log_stderr_line_filters_resume_noise;
+      Alcotest.test_case "kimi exit 75 detail is redacted" `Quick
+        test_kimi_cli_classify_cli_error_redacts_resumable_session_detail;
       Alcotest.test_case "worker build_agent installs retry policy" `Quick
         test_worker_build_agent_uses_default_internal_retry_policy;
       Alcotest.test_case "resume config propagates retry policy" `Quick

@@ -252,7 +252,7 @@ let test_dashboard_shell_http_json_prefers_last_good_while_prewarming () =
 let test_dashboard_shell_auth_json_canonicalizes_token_owner () =
   with_test_env @@ fun ~env:_ ~sw:_ ~config ->
   let cfg =
-    { Types.default_auth_config with enabled = true; require_token = true; default_role = Types.Worker }
+    { Types.default_auth_config with enabled = true; require_token = true }
   in
   Auth.save_auth_config config.base_path cfg;
   match Auth.create_token config.base_path ~agent_name:"codex" ~role:Types.Worker with
@@ -285,7 +285,7 @@ let test_dashboard_shell_auth_json_canonicalizes_token_owner () =
 let test_dashboard_shell_auth_json_reports_missing_token () =
   with_test_env @@ fun ~env:_ ~sw:_ ~config ->
   let cfg =
-    { Types.default_auth_config with enabled = true; require_token = true; default_role = Types.Worker }
+    { Types.default_auth_config with enabled = true; require_token = true }
   in
   Auth.save_auth_config config.base_path cfg;
   let json =
@@ -303,6 +303,48 @@ let test_dashboard_shell_auth_json_reports_missing_token () =
   check bool "token_valid false" false (auth |> member "token_valid" |> to_bool);
   check string "missing token code surfaced" "missing_token"
     (auth |> member "auth_error_code" |> to_string)
+
+let test_execution_actor_for_request_canonicalizes_token_owner () =
+  with_test_env @@ fun ~env:_ ~sw:_ ~config ->
+  let cfg =
+    { Types.default_auth_config with enabled = true; require_token = true }
+  in
+  Auth.save_auth_config config.base_path cfg;
+  match Auth.create_token config.base_path ~agent_name:"codex" ~role:Types.Worker with
+  | Error e -> fail (Types.masc_error_to_string e)
+  | Ok (raw_token, _) ->
+      let actor =
+        Lib.Server_dashboard_http_execution_surfaces.execution_actor_for_request
+          ~base_path:config.base_path
+          (request_with_headers "/api/v1/dashboard/execution"
+             [
+               ("authorization", "Bearer " ^ raw_token);
+               ("x-masc-agent", "dashboard");
+             ])
+      in
+      check (option string) "execution actor canonicalized to token owner"
+        (Some "codex") actor
+
+let test_verifier_of_request_canonicalizes_token_owner () =
+  with_test_env @@ fun ~env:_ ~sw:_ ~config ->
+  let cfg =
+    { Types.default_auth_config with enabled = true; require_token = true }
+  in
+  Auth.save_auth_config config.base_path cfg;
+  match Auth.create_token config.base_path ~agent_name:"codex" ~role:Types.Worker with
+  | Error e -> fail (Types.masc_error_to_string e)
+  | Ok (raw_token, _) ->
+      let verifier =
+        Lib.Server_routes_http_routes_verification.verifier_of_request
+          ~base_path:config.base_path
+          (request_with_headers "/api/v1/verification/resolve"
+             [
+               ("authorization", "Bearer " ^ raw_token);
+               ("x-masc-agent", "dashboard");
+             ])
+      in
+      check string "verification verifier canonicalized to token owner"
+        "operator:codex" verifier
 
 let () =
   run "dashboard_http_core"
@@ -325,5 +367,9 @@ let () =
             test_dashboard_shell_auth_json_canonicalizes_token_owner;
           test_case "shell auth reports missing token" `Quick
             test_dashboard_shell_auth_json_reports_missing_token;
+          test_case "execution actor canonicalizes token owner" `Quick
+            test_execution_actor_for_request_canonicalizes_token_owner;
+          test_case "verification verifier canonicalizes token owner" `Quick
+            test_verifier_of_request_canonicalizes_token_owner;
         ] );
     ]

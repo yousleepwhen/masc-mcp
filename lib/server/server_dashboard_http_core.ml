@@ -232,21 +232,10 @@ let dashboard_batch_json ?(compact = false) (config : Coord.config) : Yojson.Saf
     ("keepers", keepers_dashboard_json ~compact config);
   ]
 
-(** Strip non-ASCII characters from actor string.
-    Prevents IME artifacts (e.g. Korean ㅊ) from polluting cache keys. *)
-let sanitize_actor s =
-  let buf = Buffer.create (String.length s) in
-  String.iter (fun c ->
-    match c with
-    | 'a' .. 'z' | 'A' .. 'Z' | '0' .. '9' | '_' | '-' -> Buffer.add_char buf c
-    | '\000' .. '\255' -> ()
-  ) s;
-  Buffer.contents buf
-
 let operator_actor_hint request =
   match agent_from_request request with
   | Some raw ->
-      let sanitized = sanitize_actor (String.trim raw) in
+      let sanitized = sanitize_dashboard_actor_name raw in
       if sanitized = "" then None else Some sanitized
   | None -> None
 
@@ -1148,6 +1137,11 @@ let dashboard_shell_auth_json ~(request : Httpun.Request.t) (config : Coord.conf
     | Ok () -> (true, None)
     | Error err -> (false, Some (Types.masc_error_to_string err))
   in
+  let effective_admin =
+    match effective_role_result with
+    | Ok role -> Some (role = Types.Admin)
+    | Error _ -> None
+  in
   let effective_role =
     match effective_role_result with
     | Ok role -> Some (Types.agent_role_to_string role)
@@ -1167,7 +1161,6 @@ let dashboard_shell_auth_json ~(request : Httpun.Request.t) (config : Coord.conf
     [
       ("enabled", `Bool auth_cfg.enabled);
       ("require_token", `Bool auth_cfg.require_token);
-      ("default_role", `String (Types.agent_role_to_string auth_cfg.default_role));
       ("token_present", `Bool token_present);
       ("token_valid", `Bool token_valid);
       ("token_agent", Json_util.string_opt_to_json token_agent);
@@ -1185,6 +1178,7 @@ let dashboard_shell_auth_json ~(request : Httpun.Request.t) (config : Coord.conf
         match auth_error with
         | Some err -> `String (Types.masc_error_to_string err)
         | None -> `Null );
+      ("effective_admin", Json_util.bool_opt_to_json effective_admin);
       ("can_keeper_msg", `Bool can_keeper_msg);
       ("keeper_msg_error", Json_util.string_opt_to_json keeper_msg_error);
     ]
