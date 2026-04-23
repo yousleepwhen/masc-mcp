@@ -698,10 +698,10 @@ let profile_defaults_of_toml (doc : Keeper_toml_loader.toml_doc)
            | None -> None
            | Some raw -> normalize_tool_preset_raw raw);
         tool_preset_source =
-          (match str "tool_preset" with
-           | Some raw when Option.is_some (normalize_tool_preset_raw raw) ->
-               Some "toml"
-           | _ -> None);
+          Option.bind (str "tool_preset") (fun raw ->
+              match normalize_tool_preset_raw raw with
+              | Some _ -> Some "toml"
+              | None -> None);
         tool_also_allow = normalize_name_list_opt (strs "tool_also_allow");
         tool_denylist = normalize_name_list_opt (strs "tool_denylist");
         active_goal_ids =
@@ -973,9 +973,11 @@ let load_keeper_profile_defaults_from_persona name : keeper_profile_defaults =
                           None));
                 tool_preset_source =
                   (match Safe_ops.json_string_opt "tool_preset" keeper_json with
-                   | Some raw when Option.is_some (normalize_tool_preset_raw raw) ->
-                       Some "persona"
-                   | _ -> None);
+                  | None -> None
+                  | Some raw -> (
+                      match normalize_tool_preset_raw raw with
+                      | Some _ -> Some "persona"
+                      | None -> None));
                 tool_also_allow =
                   normalize_name_list_opt
                     (Safe_ops.json_string_list "tool_also_allow" keeper_json);
