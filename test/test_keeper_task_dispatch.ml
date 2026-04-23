@@ -119,6 +119,15 @@ let contains_substring s needle =
   in
   if n_len = 0 then true else loop 0
 
+let check_goal_scope_error json =
+  match Yojson.Safe.Util.member "error" json with
+  | `String msg ->
+    check bool "mentions active goal scope" true
+      (contains_substring msg "outside your active goal scope");
+    check bool "mentions active_goal_ids" true
+      (contains_substring msg "active_goal_ids")
+  | _ -> fail "expected scoped error response"
+
 (* --- keeper_task_claim tests --- *)
 
 let test_claim_returns_result () =
@@ -165,6 +174,45 @@ let test_claim_respects_active_goal_ids () =
     match claimed_task with
     | Some task -> check string "claimed scoped task" "Masc goal task" task.title
     | None -> fail "expected a claimed task")
+
+let test_tasks_list_respects_active_goal_ids () =
+  with_room (fun config ->
+    let meta = make_goal_scoped_meta [ "goal-masc" ] in
+    let _ =
+      Coord_task.add_task ~goal_id:"goal-other" config
+        ~title:"Other goal task" ~priority:1 ~description:"desc"
+    in
+    let _ =
+      Coord_task.add_task ~goal_id:"goal-masc" config
+        ~title:"Masc goal task" ~priority:5 ~description:"desc"
+    in
+    let result = call_tool config meta "keeper_tasks_list" (`Assoc []) in
+    check bool "includes scoped task" true (contains_substring result "Masc goal task");
+    check bool "excludes out-of-scope task" false
+      (contains_substring result "Other goal task"))
+
+let test_tasks_audit_respects_active_goal_ids () =
+  with_room (fun config ->
+    let meta = make_goal_scoped_meta [ "goal-masc" ] in
+    let _ =
+      Coord_task.add_task ~goal_id:"goal-masc" config
+        ~title:"Masc orphan task" ~priority:1 ~description:"desc"
+    in
+    let _ =
+      Coord_task.add_task ~goal_id:"goal-other" config
+        ~title:"Other orphan task" ~priority:1 ~description:"desc"
+    in
+    let _ = Coord.join config ~agent_name:"goal-masc-agent" ~capabilities:[] () in
+    let _ = Coord.join config ~agent_name:"goal-other-agent" ~capabilities:[] () in
+    let _ = Coord.claim_task config ~agent_name:"goal-masc-agent" ~task_id:"task-001" in
+    let _ = Coord.claim_task config ~agent_name:"goal-other-agent" ~task_id:"task-002" in
+    let _ = Coord.leave config ~agent_name:"goal-masc-agent" in
+    let _ = Coord.leave config ~agent_name:"goal-other-agent" in
+    let json = call_tool config meta "keeper_tasks_audit" (`Assoc []) |> parse_json in
+    let orphans = Yojson.Safe.Util.(member "orphans" json |> to_list) in
+    check int "one scoped orphan" 1 (List.length orphans);
+    let title = Yojson.Safe.Util.(List.hd orphans |> member "title" |> to_string) in
+    check string "scoped orphan title" "Masc orphan task" title)
 
 (* --- keeper_task_done tests --- *)
 
@@ -222,6 +270,48 @@ let test_done_after_claim () =
       match Yojson.Safe.Util.member "error" done_json with
       | `String _ -> () (* error path also ok for format mismatch *)
       | _ -> fail "expected ok or error in done response")
+
+let test_force_release_rejects_task_outside_active_goal_ids () =
+  with_room (fun config ->
+    let meta = make_goal_scoped_meta [ "goal-masc" ] in
+    let _ =
+      Coord_task.add_task ~goal_id:"goal-other" config
+        ~title:"Other goal task" ~priority:1 ~description:"desc"
+    in
+    let json =
+      call_tool config meta "keeper_task_force_release"
+        (`Assoc [ ("task_id", `String "task-001"); ("reason", `String "cleanup") ])
+      |> parse_json
+    in
+    check_goal_scope_error json)
+
+let test_force_done_rejects_task_outside_active_goal_ids () =
+  with_room (fun config ->
+    let meta = make_goal_scoped_meta [ "goal-masc" ] in
+    let _ =
+      Coord_task.add_task ~goal_id:"goal-other" config
+        ~title:"Other goal task" ~priority:1 ~description:"desc"
+    in
+    let json =
+      call_tool config meta "keeper_task_force_done"
+        (`Assoc [ ("task_id", `String "task-001"); ("notes", `String "done") ])
+      |> parse_json
+    in
+    check_goal_scope_error json)
+
+let test_done_rejects_task_outside_active_goal_ids () =
+  with_room (fun config ->
+    let meta = make_goal_scoped_meta [ "goal-masc" ] in
+    let _ =
+      Coord_task.add_task ~goal_id:"goal-other" config
+        ~title:"Other goal task" ~priority:1 ~description:"desc"
+    in
+    let json =
+      call_tool config meta "keeper_task_done"
+        (`Assoc [ ("task_id", `String "task-001"); ("result", `String "done") ])
+      |> parse_json
+    in
+    check_goal_scope_error json)
 
 let test_done_respects_persisted_cdal_gate () =
   with_env "MASC_CDAL_GATE_ENABLED" (Some "true") (fun () ->
@@ -326,8 +416,27 @@ let test_submit_for_verification_transitions_task () =
                  fail
                    (Printf.sprintf
                       "expected awaiting_verification, got %s"
-                      (Types.string_of_task_status status)))
+                     (Types.string_of_task_status status)))
         | _ -> fail "expected keeper_task_submit_for_verification to succeed")))
+
+let test_submit_for_verification_rejects_task_outside_active_goal_ids () =
+  with_room (fun config ->
+    let meta = make_goal_scoped_meta [ "goal-masc" ] in
+    let _ =
+      Coord_task.add_task ~goal_id:"goal-other" config
+        ~title:"Other goal task" ~priority:1 ~description:"desc"
+    in
+    let json =
+      call_tool config meta "keeper_task_submit_for_verification"
+        (`Assoc
+           [
+             ("task_id", `String "task-001");
+             ("notes", `String "tests pass");
+             ("pr_url", `String "https://github.com/jeong-sik/masc-mcp/pull/1");
+           ])
+      |> parse_json
+    in
+    check_goal_scope_error json)
 
 (* --- keeper_tool_search tests --- *)
 
@@ -425,11 +534,21 @@ let () =
       test_case "claim empty room" `Quick test_claim_empty_room;
       test_case "claim respects active_goal_ids" `Quick
         test_claim_respects_active_goal_ids;
+      test_case "tasks list respects active_goal_ids" `Quick
+        test_tasks_list_respects_active_goal_ids;
+      test_case "tasks audit respects active_goal_ids" `Quick
+        test_tasks_audit_respects_active_goal_ids;
     ];
     "done", [
       test_case "empty task_id returns error" `Quick test_done_with_empty_task_id;
       test_case "nonexistent id returns error" `Quick test_done_with_nonexistent_id;
       test_case "done after claim" `Quick test_done_after_claim;
+      test_case "force release rejects out-of-scope task" `Quick
+        test_force_release_rejects_task_outside_active_goal_ids;
+      test_case "force done rejects out-of-scope task" `Quick
+        test_force_done_rejects_task_outside_active_goal_ids;
+      test_case "done rejects out-of-scope task" `Quick
+        test_done_rejects_task_outside_active_goal_ids;
       test_case "strict contract uses CDAL gate" `Quick
         test_done_respects_persisted_cdal_gate;
       test_case "done redirects to verification FSM" `Quick
@@ -440,6 +559,8 @@ let () =
         test_submit_for_verification_requires_pr_url;
       test_case "transitions task" `Quick
         test_submit_for_verification_transitions_task;
+      test_case "rejects out-of-scope task" `Quick
+        test_submit_for_verification_rejects_task_outside_active_goal_ids;
     ];
     "keeper_tool_search", [
       test_case "empty query returns error" `Quick test_tool_search_empty_query_returns_error;

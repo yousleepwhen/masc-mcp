@@ -1,6 +1,114 @@
 open Keeper_types
 open Keeper_exec_shared
 
+let active_goal_scope_suffix (meta : keeper_meta) =
+  match meta.active_goal_ids with
+  | [] -> ""
+  | goal_ids ->
+      Printf.sprintf " within active_goal_ids=[%s]" (String.concat ", " goal_ids)
+;;
+
+let task_in_active_goal_scope (meta : keeper_meta) (task : Types.task) =
+  match meta.active_goal_ids with
+  | [] -> true
+  | goal_ids -> Keeper_runtime_contract.task_is_linked_to_keeper_goals goal_ids task
+;;
+
+let ensure_task_in_active_goal_scope
+      ~(config : Coord.config)
+      ~(meta : keeper_meta)
+      ~(task_id : string)
+  =
+  match meta.active_goal_ids with
+  | [] -> Ok ()
+  | _ ->
+      (match
+         Coord.get_tasks_safe config
+         |> List.find_opt (fun (task : Types.task) -> String.equal task.id task_id)
+       with
+       | None -> Ok ()
+       | Some task when task_in_active_goal_scope meta task -> Ok ()
+       | Some _ ->
+           Error
+             (Printf.sprintf
+                "task %s is outside your active goal scope%s."
+                task_id
+                (active_goal_scope_suffix meta)))
+;;
+
+let filtered_keeper_tasks
+      ~(meta : keeper_meta)
+      ?status_filter
+      ~(include_done : bool)
+      (tasks : Types.task list)
+  =
+  tasks
+  |> List.filter (task_in_active_goal_scope meta)
+  |> List.filter (fun (task : Types.task) ->
+    match status_filter with
+    | Some status ->
+        String.equal status (Types.string_of_task_status task.task_status)
+    | None ->
+        let status = task.task_status in
+        let is_done = Types.task_status_is_done status in
+        let is_cancelled =
+          match status with
+          | Types.Cancelled _ -> true
+          | Types.Todo
+          | Types.Claimed _
+          | Types.InProgress _
+          | Types.AwaitingVerification _
+          | Types.Done _ -> false
+        in
+        (include_done || not is_done) && not is_cancelled)
+;;
+
+let keeper_tasks_list_message
+      ~(meta : keeper_meta)
+      ?status_filter
+      ~(include_done : bool)
+      ~(limit : int)
+      (tasks : Types.task list)
+  =
+  let goal_scoped_tasks = List.filter (task_in_active_goal_scope meta) tasks in
+  let visible_tasks =
+    filtered_keeper_tasks ~meta ?status_filter ~include_done tasks
+  in
+  match visible_tasks with
+  | [] ->
+      let scope_suffix = active_goal_scope_suffix meta in
+      if tasks = [] then
+        "📋 No tasks. ACTION: STOP calling keeper_tasks_list — the backlog is empty. Move on to other work or end your turn."
+      else if meta.active_goal_ids <> [] && goal_scoped_tasks = [] then
+        Printf.sprintf
+          "📋 No tasks%s. ACTION: STOP calling keeper_tasks_list — nothing is linked to your active goals. Move on to other work or end your turn."
+          scope_suffix
+      else
+        Printf.sprintf
+          "📋 No active tasks%s. ACTION: STOP calling keeper_tasks_list — do not re-check. Move on to other work or end your turn."
+          scope_suffix
+  | _ ->
+      let sorted =
+        visible_tasks
+        |> List.sort (fun (a : Types.task) b -> compare a.priority b.priority)
+        |> List.filteri (fun i _ -> i < limit)
+      in
+      let buf = Buffer.create 256 in
+      Buffer.add_string buf "📋 Quest Board\n";
+      Buffer.add_string buf "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
+      List.iter
+        (fun (task : Types.task) ->
+           let status_icon = Types.task_status_icon task.task_status in
+           let assignee = Types.task_display_assignee task.task_status in
+           let status_str = Types.string_of_task_status task.task_status in
+           Buffer.add_string buf
+             (Printf.sprintf "%s [%d] %s: %s\n" status_icon task.priority task.id task.title);
+           Buffer.add_string buf
+             (Printf.sprintf "   └─ %s | %s\n" status_str assignee))
+        sorted;
+      Buffer.contents buf
+;;
+
 let keeper_task_result_json = function
   | Ok msg -> Yojson.Safe.to_string (`Assoc [ "ok", `Bool true; "result", `String msg ])
   | Error e ->
@@ -28,17 +136,18 @@ let handle_keeper_task_tool
     let status_filter = Safe_ops.json_string_opt "status" args in
     let include_done = Safe_ops.json_bool ~default:false "include_done" args in
     let limit = Safe_ops.json_int ~default:50 "limit" args |> max 1 |> min 100 in
-    let result = Coord.list_tasks ?status:status_filter ~include_done config in
-    (match Yojson.Safe.from_string result with
-     | `List items ->
-       Yojson.Safe.to_string (`List (List.filteri (fun i _ -> i < limit) items))
-     | _ -> result
-     | exception Yojson.Json_error _ ->
-       let lines = String.split_on_char '\n' result in
-       String.concat "\n" (List.filteri (fun i _ -> i < limit + 2) lines))
+    keeper_tasks_list_message
+      ~meta
+      ?status_filter
+      ~include_done
+      ~limit
+      (Coord.get_tasks_safe config)
   | "keeper_tasks_audit" ->
     let limit = Safe_ops.json_int ~default:20 "limit" args |> max 1 |> min 50 in
-    let orphans = Coord.audit_orphan_tasks config in
+    let orphans =
+      Coord.audit_orphan_tasks config
+      |> List.filter (fun (task, _) -> task_in_active_goal_scope meta task)
+    in
     let orphans = List.filteri (fun i _ -> i < limit) orphans in
     let items =
       List.map
@@ -54,7 +163,12 @@ let handle_keeper_task_tool
     in
     let action_hint =
       if orphans = [] then
-        "ACTION: STOP calling keeper_tasks_audit — no orphans found. Move on to other work or end your turn."
+        if meta.active_goal_ids = [] then
+          "ACTION: STOP calling keeper_tasks_audit — no orphans found. Move on to other work or end your turn."
+        else
+          Printf.sprintf
+            "ACTION: STOP calling keeper_tasks_audit — no scoped orphans found%s. Move on to other work or end your turn."
+            (active_goal_scope_suffix meta)
       else
         Printf.sprintf "ACTION: %d orphan(s) found. Use keeper_task_force_release or keeper_task_force_done to resolve, then STOP re-auditing."
           (List.length orphans)
@@ -68,32 +182,38 @@ let handle_keeper_task_tool
     if task_id = ""
     then error_json "task_id is required. Use the task_id from keeper_tasks_list or keeper_tasks_audit."
     else (
-      let agent = keeper_agent_sender ~meta in
-      let _ =
-        Coord.broadcast
-          config
-          ~from_agent:agent
-          ~content:
-            (Printf.sprintf
-               "Force-releasing task %s (reason: %s)"
-               task_id
-               (if reason = "" then "no reason given" else reason))
-      in
-      keeper_task_result_json
-        (Coord.force_release_task_r config ~agent_name:agent ~task_id ()))
+      match ensure_task_in_active_goal_scope ~config ~meta ~task_id with
+      | Error msg -> error_json msg
+      | Ok () ->
+        let agent = keeper_agent_sender ~meta in
+        let _ =
+          Coord.broadcast
+            config
+            ~from_agent:agent
+            ~content:
+              (Printf.sprintf
+                 "Force-releasing task %s (reason: %s)"
+                 task_id
+                 (if reason = "" then "no reason given" else reason))
+        in
+        keeper_task_result_json
+          (Coord.force_release_task_r config ~agent_name:agent ~task_id ()))
   | "keeper_task_force_done" ->
     let task_id = Safe_ops.json_string ~default:"" "task_id" args |> String.trim in
     let notes = Safe_ops.json_string ~default:"" "notes" args in
     if task_id = ""
     then error_json "task_id is required. Use the task_id from keeper_tasks_list or keeper_tasks_audit."
-    else
-      keeper_task_result_json
-        (Coord.force_done_task_r
-           config
-           ~agent_name:(keeper_agent_sender ~meta)
-           ~task_id
-           ~notes
-           ())
+    else (
+      match ensure_task_in_active_goal_scope ~config ~meta ~task_id with
+      | Error msg -> error_json msg
+      | Ok () ->
+        keeper_task_result_json
+          (Coord.force_done_task_r
+             config
+             ~agent_name:(keeper_agent_sender ~meta)
+             ~task_id
+             ~notes
+             ()))
   | "keeper_broadcast" ->
     let message = Safe_ops.json_string ~default:"" "message" args |> String.trim in
     if message = ""
@@ -122,18 +242,13 @@ let handle_keeper_task_tool
       in
       Yojson.Safe.to_string (`Assoc [ "ok", `Bool true; "result", `String result ]))
   | "keeper_task_claim" ->
-    let preset_name = match Keeper_types.tool_access_preset meta.tool_access with
+    let preset_name =
+      match Keeper_types.tool_access_preset meta.tool_access with
       | Some p -> Some (Keeper_types.tool_preset_to_string p)
       | None -> None
     in
-    let goal_filter (task : Types.task) =
-      match meta.active_goal_ids with
-      | [] -> true
-      | goal_ids ->
-          Keeper_runtime_contract.task_is_linked_to_keeper_goals goal_ids task
-    in
     let task_filter (task : Types.task) =
-      goal_filter task
+      task_in_active_goal_scope meta task
       &&
       match task.required_preset, preset_name with
       | None, _ -> true
@@ -159,17 +274,10 @@ let handle_keeper_task_tool
         Printf.sprintf "📋 No eligible tasks (preset mismatch: %d tasks require different preset, you have '%s')"
           preset_filtered (Option.value ~default:"unknown" preset_name)
       | Coord.Claim_next_no_eligible { excluded_count; _ } ->
-        let scope_suffix =
-          match meta.active_goal_ids with
-          | [] -> ""
-          | goal_ids ->
-              Printf.sprintf
-                " within active_goal_ids=[%s]"
-                (String.concat ", " goal_ids)
-        in
         Printf.sprintf
           "📋 No eligible tasks%s. ACTION: Stop task-checking — blocked/excluded=%d."
-          scope_suffix excluded_count
+          (active_goal_scope_suffix meta)
+          excluded_count
       | Coord.Claim_next_error e -> Printf.sprintf "❌ Error: %s" e
     in
     Yojson.Safe.to_string
@@ -186,22 +294,25 @@ let handle_keeper_task_tool
     let result_text = Safe_ops.json_string ~default:"" "result" args |> String.trim in
     if task_id = ""
     then error_json "task_id is required. Use the task_id you got from keeper_task_claim."
-    else (
-      let ok, message =
-        Tool_task.handle_transition
-          {
-            Tool_task.config;
-            agent_name = keeper_agent_sender ~meta;
-            sw = Eio_context.get_switch_opt ();
-          }
-          (`Assoc
-             [
-               "task_id", `String task_id;
-               "action", `String "done";
-               "notes", `String result_text;
-             ])
-      in
-      keeper_tool_result_json ~ok ~message)
+    else
+      (match ensure_task_in_active_goal_scope ~config ~meta ~task_id with
+       | Error msg -> error_json msg
+       | Ok () ->
+         let ok, message =
+           Tool_task.handle_transition
+             {
+               Tool_task.config;
+               agent_name = keeper_agent_sender ~meta;
+               sw = Eio_context.get_switch_opt ();
+             }
+             (`Assoc
+                [
+                  "task_id", `String task_id;
+                  "action", `String "done";
+                  "notes", `String result_text;
+                ])
+         in
+         keeper_tool_result_json ~ok ~message)
   | "keeper_task_submit_for_verification" ->
     let task_id = Safe_ops.json_string ~default:"" "task_id" args |> String.trim in
     let notes = Safe_ops.json_string ~default:"" "notes" args |> String.trim in
@@ -212,21 +323,24 @@ let handle_keeper_task_tool
     then error_json "notes is required. Include verification evidence and test summary."
     else if pr_url = ""
     then error_json "pr_url is required. Include the PR opened for this task."
-    else (
-      let ok, message =
-        Tool_task.handle_transition
-          {
-            Tool_task.config;
-            agent_name = keeper_agent_sender ~meta;
-            sw = Eio_context.get_switch_opt ();
-          }
-          (`Assoc
-             [
-               "task_id", `String task_id;
-               "action", `String "submit_for_verification";
-               "notes", `String (notes ^ "\nPR: " ^ pr_url);
-             ])
-      in
-      keeper_tool_result_json ~ok ~message)
+    else
+      (match ensure_task_in_active_goal_scope ~config ~meta ~task_id with
+       | Error msg -> error_json msg
+       | Ok () ->
+         let ok, message =
+           Tool_task.handle_transition
+             {
+               Tool_task.config;
+               agent_name = keeper_agent_sender ~meta;
+               sw = Eio_context.get_switch_opt ();
+             }
+             (`Assoc
+                [
+                  "task_id", `String task_id;
+                  "action", `String "submit_for_verification";
+                  "notes", `String (notes ^ "\nPR: " ^ pr_url);
+                ])
+         in
+         keeper_tool_result_json ~ok ~message)
   | other -> error_json ~fields:[ "tool", `String other ] "unknown_task_tool"
 ;;
