@@ -121,7 +121,7 @@ let clear_status_cache_for_tests () =
 
 let current_status_lines_uncached ~repo_root =
   run_git_capture_lines ~workdir:repo_root
-    [ "--no-optional-locks"; "status"; "--porcelain"; "--untracked-files=no" ]
+    [ "--no-optional-locks"; "status"; "--porcelain" ]
   |> Option.value ~default:[]
   |> List.map String.trim
   |> List.filter (fun line -> line <> "")
