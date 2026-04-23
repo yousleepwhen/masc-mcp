@@ -508,8 +508,18 @@ let preset_task_filter ~agent_preset (task : Types.task) =
   evaluate_preset_fit ~agent_preset ~required_preset:task.required_preset
   |> Result.is_ok
 
+let is_agent_joined_safe config agent_name =
+  try Coord.is_agent_joined config ~agent_name
+  with
+  | Sys_error msg ->
+    Log.Task.warn "is_agent_joined raised Sys_error for %s: %s" agent_name msg;
+    false
+  | Not_found ->
+    Log.Task.warn "is_agent_joined raised Not_found for %s" agent_name;
+    false
+
 let handle_claim ctx args =
-  if not (try Coord.is_agent_joined ctx.config ~agent_name:ctx.agent_name with Sys_error _ | Not_found -> false) then
+  if not (is_agent_joined_safe ctx.config ctx.agent_name) then
     result_to_response (Error (Types.AgentNotJoined ctx.agent_name))
   else
   let task_id = get_string args "task_id" "" in
@@ -551,7 +561,7 @@ let handle_claim ctx args =
   | _ -> (ok, msg)
 
 let handle_claim_next ctx _args =
-  if not (try Coord.is_agent_joined ctx.config ~agent_name:ctx.agent_name with Sys_error _ | Not_found -> false) then
+  if not (is_agent_joined_safe ctx.config ctx.agent_name) then
     (false, Printf.sprintf "Agent '%s' is not a member of this room" ctx.agent_name)
   else
   let agent_preset = resolve_agent_preset ctx.config ctx.agent_name in

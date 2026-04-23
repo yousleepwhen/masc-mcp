@@ -420,7 +420,11 @@ module Kimi_cli_transport_local = struct
   let json_of_argument_string = function
     | None | Some "" -> `Assoc []
     | Some raw -> (
-        try Yojson.Safe.from_string raw with Yojson.Json_error _ -> `Assoc [])
+        try Yojson.Safe.from_string raw
+        with Yojson.Json_error msg ->
+          Log.error ~ctx:"oas_worker_exec"
+            "Malformed JSON in tool arguments: %s (error: %s)" raw msg;
+          `Assoc [("parse_error", `String msg); ("raw", `String raw)])
 
   let blocks_of_message_content json =
     match json with

@@ -158,7 +158,10 @@ module FileSystem = struct
         in
         Common.protect ~module_name:"backend_eio" ~finally_label:"finalizer"
           ~finally:(fun () ->
-            (try Unix.lockf fd Unix.F_ULOCK 0 with Unix.Unix_error _ -> ());
+            (try Unix.lockf fd Unix.F_ULOCK 0
+             with Unix.Unix_error (e, _, _) ->
+               Log.legacy_traceln ~level:Log.Warn ~module_name:"Backend"
+                 (Printf.sprintf "unlock failed for %s: %s" path_str (Unix.error_message e)));
             Unix.close fd)
         @@ fun () -> f fd)
 

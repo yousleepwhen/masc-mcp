@@ -119,7 +119,10 @@ let save_file_atomic (path : string) (content : string) : (unit, string) result 
     save_file tmp content;
     fsync_path tmp;
     Sys.rename tmp path;
-    (try fsync_path dir with Unix.Unix_error _ -> ());
+    (try fsync_path dir
+     with Unix.Unix_error (e, _, _) ->
+       Printf.eprintf "[fs_compat] WARN: fsync on parent dir %s failed: %s\n%!"
+         dir (Unix.error_message e));
     Ok ()
   with
   | Eio.Cancel.Cancelled _ as e ->
