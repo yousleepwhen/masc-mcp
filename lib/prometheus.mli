@@ -152,7 +152,6 @@ val metric_inference_queue_max_concurrent : string
 
 val metric_agent_heartbeat_age_seconds : string
 val metric_agent_stale_total : string
-
 (** {1 Process monitoring} *)
 
 val approximate_open_fd_count : unit -> int
