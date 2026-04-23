@@ -53,7 +53,9 @@ let rate_limit_config_of_yojson json =
     let task_ops_per_minute = json |> member "task_ops_per_minute" |> to_int_option |> Option.value ~default:30 in
     Ok { per_minute; burst_allowed; priority_agents; reader_multiplier; worker_multiplier; admin_multiplier;
          broadcast_per_minute; task_ops_per_minute }
-  with e -> Error (Printexc.to_string e)
+  with
+  | Eio.Cancel.Cancelled _ as e -> raise e
+  | e -> Error (Printexc.to_string e)
 
 (** Rate limit categories *)
 type rate_limit_category =
@@ -270,7 +272,9 @@ let agent_credential_of_yojson json =
     match agent_role_of_string role_str with
     | Ok role -> Ok { agent_name; token; role; created_at; expires_at }
     | Error e -> Error e
-  with e -> Error (Printexc.to_string e)
+  with
+  | Eio.Cancel.Cancelled _ as e -> raise e
+  | e -> Error (Printexc.to_string e)
 
 (** Auth config - room-level settings *)
 type auth_config = {
@@ -309,7 +313,9 @@ let auth_config_of_yojson json =
     match agent_role_of_string default_role_str with
     | Ok default_role -> Ok { enabled; room_secret_hash; require_token; default_role; token_expiry_hours }
     | Error e -> Error e
-  with e -> Error (Printexc.to_string e)
+  with
+  | Eio.Cancel.Cancelled _ as e -> raise e
+  | e -> Error (Printexc.to_string e)
 
 (** Permission matrix - what each role can do *)
 type permission =

@@ -237,7 +237,9 @@ let read tid ~since_stdout ~since_stderr =
              bytes_dropped_stdout = 0;
              bytes_dropped_stderr = 0;
            }
-       with e -> Error (Read_failed (Printexc.to_string e)))
+       with
+       | Eio.Cancel.Cancelled _ as e -> raise e
+       | e -> Error (Read_failed (Printexc.to_string e)))
 
 let kill tid ~signal ~grace_sec =
   let st_opt = with_reg (fun () -> Hashtbl.find_opt registry tid) in
@@ -253,7 +255,9 @@ let kill tid ~signal ~grace_sec =
             task as orphan. *)
          if st.closed then try_delete_pid_file st.pid_file;
          Ok ()
-       with e -> Error (Kill_failed (Printexc.to_string e)))
+       with
+       | Eio.Cancel.Cancelled _ as e -> raise e
+       | e -> Error (Kill_failed (Printexc.to_string e)))
 
 let list ~keeper =
   with_reg (fun () ->

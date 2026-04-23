@@ -194,7 +194,9 @@ let persist_start ~base_path ~retention_days (r : start_record) :
   (unit, write_error) result =
   let json =
     try Ok (start_to_json r)
-    with e -> Error (Serialize_failure (Printexc.to_string e))
+    with
+    | Eio.Cancel.Cancelled _ as e -> raise e
+    | e -> Error (Serialize_failure (Printexc.to_string e))
   in
   match json with
   | Error _ as e -> e
@@ -203,13 +205,17 @@ let persist_start ~base_path ~retention_days (r : start_record) :
        Dated_jsonl.append (get_store base_path) j;
        prune_best_effort base_path ~retention_days;
        Ok ()
-     with e -> Error (Io_failure (Printexc.to_string e)))
+     with
+     | Eio.Cancel.Cancelled _ as e -> raise e
+     | e -> Error (Io_failure (Printexc.to_string e)))
 
 let persist_complete ~base_path ~retention_days (r : complete_record) :
   (unit, write_error) result =
   let json =
     try Ok (complete_to_json r)
-    with e -> Error (Serialize_failure (Printexc.to_string e))
+    with
+    | Eio.Cancel.Cancelled _ as e -> raise e
+    | e -> Error (Serialize_failure (Printexc.to_string e))
   in
   match json with
   | Error _ as e -> e
@@ -218,7 +224,9 @@ let persist_complete ~base_path ~retention_days (r : complete_record) :
        Dated_jsonl.append (get_store base_path) j;
        prune_best_effort base_path ~retention_days;
        Ok ()
-     with e -> Error (Io_failure (Printexc.to_string e)))
+     with
+     | Eio.Cancel.Cancelled _ as e -> raise e
+     | e -> Error (Io_failure (Printexc.to_string e)))
 
 (* ── Retention ─────────────────────────────────────────────────── *)
 

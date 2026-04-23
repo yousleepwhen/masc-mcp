@@ -183,7 +183,9 @@ end = struct
               let dec = Pbrt.Decoder.of_string body in
               let r =
                 try Ok (f dec)
-                with e ->
+                with
+                | Eio.Cancel.Cancelled _ as e -> raise e
+                | e ->
                   let bt = Printexc.get_backtrace () in
                   Error
                     (`Failure
@@ -198,7 +200,9 @@ end = struct
             try
               let status = Status.decode_pb_status dec in
               Error (`Status (code, status))
-            with e ->
+            with
+            | Eio.Cancel.Cancelled _ as e -> raise e
+            | e ->
               let bt = Printexc.get_backtrace () in
               Error
                 (`Failure
@@ -268,7 +272,9 @@ let mk_emitter ~stop ~clock ~net (config : Config.t) : (module EMITTER) =
 
     let[@inline] guard_exn_ where f =
       try f ()
-      with e ->
+      with
+      | Eio.Cancel.Cancelled _ as e -> raise e
+      | e ->
         let bt = Printexc.get_backtrace () in
         Printf.eprintf "opentelemetry-eio: uncaught exception in %s: %s\n%s\n%!"
           where (Printexc.to_string e) bt
@@ -315,7 +321,9 @@ let mk_emitter ~stop ~clock ~net (config : Config.t) : (module EMITTER) =
       List.iter
         (fun f ->
           try f ()
-          with e ->
+          with
+          | Eio.Cancel.Cancelled _ as e -> raise e
+          | e ->
             Printf.eprintf "on tick callback raised: %s\n"
               (Printexc.to_string e))
         (AList.get @@ Atomic.get on_tick_cbs_)

@@ -195,7 +195,9 @@ let with_sandbox ~config ~task_id ?base_branch ~agent_name f =
           let files = changed_files sandbox in
           result_ref := Some files;
           exn_ref := Some (Ok v)
-        with e ->
+        with
+        | Eio.Cancel.Cancelled _ as e -> raise e
+        | e ->
           exn_ref := Some (Error e);
           raise e);
     (* After Fun.protect returns normally *)

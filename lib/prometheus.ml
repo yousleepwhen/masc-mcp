@@ -293,6 +293,14 @@ let metric_oas_bus_subscriber_stream_depth = "masc_oas_bus_subscriber_stream_dep
 let metric_oas_bus_publish_block_seconds = "masc_oas_bus_publish_block_seconds_total"
 let metric_oas_bus_publish = "masc_oas_bus_publish_total"
 
+let init () =
+  (* Module-level init runs before Eio context exists.
+     Single-threaded at load time — bypass mutex. *)
+  let add name help mt =
+    let key = name in
+    if not (Hashtbl.mem metrics key) then
+      Hashtbl.add metrics key { name; help; metric_type = mt; value = 0.0; labels = [] }
+  in
   (* Per-keeper turn outcome + token counters.  Labels are populated
      dynamically via inc_counter; no upfront registration needed.
      Covers issues #7495 (cost/token attribution) and #7519 (SLO). *)

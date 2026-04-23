@@ -46,7 +46,9 @@ let capture_sidecar_json name =
             | Unix.WSIGNALED _ | Unix.WSTOPPED _ -> 2
           in
           Ok (Buffer.contents buf, rc)
-        with e -> Error (Printexc.to_string e)
+        with
+        | Eio.Cancel.Cancelled _ as e -> raise e
+        | e -> Error (Printexc.to_string e)
       in
       Sys.chdir prev;
       result

@@ -415,7 +415,9 @@ let render_template ~template ~vars () : (string, string) result =
       Error "Unresolved variables in template"
     else
       Ok !result
-  with e ->
+  with
+  | Eio.Cancel.Cancelled _ as e -> raise e
+  | e ->
     Error (Printf.sprintf "Render error: %s" (Printexc.to_string e))
 
 (** Render a registered prompt by ID with the given variables *)
@@ -517,7 +519,9 @@ let of_json (json : Yojson.Safe.t) : (int, string) result =
       | Error e -> Log.Misc.debug "prompt entry parse skipped: %s" e
     ) entries;
     Ok !count
-  with e ->
+  with
+  | Eio.Cancel.Cancelled _ as e -> raise e
+  | e ->
     Error (Printexc.to_string e)
 
 (** {1 Simple Override API for Hardcoded Prompts} *)

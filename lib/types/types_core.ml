@@ -509,7 +509,9 @@ let task_status_of_yojson json =
         let reason = json |> member "reason" |> to_string_option in
         Ok (Cancelled { cancelled_by; cancelled_at; reason })
     | s -> Error ("Unknown task status: " ^ s)
-  with e -> Error (Printexc.to_string e)
+  with
+  | Eio.Cancel.Cancelled _ as e -> raise e
+  | e -> Error (Printexc.to_string e)
 
 (** Worktree info - tracks which worktree is used for a task *)
 type worktree_info = {
@@ -535,7 +537,9 @@ let worktree_info_of_yojson json =
     let git_root = json |> member "git_root" |> to_string in
     let repo_name = json |> member "repo_name" |> to_string in
     Ok { branch; path; git_root; repo_name }
-  with e -> Error (Printexc.to_string e)
+  with
+  | Eio.Cancel.Cancelled _ as e -> raise e
+  | e -> Error (Printexc.to_string e)
 
 (** Task execution links - tie task state to runtime evidence producers *)
 type task_execution_links = {
@@ -563,7 +567,9 @@ let task_execution_links_of_yojson json =
         autoresearch_loop_id =
           json |> member "autoresearch_loop_id" |> to_string_option;
       }
-  with e -> Error (Printexc.to_string e)
+  with
+  | Eio.Cancel.Cancelled _ as e -> raise e
+  | e -> Error (Printexc.to_string e)
 
 (** Task contract - persisted deterministic gate inputs *)
 type task_contract = {
@@ -639,7 +645,9 @@ let task_contract_of_yojson json =
           task_contract_string_list json "verify_gate_evidence";
         links;
       }
-  with e -> Error (Printexc.to_string e)
+  with
+  | Eio.Cancel.Cancelled _ as e -> raise e
+  | e -> Error (Printexc.to_string e)
 
 (** Handoff context persisted across release/reclaim cycles *)
 type task_handoff_context = {
@@ -680,7 +688,9 @@ let task_handoff_context_of_yojson json =
         updated_at = json |> member "updated_at" |> to_string_option;
         updated_by = json |> member "updated_by" |> to_string_option;
       }
-  with e -> Error (Printexc.to_string e)
+  with
+  | Eio.Cancel.Cancelled _ as e -> raise e
+  | e -> Error (Printexc.to_string e)
 
 (** Task definition *)
 type task = {
@@ -843,7 +853,9 @@ let task_of_yojson json =
             do_not_reclaim_reason;
           }
     | Error e -> Error e
-  with e -> Error (Printexc.to_string e)
+  with
+  | Eio.Cancel.Cancelled _ as e -> raise e
+  | e -> Error (Printexc.to_string e)
 
 (** Message - broadcast or direct *)
 type message = {
@@ -943,7 +955,9 @@ let tempo_config_of_yojson json =
     match tempo_mode_of_string mode_str with
     | Ok mode -> Ok { mode; delay_ms; reason; set_by; set_at }
     | Error e -> Error e
-  with e -> Error (Printexc.to_string e)
+  with
+  | Eio.Cancel.Cancelled _ as e -> raise e
+  | e -> Error (Printexc.to_string e)
 
 (** Backlog (task collection) *)
 type backlog = {
@@ -984,7 +998,9 @@ let backlog_of_yojson json =
       |> Option.value ~default:1
     in
     Ok { tasks; last_updated; version }
-  with e -> Error (Printexc.to_string e)
+  with
+  | Eio.Cancel.Cancelled _ as e -> raise e
+  | e -> Error (Printexc.to_string e)
 
 (** A2A Task status - enforced at compile time *)
 type a2a_task_status =
@@ -1076,7 +1092,9 @@ let a2a_task_of_yojson json =
     match a2a_task_status_of_string status_str with
     | Ok a2a_status -> Ok { a2a_id; from_agent; to_agent; a2a_message; a2a_status; a2a_result; created_at; updated_at }
     | Error e -> Error e
-  with e -> Error (Printexc.to_string e)
+  with
+  | Eio.Cancel.Cancelled _ as e -> raise e
+  | e -> Error (Printexc.to_string e)
 
 (** Portal - bidirectional A2A connection *)
 type portal = {
@@ -1108,7 +1126,9 @@ let portal_of_yojson json =
     match portal_state_of_string status_str with
     | Ok portal_status -> Ok { portal_from; portal_target; portal_opened_at; portal_status; task_count }
     | Error e -> Error e
-  with e -> Error (Printexc.to_string e)
+  with
+  | Eio.Cancel.Cancelled _ as e -> raise e
+  | e -> Error (Printexc.to_string e)
 
 (** SSE Session info (for tracking connected agents) *)
 type sse_session = {
