@@ -156,79 +156,85 @@ let run_docker_shell_command_with_status
           | Network_none -> ([ "--network"; "none" ], "none")
           | Network_inherit -> ([], network_mode_to_string network_mode)
       in
-      let gh_creds =
-        match Keeper_gh_env.keeper_config_dir config ~keeper_name:meta.name with
-        | Ok (Some dir) -> dir
-        | Ok None -> Env_config_keeper.KeeperSandbox.gh_creds_host_path ()
-        | Error err -> raise (Failure err)
-      in
-      let gitconfig = Env_config_keeper.KeeperSandbox.gitconfig_host_path () in
-      let ssh_dir = Env_config_keeper.KeeperSandbox.ssh_dir_host_path () in
-      let gh_token = Env_config_keeper.KeeperSandbox.gh_token () in
-      let cred_mounts =
+      let gh_creds_result =
         if not git_creds_enabled then
-          []
+          Ok ""
         else
-          optional_ro_mount ~host:gh_creds ~container:"/root/.config/gh"
-          @ optional_ro_mount ~host:gitconfig ~container:"/root/.gitconfig"
-          @ optional_ro_mount ~host:ssh_dir ~container:"/root/.ssh"
+          match Keeper_gh_env.keeper_config_dir config ~keeper_name:meta.name with
+          | Ok (Some dir) -> Ok dir
+          | Ok None -> Ok (Env_config_keeper.KeeperSandbox.gh_creds_host_path ())
+          | Error err -> Error err
       in
-      let token_env =
-        if (not git_creds_enabled) || gh_token = "" then
-          []
-        else
-          [ "-e"; "GH_TOKEN=" ^ gh_token ]
-      in
-      let argv =
-        [
-          "docker";
-          "run";
-          "--rm";
-          "--name";
-          container_name;
-          "-i";
-          "--user";
-          Printf.sprintf "%d:%d" uid gid;
-        ]
-        @ Env_config_keeper.KeeperSandbox.read_only_rootfs_args ()
-        @ [
-          "--tmpfs";
-          Env_config_keeper.KeeperSandbox.tmpfs_mount ();
-          "--cap-drop=ALL";
-          "--security-opt";
-          "no-new-privileges";
-        ]
-        @ seccomp_args
-        @ [
-          "--pids-limit";
-          string_of_int (Env_config_keeper.KeeperSandbox.pids_limit ());
-          "--memory";
-          Env_config_keeper.KeeperSandbox.memory ();
-          "-v";
-          host_root ^ ":" ^ container_root ^ ":rw";
-          "--workdir";
-          container_cwd;
-        ]
-        @ network_args
-        @ cred_mounts
-        @ token_env
-        @ [ image; "bash"; "-lc"; cmd ]
-      in
-      (try
-         let status, output =
-           Process_eio.run_argv_with_status
-             ~cwd:(Sys.getcwd ()) ~timeout_sec argv
-         in
-         if status <> Unix.WEXITED 0 then
-           Keeper_registry.record_error ~base_path:config.base_path meta.name
-             (Printf.sprintf "sandbox docker exec failed (%s): %s"
-                image
-                (Worker_dev_tools.truncate_for_log output))
-         else
-           Keeper_registry.clear_error ~base_path:config.base_path meta.name;
-         Ok { status; output; image; network_label }
-       with
-       | Failure err -> sandbox_error err)
+      match gh_creds_result with
+      | Error err -> sandbox_error err
+      | Ok gh_creds ->
+          let gitconfig = Env_config_keeper.KeeperSandbox.gitconfig_host_path () in
+          let ssh_dir = Env_config_keeper.KeeperSandbox.ssh_dir_host_path () in
+          let gh_token = Env_config_keeper.KeeperSandbox.gh_token () in
+          let cred_mounts =
+            if not git_creds_enabled then
+              []
+            else
+              optional_ro_mount ~host:gh_creds ~container:"/root/.config/gh"
+              @ optional_ro_mount ~host:gitconfig ~container:"/root/.gitconfig"
+              @ optional_ro_mount ~host:ssh_dir ~container:"/root/.ssh"
+          in
+          let token_env =
+            if (not git_creds_enabled) || gh_token = "" then
+              []
+            else
+              [ "-e"; "GH_TOKEN=" ^ gh_token ]
+          in
+          let argv =
+            [
+              "docker";
+              "run";
+              "--rm";
+              "--name";
+              container_name;
+              "-i";
+              "--user";
+              Printf.sprintf "%d:%d" uid gid;
+            ]
+            @ Env_config_keeper.KeeperSandbox.read_only_rootfs_args ()
+            @ [
+                "--tmpfs";
+                Env_config_keeper.KeeperSandbox.tmpfs_mount ();
+                "--cap-drop=ALL";
+                "--security-opt";
+                "no-new-privileges";
+              ]
+            @ seccomp_args
+            @ [
+                "--pids-limit";
+                string_of_int (Env_config_keeper.KeeperSandbox.pids_limit ());
+                "--memory";
+                Env_config_keeper.KeeperSandbox.memory ();
+                "-v";
+                host_root ^ ":" ^ container_root ^ ":rw";
+                "--workdir";
+                container_cwd;
+              ]
+            @ network_args
+            @ cred_mounts
+            @ token_env
+            @ [ image; "bash"; "-lc"; cmd ]
+          in
+          (try
+             let status, output =
+               Process_eio.run_argv_with_status
+                 ~cwd:(Sys.getcwd ()) ~timeout_sec argv
+             in
+             if status <> Unix.WEXITED 0 then
+               Keeper_registry.record_error ~base_path:config.base_path meta.name
+                 (Printf.sprintf "sandbox docker exec failed (%s): %s"
+                    image
+                    (Worker_dev_tools.truncate_for_log output))
+             else
+               Keeper_registry.clear_error ~base_path:config.base_path meta.name;
+             Ok { status; output; image; network_label }
+           with
+           | Failure err -> sandbox_error err)
 
 let run_docker_with_git_bash
     ~(turn_sandbox_runtime : Keeper_turn_sandbox_runtime.t option)

@@ -86,6 +86,11 @@ let with_env key value f =
       | None -> Unix.putenv key "")
     f
 
+let write_file path content =
+  let oc = open_out_bin path in
+  Fun.protect ~finally:(fun () -> close_out_noerr oc) @@ fun () ->
+  output_string oc content
+
 let with_fake_gh script f =
   let dir = temp_dir () in
   let gh_path = Filename.concat dir "gh" in
@@ -182,6 +187,27 @@ let with_repo_context_test_env f =
   ensure_dir repo_dir;
   run_argv [ "git"; "-C"; repo_dir; "init"; "-q" ];
   f ~base ~config ~repo_dir
+
+let with_config_dir f =
+  let config_dir = temp_dir () in
+  let cascade_path = Filename.concat config_dir "cascade.json" in
+  let original = Sys.getenv_opt "MASC_CONFIG_DIR" in
+  Fun.protect
+    ~finally:(fun () ->
+      (match original with
+       | Some value -> Unix.putenv "MASC_CONFIG_DIR" value
+       | None -> Unix.putenv "MASC_CONFIG_DIR" "");
+      Config_dir_resolver.reset ();
+      Cascade_catalog_runtime.reset_cache_for_tests ();
+      cleanup_dir config_dir)
+    (fun () ->
+      write_file cascade_path {|{"big_three_models":["test-only:model"]}|};
+      Unix.putenv "MASC_CONFIG_DIR" config_dir;
+      Config_dir_resolver.reset ();
+      Cascade_catalog_runtime.install_snapshot_for_tests
+        ~source_path:cascade_path
+        ~profile_names:[ Keeper_config.default_cascade_name ];
+      f config_dir)
 
 (* ================================================================ *)
 (* Read-only subcommands via cmd                                     *)
@@ -523,17 +549,28 @@ while [ \"$#\" -gt 0 ]; do\n\
 done\n\
 printf 'docker-gh-ok workdir=%s cmd=%s\\n' \"$workdir\" \"$*\"\n"
 
+let fake_docker_info_only_script =
+  "#!/bin/sh\n\
+if [ \"$1\" = \"info\" ]; then\n\
+  printf '[]\\n'\n\
+  exit 0\n\
+fi\n\
+printf 'docker run should not happen\\n' >&2\n\
+exit 91\n"
+
 let test_keeper_shell_gh_without_current_task_uses_sandbox_context () =
-  with_repo_context_test_env @@ fun ~base:_ ~config ~repo_dir ->
+  with_repo_context_test_env @@ fun ~base:_ ~config ~repo_dir:_ ->
   with_env "MASC_KEEPER_SANDBOX_DOCKER_IMAGE" "" @@ fun () ->
   let meta = make_meta ~sandbox_profile:Keeper_types.Docker () in
+  let sandbox_cwd = Keeper_sandbox.host_root_abs_of_meta ~config meta in
+  ensure_dir sandbox_cwd;
   let raw =
     Keeper_exec_shell.handle_keeper_shell ~turn_sandbox_runtime:None ~config ~meta
       ~args:
         (`Assoc
           [
             ("op", `String "gh");
-            ("cwd", `String repo_dir);
+            ("cwd", `String sandbox_cwd);
             ("cmd", `String "pr list --repo example/project");
           ])
   in
@@ -543,12 +580,54 @@ let test_keeper_shell_gh_without_current_task_uses_sandbox_context () =
     (json |> member "ok" |> to_bool);
   Alcotest.(check string) "sandbox task marker" "(sandbox)"
     (json |> member "task_id" |> to_string);
-  Alcotest.(check string) "cwd preserved" repo_dir
+  Alcotest.(check string) "cwd preserved" sandbox_cwd
     (json |> member "cwd" |> to_string);
   Alcotest.(check bool) "repo omitted when sandbox fallback has none" true
     (json |> member "repo" = `Null);
   Alcotest.(check string) "docker image error surfaced"
     "keeper sandbox docker image is not configured"
+    (json |> member "error" |> to_string)
+
+let test_keeper_shell_gh_surfaces_missing_keeper_identity_bundle () =
+  with_repo_context_test_env @@ fun ~base:_ ~config ~repo_dir:_ ->
+  with_config_dir @@ fun config_dir ->
+  let keepers_toml_dir = Filename.concat config_dir "keepers" in
+  Unix.mkdir keepers_toml_dir 0o755;
+  write_file
+    (Filename.concat keepers_toml_dir "sojin.toml")
+    {|[keeper]
+github_identity = "robot-reviewer"
+|};
+  with_env "MASC_KEEPER_SANDBOX_DOCKER_IMAGE" "alpine:test" @@ fun () ->
+  with_fake_docker fake_docker_info_only_script @@ fun () ->
+  let meta = make_meta ~sandbox_profile:Keeper_types.Docker () in
+  let sandbox_cwd = Keeper_sandbox.host_root_abs_of_meta ~config meta in
+  ensure_dir sandbox_cwd;
+  let raw =
+    Keeper_exec_shell.handle_keeper_shell ~turn_sandbox_runtime:None ~config ~meta
+      ~args:
+        (`Assoc
+          [
+            ("op", `String "gh");
+            ("cwd", `String sandbox_cwd);
+            ("cmd", `String "pr list --repo example/project");
+          ])
+  in
+  let json = Yojson.Safe.from_string raw in
+  let open Yojson.Safe.Util in
+  let expected_missing_dir =
+    Filename.concat
+      (Filename.concat (Coord.masc_dir config) "github-identities/robot-reviewer")
+      "gh"
+  in
+  let expected_error =
+    Printf.sprintf
+      "keeper sojin is bound to github_identity robot-reviewer but GH config dir %s is missing. Run the operator GitHub identity login flow first."
+      expected_missing_dir
+  in
+  Alcotest.(check bool) "gh returns structured failure" false
+    (json |> member "ok" |> to_bool);
+  Alcotest.(check string) "missing bundle error surfaced" expected_error
     (json |> member "error" |> to_string)
 
 (* Tool-call observability flows through the OAS Event_bus.
@@ -876,5 +955,8 @@ let () =
           Alcotest.test_case
             "keeper_shell gh without current task uses sandbox context"
             `Quick test_keeper_shell_gh_without_current_task_uses_sandbox_context;
+          Alcotest.test_case
+            "keeper_shell gh surfaces missing keeper identity bundle"
+            `Quick test_keeper_shell_gh_surfaces_missing_keeper_identity_bundle;
         ] );
     ]

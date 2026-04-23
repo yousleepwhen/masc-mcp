@@ -8,7 +8,8 @@ let count_context_tokens (ctx : working_context) =
 ;;
 
 let error_json ?(fields = []) (message : string) =
-  Yojson.Safe.to_string (`Assoc (("error", `String message) :: fields))
+  Yojson.Safe.to_string
+    (`Assoc (("ok", `Bool false) :: ("error", `String message) :: fields))
 ;;
 
 let tool_result_or_error (ok, msg) = if ok then msg else error_json msg
