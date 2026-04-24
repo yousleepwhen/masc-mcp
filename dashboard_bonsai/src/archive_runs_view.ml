@@ -202,7 +202,21 @@ let view_loop (l : Archive_runs_types.loop) =
   let keeps = l.total_keeps in
   let discards = l.total_discards in
   Node.div
-    ~attrs:[ Style.loop; Attr.role "listitem"; Attr.create "aria-label" (Archive_runs_types.status_label l.status ^ " · " ^ cycle_str ^ " · +" ^ Int.to_string keeps ^ " −" ^ Int.to_string discards ^ " · " ^ l.goal) ]
+    ~attrs:
+      [ Style.loop
+      ; Attr.role "listitem"
+      ; Attr.create
+          "aria-label"
+          (Archive_runs_types.status_label l.status
+           ^ " · "
+           ^ cycle_str
+           ^ " · +"
+           ^ Int.to_string keeps
+           ^ " −"
+           ^ Int.to_string discards
+           ^ " · "
+           ^ l.goal)
+      ]
     [ Pill.view
         ~color:(pill_color l.status)
         ~label:(Archive_runs_types.status_label l.status)
