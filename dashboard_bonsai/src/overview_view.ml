@@ -229,7 +229,7 @@ let paused_pill ~(paused : bool) =
 let view_hero_panel (r : Overview_types.response) =
   let s = r.status in
   Node.div
-    ~attrs:[ Style.panel ]
+    ~attrs:[ Style.panel; Attr.role "group"; Attr.arialabel "Runtime identity panel" ]
     [ Node.h2 ~attrs:[ Style.panel_title ] [ Node.text "runtime · identity" ]
     ; Node.div
         ~attrs:[ Style.kv_row; Attr.role "list"; Attr.arialabel "Runtime identity" ]
@@ -277,7 +277,7 @@ let view_hero_panel (r : Overview_types.response) =
 let view_build_panel (r : Overview_types.response) =
   let b = r.status.build in
   Node.div
-    ~attrs:[ Style.panel ]
+    ~attrs:[ Style.panel; Attr.role "group"; Attr.arialabel "Build release panel" ]
     [ Node.h2 ~attrs:[ Style.panel_title ] [ Node.text "build · release" ]
     ; Node.div
         ~attrs:[ Style.kv_row; Attr.role "list"; Attr.arialabel "Build and release" ]
@@ -327,7 +327,7 @@ let view_counts_panel (r : Overview_types.response) =
     else Printf.sprintf "%d / %d" c.keepers r.configured_keepers
   in
   Node.div
-    ~attrs:[ Style.panel ]
+    ~attrs:[ Style.panel; Attr.role "group"; Attr.arialabel "Fleet counts panel" ]
     [ Node.h2 ~attrs:[ Style.panel_title ] [ Node.text "fleet · counts" ]
     ; Node.div
         ~attrs:[ Style.counts ]
@@ -380,7 +380,7 @@ let view_meta_panel (r : Overview_types.response) =
         [ Node.text "no dominant belief recorded." ]
   in
   Node.div
-    ~attrs:[ Style.panel ]
+    ~attrs:[ Style.panel; Attr.role "group"; Attr.arialabel "Meta cognition panel" ]
     [ Node.h2
         ~attrs:[ Style.panel_title ]
         [ Node.text "meta · cognition" ]
@@ -435,7 +435,7 @@ let render (r : Overview_types.response) : Node.t =
            깊은 진단은 각 tab에서 확인."
         ()
     ; Node.div
-        ~attrs:[ Style.grid ]
+        ~attrs:[ Style.grid; Attr.role "region"; Attr.arialabel "Overview panels" ]
         [ view_hero_panel r
         ; view_build_panel r
         ; view_counts_panel r
