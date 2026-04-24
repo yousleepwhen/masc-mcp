@@ -202,7 +202,7 @@ let view_loop (l : Archive_runs_types.loop) =
   let keeps = l.total_keeps in
   let discards = l.total_discards in
   Node.div
-    ~attrs:[ Style.loop; Attr.role "listitem"; Attr.arialabel (Archive_runs_types.status_label l.status ^ " · " ^ cycle_str ^ " · +" ^ Int.to_string keeps ^ " −" ^ Int.to_string discards ^ " · " ^ l.goal) ]
+    ~attrs:[ Style.loop; Attr.role "listitem"; Attr.create "aria-label" (Archive_runs_types.status_label l.status ^ " · " ^ cycle_str ^ " · +" ^ Int.to_string keeps ^ " −" ^ Int.to_string discards ^ " · " ^ l.goal) ]
     [ Pill.view
         ~color:(pill_color l.status)
         ~label:(Archive_runs_types.status_label l.status)
@@ -296,11 +296,11 @@ let render ~(shell : Overview_types.response) (r : Archive_runs_types.response) 
     ; (match r.loops with
        | [] ->
          Node.div
-           ~attrs:[ Style.quiet; Attr.role "status"; Attr.arialabel "No archive runs" ]
+           ~attrs:[ Style.quiet; Attr.role "status"; Attr.create "aria-label" "No archive runs" ]
            [ Node.text "no runs recorded yet." ]
        | loops ->
          Node.div
-           ~attrs:[ Style.loop_list; Attr.role "list"; Attr.arialabel "Archive runs" ]
+           ~attrs:[ Style.loop_list; Attr.role "list"; Attr.create "aria-label" "Archive runs" ]
            (List.map loops ~f:view_loop))
     ]
 ;;
