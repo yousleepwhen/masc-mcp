@@ -122,7 +122,7 @@ stylesheet
     margin-left: auto;
     font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace;
     font-variant-numeric: tabular-nums;
-    font-size: 10px;
+    font-size: 11px;
     color: var(--text-dim);
     flex-shrink: 0;
   }
