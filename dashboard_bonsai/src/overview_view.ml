@@ -18,54 +18,6 @@ module Style =
 [%css
 stylesheet
   {|
-  .root {
-    display: grid;
-    grid-template-columns: 232px 1fr;
-    min-height: 100vh;
-    background:
-      radial-gradient(ellipse 60% 40% at 12% 8%, rgba(138,106,40,0.06), transparent 55%),
-      radial-gradient(ellipse 40% 50% at 92% 95%, rgba(58,58,90,0.06), transparent 60%),
-      linear-gradient(170deg, #0e0a08 0%, #140c08 60%, #080504 100%);
-    color: var(--text-primary);
-    font-family: 'Noto Sans KR', 'EB Garamond', sans-serif;
-  }
-
-  .main {
-    padding: 3rem 3rem 2rem;
-    display: flex;
-    flex-direction: column;
-    gap: 1.5rem;
-    overflow: auto;
-  }
-
-  .eyebrow {
-    font-family: 'Noto Sans KR', sans-serif;
-    font-size: 11px;
-    letter-spacing: 0.25em;
-    text-transform: uppercase;
-    color: var(--text-dim);
-    margin: 0;
-  }
-
-  .title {
-    font-family: 'Cinzel', serif;
-    font-size: 32px;
-    letter-spacing: 0.16em;
-    color: var(--text-bright);
-    text-transform: uppercase;
-    margin: 0;
-  }
-  .title_brass { color: var(--accent-brass); }
-
-  .sub {
-    font-family: 'EB Garamond', serif;
-    font-style: italic;
-    font-size: 14px;
-    color: var(--text-primary);
-    margin: 0;
-    max-width: 680px;
-  }
-
   .grid {
     display: grid;
     grid-template-columns: 1fr 1fr;

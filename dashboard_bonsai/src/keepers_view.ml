@@ -18,61 +18,6 @@ module Style =
 [%css
 stylesheet
   {|
-  .root {
-    display: grid;
-    grid-template-columns: 232px 1fr;
-    min-height: 100vh;
-    background:
-      radial-gradient(ellipse 60% 40% at 12% 8%, rgba(212,169,64,0.06), transparent 55%),
-      radial-gradient(ellipse 40% 50% at 92% 95%, rgba(232,80,80,0.08), transparent 60%),
-      linear-gradient(170deg, #0e0a08 0%, #140c08 60%, #080504 100%);
-    color: var(--text-primary);
-    font-family: 'Noto Sans KR', 'EB Garamond', sans-serif;
-  }
-
-  .main {
-    padding: 2.5rem 2.5rem 1.5rem;
-    display: flex;
-    flex-direction: column;
-    gap: 1.25rem;
-    overflow: auto;
-  }
-
-  .hero { display: flex; flex-direction: column; gap: 6px; }
-
-  .eyebrow {
-    font-family: 'Noto Sans KR', sans-serif;
-    font-size: 11px;
-    letter-spacing: 0.3em;
-    text-transform: uppercase;
-    color: var(--text-dim);
-    margin: 0;
-  }
-
-  .title {
-    font-family: 'Cinzel', serif;
-    font-size: 30px;
-    letter-spacing: 0.16em;
-    color: var(--text-bright);
-    text-transform: uppercase;
-    margin: 0;
-  }
-
-  .title_tail {
-    color: var(--accent-brass);
-    font-size: 18px;
-    margin-left: 14px;
-  }
-
-  .sub {
-    font-family: 'EB Garamond', serif;
-    font-style: italic;
-    font-size: 14px;
-    color: var(--text-primary);
-    margin: 0;
-    max-width: 640px;
-  }
-
   .quiet {
     padding: 28px 20px;
     text-align: center;
