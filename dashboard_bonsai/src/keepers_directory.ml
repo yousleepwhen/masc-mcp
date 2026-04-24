@@ -1179,21 +1179,21 @@ let view
          in
          Node.div
            ~attrs:row_attrs
-           [ Node.div ~attrs:[ Style.sigil ] [ Node.text (row_sigil row.name) ]
+           [ Node.div ~attrs:[ Style.sigil; Attr.role "cell" ] [ Node.text (row_sigil row.name) ]
            ; Node.div
-               ~attrs:[ Style.identity ]
+               ~attrs:[ Style.identity; Attr.role "cell" ]
                [ Node.div ~attrs:[ Style.name ] [ Node.text row.name ]
                ; Node.div
                    ~attrs:[ Style.subline ]
                    [ Node.text (String.concat ~sep:" · " subtitle_bits) ]
                ]
            ; Node.div
-               ~attrs:[ Style.summary ]
+               ~attrs:[ Style.summary; Attr.role "cell" ]
                [ Node.div ~attrs:[ Style.summary_k ] [ Node.text summary_k ]
                ; Node.div ~attrs:[ Style.summary_v ] [ Node.text summary_v ]
                ]
            ; Node.div
-               ~attrs:[ Style.chip_stack ]
+               ~attrs:[ Style.chip_stack; Attr.role "cell" ]
                [ Node.div
                    ~attrs:[ Style.chip_row ]
                    [ Pill.view ~size:`Sm ~color:row.status_color
@@ -1224,7 +1224,7 @@ let view
                    ]
                ]
            ; Node.div
-               ~attrs:[ Style.metric ]
+               ~attrs:[ Style.metric; Attr.role "cell" ]
                [ Node.div
                    ~attrs:[ context_class row.context_pct ]
                    [ Node.text
