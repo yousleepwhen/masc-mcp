@@ -898,7 +898,7 @@ let focus_card ~(shell : Overview_types.response) ~(active : Route.t) =
 let flame_block ?(cls = Style.flame_block) ~flex text =
   Node.div
     ~attrs:
-      [ cls
+      [ Attr.create "aria-hidden" "true"; cls
       ; Attr.style
           (Css_gen.create
              ~field:"flex-grow"
@@ -911,7 +911,7 @@ let flame () =
   Node.div
     [ aside_title ~right:"2.40s" "Last turn"
     ; Node.div
-        ~attrs:[ Style.flame ]
+        ~attrs:[ Style.flame; Attr.role "img"; Attr.arialabel "Flame graph: last turn timing breakdown" ]
         [ Node.div
             ~attrs:[ Style.flame_row ]
             [ flame_block ~flex:240. "bonsai.shell()" ]
@@ -951,7 +951,7 @@ let watch_feed () =
   Node.div
     [ aside_title ~right:"live" "Watch"
     ; Node.div
-        ~attrs:[ Style.events ]
+        ~attrs:[ Style.events; Attr.role "log"; Attr.arialabel "Watch event feed" ]
         [ event ~tone:`Ok "now"
             [ Node.code [ Node.text "shell" ]
             ; Node.text " . dashboard_v2 chrome mounted."
