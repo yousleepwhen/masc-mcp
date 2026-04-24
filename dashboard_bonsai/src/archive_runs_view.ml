@@ -215,6 +215,19 @@ stylesheet
       transition-duration: 0.01ms !important;
     }
   }
+
+  @media (max-width: 760px) {
+    .loop {
+      grid-template-columns: 1fr;
+      gap: 8px;
+    }
+    .goal {
+      min-width: 0;
+    }
+    .cycle, .kd, .elapsed {
+      text-align: left;
+    }
+  }
 |}]
 
 let pill_color : Archive_runs_types.status -> Pill.color = function

@@ -233,6 +233,16 @@ stylesheet
     font-size: 11px;
     color: var(--text-dim);
   }
+
+  @media (max-width: 760px) {
+    .goal_head {
+      grid-template-columns: 1fr;
+      gap: 8px;
+    }
+    .goal_horizon { text-align: left; }
+    .conv_bar_wrap { text-align: left; }
+    .goal_indent { margin-left: 12px; padding-left: 10px; }
+  }
 |}]
 
 let status_pill_color (s : string) : Pill.color =
