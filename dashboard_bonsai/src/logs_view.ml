@@ -1333,8 +1333,8 @@ let sigil_char source =
 let view_entry ~is_first (e : Logs_types.entry) =
   let row_attrs =
     match row_tint e.normalized_level with
-    | None -> [ Style.row ]
-    | Some tint -> [ Style.row; tint ]
+    | None -> [ Style.row; Attr.arialabel (e.normalized_level ^ " " ^ e.module_ ^ ": " ^ e.message) ]
+    | Some tint -> [ Style.row; tint; Attr.arialabel (e.normalized_level ^ " " ^ e.module_ ^ ": " ^ e.message) ]
   in
   let sigil_attrs =
     match sigil_class e.normalized_level with
@@ -1452,10 +1452,10 @@ let view_heartbeat ?(entries : Logs_types.entry list = []) () =
       Attr.style (Css_gen.create ~field:"height" ~value:(Printf.sprintf "%dpx" h))
     in
     let title_attr = Attr.create "title" tip in
-    Node.div ~attrs:(title_attr :: style :: base_attrs) []
+    Node.div ~attrs:(Attr.create "aria-hidden" "true" :: title_attr :: style :: base_attrs) []
   in
   Node.div
-    ~attrs:[ Style.heartbeat ]
+    ~attrs:[ Style.heartbeat; Attr.role "img"; Attr.arialabel "Cycle pulse: event density across last 60 ticks" ]
     [ Node.div
         ~attrs:[ Style.heartbeat_head ]
         [ Node.span
