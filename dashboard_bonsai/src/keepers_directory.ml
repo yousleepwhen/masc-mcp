@@ -1121,8 +1121,10 @@ let view
   | [] ->
     Node.div
       ~attrs:[ Style.quiet; Attr.role "status"; Attr.arialabel "Directory loading" ]
-      [ Node.text
-          "runtime/mission snapshot이 아직 조용합니다. keepers summary만 먼저 올라왔을 가능성이 있습니다."
+      [ Node.span ~attrs:[ Attr.create "lang" "ko" ]
+          [ Node.text
+              "runtime/mission snapshot이 아직 조용합니다. keepers summary만 먼저 올라왔을 가능성이 있습니다."
+          ]
       ]
   | _ ->
     let selected = selected_row rows selected_name in
