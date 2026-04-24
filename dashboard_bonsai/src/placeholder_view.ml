@@ -87,6 +87,7 @@ stylesheet
     color: var(--accent-brass);
     border-color: var(--accent-brass);
   }
+  .btn:focus-visible { outline: 2px solid var(--accent-brass); outline-offset: -2px; }
 
   .btn_primary {
     color: var(--accent-brass);

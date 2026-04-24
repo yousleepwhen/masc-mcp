@@ -341,6 +341,7 @@ stylesheet
     transition: color 0.18s, border-color 0.18s;
   }
   .btn_ghost:hover { color: var(--accent-brass); border-color: var(--border-highlight); }
+  .btn_ghost:focus-visible { outline: 2px solid var(--accent-brass); outline-offset: -2px; }
 
   .header {
     display: flex;
@@ -1177,6 +1178,7 @@ stylesheet
     border-color: var(--accent-brass);
     color: var(--accent-brass);
   }
+  .pbtn:focus-visible { outline: 2px solid var(--accent-brass); outline-offset: -2px; }
   .pbtn_primary {
     background: linear-gradient(180deg, #3a2a16 0%, #241810 100%);
     border-color: var(--accent-brass);
