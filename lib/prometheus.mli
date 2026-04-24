@@ -157,6 +157,11 @@ val metric_inference_queue_max_concurrent : string
 
 val metric_agent_heartbeat_age_seconds : string
 val metric_agent_stale_total : string
+val metric_dashboard_snapshot_section_duration : string
+val metric_dashboard_keeper_snapshot_wait_duration : string
+val metric_dashboard_keeper_snapshot_work_duration : string
+val metric_dashboard_keeper_snapshot_stage_duration : string
+val metric_dashboard_keeper_audit_source : string
 
 (** {1 Process monitoring} *)
 

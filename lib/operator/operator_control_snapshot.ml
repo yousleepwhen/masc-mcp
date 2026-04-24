@@ -209,6 +209,185 @@ let align_keeper_runtime_status
     | ("inactive" | "offline"), Some status -> status
     | _ -> surface_status
 
+type keeper_tool_audit_trace = {
+  mutable recent_tools_sec : float;
+  mutable snapshot_sec : float;
+  mutable heartbeat_sec : float;
+}
+
+let make_keeper_tool_audit_trace () =
+  { recent_tools_sec = 0.0; snapshot_sec = 0.0; heartbeat_sec = 0.0 }
+
+type keeper_snapshot_timing = {
+  keeper_name : string;
+  lightweight : bool;
+  wait_sec : float;
+  work_sec : float;
+  meta_sec : float;
+  agent_sec : float;
+  keepalive_sec : float;
+  audit_sec : float;
+  audit_recent_tools_sec : float;
+  audit_snapshot_sec : float;
+  audit_heartbeat_sec : float;
+  profile_sec : float;
+  phase_sec : float;
+  activity_sec : float;
+  audit_cache_source : string;
+}
+
+type keepers_snapshot_rollup = {
+  keeper_count : int;
+  slow_keeper_count : int;
+  slowest_keeper : string option;
+  slowest_total_sec : float;
+  max_wait_sec : float;
+  dominant_stage : string option;
+}
+
+let keeper_log_detail_threshold_sec = 0.3
+let keeper_wait_log_threshold_sec = 0.5
+let keeper_audit_detail_threshold_sec = 0.2
+
+let bool_label value = if value then "true" else "false"
+
+let keeper_snapshot_total_sec (timing : keeper_snapshot_timing) =
+  timing.wait_sec +. timing.work_sec
+
+let keeper_snapshot_stage_pairs (timing : keeper_snapshot_timing) =
+  [
+    ("meta", timing.meta_sec);
+    ("agent", timing.agent_sec);
+    ("keepalive", timing.keepalive_sec);
+    ("audit", timing.audit_sec);
+    ("profile", timing.profile_sec);
+    ("phase", timing.phase_sec);
+    ("activity", timing.activity_sec);
+    ("audit_recent_tools", timing.audit_recent_tools_sec);
+    ("audit_snapshot", timing.audit_snapshot_sec);
+    ("audit_heartbeat", timing.audit_heartbeat_sec);
+  ]
+
+let keeper_snapshot_dominant_stage (timing : keeper_snapshot_timing) =
+  keeper_snapshot_stage_pairs timing
+  |> List.fold_left
+       (fun best (stage, sec) ->
+         if sec <= 0.0 then best
+         else
+           match best with
+           | Some (_, best_sec) when best_sec >= sec -> best
+           | _ -> Some (stage, sec))
+       None
+  |> Option.map fst
+
+let keeper_snapshot_should_log_detail (timing : keeper_snapshot_timing) =
+  keeper_snapshot_total_sec timing >= keeper_log_detail_threshold_sec
+  || timing.wait_sec >= keeper_wait_log_threshold_sec
+  || timing.audit_sec >= keeper_audit_detail_threshold_sec
+
+let keepers_snapshot_rollup (timings : keeper_snapshot_timing list) =
+  let slow_keeper_count =
+    List.fold_left
+      (fun acc timing -> if keeper_snapshot_should_log_detail timing then acc + 1 else acc)
+      0 timings
+  in
+  let slowest =
+    List.fold_left
+      (fun best timing ->
+        let total_sec = keeper_snapshot_total_sec timing in
+        match best with
+        | Some (_, best_total) when best_total >= total_sec -> best
+        | _ -> Some (timing, total_sec))
+      None timings
+  in
+  let max_wait_sec =
+    List.fold_left (fun acc timing -> max acc timing.wait_sec) 0.0 timings
+  in
+  match slowest with
+  | Some (timing, slowest_total_sec) ->
+      {
+        keeper_count = List.length timings;
+        slow_keeper_count;
+        slowest_keeper = Some timing.keeper_name;
+        slowest_total_sec;
+        max_wait_sec;
+        dominant_stage = keeper_snapshot_dominant_stage timing;
+      }
+  | None ->
+      {
+        keeper_count = 0;
+        slow_keeper_count;
+        slowest_keeper = None;
+        slowest_total_sec = 0.0;
+        max_wait_sec;
+        dominant_stage = None;
+      }
+
+let observe_keeper_snapshot_timing (timing : keeper_snapshot_timing) =
+  let lightweight = bool_label timing.lightweight in
+  let labels = [ ("lightweight", lightweight) ] in
+  Prometheus.observe_histogram
+    Prometheus.metric_dashboard_keeper_snapshot_wait_duration
+    ~labels timing.wait_sec;
+  Prometheus.observe_histogram
+    Prometheus.metric_dashboard_keeper_snapshot_work_duration
+    ~labels timing.work_sec;
+  List.iter
+    (fun (stage, sec) ->
+      if sec > 0.0 then
+        Prometheus.observe_histogram
+          Prometheus.metric_dashboard_keeper_snapshot_stage_duration
+          ~labels:[ ("stage", stage); ("lightweight", lightweight) ]
+          sec)
+    (keeper_snapshot_stage_pairs timing);
+  if timing.audit_sec > 0.0 then
+    Prometheus.inc_counter Prometheus.metric_dashboard_keeper_audit_source
+      ~labels:
+        [ ("source", timing.audit_cache_source); ("lightweight", lightweight) ]
+      ()
+
+let log_keeper_snapshot_timing (timing : keeper_snapshot_timing) =
+  if keeper_snapshot_should_log_detail timing then
+    Log.Dashboard.info
+      "[keepers_json:%s] detail lightweight=%s wait_ms=%.0f work_ms=%.0f \
+       total_ms=%.0f threshold_ms=%.0f meta_ms=%.0f agent_ms=%.0f \
+       keepalive_ms=%.0f audit_ms=%.0f audit_recent_tools_ms=%.0f \
+       audit_snapshot_ms=%.0f audit_heartbeat_ms=%.0f profile_ms=%.0f \
+       phase_ms=%.0f activity_ms=%.0f audit_cache_source=%s dominant_stage=%s"
+      timing.keeper_name
+      (bool_label timing.lightweight)
+      (timing.wait_sec *. 1000.0)
+      (timing.work_sec *. 1000.0)
+      (keeper_snapshot_total_sec timing *. 1000.0)
+      (keeper_log_detail_threshold_sec *. 1000.0)
+      (timing.meta_sec *. 1000.0)
+      (timing.agent_sec *. 1000.0)
+      (timing.keepalive_sec *. 1000.0)
+      (timing.audit_sec *. 1000.0)
+      (timing.audit_recent_tools_sec *. 1000.0)
+      (timing.audit_snapshot_sec *. 1000.0)
+      (timing.audit_heartbeat_sec *. 1000.0)
+      (timing.profile_sec *. 1000.0)
+      (timing.phase_sec *. 1000.0)
+      (timing.activity_sec *. 1000.0)
+      timing.audit_cache_source
+      (Option.value ~default:"none" (keeper_snapshot_dominant_stage timing))
+
+let log_keepers_snapshot_rollup total_sec (timings : keeper_snapshot_timing list) =
+  if total_sec >= keeper_wait_log_threshold_sec then
+    let rollup = keepers_snapshot_rollup timings in
+    Log.Dashboard.info
+      "[keepers_json] rollup keeper_count=%d slow_keeper_count=%d \
+       slowest_keeper=%s slowest_total_ms=%.0f max_wait_ms=%.0f \
+       dominant_stage=%s total_ms=%.0f"
+      rollup.keeper_count
+      rollup.slow_keeper_count
+      (Option.value ~default:"none" rollup.slowest_keeper)
+      (rollup.slowest_total_sec *. 1000.0)
+      (rollup.max_wait_sec *. 1000.0)
+      (Option.value ~default:"none" rollup.dominant_stage)
+      (total_sec *. 1000.0)
+
 let remote_client_type_of_context (ctx : 'a context) =
   match ctx.mcp_session_id with
   | Some _ -> "mcp_remote"
@@ -338,14 +517,29 @@ let recent_tool_names_from_files config keeper_name =
     (collect_recent_tool_names decision_lines)
     (collect_recent_tool_names metrics_lines)
 
+type keeper_tool_audit_fields = {
+  allowed_tool_names : string list;
+  recent_tool_names : string list;
+  latest_tool_names : string list;
+  latest_tool_call_count : int option;
+  latest_action_source : string option;
+  tool_audit_source : string option;
+  tool_audit_at : string option;
+}
+
 let keeper_tool_audit_fields ?(include_allowed_tools = true) config
-    (meta : Keeper_types.keeper_meta) =
+    ?trace (meta : Keeper_types.keeper_meta) =
   let fallback_allowed =
     if include_allowed_tools then Keeper_exec_tools.keeper_allowed_tool_names meta
     else []
   in
+  let t_recent_tools = Time_compat.now () in
   let recent_tool_names = recent_tool_names_from_files config meta.name in
+  Option.iter
+    (fun trace -> trace.recent_tools_sec <- Time_compat.now () -. t_recent_tools)
+    trace;
   let last_autonomous = String.trim meta.runtime.last_autonomous_action_at in
+  let t_snapshot = Time_compat.now () in
   let fallback_snapshot =
     match
       Keeper_exec_status_metrics.latest_tool_audit_snapshot_from_files config
@@ -378,76 +572,107 @@ let keeper_tool_audit_fields ?(include_allowed_tools = true) config
              else None);
         }
   in
+  Option.iter
+    (fun trace -> trace.snapshot_sec <- Time_compat.now () -. t_snapshot)
+    trace;
+  let t_heartbeat = Time_compat.now () in
+  let fields =
   match A2a_tools.latest_heartbeat_task meta.agent_name,
         A2a_tools.latest_heartbeat_result meta.agent_name with
   | Some task, Some result ->
       if task.seq > result.seq then
-        ( task.allowed_tools,
-          recent_tool_names,
-          result.tool_names,
-          Some result.tool_call_count,
-          fallback_snapshot.latest_action_source,
-          Some "heartbeat_task_pending_result",
-          Some task.created_at )
+        {
+          allowed_tool_names = task.allowed_tools;
+          recent_tool_names;
+          latest_tool_names = result.tool_names;
+          latest_tool_call_count = Some result.tool_call_count;
+          latest_action_source = fallback_snapshot.latest_action_source;
+          tool_audit_source = Some "heartbeat_task_pending_result";
+          tool_audit_at = Some task.created_at;
+        }
       else
-        ( task.allowed_tools,
-          merge_tool_name_lists result.tool_names recent_tool_names,
-          result.tool_names,
-          Some result.tool_call_count,
-          fallback_snapshot.latest_action_source,
-          Some "heartbeat_result",
-          Some result.updated_at )
+        {
+          allowed_tool_names = task.allowed_tools;
+          recent_tool_names =
+            merge_tool_name_lists result.tool_names recent_tool_names;
+          latest_tool_names = result.tool_names;
+          latest_tool_call_count = Some result.tool_call_count;
+          latest_action_source = fallback_snapshot.latest_action_source;
+          tool_audit_source = Some "heartbeat_result";
+          tool_audit_at = Some result.updated_at;
+        }
   | Some task, None ->
-      ( task.allowed_tools,
-        recent_tool_names,
-        [],
-        None,
-        fallback_snapshot.latest_action_source,
-        Some "heartbeat_task",
-        Some task.created_at )
+      {
+        allowed_tool_names = task.allowed_tools;
+        recent_tool_names;
+        latest_tool_names = [];
+        latest_tool_call_count = None;
+        latest_action_source = fallback_snapshot.latest_action_source;
+        tool_audit_source = Some "heartbeat_task";
+        tool_audit_at = Some task.created_at;
+      }
   | None, Some result ->
-      ( fallback_allowed,
-        merge_tool_name_lists result.tool_names recent_tool_names,
-        result.tool_names,
-        Some result.tool_call_count,
-        fallback_snapshot.latest_action_source,
-        Some "heartbeat_result",
-        Some result.updated_at )
+      {
+        allowed_tool_names = fallback_allowed;
+        recent_tool_names =
+          merge_tool_name_lists result.tool_names recent_tool_names;
+        latest_tool_names = result.tool_names;
+        latest_tool_call_count = Some result.tool_call_count;
+        latest_action_source = fallback_snapshot.latest_action_source;
+        tool_audit_source = Some "heartbeat_result";
+        tool_audit_at = Some result.updated_at;
+      }
   | None, None ->
-      ( fallback_allowed,
-        recent_tool_names,
-        fallback_snapshot.latest_tool_names,
-        fallback_snapshot.latest_tool_call_count,
-        fallback_snapshot.latest_action_source,
-        fallback_snapshot.tool_audit_source,
-        fallback_snapshot.tool_audit_at )
+      {
+        allowed_tool_names = fallback_allowed;
+        recent_tool_names;
+        latest_tool_names = fallback_snapshot.latest_tool_names;
+        latest_tool_call_count = fallback_snapshot.latest_tool_call_count;
+        latest_action_source = fallback_snapshot.latest_action_source;
+        tool_audit_source = fallback_snapshot.tool_audit_source;
+        tool_audit_at = fallback_snapshot.tool_audit_at;
+      }
+  in
+  Option.iter
+    (fun trace -> trace.heartbeat_sec <- Time_compat.now () -. t_heartbeat)
+    trace;
+  fields
 
-let cached_tool_audit_json ~lightweight config (meta : Keeper_types.keeper_meta) =
+let tool_audit_json_of_fields (fields : keeper_tool_audit_fields) =
+  `Assoc
+    [
+      ( "allowed_tool_names",
+        `List (List.map (fun value -> `String value) fields.allowed_tool_names) );
+      ( "recent_tool_names",
+        `List (List.map (fun value -> `String value) fields.recent_tool_names) );
+      ( "latest_tool_names",
+        `List (List.map (fun value -> `String value) fields.latest_tool_names) );
+      ( "latest_tool_call_count",
+        option_to_json (fun value -> `Int value) fields.latest_tool_call_count );
+      ("latest_action_source", string_option_to_json fields.latest_action_source);
+      ("tool_audit_source", string_option_to_json fields.tool_audit_source);
+      ("tool_audit_at", string_option_to_json fields.tool_audit_at);
+    ]
+
+let cached_tool_audit_json ?audit_trace ~lightweight config
+    (meta : Keeper_types.keeper_meta) =
   let cache_key = "kta:" ^ meta.name in
-  Dashboard_cache.get_or_compute cache_key ~ttl:2.0 (fun () ->
-    let allowed_tool_names, recent_tool_names, latest_tool_names,
-        latest_tool_call_count, latest_action_source,
-        tool_audit_source, tool_audit_at =
-      if lightweight then
-        let _, recent_tool_names, latest_tool_names,
-            latest_tool_call_count, latest_action_source,
-            tool_audit_source, tool_audit_at =
-          keeper_tool_audit_fields ~include_allowed_tools:false config meta
+  let cache_hit = Dashboard_cache.peek cache_key <> None in
+  let trace_for_compute = if cache_hit then None else audit_trace in
+  let audit_json =
+    Dashboard_cache.get_or_compute cache_key ~ttl:2.0 (fun () ->
+        let fields =
+          if lightweight then
+            let fields =
+              keeper_tool_audit_fields ~include_allowed_tools:false
+                ?trace:trace_for_compute config meta
+            in
+            { fields with allowed_tool_names = [] }
+          else keeper_tool_audit_fields ?trace:trace_for_compute config meta
         in
-        ( [], recent_tool_names, latest_tool_names,
-          latest_tool_call_count, latest_action_source,
-          tool_audit_source, tool_audit_at )
-      else keeper_tool_audit_fields config meta
-    in
-    `Assoc [
-      ("allowed_tool_names", `List (List.map (fun v -> `String v) allowed_tool_names));
-      ("recent_tool_names", `List (List.map (fun v -> `String v) recent_tool_names));
-      ("latest_tool_names", `List (List.map (fun v -> `String v) latest_tool_names));
-      ("latest_tool_call_count", option_to_json (fun v -> `Int v) latest_tool_call_count);
-      ("latest_action_source", string_option_to_json latest_action_source);
-      ("tool_audit_source", string_option_to_json tool_audit_source);
-      ("tool_audit_at", string_option_to_json tool_audit_at);
-    ])
+        tool_audit_json_of_fields fields)
+  in
+  (audit_json, if cache_hit then "cache" else "recomputed")
 
 (* Concurrency cap for parallel keeper snapshot fibers.
    Originally 4 to guard against memory bursts when many keepers are
@@ -477,6 +702,7 @@ let _keeper_sem = Eio.Semaphore.make _keeper_snapshot_max_concurrency
 
 let keepers_json ?keeper_names ?(include_recent_activity = false)
     ?(lightweight = false) config =
+  let keepers_t0 = Time_compat.now () in
   let names = match keeper_names with
     | Some n -> n
     | None -> Keeper_types.keeper_names config
@@ -487,6 +713,7 @@ let keepers_json ?keeper_names ?(include_recent_activity = false)
      construction can cause memory spikes during dashboard refresh. *)
   let n = List.length names in
   let results = Array.make n None in
+  let timings = Array.make n None in
   Eio.Fiber.all
     (List.mapi
        (fun idx name () ->
@@ -498,18 +725,8 @@ let keepers_json ?keeper_names ?(include_recent_activity = false)
          let t_wait_start = Time_compat.now () in
          Eio.Semaphore.acquire _keeper_sem;
          let t_work_start = Time_compat.now () in
-         let wait_ms = (t_work_start -. t_wait_start) *. 1000.0 in
-         Fun.protect
-           ~finally:(fun () ->
-             Eio.Semaphore.release _keeper_sem;
-             let work_ms = (Time_compat.now () -. t_work_start) *. 1000.0 in
-             if work_ms > 500.0 || wait_ms > 500.0 then
-               Log.Dashboard.info
-                 "[keepers_json:%s] wait=%.0fms work=%.0fms" name wait_ms
-                 work_ms)
-           (fun () ->
-         (* Per-sub-op timing for #8822: attribute ~3100ms snapshot cost.
-            Threshold 300ms — lower than outer 500ms for more data. *)
+         let wait_sec = t_work_start -. t_wait_start in
+         let wait_ms = wait_sec *. 1000.0 in
          let dt_meta = ref 0.0 in
          let dt_agent = ref 0.0 in
          let dt_ka = ref 0.0 in
@@ -517,22 +734,42 @@ let keepers_json ?keeper_names ?(include_recent_activity = false)
          let dt_profile = ref 0.0 in
          let dt_phase = ref 0.0 in
          let dt_activity = ref 0.0 in
-         let emit_timing_log total_work =
-           if total_work > 0.3 then
-             Log.Dashboard.info
-               "[keepers_json:%s] sub-op: meta=%.0fms agent=%.0fms ka=%.0fms \
-                audit=%.0fms profile=%.0fms phase=%.0fms activity=%.0fms \
-                total=%.0fms"
-               name
-               (!dt_meta *. 1000.0)
-               (!dt_agent *. 1000.0)
-               (!dt_ka *. 1000.0)
-               (!dt_audit *. 1000.0)
-               (!dt_profile *. 1000.0)
-               (!dt_phase *. 1000.0)
-               (!dt_activity *. 1000.0)
-               (total_work *. 1000.0)
-         in
+         let audit_trace = make_keeper_tool_audit_trace () in
+         let audit_cache_source = ref "cache" in
+         Fun.protect
+           ~finally:(fun () ->
+             Eio.Semaphore.release _keeper_sem;
+             let work_sec = Time_compat.now () -. t_work_start in
+             let work_ms = work_sec *. 1000.0 in
+             let timing =
+               {
+                 keeper_name = name;
+                 lightweight;
+                 wait_sec;
+                 work_sec;
+                 meta_sec = !dt_meta;
+                 agent_sec = !dt_agent;
+                 keepalive_sec = !dt_ka;
+                 audit_sec = !dt_audit;
+                 audit_recent_tools_sec = audit_trace.recent_tools_sec;
+                 audit_snapshot_sec = audit_trace.snapshot_sec;
+                 audit_heartbeat_sec = audit_trace.heartbeat_sec;
+                 profile_sec = !dt_profile;
+                 phase_sec = !dt_phase;
+                 activity_sec = !dt_activity;
+                 audit_cache_source = !audit_cache_source;
+               }
+             in
+             timings.(idx) <- Some timing;
+             observe_keeper_snapshot_timing timing;
+             log_keeper_snapshot_timing timing;
+             if work_ms > 500.0 || wait_ms > 500.0 then
+               Log.Dashboard.info
+                 "[keepers_json:%s] wait_ms=%.0f work_ms=%.0f total_ms=%.0f"
+                 name wait_ms work_ms ((wait_sec +. work_sec) *. 1000.0))
+           (fun () ->
+         (* Per-keeper timing at stage granularity so slow-path logs can
+            point at the specific file/audit branch that dominates latency. *)
          results.(idx) <-
            (try
              let t0 = Time_compat.now () in
@@ -548,7 +785,6 @@ let keepers_json ?keeper_names ?(include_recent_activity = false)
                      | None -> `String "paused"
                    in
                    dt_phase := Time_compat.now () -. t_ph;
-                   emit_timing_log (Time_compat.now () -. t_work_start);
                    Some
                      (`Assoc
                        [
@@ -627,9 +863,11 @@ let keepers_json ?keeper_names ?(include_recent_activity = false)
                         ~meta ~keepalive_running ~keepalive_started_at ~now_ts
                  in
                  let t_audit = Time_compat.now () in
-                 let audit_json =
-                   cached_tool_audit_json ~lightweight config meta
+                 let audit_json, audit_source =
+                   cached_tool_audit_json ~lightweight
+                     ?audit_trace:(Some audit_trace) config meta
                  in
+                 audit_cache_source := audit_source;
                  let allowed_tool_names =
                    match U.to_list (U.member "allowed_tool_names" audit_json) with
                    | l -> List.filter_map (function `String s -> Some s | _ -> None) l
@@ -694,7 +932,6 @@ let keepers_json ?keeper_names ?(include_recent_activity = false)
                    | None -> `Null
                  in
                  let context_snapshot = keeper_context_snapshot_of_meta config meta in
-                 emit_timing_log (Time_compat.now () -. t_work_start);
                  Some
                    (`Assoc
                      ([
@@ -887,6 +1124,8 @@ let keepers_json ?keeper_names ?(include_recent_activity = false)
                name (Printexc.to_string exn);
              None)))
        names);
+  let timing_rows = Array.to_list timings |> List.filter_map Fun.id in
+  log_keepers_snapshot_rollup (Time_compat.now () -. keepers_t0) timing_rows;
   let rows = Array.to_list results |> List.filter_map Fun.id in
   `Assoc [ ("count", `Int (List.length rows)); ("items", `List rows) ]
 
@@ -1259,6 +1498,9 @@ let snapshot_json ?actor ?view ?(include_messages = true)
     let result = f () in
     let elapsed = Time_compat.now () -. t_start in
     timing_records := (label, elapsed) :: !timing_records;
+    Prometheus.observe_histogram
+      Prometheus.metric_dashboard_snapshot_section_duration
+      ~labels:[ ("section", label) ] elapsed;
     if elapsed > 0.5 then
       Log.Dashboard.info "[snapshot_json] %s: %.0fms" label (elapsed *. 1000.0);
     result

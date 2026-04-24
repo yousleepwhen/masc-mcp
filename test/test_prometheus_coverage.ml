@@ -223,6 +223,16 @@ let test_keeper_metrics_registered () =
     (has "masc_keeper_operator_compact_total");
   check bool "has operator clear counter" true
     (has "masc_keeper_operator_clear_total");
+  check bool "has dashboard snapshot section histogram" true
+    (has "masc_dashboard_snapshot_section_duration_seconds");
+  check bool "has dashboard keeper wait histogram" true
+    (has "masc_dashboard_keeper_snapshot_wait_duration_seconds");
+  check bool "has dashboard keeper work histogram" true
+    (has "masc_dashboard_keeper_snapshot_work_duration_seconds");
+  check bool "has dashboard keeper stage histogram" true
+    (has "masc_dashboard_keeper_snapshot_stage_duration_seconds");
+  check bool "has dashboard keeper audit source counter" true
+    (has "masc_dashboard_keeper_audit_source_total");
   check bool "has tool call counter" true
     (has "masc_tool_call_total")
 

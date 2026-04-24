@@ -258,6 +258,18 @@ let metric_inference_queue_max_concurrent = "masc_inference_queue_max_concurrent
 let metric_agent_heartbeat_age_seconds = "masc_agent_heartbeat_age_seconds"
 let metric_agent_stale_total = "masc_agent_stale_total"
 
+(* Dashboard snapshot telemetry — emitted by operator_control_snapshot.ml. *)
+let metric_dashboard_snapshot_section_duration =
+  "masc_dashboard_snapshot_section_duration_seconds"
+let metric_dashboard_keeper_snapshot_wait_duration =
+  "masc_dashboard_keeper_snapshot_wait_duration_seconds"
+let metric_dashboard_keeper_snapshot_work_duration =
+  "masc_dashboard_keeper_snapshot_work_duration_seconds"
+let metric_dashboard_keeper_snapshot_stage_duration =
+  "masc_dashboard_keeper_snapshot_stage_duration_seconds"
+let metric_dashboard_keeper_audit_source =
+  "masc_dashboard_keeper_audit_source_total"
+
 (* Process-level FD gauges — used in init() and update_fd_gauges. *)
 let metric_open_fds = "masc_process_open_fds"
 let metric_fd_warn_threshold = "masc_process_fd_warn_threshold"
@@ -436,6 +448,17 @@ let init () =
     Gauge;
   add metric_agent_stale_total
     "Total agents marked stale due to missed heartbeats"
+    Counter;
+  register_histogram ~name:metric_dashboard_snapshot_section_duration
+    ~help:"Dashboard snapshot section duration in seconds, labeled by section" ();
+  register_histogram ~name:metric_dashboard_keeper_snapshot_wait_duration
+    ~help:"keepers_json per-keeper wait duration in seconds, labeled by lightweight" ();
+  register_histogram ~name:metric_dashboard_keeper_snapshot_work_duration
+    ~help:"keepers_json per-keeper work duration in seconds, labeled by lightweight" ();
+  register_histogram ~name:metric_dashboard_keeper_snapshot_stage_duration
+    ~help:"keepers_json per-keeper stage duration in seconds, labeled by stage and lightweight" ();
+  add metric_dashboard_keeper_audit_source
+    "Total keepers_json tool-audit cache source observations, labeled by source=cache|recomputed and lightweight"
     Counter;
   register_histogram ~name:metric_llm_provider_request_latency
     ~help:"Per-HTTP-request LLM latency from OAS on_request_end callback. \

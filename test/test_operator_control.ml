@@ -52,6 +52,9 @@ let () =
             `Quick
             Test_operator_control_snapshot
             .test_snapshot_lightweight_summary_keeps_recent_tools_distinct_from_latest;
+          Alcotest.test_case "snapshot emits keeper telemetry metrics" `Quick
+            Test_operator_control_snapshot
+            .test_snapshot_emits_keeper_telemetry_metrics;
           Alcotest.test_case "snapshot waiters share inflight result" `Quick
             Test_operator_control_snapshot
             .test_snapshot_waiters_share_inflight_result;

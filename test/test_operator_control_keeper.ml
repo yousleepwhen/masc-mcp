@@ -1098,6 +1098,7 @@ proactive_enabled = true
               ])
       in
       Alcotest.(check bool) "keeper up ok" true ok;
+      Keeper_keepalive.stop_keepalive keeper_name;
       let meta =
         match Masc_mcp.Keeper_types.read_meta config keeper_name with
         | Ok (Some meta) -> meta
@@ -1254,15 +1255,21 @@ proactive_enabled = true
       let effective_system_prompt =
         json |> member "prompt" |> member "effective_system_prompt" |> to_string
       in
-      Alcotest.(check bool) "effective system prompt includes goal" true
-        (contains_substring effective_system_prompt ("Goal: " ^ mutated.goal));
-      Alcotest.(check bool) "effective system prompt includes world block" true
-        (contains_substring effective_system_prompt "<world>");
-      let stale_meta =
-        { mutated with
-          cascade_name = "vendor_mix_balanced";
-          updated_at = Types.now_iso ();
-        }
+	      Alcotest.(check bool) "effective system prompt includes goal" true
+	        (contains_substring effective_system_prompt ("Goal: " ^ mutated.goal));
+	      Alcotest.(check bool) "effective system prompt includes world block" true
+	        (contains_substring effective_system_prompt "<world>");
+	      let fresh_meta =
+	        match Masc_mcp.Keeper_types.read_meta config keeper_name with
+	        | Ok (Some meta) -> meta
+	        | Ok None -> Alcotest.fail "fresh keeper meta missing"
+	        | Error err -> Alcotest.fail ("fresh meta read failed: " ^ err)
+	      in
+	      let stale_meta =
+	        { fresh_meta with
+	          cascade_name = "vendor_mix_balanced";
+	          updated_at = Types.now_iso ();
+	        }
       in
       (match Masc_mcp.Keeper_types.write_meta config stale_meta with
       | Ok () -> ()

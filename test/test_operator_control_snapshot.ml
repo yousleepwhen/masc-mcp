@@ -578,6 +578,117 @@ let test_snapshot_lightweight_summary_keeps_recent_tools_distinct_from_latest ()
         Yojson.Safe.Util.
           (keeper |> member "latest_tool_names" |> to_list |> List.map to_string))
 
+let test_snapshot_emits_keeper_telemetry_metrics () =
+  let counter_value name ~labels =
+    Prometheus.get_metric_value name ~labels () |> Option.value ~default:0.0
+  in
+  let histogram_count name ~labels =
+    Prometheus.get_metric_value (name ^ "_count") ~labels ()
+    |> Option.value ~default:0.0
+  in
+  Eio_main.run @@ fun env ->
+  ensure_fs env;
+  Eio.Switch.run @@ fun sw ->
+  let base_dir = temp_dir () in
+  Fun.protect
+    ~finally:(fun () -> cleanup_dir base_dir)
+    (fun () ->
+      let config = Coord.default_config base_dir in
+      ignore (Coord.init config ~agent_name:(Some "owner"));
+      ignore (Coord.join config ~agent_name:"owner" ~capabilities:[] ());
+      let keeper_ctx : _ Tool_keeper.context =
+        {
+          config;
+          agent_name = "owner";
+          sw;
+          clock = Eio.Stdenv.clock env;
+          proc_mgr = Some (Eio.Stdenv.process_mgr env);
+          net = None;
+        }
+      in
+      let keeper_name = "telemetry-observer" in
+      let ok, _ =
+        dispatch_keeper_exn keeper_ctx ~name:"masc_keeper_up"
+          ~args:
+            (`Assoc
+              [
+                ("name", `String keeper_name);
+                ("goal", `String "Emit keeper snapshot telemetry");
+                ("proactive_enabled", `Bool false);
+                ("autoboot_enabled", `Bool false);
+              ])
+      in
+      Alcotest.(check bool) "keeper up ok" true ok;
+      Keeper_keepalive.stop_keepalive keeper_name;
+      Dashboard_cache.invalidate_all ();
+      Operator_control.invalidate_snapshot_cache ();
+      let section_labels = [ ("section", "keepers_json") ] in
+      let lightweight_labels = [ ("lightweight", "false") ] in
+      let audit_stage_labels =
+        [ ("stage", "audit"); ("lightweight", "false") ]
+      in
+      let recomputed_labels =
+        [ ("source", "recomputed"); ("lightweight", "false") ]
+      in
+      let cache_labels = [ ("source", "cache"); ("lightweight", "false") ] in
+      let section_before =
+        histogram_count Prometheus.metric_dashboard_snapshot_section_duration
+          ~labels:section_labels
+      in
+      let work_before =
+        histogram_count Prometheus.metric_dashboard_keeper_snapshot_work_duration
+          ~labels:lightweight_labels
+      in
+      let audit_stage_before =
+        histogram_count Prometheus.metric_dashboard_keeper_snapshot_stage_duration
+          ~labels:audit_stage_labels
+      in
+      let recomputed_before =
+        counter_value Prometheus.metric_dashboard_keeper_audit_source
+          ~labels:recomputed_labels
+      in
+      ignore
+        (Operator_control.snapshot_json ~view:"summary" ~include_keepers:true
+           ~include_messages:false (operator_ctx env sw config "owner"));
+      let section_after =
+        histogram_count Prometheus.metric_dashboard_snapshot_section_duration
+          ~labels:section_labels
+      in
+      let work_after =
+        histogram_count Prometheus.metric_dashboard_keeper_snapshot_work_duration
+          ~labels:lightweight_labels
+      in
+      let audit_stage_after =
+        histogram_count Prometheus.metric_dashboard_keeper_snapshot_stage_duration
+          ~labels:audit_stage_labels
+      in
+      let recomputed_after =
+        counter_value Prometheus.metric_dashboard_keeper_audit_source
+          ~labels:recomputed_labels
+      in
+      Alcotest.(check bool) "section histogram observed" true
+        (section_after > section_before);
+      Alcotest.(check bool) "keeper work histogram observed" true
+        (work_after > work_before);
+      Alcotest.(check bool) "audit stage histogram observed" true
+        (audit_stage_after > audit_stage_before);
+      Alcotest.(check bool) "recomputed audit source observed" true
+        (recomputed_after > recomputed_before);
+      Operator_control.invalidate_snapshot_cache ();
+      let cache_before =
+        counter_value Prometheus.metric_dashboard_keeper_audit_source
+          ~labels:cache_labels
+      in
+      ignore
+        (Operator_control.snapshot_json ~view:"summary" ~include_keepers:true
+           ~include_messages:false (operator_ctx env sw config "owner"));
+      let cache_after =
+        counter_value Prometheus.metric_dashboard_keeper_audit_source
+          ~labels:cache_labels
+      in
+      Alcotest.(check bool) "cached audit source observed" true
+        (cache_after > cache_before))
+
 let test_snapshot_waiters_share_inflight_result () =
   Eio_main.run @@ fun env ->
   ensure_fs env;
