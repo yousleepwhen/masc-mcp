@@ -100,19 +100,6 @@ stylesheet
     background: var(--status-ok);
   }
 
-  .status_pill {
-    font-family: 'JetBrains Mono', ui-monospace, monospace;
-    font-size: 11px;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    padding: 2px 6px;
-    border: 1px solid var(--border-main);
-    text-align: center;
-    color: var(--text-dim);
-  }
-  .status_active { color: var(--status-ok); border-color: var(--status-ok); background: rgba(90,122,58,0.12); }
-  .status_paused { color: var(--status-warn); border-color: var(--status-warn); background: rgba(160,106,26,0.10); }
-  .status_done { color: var(--accent-brass); border-color: var(--accent-brass); background: rgba(138,106,40,0.12); }
 
   .tasks {
     font-family: 'JetBrains Mono', ui-monospace, monospace;
