@@ -1127,7 +1127,7 @@ let view
   | _ ->
     let selected = selected_row rows selected_name in
     Node.div
-      ~attrs:[ Style.directory; Attr.role "grid"; Attr.arialabel "Keepers directory" ]
+      ~attrs:[ Style.directory; Attr.role "table"; Attr.arialabel "Keepers directory" ]
       ([ Node.div
            ~attrs:[ Style.head; Attr.role "row" ]
            [ Node.div ~attrs:[ Attr.role "columnheader" ] [ Node.text "Sigil" ]

@@ -150,7 +150,7 @@ let view_slot ~(state : state) ~sigil ~name ~state_label ~when_ =
     | `Failed -> Style.dot_failed
   in
   Node.div
-    ~attrs:[ Style.slot; Attr.role "listitem" ]
+    ~attrs:[ Style.slot; Attr.role "listitem"; Attr.arialabel (name ^ " · " ^ state_label ^ " · " ^ when_) ]
     [ Node.div ~attrs:[ Style.sigil ] [ Node.text sigil ]
     ; Node.div
         ~attrs:[ Style.body ]
