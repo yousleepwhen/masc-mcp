@@ -1676,7 +1676,7 @@ let render_response
   in
   let toolbar =
     Node.div
-      ~attrs:[ Style.toolbar ]
+      ~attrs:[ Style.toolbar; Attr.role "group"; Attr.arialabel "Log controls" ]
       [ (let filter_chip ~level ~label =
            let fire () =
              Effect.of_sync_fun
@@ -1751,7 +1751,7 @@ let render_response
   in
   let moonrise =
     Node.div
-      ~attrs:[ Style.moonrise ]
+      ~attrs:[ Style.moonrise; Attr.role "status"; Attr.arialabel "Watch status" ]
       [ Node.span ~attrs:[ Style.moon_glyph; Attr.create "aria-hidden" "true" ] []
       ; Node.span ~attrs:[ Style.moon_lead ] [ Node.text moon_lead_text ]
       ; Node.span ~attrs:[ Style.moon_sep ] [ Node.text "·" ]
