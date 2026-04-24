@@ -433,6 +433,7 @@ let render (r : Overview_types.response) : Node.t =
           "runtime snapshot — identity, build, fleet counts, \
            meta-cognition. shell endpoint의 압축 projection으로, \
            깊은 진단은 각 tab에서 확인."
+        ~sub_lang:"ko"
         ()
     ; Node.div
         ~attrs:[ Style.grid; Attr.role "region"; Attr.arialabel "Overview panels" ]

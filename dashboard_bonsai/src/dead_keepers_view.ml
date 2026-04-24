@@ -157,6 +157,7 @@ let render ~(shell : Overview_types.response) (keepers : Keepers_types.response)
           "fleet의 추락한 자들. 이 목록은 Keepers 엔드포인트의 status=Dead \
            필터링 — 별도 endpoint 없음. 각 slot은 마지막으로 관측된 \
            state와 latency를 기록한다."
+        ~sub_lang:"ko"
         ()
     ; view_meta_strip ~total ~dead:dead_n ~synced
     ; view_dead_list dead

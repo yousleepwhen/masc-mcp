@@ -352,6 +352,7 @@ let render ~(shell : Overview_types.response) (r : Archive_runs_types.response) 
           "autoresearch의 reinforced-write loop 기록. 각 row는 \
            목표 · cycle progress · keeps/discards 의 총합. 실패한 \
            run은 error 사유를 함께 남긴다."
+        ~sub_lang:"ko"
         ()
     ; view_meta_strip r
     ; (match r.loops with

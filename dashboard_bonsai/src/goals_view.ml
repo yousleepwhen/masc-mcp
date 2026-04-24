@@ -468,6 +468,7 @@ let render ~(shell : Overview_types.response) (r : Goals_types.response) : Node.
           "config-driven goal forest. 각 node는 goal 하나 + 직속 \
            task들 + 하위 goals. convergence는 child goals의 평균 \
            progress."
+        ~sub_lang:"ko"
         ()
     ; view_meta_strip r
     ; (match r.tree with

@@ -102,6 +102,7 @@ let view_hero (rows : Keepers_directory.row list) =
     ~tail:(tail, `Brass)
     ~sub:
       "keepers summary에 execution + mission snapshot을 덧입혀 directory를 먼저 보여준다. 아래 섹션은 roster(축약) · swim(60s 활동) · pressure(60m ctx) 순으로 이어진다."
+    ~sub_lang:"ko"
     ()
 ;;
 
