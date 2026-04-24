@@ -1681,10 +1681,20 @@ let render_response
            let fire () =
              Effect.of_sync_fun
                (fun () ->
-                 let doc = Js_of_ocaml.Dom_html.document in
-                 doc##.documentElement##setAttribute
-                   (Js_of_ocaml.Js.string "data-log-level")
-                   (Js_of_ocaml.Js.string level))
+                 let root = Dom_html.document##.documentElement in
+                 root##setAttribute
+                   (Js.string "data-log-level")
+                   (Js.string level);
+                 let update lvl =
+                   Js.Opt.iter
+                     (root##querySelector
+                        (Js.string ("[data-filter-level=\"" ^ lvl ^ "\"]")))
+                     (fun el ->
+                        el##setAttribute
+                          (Js.string "aria-pressed")
+                          (Js.string (if lvl = level then "true" else "false")))
+                 in
+                 update "debug"; update "info"; update "warn"; update "error")
                ()
            in
            Node.span
@@ -1692,6 +1702,7 @@ let render_response
                [ Style.chip
                ; Attr.create "data-filter-level" level
                ; Attr.role "button"
+               ; Attr.create "aria-pressed" (if level = "info" then "true" else "false")
                ; Attr.tabindex 0
                ; Attr.on_click (fun _ev -> fire ())
                ; Attr.on_key_down (fun ev ->
@@ -1842,7 +1853,19 @@ let render_response
              Effect.of_sync_fun
                (fun () ->
                  Dom_html.window##.location##.hash
-                 := Js.string ("#" ^ name))
+                   := Js.string ("#" ^ name);
+                 let root = Dom_html.document##.documentElement in
+                 let update n =
+                   Js.Opt.iter
+                     (root##querySelector
+                        (Js.string ("[data-chip-theme=\"" ^ n ^ "\"]")))
+                     (fun el ->
+                        el##setAttribute
+                          (Js.string "aria-pressed")
+                          (Js.string (if n = name then "true" else "false")))
+                 in
+                 update "dark"; update "cyber"; update "term";
+                 update "parchment"; update "paper")
                ()
            in
            Node.div
@@ -1850,6 +1873,7 @@ let render_response
                [ Style.theme_chip
                ; Attr.create "data-chip-theme" name
                ; Attr.role "button"
+               ; Attr.create "aria-pressed" (if name = "dark" then "true" else "false")
                ; Attr.tabindex 0
                ; Attr.on_click (fun _ -> fire ())
                ; Attr.on_key_down (fun ev ->
