@@ -77,7 +77,7 @@ stylesheet
     background: linear-gradient(180deg, #241a12, #14100a);
     color: var(--text-primary);
     font-family: var(--font-ui, 'Noto Sans KR', sans-serif);
-    font-size: 10px;
+    font-size: 11px;
     letter-spacing: 0.24em;
     text-transform: uppercase;
     text-decoration: none;
@@ -215,7 +215,7 @@ let blueprint_of_route : Route.t -> blueprint = function
 
 let panel ~title ~text ~code =
   Node.div
-    ~attrs:[ Style.panel ]
+    ~attrs:[ Style.panel; Attr.role "listitem"; Attr.arialabel title ]
     [ Node.h4 ~attrs:[ Style.panel_title ] [ Node.text title ]
     ; Node.p ~attrs:[ Style.panel_text ] [ Node.text text ]
     ; Node.div ~attrs:[ Style.panel_code ] [ Node.text code ]
@@ -242,7 +242,7 @@ let component ~(route : Route.t) (_graph @ local) =
           ]
       ; Sec.view ~title:"operator contract" ~sub:"target · measure · next" ()
       ; Node.div
-          ~attrs:[ Style.grid ]
+          ~attrs:[ Style.grid; Attr.role "list" ]
           [ panel ~title:"measure" ~text:bp.measure ~code:"what must stay visible"
           ; panel ~title:"next" ~text:bp.next_step ~code:bp.endpoint
           ; panel
