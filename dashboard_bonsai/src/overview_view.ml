@@ -332,21 +332,21 @@ let view_counts_panel (r : Overview_types.response) =
     ; Node.div
         ~attrs:[ Style.counts ]
         [ Node.div
-            ~attrs:[ Style.count_cell ]
+            ~attrs:[ Style.count_cell; Attr.arialabel ("keepers: " ^ keeper_label) ]
             [ Node.div ~attrs:[ Style.count_k ] [ Node.text "keepers" ]
             ; Node.div
                 ~attrs:[ Style.count_v ]
                 [ Node.text keeper_label ]
             ]
         ; Node.div
-            ~attrs:[ Style.count_cell ]
+            ~attrs:[ Style.count_cell; Attr.arialabel ("tasks: " ^ Printf.sprintf "%d" c.tasks) ]
             [ Node.div ~attrs:[ Style.count_k ] [ Node.text "tasks" ]
             ; Node.div
                 ~attrs:[ Style.count_v ]
                 [ Node.text (Printf.sprintf "%d" c.tasks) ]
             ]
         ; Node.div
-            ~attrs:[ Style.count_cell ]
+            ~attrs:[ Style.count_cell; Attr.arialabel ("agents: " ^ Printf.sprintf "%d" c.agents) ]
             [ Node.div ~attrs:[ Style.count_k ] [ Node.text "agents" ]
             ; Node.div
                 ~attrs:[ Style.count_v ]

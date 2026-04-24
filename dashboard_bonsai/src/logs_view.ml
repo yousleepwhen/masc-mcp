@@ -1627,7 +1627,7 @@ let render_response
     match response.entries with
     | [] ->
       Node.div
-        ~attrs:[ Style.empty ]
+        ~attrs:[ Style.empty; Attr.role "status"; Attr.arialabel "No log entries" ]
         [ Node.span ~attrs:[ Attr.create "lang" "ko" ] [ Node.text "저택은 조용하다. 아무도 아직 말하지 않았다." ]
         ; Node.span
             ~attrs:[ Style.empty_attr ]
