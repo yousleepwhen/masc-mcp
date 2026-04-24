@@ -231,7 +231,7 @@ stylesheet
     letter-spacing: 0.22em;
     text-transform: uppercase;
     color: var(--text-bright);
-    font-size: 10px;
+    font-size: 11px;
   }
 
   .moon_sep {
@@ -251,7 +251,7 @@ stylesheet
     margin-left: auto;
     color: var(--text-dim);
     font-variant: normal;
-    font-size: 10px;
+    font-size: 11px;
     letter-spacing: 0.2em;
     text-transform: uppercase;
   }
@@ -414,7 +414,7 @@ stylesheet
   .folio {
     font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace;
     font-variant-numeric: tabular-nums;
-    font-size: 10px;
+    font-size: 11px;
     letter-spacing: 0.08em;
     color: var(--border-highlight);
     text-transform: none;
@@ -500,7 +500,7 @@ stylesheet
     display: grid;
     place-items: center;
     font-family: 'Cinzel', serif;
-    font-size: 10px;
+    font-size: 11px;
     letter-spacing: 0;
     color: var(--accent-brass);
     text-transform: uppercase;
@@ -636,7 +636,7 @@ stylesheet
   .details {
     color: var(--text-dim);
     font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace;
-    font-size: 10px;
+    font-size: 11px;
     margin-top: 0.25rem;
     opacity: 0.75;
   }
@@ -715,7 +715,7 @@ stylesheet
     left: 50%;
     transform: translateX(-50%) rotate(14deg);
     font-family: 'Noto Sans KR', sans-serif;
-    font-size: 10px;
+    font-size: 11px;
     letter-spacing: 0.3em;
     text-transform: uppercase;
     color: var(--border-highlight);
@@ -825,7 +825,7 @@ stylesheet
   .nav_link_tail {
     margin-left: auto;
     font-family: 'JetBrains Mono', ui-monospace, monospace;
-    font-size: 10px;
+    font-size: 11px;
     color: var(--accent-blood);
     font-variant-numeric: tabular-nums;
   }
@@ -835,7 +835,7 @@ stylesheet
     padding: 14px 18px 0;
     border-top: 1px solid var(--border-main);
     font-family: 'JetBrains Mono', ui-monospace, monospace;
-    font-size: 10px;
+    font-size: 11px;
     letter-spacing: 0.16em;
     color: var(--text-dim);
     text-transform: uppercase;
@@ -856,7 +856,7 @@ stylesheet
   }
   .theme_chip {
     font-family: 'Noto Sans KR', sans-serif;
-    font-size: 10px;
+    font-size: 11px;
     letter-spacing: 0.22em;
     text-transform: uppercase;
     padding: 3px 6px;
@@ -932,7 +932,7 @@ stylesheet
   }
   .aside_h_tail {
     font-family: 'JetBrains Mono', ui-monospace, monospace;
-    font-size: 10px;
+    font-size: 11px;
     color: var(--text-dim);
     margin-left: auto;
     font-variant-numeric: tabular-nums;
@@ -993,7 +993,7 @@ stylesheet
     display: flex;
     justify-content: space-between;
     font-family: 'JetBrains Mono', ui-monospace, monospace;
-    font-size: 10px;
+    font-size: 11px;
     color: var(--text-dim);
     margin-bottom: 4px;
     font-variant-numeric: tabular-nums;
@@ -1056,7 +1056,7 @@ stylesheet
   .evrow:last-child { border-bottom: 0; }
   .evrow_t {
     font-family: 'JetBrains Mono', ui-monospace, monospace;
-    font-size: 10px;
+    font-size: 11px;
     color: var(--text-dim);
     font-variant-numeric: tabular-nums;
   }
@@ -1080,7 +1080,7 @@ stylesheet
   .evrow_b_em { color: var(--text-bright); font-style: italic; }
   .evrow_b_code {
     font-family: 'JetBrains Mono', ui-monospace, monospace;
-    font-size: 10px;
+    font-size: 11px;
     color: var(--accent-brass);
     background: rgba(138, 106, 40, 0.08);
     padding: 0 5px;
@@ -1110,7 +1110,7 @@ stylesheet
   }
   .page_tag {
     font-family: 'Noto Sans KR', -apple-system, sans-serif;
-    font-size: 10px;
+    font-size: 11px;
     letter-spacing: 0.3em;
     text-transform: uppercase;
     color: var(--text-dim);
@@ -1161,7 +1161,7 @@ stylesheet
   }
   .pbtn {
     font-family: 'Noto Sans KR', sans-serif;
-    font-size: 10px;
+    font-size: 11px;
     letter-spacing: 0.24em;
     text-transform: uppercase;
     padding: 7px 12px;
