@@ -1361,7 +1361,7 @@ let note_section row =
            [ Node.span ~attrs:[ Attr.create "lang" "ko" ] [ Node.text "trust/note/current_work evidence가 아직 없습니다." ] ]
        | entries ->
          Node.div
-           ~attrs:[ Style.list; Attr.role "list"; Attr.arialabel "Keeper notes" ]
+           ~attrs:[ Style.list; Attr.role "list"; Attr.create "aria-label" "Keeper notes" ]
            (List.map entries ~f:(fun (label, text) ->
               Node.div
                 ~attrs:[ Style.note_box; Attr.role "listitem" ]
@@ -1431,7 +1431,7 @@ let data_section row execution mission =
   Node.div
     [ Shell_view.aside_title "Data"
     ; Node.div
-        ~attrs:[ Style.list; Attr.role "list"; Attr.arialabel "Keeper data" ]
+        ~attrs:[ Style.list; Attr.role "list"; Attr.create "aria-label" "Keeper data" ]
         (List.map (rows @ sparse_rows) ~f:(fun (label, value) ->
            Node.div
              ~attrs:[ Style.list_row; Attr.role "listitem" ]
@@ -1463,7 +1463,7 @@ let preview_section row =
     Node.div
       [ Shell_view.aside_title "Preview"
       ; Node.div
-          ~attrs:[ Style.list; Attr.role "list"; Attr.arialabel "Brief preview" ]
+          ~attrs:[ Style.list; Attr.role "list"; Attr.create "aria-label" "Brief preview" ]
           (List.map previews ~f:(fun (label, text) ->
              Node.div
                ~attrs:[ Style.preview_box; Attr.role "listitem" ]

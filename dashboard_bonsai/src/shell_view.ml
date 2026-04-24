@@ -911,7 +911,7 @@ let flame () =
   Node.div
     [ aside_title ~right:"2.40s" "Last turn"
     ; Node.div
-        ~attrs:[ Style.flame; Attr.role "img"; Attr.arialabel "Flame graph: last turn timing breakdown" ]
+        ~attrs:[ Style.flame; Attr.role "img"; Attr.create "aria-label" "Flame graph: last turn timing breakdown" ]
         [ Node.div
             ~attrs:[ Style.flame_row ]
             [ flame_block ~flex:240. "bonsai.shell()" ]
@@ -951,7 +951,7 @@ let watch_feed () =
   Node.div
     [ aside_title ~right:"live" "Watch"
     ; Node.div
-        ~attrs:[ Style.events; Attr.role "log"; Attr.arialabel "Watch event feed" ]
+        ~attrs:[ Style.events; Attr.role "log"; Attr.create "aria-label" "Watch event feed" ]
         [ event ~tone:`Ok "now"
             [ Node.code [ Node.text "shell" ]
             ; Node.text " . dashboard_v2 chrome mounted."

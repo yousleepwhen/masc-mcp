@@ -1333,8 +1333,8 @@ let sigil_char source =
 let view_entry ~is_first (e : Logs_types.entry) =
   let row_attrs =
     match row_tint e.normalized_level with
-    | None -> [ Style.row; Attr.arialabel (e.normalized_level ^ " " ^ e.module_ ^ ": " ^ e.message) ]
-    | Some tint -> [ Style.row; tint; Attr.arialabel (e.normalized_level ^ " " ^ e.module_ ^ ": " ^ e.message) ]
+    | None -> [ Style.row; Attr.create "aria-label" (e.normalized_level ^ " " ^ e.module_ ^ ": " ^ e.message) ]
+    | Some tint -> [ Style.row; tint; Attr.create "aria-label" (e.normalized_level ^ " " ^ e.module_ ^ ": " ^ e.message) ]
   in
   let sigil_attrs =
     match sigil_class e.normalized_level with
@@ -1455,7 +1455,7 @@ let view_heartbeat ?(entries : Logs_types.entry list = []) () =
     Node.div ~attrs:(Attr.create "aria-hidden" "true" :: title_attr :: style :: base_attrs) []
   in
   Node.div
-    ~attrs:[ Style.heartbeat; Attr.role "img"; Attr.arialabel "Cycle pulse: event density across last 60 ticks" ]
+    ~attrs:[ Style.heartbeat; Attr.role "img"; Attr.create "aria-label" "Cycle pulse: event density across last 60 ticks" ]
     [ Node.div
         ~attrs:[ Style.heartbeat_head ]
         [ Node.span
@@ -1627,7 +1627,7 @@ let render_response
     match response.entries with
     | [] ->
       Node.div
-        ~attrs:[ Style.empty; Attr.role "status"; Attr.arialabel "No log entries" ]
+        ~attrs:[ Style.empty; Attr.role "status"; Attr.create "aria-label" "No log entries" ]
         [ Node.span ~attrs:[ Attr.create "lang" "ko" ] [ Node.text "저택은 조용하다. 아무도 아직 말하지 않았다." ]
         ; Node.span
             ~attrs:[ Style.empty_attr ]
@@ -1676,7 +1676,7 @@ let render_response
   in
   let toolbar =
     Node.div
-      ~attrs:[ Style.toolbar; Attr.role "group"; Attr.arialabel "Log controls" ]
+      ~attrs:[ Style.toolbar; Attr.role "group"; Attr.create "aria-label" "Log controls" ]
       [ (let filter_chip ~level ~label =
            let fire () =
              Effect.of_sync_fun
@@ -1751,7 +1751,7 @@ let render_response
   in
   let moonrise =
     Node.div
-      ~attrs:[ Style.moonrise; Attr.role "status"; Attr.arialabel "Watch status" ]
+      ~attrs:[ Style.moonrise; Attr.role "status"; Attr.create "aria-label" "Watch status" ]
       [ Node.span ~attrs:[ Style.moon_glyph; Attr.create "aria-hidden" "true" ] []
       ; Node.span ~attrs:[ Style.moon_lead ] [ Node.text moon_lead_text ]
       ; Node.span ~attrs:[ Style.moon_sep ] [ Node.text "·" ]

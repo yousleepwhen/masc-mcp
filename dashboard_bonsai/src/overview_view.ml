@@ -181,7 +181,7 @@ let paused_pill ~(paused : bool) =
 let view_hero_panel (r : Overview_types.response) =
   let s = r.status in
   Node.div
-    ~attrs:[ Style.panel; Attr.role "group"; Attr.arialabel "Runtime identity panel" ]
+    ~attrs:[ Style.panel; Attr.role "group"; Attr.create "aria-label" "Runtime identity panel" ]
     [ Node.h2 ~attrs:[ Style.panel_title ] [ Node.text "runtime · identity" ]
     ; Node.div
         ~attrs:[ Style.kv_row; Attr.role "list"; Attr.create "aria-label" "Runtime identity" ]
@@ -229,7 +229,7 @@ let view_hero_panel (r : Overview_types.response) =
 let view_build_panel (r : Overview_types.response) =
   let b = r.status.build in
   Node.div
-    ~attrs:[ Style.panel; Attr.role "group"; Attr.arialabel "Build release panel" ]
+    ~attrs:[ Style.panel; Attr.role "group"; Attr.create "aria-label" "Build release panel" ]
     [ Node.h2 ~attrs:[ Style.panel_title ] [ Node.text "build · release" ]
     ; Node.div
         ~attrs:[ Style.kv_row; Attr.role "list"; Attr.create "aria-label" "Build and release" ]
@@ -279,26 +279,26 @@ let view_counts_panel (r : Overview_types.response) =
     else Printf.sprintf "%d / %d" c.keepers r.configured_keepers
   in
   Node.div
-    ~attrs:[ Style.panel; Attr.role "group"; Attr.arialabel "Fleet counts panel" ]
+    ~attrs:[ Style.panel; Attr.role "group"; Attr.create "aria-label" "Fleet counts panel" ]
     [ Node.h2 ~attrs:[ Style.panel_title ] [ Node.text "fleet · counts" ]
     ; Node.div
         ~attrs:[ Style.counts ]
         [ Node.div
-            ~attrs:[ Style.count_cell; Attr.arialabel ("keepers: " ^ keeper_label) ]
+            ~attrs:[ Style.count_cell; Attr.create "aria-label" ("keepers: " ^ keeper_label) ]
             [ Node.div ~attrs:[ Style.count_k ] [ Node.text "keepers" ]
             ; Node.div
                 ~attrs:[ Style.count_v ]
                 [ Node.text keeper_label ]
             ]
         ; Node.div
-            ~attrs:[ Style.count_cell; Attr.arialabel ("tasks: " ^ Printf.sprintf "%d" c.tasks) ]
+            ~attrs:[ Style.count_cell; Attr.create "aria-label" ("tasks: " ^ Printf.sprintf "%d" c.tasks) ]
             [ Node.div ~attrs:[ Style.count_k ] [ Node.text "tasks" ]
             ; Node.div
                 ~attrs:[ Style.count_v ]
                 [ Node.text (Printf.sprintf "%d" c.tasks) ]
             ]
         ; Node.div
-            ~attrs:[ Style.count_cell; Attr.arialabel ("agents: " ^ Printf.sprintf "%d" c.agents) ]
+            ~attrs:[ Style.count_cell; Attr.create "aria-label" ("agents: " ^ Printf.sprintf "%d" c.agents) ]
             [ Node.div ~attrs:[ Style.count_k ] [ Node.text "agents" ]
             ; Node.div
                 ~attrs:[ Style.count_v ]
@@ -332,7 +332,7 @@ let view_meta_panel (r : Overview_types.response) =
         [ Node.text "no dominant belief recorded." ]
   in
   Node.div
-    ~attrs:[ Style.panel; Attr.role "group"; Attr.arialabel "Meta cognition panel" ]
+    ~attrs:[ Style.panel; Attr.role "group"; Attr.create "aria-label" "Meta cognition panel" ]
     [ Node.h2
         ~attrs:[ Style.panel_title ]
         [ Node.text "meta · cognition" ]
@@ -388,7 +388,7 @@ let render (r : Overview_types.response) : Node.t =
         ~sub_lang:"ko"
         ()
     ; Node.div
-        ~attrs:[ Style.grid; Attr.role "region"; Attr.arialabel "Overview panels" ]
+        ~attrs:[ Style.grid; Attr.role "region"; Attr.create "aria-label" "Overview panels" ]
         [ view_hero_panel r
         ; view_build_panel r
         ; view_counts_panel r
