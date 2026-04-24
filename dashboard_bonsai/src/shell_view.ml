@@ -80,7 +80,7 @@ stylesheet
     gap: 10px;
     color: var(--text-dim);
     font-family: var(--font-ui, 'Noto Sans KR', sans-serif);
-    font-size: 10px;
+    font-size: 11px;
     letter-spacing: 0.22em;
     text-transform: uppercase;
     overflow: hidden;
@@ -247,7 +247,7 @@ stylesheet
   .tail {
     margin-left: auto;
     font-family: var(--font-mono, 'JetBrains Mono', monospace);
-    font-size: 10px;
+    font-size: 11px;
     color: var(--accent-blood);
   }
 
@@ -335,7 +335,7 @@ stylesheet
 
   .aside_title .r {
     font-family: var(--font-mono, 'JetBrains Mono', monospace);
-    font-size: 10px;
+    font-size: 11px;
     color: var(--text-dim);
     margin-left: auto;
     font-variant-numeric: tabular-nums;
@@ -406,7 +406,7 @@ stylesheet
     display: flex;
     justify-content: space-between;
     font-family: var(--font-mono, 'JetBrains Mono', monospace);
-    font-size: 10px;
+    font-size: 11px;
     color: var(--text-dim);
     margin-bottom: 4px;
     font-variant-numeric: tabular-nums;
@@ -465,7 +465,7 @@ stylesheet
 
   .flame {
     font-family: var(--font-mono, 'JetBrains Mono', monospace);
-    font-size: 10px;
+    font-size: 11px;
     color: var(--text-bright);
     border: 1px solid rgba(120,100,80,0.14);
     background: #0c0806;
@@ -515,7 +515,7 @@ stylesheet
 
   .event_time {
     font-family: var(--font-mono, 'JetBrains Mono', monospace);
-    font-size: 10px;
+    font-size: 11px;
     color: var(--text-dim);
     font-variant-numeric: tabular-nums;
   }
@@ -539,7 +539,7 @@ stylesheet
 
   .event_body code {
     font-family: var(--font-mono, 'JetBrains Mono', monospace);
-    font-size: 10px;
+    font-size: 11px;
     color: var(--accent-brass);
     background: rgba(212,169,64,0.08);
     padding: 0 5px;

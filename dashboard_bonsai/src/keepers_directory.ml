@@ -169,7 +169,7 @@ stylesheet
 
   .subline {
     font-family: var(--font-mono, 'JetBrains Mono', monospace);
-    font-size: 10px;
+    font-size: 11px;
     line-height: 1.35;
     color: var(--text-dim);
     font-variant-numeric: tabular-nums;
@@ -226,7 +226,7 @@ stylesheet
   .metric_sub {
     margin-top: 3px;
     font-family: var(--font-mono, 'JetBrains Mono', monospace);
-    font-size: 10px;
+    font-size: 11px;
     color: var(--text-dim);
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
