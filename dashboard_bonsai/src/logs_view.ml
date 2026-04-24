@@ -2116,12 +2116,16 @@ let render_response
             ~attrs:[ Style.page_actions ]
             [ Node.button
                 ~attrs:[ Style.pbtn ]
-                [ Node.span ~attrs:[ Style.pbtn_glyph ] []
+                [ Node.span
+                    ~attrs:[ Style.pbtn_glyph; Attr.create "aria-hidden" "true" ]
+                    []
                 ; Node.text "preflight"
                 ]
             ; Node.button
                 ~attrs:[ Style.pbtn; Style.pbtn_primary ]
-                [ Node.span ~attrs:[ Style.pbtn_glyph ] []
+                [ Node.span
+                    ~attrs:[ Style.pbtn_glyph; Attr.create "aria-hidden" "true" ]
+                    []
                 ; Node.text "advance round"
                 ]
             ]
