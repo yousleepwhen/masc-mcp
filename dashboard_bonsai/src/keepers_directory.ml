@@ -1226,7 +1226,7 @@ let view
            ; Node.div
                ~attrs:[ Style.metric ]
                [ Node.div
-                   ~attrs:[ context_class row.context_pct ]
+                   ~attrs:[ context_class row.context_pct; Attr.arialabel (row.name ^ " context " ^ match row.context_pct with Some pct -> Printf.sprintf "%d%%" pct | None -> "—") ]
                    [ Node.text
                        (match row.context_pct with
                         | Some pct -> Printf.sprintf "%d%%" pct

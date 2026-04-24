@@ -62,7 +62,7 @@ let cell ?(color : value_color = `Default) ~(k : string) ~(v : string) () : Node
     | `Blood -> Style.v_blood
   in
   Node.div
-    ~attrs:[ Style.item ]
+    ~attrs:[ Style.item; Attr.arialabel (k ^ ": " ^ v) ]
     [ Node.span ~attrs:[ Style.k ] [ Node.text k ]
     ; Node.span ~attrs:[ v_attr ] [ Node.text v ]
     ]
