@@ -1460,6 +1460,7 @@
  (libraries dated_jsonl fs_compat alcotest eio eio_main yojson unix))
 
 
+(test
  (name test_goal_janitor_scheduler_10405)
  (modules test_goal_janitor_scheduler_10405)
  (libraries
