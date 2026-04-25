@@ -1460,6 +1460,7 @@
  (libraries dated_jsonl fs_compat alcotest eio eio_main yojson unix))
 
 
+(test
  (name test_task_claim_auto_release_reason_10421)
  (modules test_task_claim_auto_release_reason_10421)
  (libraries masc_mcp masc_coord masc_types alcotest))
