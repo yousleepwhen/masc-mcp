@@ -659,9 +659,9 @@ describe('ConnectorStatusPanel', () => {
     const text = container.textContent?.replace(/\s+/g, ' ').trim() ?? ''
     expect(text).toContain('사이드카 미시작')
     expect(text).toContain('cd sidecars/discord-bot && ./run.sh')
-    expect(text).toContain('Cause: no sidecar status file has been observed at /tmp/discord_status.json')
-    expect(text).toContain('Next: click Start to spawn via the backend')
-    expect(text).toContain('Use status and tail logs if it stays offline')
+    expect(text).toContain('sidecar status 파일이 /tmp/discord_status.json 에서 관찰되지 않았습니다')
+    expect(text).toContain('Start 버튼으로 backend 를 통해 spawn')
+    expect(text).toContain('status 와 tail logs 를 사용하세요')
 
     // Regression guard for the screenshot bug: when a connector card's
     // brand accent is green (iMessage), the outer card renders a green
