@@ -20,6 +20,8 @@
 (** Drain interval: how often we poll the Event_bus subscription.
     Lower default keeps the dashboard close to real-time, while staying
     runtime-tunable for quieter deployments. *)
+[@@@ocaml.warning "-8"]
+
 let drain_interval_s () = Env_config.Oas_sse.drain_interval_sec
 
 let json_string_opt = function

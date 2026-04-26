@@ -102,7 +102,6 @@ module Http_client = struct
           Cli_transport_required
       | Llm_provider.Http_client.ProviderTerminal _ -> Terminal_http 0
       | Llm_provider.Http_client.NetworkError _ -> Network_error
-      | Llm_provider.Http_client.ProviderTerminal _ -> Provider_terminal
 
   let should_cascade (err : Llm_provider.Http_client.http_error) : bool =
     match classify err with

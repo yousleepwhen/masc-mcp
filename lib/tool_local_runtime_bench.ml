@@ -17,11 +17,6 @@ let pctl percentile values =
       List.nth_opt sorted index
 
 let error_message_of_http_error = function
-  | Llm_provider.Http_client.ProviderTerminal { message; _ } -> message
-  | Llm_provider.Http_client.NetworkError { message; _ } -> message
-  | Llm_provider.Http_client.AcceptRejected { reason } -> reason
-  | Llm_provider.Http_client.CliTransportRequired { kind } ->
-      Printf.sprintf "%s provider requires a CLI transport" kind
   | Llm_provider.Http_client.ProviderTerminal
       { kind = Llm_provider.Http_client.Max_turns { turns; limit }; message } ->
       Printf.sprintf "provider terminal: max turns exceeded (%d/%d): %s"
@@ -29,6 +24,10 @@ let error_message_of_http_error = function
   | Llm_provider.Http_client.ProviderTerminal
       { kind = Llm_provider.Http_client.Other subtype; message } ->
       Printf.sprintf "provider terminal: %s: %s" subtype message
+  | Llm_provider.Http_client.NetworkError { message; _ } -> message
+  | Llm_provider.Http_client.AcceptRejected { reason } -> reason
+  | Llm_provider.Http_client.CliTransportRequired { kind } ->
+      Printf.sprintf "%s provider requires a CLI transport" kind
   | Llm_provider.Http_client.HttpError { code; body } -> (
       try
         let json = Yojson.Safe.from_string body in
