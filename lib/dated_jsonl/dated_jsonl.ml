@@ -48,18 +48,16 @@ let canonicalize_base_dir base_dir =
 
 let mutex_for_base_dir ~base_dir ~injected =
   let canon = canonicalize_base_dir base_dir in
-  Stdlib.Mutex.protect mutex_registry_mu (fun () ->
-    match Hashtbl.find_opt mutex_registry canon with
-    | Some cell -> cell
-    | None ->
-        let mutex =
-          match injected with
-          | Some mutex -> mutex
-          | None -> Eio.Mutex.create ()
-        in
-        let cell = Atomic.make mutex in
-        Hashtbl.add mutex_registry canon cell;
-        cell)
+  match injected with
+  | Some mutex -> Atomic.make mutex
+  | None ->
+      Stdlib.Mutex.protect mutex_registry_mu (fun () ->
+        match Hashtbl.find_opt mutex_registry canon with
+        | Some cell -> cell
+        | None ->
+            let cell = Atomic.make (Eio.Mutex.create ()) in
+            Hashtbl.add mutex_registry canon cell;
+            cell)
 
 let create ~base_dir ?mutex () =
   let mutex = mutex_for_base_dir ~base_dir ~injected:mutex in
@@ -373,9 +371,9 @@ let prune t ~days =
 (* Duplicate count_entries removed — canonical definition at line 225 *)
 
 module For_testing = struct
-  let mutex t = t.mutex
+  let mutex t = Atomic.get t.mutex
 
-  let mutex_for_base_dir = mutex_for_base_dir
+  let mutex_for_base_dir dir = Atomic.get (mutex_for_base_dir ~base_dir:dir ~injected:None)
 
   let registry_size () =
     Stdlib.Mutex.lock mutex_registry_mu;
