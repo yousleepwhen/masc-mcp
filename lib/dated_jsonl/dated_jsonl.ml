@@ -209,10 +209,24 @@ let load_tail_lines path ~max_lines =
 (* ── Public API ───────────────────────────────────────── *)
 
 let append t json =
-  let mutex = Atomic.get t.mutex in
-  Eio.Mutex.use_rw ~protect:false mutex (fun () ->
-    let path = today_path t in
-    Fs_compat.append_jsonl path json)
+  let rec attempt ~retrying =
+    let mutex = Atomic.get t.mutex in
+    try
+      Eio.Mutex.use_rw ~protect:false mutex (fun () ->
+        let path = today_path t in
+        Fs_compat.append_jsonl path json)
+    with
+    | Eio.Cancel.Cancelled _ as exn ->
+      raise exn
+    | Eio.Mutex.Poisoned _ as exn ->
+      (* Replace poisoned mutex in-place, keep the shared atomic registry cell. *)
+      Atomic.set t.mutex (Eio.Mutex.create ());
+      if retrying then
+        raise exn
+      else
+        attempt ~retrying:true
+  in
+  attempt ~retrying:false
 
 let read_recent t n =
   if n <= 0 then []
