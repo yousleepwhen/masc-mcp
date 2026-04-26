@@ -362,7 +362,7 @@ let prune t ~days =
 module For_testing = struct
   let mutex t = Atomic.get t.mutex
 
-  let mutex_for_base_dir = mutex_for_base_dir
+  let mutex_for_base_dir base_dir = mutex_for_base_dir ~base_dir ~injected:None
 
   let registry_size () =
     Stdlib.Mutex.protect mutex_registry_mu (fun () ->
