@@ -226,6 +226,58 @@ let test_concurrent_append () =
   let result = Dated_jsonl.read_recent store n in
   check int "all entries written" n (List.length result)
 
+let test_same_base_stores_share_injected_mutex () =
+  Eio_main.run @@ fun env ->
+  Fs_compat.set_fs (Eio.Stdenv.fs env);
+  let dir = tmpdir "dated_jsonl_shared_mutex" in
+  let mutex = Eio.Mutex.create () in
+  ignore (Dated_jsonl.create ~base_dir:dir ~mutex ());
+  let peer = Dated_jsonl.create ~base_dir:dir () in
+  let started, wake_started = Eio.Promise.create () in
+  let done_, wake_done = Eio.Promise.create () in
+  let completed = ref false in
+  Eio.Switch.run (fun sw ->
+    Eio.Mutex.use_rw ~protect:true mutex (fun () ->
+      Eio.Fiber.fork ~sw (fun () ->
+        Eio.Promise.resolve wake_started ();
+        Dated_jsonl.append peer (make_json 1);
+        completed := true;
+        Eio.Promise.resolve wake_done ());
+      Eio.Promise.await started;
+      Eio.Fiber.yield ();
+      check bool "append waits for shared mutex" false !completed);
+    Eio.Time.with_timeout_exn (Eio.Stdenv.clock env) 1.0 (fun () ->
+      Eio.Promise.await done_);
+    check bool "append completes after release" true !completed)
+
+let test_append_failure_does_not_poison_shared_mutex () =
+  Eio_main.run @@ fun env ->
+  Fs_compat.set_fs (Eio.Stdenv.fs env);
+  let dir = tmpdir "dated_jsonl_shared_mutex_recovery" in
+  let base = Filename.concat dir "shared" in
+  (* First creation points base_dir at a file, so append_file path setup fails. *)
+  let out = open_out base in
+  close_out out;
+  let store = Dated_jsonl.create ~base_dir:base () in
+  let peer = Dated_jsonl.create ~base_dir:base () in
+  let failed = ref false in
+  (try
+     Dated_jsonl.append store (make_json 1)
+   with
+   | _ -> failed := true);
+  check bool "append fails on blocked base dir" true !failed;
+  Sys.remove base;
+  Unix.mkdir base 0o755;
+  let recovered = ref false in
+  (try
+     Dated_jsonl.append peer (make_json 2);
+     recovered := true
+   with
+   | _ -> ());
+  check bool "append succeeds after recovering base dir" true !recovered;
+  let result = Dated_jsonl.read_recent peer 1 in
+  check int "recovery writes one row" 1 (List.length result)
+
 (* ── empty store ───────────────────────────────────────── *)
 
 let test_empty_store () =
@@ -276,6 +328,10 @@ let () =
       ( "concurrent",
         [
           test_case "concurrent append" `Quick test_concurrent_append;
+          test_case "same base stores share mutex" `Quick
+            test_same_base_stores_share_injected_mutex;
+          test_case "append failure does not poison shared mutex" `Quick
+            test_append_failure_does_not_poison_shared_mutex;
         ] );
       ( "empty",
         [

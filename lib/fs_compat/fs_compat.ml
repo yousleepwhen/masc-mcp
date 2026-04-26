@@ -125,11 +125,51 @@ let save_file_unix (path : string) (content : string) : unit =
     output_string oc content
   )
 
+let append_mutexes : (string, Stdlib.Mutex.t) Hashtbl.t = Hashtbl.create 64
+let append_mutexes_mu = Stdlib.Mutex.create ()
+
+let strip_trailing_slashes path =
+  let rec loop len =
+    if len > 1 && path.[len - 1] = '/' then loop (len - 1) else len
+  in
+  let len = loop (String.length path) in
+  if len = String.length path then path else String.sub path 0 len
+
+let append_mutex_key path =
+  let path =
+    if Filename.is_relative path then Filename.concat (Sys.getcwd ()) path else path
+  in
+  strip_trailing_slashes path
+
+let append_mutex_for_path path =
+  let key = append_mutex_key path in
+  Stdlib.Mutex.protect append_mutexes_mu (fun () ->
+    match Hashtbl.find_opt append_mutexes key with
+    | Some mutex -> mutex
+    | None ->
+        let mutex = Stdlib.Mutex.create () in
+        Hashtbl.add append_mutexes key mutex;
+        mutex)
+
+let with_append_mutex path f =
+  Stdlib.Mutex.protect (append_mutex_for_path path) f
+
+let write_all fd content =
+  let len = String.length content in
+  let rec loop offset =
+    if offset < len then
+      let written = Unix.write_substring fd content offset (len - offset) in
+      if written = 0 then
+        raise (Sys_error "append_file_unix: write returned 0")
+      else
+        loop (offset + written)
+  in
+  loop 0
+
 let append_file_unix (path : string) (content : string) : unit =
-  let oc = open_out_gen [Open_append; Open_creat] 0o644 path in
-  Fun.protect ~finally:(fun () -> close_out_noerr oc) (fun () ->
-    output_string oc content
-  )
+  let fd = Unix.openfile path [ Unix.O_WRONLY; Unix.O_CREAT; Unix.O_APPEND ] 0o644 in
+  Fun.protect ~finally:(fun () -> Unix.close fd) (fun () ->
+    write_all fd content)
 
 let mkdir_p_unix (path : string) : unit =
   let rec ensure_dir (p : string) : unit =
@@ -296,9 +336,10 @@ let cleanup_atomic_orphans
     @raises Sys_error on all I/O failures. Eio.Io is normalized internally. *)
 let append_file (path : string) (content : string) : unit =
   test_exec_home_guard ~op:"append_file" path;
-  with_fs_or_fallback ~path ~fallback:(fun () -> append_file_unix path content) (fun fs ->
+  with_append_mutex path (fun () ->
+    with_fs_or_fallback ~path ~fallback:(fun () -> append_file_unix path content) (fun fs ->
       let eio_path = Eio.Path.(fs / path) in
-      Eio.Path.save ~append:true ~create:(`If_missing 0o644) eio_path content)
+      Eio.Path.save ~append:true ~create:(`If_missing 0o644) eio_path content))
 
 (** Check if file exists.
     Uses Sys.file_exists (works in both Eio and non-Eio contexts). *)

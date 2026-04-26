@@ -1,21 +1,24 @@
 (** Date-split JSONL storage.
 
     Organises JSONL records into [base_dir/YYYY-MM/DD.jsonl] files.
-    Each instance carries its own {!Eio.Mutex.t} for concurrent-safe appends. *)
+    Instances that point at the same base directory share a process-local
+    file-scope mutex for concurrent-safe appends. *)
 
 type t
 (** Opaque handle.  Holds [base_dir] and a per-store mutex. *)
 
 val create : base_dir:string -> ?mutex:Eio.Mutex.t -> unit -> t
 (** [create ~base_dir ()] builds a store rooted at [base_dir].
-    An optional [mutex] can be injected (useful for testing). *)
+    An optional [mutex] can be injected before the first store for a base
+    directory is created (useful for testing the shared-mutex registry). *)
 
 val base_dir : t -> string
 (** Return the base directory of this store. *)
 
 val append : t -> Yojson.Safe.t -> unit
 (** Append [json] to today's [DD.jsonl] inside [YYYY-MM/].
-    Creates directories as needed.  Thread-safe via internal mutex. *)
+    Creates directories as needed.  Thread-safe across store instances that
+    target the same base directory. *)
 
 val read_recent : t -> int -> Yojson.Safe.t list
 (** [read_recent t n] returns the newest [n] entries in chronological order

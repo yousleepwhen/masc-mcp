@@ -16,7 +16,7 @@
 
 type t = {
   base_dir : string;
-  mutex : Eio.Mutex.t;
+  mutex : Eio.Mutex.t Atomic.t;
 }
 
 (* #10372: file-scope mutex registry keyed on canonical [base_dir].
@@ -35,8 +35,8 @@ type t = {
    The registry forces every store rooted at the same directory
    to share one mutex. An explicit [?mutex] argument still wins,
    keeping test isolation patterns intact. *)
-let registry : (string, Eio.Mutex.t) Hashtbl.t = Hashtbl.create 16
-let registry_guard = Stdlib.Mutex.create ()
+let mutex_registry : (string, Eio.Mutex.t Atomic.t) Hashtbl.t = Hashtbl.create 16
+let mutex_registry_mu = Stdlib.Mutex.create ()
 
 let canonicalize_base_dir base_dir =
   try Unix.realpath base_dir
@@ -46,25 +46,23 @@ let canonicalize_base_dir base_dir =
       String.sub base_dir 0 (len - 1)
     else base_dir
 
-let mutex_for_base_dir base_dir =
+let mutex_for_base_dir ~base_dir ~injected =
   let canon = canonicalize_base_dir base_dir in
-  Stdlib.Mutex.lock registry_guard;
-  Fun.protect
-    ~finally:(fun () -> Stdlib.Mutex.unlock registry_guard)
-    (fun () ->
-      match Hashtbl.find_opt registry canon with
-      | Some m -> m
-      | None ->
-          let m = Eio.Mutex.create () in
-          Hashtbl.add registry canon m;
-          m)
+  Stdlib.Mutex.protect mutex_registry_mu (fun () ->
+    match Hashtbl.find_opt mutex_registry canon with
+    | Some cell -> cell
+    | None ->
+        let mutex =
+          match injected with
+          | Some mutex -> mutex
+          | None -> Eio.Mutex.create ()
+        in
+        let cell = Atomic.make mutex in
+        Hashtbl.add mutex_registry canon cell;
+        cell)
 
 let create ~base_dir ?mutex () =
-  let mutex =
-    match mutex with
-    | Some m -> m
-    | None -> mutex_for_base_dir base_dir
-  in
+  let mutex = mutex_for_base_dir ~base_dir ~injected:mutex in
   { base_dir; mutex }
 
 let base_dir t = t.base_dir
@@ -211,7 +209,8 @@ let load_tail_lines path ~max_lines =
 (* ── Public API ───────────────────────────────────────── *)
 
 let append t json =
-  Eio.Mutex.use_rw ~protect:true t.mutex (fun () ->
+  let mutex = Atomic.get t.mutex in
+  Eio.Mutex.use_rw ~protect:false mutex (fun () ->
     let path = today_path t in
     Fs_compat.append_jsonl path json)
 
@@ -365,8 +364,8 @@ module For_testing = struct
   let mutex_for_base_dir = mutex_for_base_dir
 
   let registry_size () =
-    Stdlib.Mutex.lock registry_guard;
+    Stdlib.Mutex.lock mutex_registry_mu;
     Fun.protect
-      ~finally:(fun () -> Stdlib.Mutex.unlock registry_guard)
-      (fun () -> Hashtbl.length registry)
+      ~finally:(fun () -> Stdlib.Mutex.unlock mutex_registry_mu)
+      (fun () -> Hashtbl.length mutex_registry)
 end
