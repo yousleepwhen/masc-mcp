@@ -52,9 +52,9 @@ module For_testing : sig
   val mutex : t -> Eio.Mutex.t
   (** Expose the internal mutex so tests can verify sharing. *)
 
-  val mutex_for_base_dir : string -> Eio.Mutex.t
+  val mutex_for_base_dir : string -> Eio.Mutex.t Atomic.t
   (** Lookup or insert the registry entry for [base_dir].
-      Equivalent to the default-mutex path of {!create}. *)
+      Returns the atomic cell so tests can observe swap/reinit. *)
 
   val registry_size : unit -> int
   (** Number of distinct [base_dir] keys currently held by the
