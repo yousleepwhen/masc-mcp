@@ -181,11 +181,11 @@ function ToolTable({
       <table class="w-full text-2xs">
         <thead>
           <tr class="text-[var(--color-fg-disabled)] border-b border-[var(--color-border-default)]">
-            <th class="text-left py-1 font-normal">Tool</th>
-            <th class="text-right py-1 font-normal">Calls</th>
-            <th class="text-right py-1 font-normal">Success</th>
+            <th class="text-left py-1 font-normal">도구</th>
+            <th class="text-right py-1 font-normal">호출</th>
+            <th class="text-right py-1 font-normal">성공</th>
             <th class="text-right py-1 font-normal">평균 ms</th>
-            <th class="text-right py-1 font-normal">Output</th>
+            <th class="text-right py-1 font-normal">출력</th>
           </tr>
         </thead>
         <tbody>
@@ -365,11 +365,11 @@ export function ToolQualityPanel() {
         </div>
         <div class="text-center">
           <div class="text-lg font-mono text-[var(--bad-light)]/80">${d.failure}</div>
-          <div class="text-3xs text-[var(--color-fg-disabled)] uppercase">Failures</div>
+          <div class="text-3xs text-[var(--color-fg-disabled)] uppercase">실패</div>
         </div>
       </div>
 
-      <${RateGauge} rate=${d.success_rate} label="Overall" />
+      <${RateGauge} rate=${d.success_rate} label="전체" />
 
       ${d.hourly_trend && d.hourly_trend.length >= 2 ? html`
         <${TrendSparkline} points=${d.hourly_trend} />

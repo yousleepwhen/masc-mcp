@@ -226,7 +226,7 @@ export function ConnectorKeeperMatrix({ matrix }: { matrix: MatrixData }) {
   const gridCols = `grid-template-columns: minmax(160px, 1fr) repeat(${matrix.columns.length}, minmax(80px, 1fr)) minmax(90px, auto);`
 
   return html`
-    <section class="mb-4 rounded border border-[var(--color-border-default)] bg-[var(--bg-1)] p-3" data-panel="connector-keeper-matrix">
+    <section class="mb-4 rounded border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3" data-panel="connector-keeper-matrix">
       <header class="mb-2 flex items-baseline justify-between gap-3">
         <div>
           <h4 class="text-xs font-semibold uppercase tracking-4 text-[var(--color-fg-primary)]">
@@ -258,7 +258,7 @@ export function ConnectorKeeperMatrix({ matrix }: { matrix: MatrixData }) {
         : html`
             <div class="overflow-x-auto">
               <div class="grid gap-1 text-2xs" style=${gridCols} data-matrix-grid>
-                <div class="px-1 py-1 text-3xs uppercase tracking-4 text-[var(--color-fg-disabled)]">Keeper ↓ / Connector →</div>
+                <div class="px-1 py-1 text-3xs uppercase tracking-4 text-[var(--color-fg-disabled)]">키퍼 ↓ / 커넥터 →</div>
                 ${matrix.columns.map(colId => html`
                   <button
                     type="button"

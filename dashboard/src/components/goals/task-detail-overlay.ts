@@ -130,11 +130,11 @@ const VERDICT_LINEAGE_LABELS = new Set([
 function verdictStageLabel(label: string): string {
   switch (label) {
     case 'submit_for_verification':
-    case 'awaiting_verification': return 'Submit'
+    case 'awaiting_verification': return '제출'
     case 'approve':
-    case 'approved': return 'Approve'
+    case 'approved': return '승인'
     case 'reject':
-    case 'rejected': return 'Reject'
+    case 'rejected': return '반려'
     default: return label
   }
 }
@@ -276,7 +276,7 @@ function ContractSection({ task }: { task: Task }) {
 
       ${completionItems.length > 0 ? html`
         <div class="rounded border border-[var(--white-10)] bg-[var(--white-3)] px-4 py-3">
-          <div class="text-xs font-medium text-text-strong">Completion Contract</div>
+          <div class="text-xs font-medium text-text-strong">완료 계약</div>
           <div class="mt-2 flex flex-col gap-1">
             ${completionItems.map((item: string) => html`
               <div key=${item} class=${`text-2xs ${unmetItems.includes(item) ? 'text-bad' : 'text-text-body'}`}>${item}</div>
@@ -287,7 +287,7 @@ function ContractSection({ task }: { task: Task }) {
 
       ${requiredEvidence.length > 0 ? html`
         <div class="rounded border border-[var(--white-10)] bg-[var(--white-3)] px-4 py-3">
-          <div class="text-xs font-medium text-text-strong">Required Evidence</div>
+          <div class="text-xs font-medium text-text-strong">필수 증거</div>
           <div class="mt-2 flex flex-wrap gap-1.5">
             ${requiredEvidence.map((item: string) => html`
               <span key=${item} class="rounded border border-[var(--white-10)] bg-[var(--white-5)] px-2 py-0.5 text-3xs font-mono text-text-body">${item}</span>

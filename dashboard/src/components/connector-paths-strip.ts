@@ -82,7 +82,7 @@ export function ConnectorPathsStrip({ connectors }: { connectors: GateConnectorI
   const open = pathsExpanded.value
   return html`
     <div
-      class="mb-3 rounded border border-[var(--color-border-default)] bg-[var(--bg-1)]"
+      class="mb-3 rounded border border-[var(--color-border-default)] bg-[var(--color-bg-surface)]"
       data-panel="connector-paths-strip"
     >
       <button
@@ -93,7 +93,7 @@ export function ConnectorPathsStrip({ connectors }: { connectors: GateConnectorI
         aria-controls="connector-paths-body"
       >
         <span>
-          <span class="mr-2 text-3xs uppercase tracking-4">Paths</span>
+          <span class="mr-2 text-3xs uppercase tracking-4">경로</span>
           <span class="font-mono">${paths.connectorsDir ?? paths.sidecarsDir}</span>
           <span class="ml-2 text-[var(--color-fg-disabled)]">${paths.connectorsDir ? '' : '(런타임 미관찰 · sidecar 경로만 표시)'}</span>
         </span>
@@ -103,13 +103,13 @@ export function ConnectorPathsStrip({ connectors }: { connectors: GateConnectorI
         ? html`
             <div id="connector-paths-body" class="space-y-1.5 border-t border-[var(--color-border-default)] px-3 py-2">
               ${paths.connectorsDir
-                ? html`<${PathRow} label="Connectors" value=${paths.connectorsDir} hint="sidecar names.json / status.json 위치" />`
+                ? html`<${PathRow} label="커넥터" value=${paths.connectorsDir} hint="sidecar names.json / status.json 위치" />`
                 : null}
               ${paths.logsDir
-                ? html`<${PathRow} label="Logs" value=${paths.logsDir} hint="sidecar 로그 디렉토리" />`
+                ? html`<${PathRow} label="로그" value=${paths.logsDir} hint="sidecar 로그 디렉토리" />`
                 : null}
-              <${PathRow} label="Keepers" value=${paths.keepersDir} hint="keeper TOML 설정 파일" />
-              <${PathRow} label="Sidecars" value=${paths.sidecarsDir} hint="sidecar 스크립트 (run.sh) 위치" />
+              <${PathRow} label="키퍼" value=${paths.keepersDir} hint="keeper TOML 설정 파일" />
+              <${PathRow} label="사이드카" value=${paths.sidecarsDir} hint="sidecar 스크립트 (run.sh) 위치" />
             </div>
           `
         : null}

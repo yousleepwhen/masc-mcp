@@ -207,9 +207,9 @@ describe('TelemetryUnified', () => {
     expect(container.textContent).toContain('mcp__masc__masc_status')
 
     // MASC Store Diagnosis cards (live state)
-    expect(container.textContent).toContain('Keeper 현황 (live)')
-    expect(container.textContent).toContain('Tool 등록 현황 (live)')
-    expect(container.textContent).toContain('Agent 현황 (live)')
+    expect(container.textContent).toContain('키퍼 현황 (실시간)')
+    expect(container.textContent).toContain('도구 등록 현황 (실시간)')
+    expect(container.textContent).toContain('에이전트 현황 (실시간)')
     expect(container.textContent).toContain('3 활성 작업')
     expect(container.textContent).toContain('1 차단 작업')
     expect(container.textContent).not.toContain('활성 세션')
@@ -227,9 +227,9 @@ describe('TelemetryUnified', () => {
     })
     await flushUi()
 
-    const copyButton = container.querySelector('[aria-label="Copy telemetry entry JSON"]') as HTMLButtonElement | null
+    const copyButton = container.querySelector('[aria-label="텔레메트리 항목 JSON 복사"]') as HTMLButtonElement | null
     expect(copyButton).not.toBeNull()
-    expect(copyButton?.getAttribute('title')).toBe('Copy telemetry entry JSON')
+    expect(copyButton?.getAttribute('title')).toBe('텔레메트리 항목 JSON 복사')
   })
 
   it('surfaces a raw JSON copy action inside an expanded telemetry entry', async () => {
@@ -251,9 +251,9 @@ describe('TelemetryUnified', () => {
     })
     await flushUi()
 
-    const expandedCopyButton = container.querySelector('[aria-label="Copy expanded telemetry entry JSON"]') as HTMLButtonElement | null
+    const expandedCopyButton = container.querySelector('[aria-label="펼친 텔레메트리 항목 JSON 복사"]') as HTMLButtonElement | null
     expect(expandedCopyButton).not.toBeNull()
-    expect(expandedCopyButton?.getAttribute('title')).toBe('Copy expanded telemetry entry JSON')
+    expect(expandedCopyButton?.getAttribute('title')).toBe('펼친 텔레메트리 항목 JSON 복사')
   })
 
   it('condenses consecutive noisy telemetry into grouped categories', async () => {
@@ -333,9 +333,9 @@ describe('TelemetryUnified', () => {
     })
     await flushUi()
 
-    const expandedCopyButton = container.querySelector('[aria-label="Copy expanded telemetry group JSON"]') as HTMLButtonElement | null
+    const expandedCopyButton = container.querySelector('[aria-label="펼친 텔레메트리 그룹 JSON 복사"]') as HTMLButtonElement | null
     expect(expandedCopyButton).not.toBeNull()
-    expect(expandedCopyButton?.getAttribute('title')).toBe('Copy expanded telemetry group JSON')
+    expect(expandedCopyButton?.getAttribute('title')).toBe('펼친 텔레메트리 그룹 JSON 복사')
   })
 
   it('groups heartbeat keeper metrics into a heartbeat category', async () => {
@@ -504,7 +504,7 @@ describe('TelemetryUnified', () => {
     expect(groupRow?.getAttribute('aria-expanded')).toBe('true')
     expect(container.textContent).toContain('Latest:')
     expect(container.textContent).toContain('keeper-alpha -> masc_status')
-    expect(container.textContent).toContain('Raw JSON')
+    expect(container.textContent).toContain('원본 JSON')
   })
 
   it('keeps condensed keys stable when repeated no-timestamp groups reappear', async () => {

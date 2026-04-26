@@ -190,7 +190,7 @@ export function KeeperEvalQualityPanel({ keeperName }: { keeperName: string }) {
 
       ${'' /* Coverage bar */}
       <div class="flex items-center gap-3 mb-3">
-        <span class="text-3xs text-[var(--color-fg-muted)] flex-shrink-0 w-16">Coverage</span>
+        <span class="text-3xs text-[var(--color-fg-muted)] flex-shrink-0 w-16">커버리지</span>
         <div class="flex-1 h-2 bg-[var(--white-6)] rounded-sm overflow-hidden">
           <div
             class="h-full rounded-sm transition-all duration-500"
@@ -213,7 +213,7 @@ export function KeeperEvalQualityPanel({ keeperName }: { keeperName: string }) {
       ${'' /* 24h Trend */}
       ${trend ? html`
         <div class="flex items-center gap-2 pt-2 border-t border-[var(--white-8)]">
-          <span class="text-3xs uppercase tracking-wider text-[var(--color-fg-disabled)]">Trend (24h)</span>
+          <span class="text-3xs uppercase tracking-wider text-[var(--color-fg-disabled)]">추세 (24h)</span>
           <span class="text-2xs font-mono tabular-nums text-[var(--color-fg-muted)]">
             ${trend.oldCoverage.toFixed(2)} \u2192 ${trend.newCoverage.toFixed(2)}
           </span>

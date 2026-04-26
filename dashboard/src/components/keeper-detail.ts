@@ -657,11 +657,11 @@ function PlaygroundReposPanel({ keeperName }: { keeperName: string }) {
   if (repos.length === 0 && prs.length === 0 && worktrees.length === 0) return null
 
   return html`
-    <${SectionCard} title="Playground">
+    <${SectionCard} title="플레이그라운드">
       <div class="flex flex-col gap-3">
         ${repos.length > 0 ? html`
           <div>
-            <div class="text-3xs font-semibold uppercase tracking-wider text-[var(--color-fg-muted)] mb-1.5">Repos (${repos.length})</div>
+            <div class="text-3xs font-semibold uppercase tracking-wider text-[var(--color-fg-muted)] mb-1.5">저장소 (${repos.length})</div>
             <div class="flex flex-col gap-1.5">
               ${repos.map(r => html`
                 <div class="flex items-center gap-3 px-3 py-2 rounded border border-[var(--white-8)] bg-[var(--white-2)]">
@@ -698,7 +698,7 @@ function PlaygroundReposPanel({ keeperName }: { keeperName: string }) {
 
         ${worktrees.length > 0 ? html`
           <div>
-            <div class="text-3xs font-semibold uppercase tracking-wider text-[var(--color-fg-muted)] mb-1.5">Worktrees (${worktrees.length})</div>
+            <div class="text-3xs font-semibold uppercase tracking-wider text-[var(--color-fg-muted)] mb-1.5">워크트리 (${worktrees.length})</div>
             <div class="flex flex-wrap gap-1.5">
               ${worktrees.map(w => html`
                 <span class="text-3xs font-mono px-2 py-1 rounded border border-[var(--white-8)] bg-[var(--white-2)] text-[var(--color-fg-muted)]" title=${w.path}>${w.name}</span>
@@ -988,7 +988,7 @@ export function KeeperDetailPage() {
 
           <${KeeperDetailSection}
             id="keeper-comms"
-            eyebrow="Conversation & Session"
+            eyebrow="대화 & 세션"
             title="대화 / 활동 흐름"
             description="운영자가 keeper와 바로 대화하고, 같은 화면에서 세션 이벤트를 대조할 수 있도록 묶었습니다."
           >
@@ -1042,7 +1042,7 @@ export function KeeperDetailPage() {
 
           <${KeeperDetailSection}
             id="keeper-identity"
-            eyebrow="Identity & Lineage"
+            eyebrow="신원 & 계보"
             title="정체성 / 세대"
             description="프로필, 관계, 장비, generation lineage, checkpoints를 하나의 맥락으로 보고 continuity를 해석합니다."
           >

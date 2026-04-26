@@ -15,7 +15,7 @@
     Scope: this initial adapter covers [Http_client.http_error] and
     [Metrics.t], the two surfaces whose MASC consumer is a record
     literal or small match. [Event_bus.payload] has an elaborate
-    per-variant JSON projection in [oas_sse_bridge.ml]; a full
+    per-variant JSON projection in [oas_event_bridge.ml]; a full
     classifier is deferred to follow-up because a genuine abstraction
     there requires touching the JSON-emission path, which carries
     regression risk that should not ride this foundational PR. *)
@@ -31,6 +31,7 @@ module Http_client : sig
     | Accept_rejected_terminal
     | Cli_transport_required
     | Network_error
+    | Provider_terminal
 
   val classify : Llm_provider.Http_client.http_error -> cascade_failure_class
   (** Classify an OAS HTTP/client failure into MASC's typed cascade boundary.
@@ -62,6 +63,21 @@ module Http_client : sig
       All of these are per-provider, not cascade-wide; a fallback provider
       may succeed where the current one rejected. See masc-mcp #9932
       (kimi fallback), #9850 (codex_cli runtime_mcp_auth). *)
+
+  val error_message : Llm_provider.Http_client.http_error -> string
+  (** Extract a human-readable message from an OAS HTTP error.
+
+      Centralises the "render error for log/observation" logic so callers
+      stop pattern-matching the OAS variant directly. When OAS adds a new
+      [http_error] variant, only this adapter (and its [classify] /
+      [should_cascade]) need to be updated — without this helper, every
+      consumer carries its own copy of the match and a new variant breaks
+      [warn-error +8] across the codebase (see #oas-providerterminal-sweep
+      2026-04-26 cascade where 5 sites repeated the same match).
+
+      For [HttpError] the body is parsed as JSON to surface the
+      provider-supplied [error.message] when present; otherwise the HTTP
+      status code is rendered. *)
 end
 
 module Metrics : sig

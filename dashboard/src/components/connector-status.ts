@@ -926,7 +926,7 @@ function ConnectorLivePanel({
                 <span>keeper dir ${keepers.length}</span>
               </div>
               <div class="mt-3">
-                <${ActionButton} variant="ghost" size="sm" disabled=${loading || isActionLoading} onClick=${() => { void refresh() }}>Refresh<//>
+                <${ActionButton} variant="ghost" size="sm" disabled=${loading || isActionLoading} onClick=${() => { void refresh() }}>새로고침<//>
               </div>
             </div>
           `
@@ -962,7 +962,7 @@ function ConnectorLivePanel({
             >
               <span
                 class="mr-2 inline-flex items-center gap-1 rounded-sm border border-[var(--warn-20)] bg-[var(--warn-10)] px-1.5 py-0.5 text-3xs font-semibold uppercase tracking-4 text-[var(--color-status-warn)]"
-                aria-label="Keeper directory status: unavailable"
+                aria-label="키퍼 디렉토리 상태: 사용 불가"
               >
                 <span aria-hidden="true">⚠</span>
                 <span>디렉토리 오류</span>
@@ -989,7 +989,7 @@ function ConnectorLivePanel({
               <div class="mb-1 flex items-center gap-2">
                 <span
                   class="inline-flex items-center gap-1 rounded-sm border border-[var(--warn-20)] bg-[var(--warn-10)] px-1.5 py-0.5 text-3xs font-semibold uppercase tracking-4 text-[var(--color-status-warn)]"
-                  aria-label="Keeper configuration status: none configured"
+                  aria-label="키퍼 설정 상태: 설정된 키퍼 없음"
                   data-no-keepers-status-chip
                 >
                   <span aria-hidden="true">⊘</span>
@@ -1030,7 +1030,7 @@ function ConnectorLivePanel({
                   <div class="flex flex-wrap items-center gap-2">
                     <span
                       class="inline-flex items-center gap-1 rounded-sm border border-[var(--warn-20)] bg-[var(--warn-10)] px-1.5 py-0.5 text-3xs font-semibold uppercase tracking-4 text-[var(--color-status-warn)]"
-                      aria-label="Sidecar process status: not running"
+                      aria-label="사이드카 프로세스 상태: 실행 중 아님"
                       data-sidecar-status-chip
                     >
                       <span aria-hidden="true">⊘</span>
@@ -1053,10 +1053,10 @@ function ConnectorLivePanel({
                 </div>
                 <div class="text-2xs text-[var(--color-status-warn)]/80">
                   <div>
-                    <span class="font-medium">Cause: </span> no sidecar status file has been observed at <code class="rounded bg-[var(--white-4)] px-1">${connector?.status_path || `sidecars/${connectorId}-bot/status.json`}</code>.
+                    <span class="font-medium">원인: </span> sidecar status 파일이 <code class="rounded bg-[var(--white-4)] px-1">${connector?.status_path || `sidecars/${connectorId}-bot/status.json`}</code> 에서 관찰되지 않았습니다.
                   </div>
                   <div class="mt-1">
-                    <span class="font-medium">Next: </span> click <strong>Start</strong> to spawn via the backend, or copy the command below to run it from a terminal. Use <strong>status</strong> and <strong>tail logs</strong> if it stays offline.
+                    <span class="font-medium">다음: </span> <strong>Start</strong> 버튼으로 backend 를 통해 spawn 하거나, 아래 명령을 복사해 터미널에서 실행하세요. 오프라인이 지속되면 <strong>status</strong> 와 <strong>tail logs</strong> 를 사용하세요.
                   </div>
                 </div>
                 <div class="mt-2 grid grid-cols-1 gap-1.5">
@@ -1222,7 +1222,7 @@ function ConnectorLivePanel({
                                       size="sm"
                                       disabled=${isActionLoading || ui.channelDraft.trim().length === 0}
                                       onClick=${() => { void bindConnector(connectorId, group.name, ui.channelDraft.trim()) }}
-                                    >${isActionLoading ? 'Applying...' : 'bind'}<//>
+                                    >${isActionLoading ? '적용 중...' : '연결'}<//>
                                   </div>
                                 </div>
                               `
@@ -1472,7 +1472,7 @@ function DisclosurePanel({
   testId: string
 }) {
   return html`
-    <details class="mb-4 rounded border border-[var(--color-border-default)] bg-[var(--bg-1)]" data-testid=${testId}>
+    <details class="mb-4 rounded border border-[var(--color-border-default)] bg-[var(--color-bg-surface)]" data-testid=${testId}>
       <summary class="cursor-pointer list-none px-3 py-2.5">
         <div class="flex items-center justify-between gap-3">
           <div>
@@ -1677,7 +1677,7 @@ export function ConnectorStatusPanel() {
         ? html`
             <div
               id="connector-detail-panel"
-              class="mb-4 rounded border border-[var(--color-border-default)] bg-[var(--bg-0)]/40 p-3"
+              class="mb-4 rounded border border-[var(--color-border-default)] bg-[var(--color-bg-page)]/40 p-3"
               data-testid="connector-detail-panel"
             >
               <div class="mb-3 flex items-center justify-between gap-3 text-2xs">

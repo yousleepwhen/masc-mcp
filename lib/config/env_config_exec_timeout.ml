@@ -19,7 +19,8 @@ type caller =
   | Preflight                 (** keeper_exec_preflight checks (10s) *)
   | Repo_readiness            (** keeper_repo_readiness git status (10s) *)
   | Sandbox                   (** keeper_sandbox_control / keeper_shell_docker probes (2s) *)
-  | Pr_review                 (** keeper_tool_pr_review gh CLI calls (15s) *)
+  | Pr_review                 (** keeper_tool_pr_review gh CLI reads (15s) *)
+  | Pr_review_post            (** keeper_tool_pr_review gh pr review write (30s) *)
   | Dispatch                  (** exec_dispatch routine execution (120s) *)
   | Memory_audit              (** keeper_exec_memory short audits (3s) *)
   | Alerting                  (** keeper_alerting fanout (Slack/webhook POST + gh issue create) (20s) *)
@@ -27,6 +28,8 @@ type caller =
   | Status_detail             (** keeper_status_detail health probes (5/10s) *)
   | Turn_sandbox              (** keeper_turn_sandbox_runtime (2/5s) *)
   | Turn_up                   (** keeper_turn_up_create / _update sandbox (15s) *)
+  | Git_meta                  (** local git metadata (rev-parse, remote get-url) (5s) *)
+  | Shell_probe               (** PATH probes via [command -v] (2s) *)
   | Unknown of string
 
 (** Hardcoded default seconds for each known caller.  Preserves
@@ -40,6 +43,7 @@ let caller_key = function
   | Repo_readiness -> "repo_readiness"
   | Sandbox -> "sandbox"
   | Pr_review -> "pr_review"
+  | Pr_review_post -> "pr_review_post"
   | Dispatch -> "dispatch"
   | Memory_audit -> "memory_audit"
   | Alerting -> "alerting"
@@ -47,6 +51,8 @@ let caller_key = function
   | Status_detail -> "status_detail"
   | Turn_sandbox -> "turn_sandbox"
   | Turn_up -> "turn_up"
+  | Git_meta -> "git_meta"
+  | Shell_probe -> "shell_probe"
   | Unknown caller -> caller
 
 (** Exported for tests that pin the per-caller default table. *)
@@ -58,6 +64,7 @@ let known_callers () =
     Repo_readiness;
     Sandbox;
     Pr_review;
+    Pr_review_post;
     Dispatch;
     Memory_audit;
     Alerting;
@@ -65,17 +72,26 @@ let known_callers () =
     Status_detail;
     Turn_sandbox;
     Turn_up;
+    Git_meta;
+    Shell_probe;
   ]
 
 let known_default_sec = function
   | Shell -> Some 60.0
   | Fs -> Some 30.0
   | Preflight | Repo_readiness | Gh_shared | Status_detail -> Some 10.0
-  | Sandbox | Turn_sandbox -> Some 2.0
+  | Sandbox | Turn_sandbox | Shell_probe -> Some 2.0
   | Pr_review | Turn_up -> Some 15.0
+  (* #10594 site 1: bumped 15.0 → 20.0 because gh issue create + Slack
+     POST + webhook fanout share this caller and the gh path can hit
+     ~18s under GitHub API load.  Operators can env-override down via
+     MASC_EXEC_TIMEOUT_ALERTING_SEC if the wider budget masks a real
+     stuck call. *)
   | Alerting -> Some 20.0
+  | Pr_review_post -> Some 30.0
   | Dispatch -> Some 120.0
   | Memory_audit -> Some 3.0
+  | Git_meta -> Some 5.0
   | Unknown _ -> None
 
 let upper_case s =

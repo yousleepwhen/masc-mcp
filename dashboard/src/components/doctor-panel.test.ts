@@ -56,14 +56,14 @@ describe('severityChipClass', () => {
 })
 
 describe('doctorHeading', () => {
-  it('returns Config for config entries', () => {
+  it('returns 설정 for config entries', () => {
     const entry: DoctorEntry = {
       name: 'config',
       kind: 'config',
       exit_code: 0,
       payload: {},
     }
-    expect(doctorHeading(entry)).toBe('Config')
+    expect(doctorHeading(entry)).toBe('설정')
   })
   it('capitalises sidecar names', () => {
     const entry: DoctorEntry = {
@@ -89,13 +89,13 @@ describe('summaryLine', () => {
   it('formats aggregate with Korean middot separators', () => {
     const summary: DoctorSummary = { total: 6, ok: 3, warn: 2, error: 1 }
     expect(summaryLine(summary)).toBe(
-      '6 Doctor · 정상 3 · 경고 2 · 오류 1',
+      '6건 진단 · 정상 3 · 경고 2 · 오류 1',
     )
   })
   it('all-ok summary shows zeros', () => {
     const summary: DoctorSummary = { total: 6, ok: 6, warn: 0, error: 0 }
     expect(summaryLine(summary)).toBe(
-      '6 Doctor · 정상 6 · 경고 0 · 오류 0',
+      '6건 진단 · 정상 6 · 경고 0 · 오류 0',
     )
   })
 })
