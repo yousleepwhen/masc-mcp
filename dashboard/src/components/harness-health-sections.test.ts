@@ -108,15 +108,15 @@ describe('statusChipClass', () => {
   })
 
   it('returns muted class for stale', () => {
-    expect(statusChipClass('stale')).toContain('text-muted')
+    expect(statusChipClass('stale')).toContain('text-[var(--color-fg-muted)]')
   })
 
   it('returns dim class for idle', () => {
-    expect(statusChipClass('idle')).toContain('text-dim')
+    expect(statusChipClass('idle')).toContain('text-[var(--color-fg-disabled)]')
   })
 
   it('returns dim class for unknown', () => {
-    expect(statusChipClass('unknown' as any)).toContain('text-dim')
+    expect(statusChipClass('unknown' as any)).toContain('text-[var(--color-fg-disabled)]')
   })
 })
 

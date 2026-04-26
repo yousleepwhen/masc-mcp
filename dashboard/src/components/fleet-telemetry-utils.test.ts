@@ -153,8 +153,8 @@ describe('successClass', () => {
   })
 
   it('returns dim for null/non-finite', () => {
-    expect(successClass(null)).toContain('dim')
-    expect(successClass(NaN)).toContain('dim')
+    expect(successClass(null)).toContain('text-[var(--color-fg-disabled)]')
+    expect(successClass(NaN)).toContain('text-[var(--color-fg-disabled)]')
   })
 })
 

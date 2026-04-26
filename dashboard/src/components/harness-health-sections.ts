@@ -118,10 +118,10 @@ export function statusChipClass(status: RailStatus): string {
     case 'warning':
       return 'border-[var(--warn-30)] bg-[var(--warn-12)] text-[var(--warn)]'
     case 'stale':
-      return 'border-[var(--white-12)] bg-[var(--white-4)] text-[var(--text-muted)]'
+      return 'border-[var(--white-12)] bg-[var(--white-4)] text-[var(--color-fg-muted)]'
     case 'idle':
     default:
-      return 'border-[var(--white-8)] bg-[var(--white-4)] text-[var(--text-dim)]'
+      return 'border-[var(--white-8)] bg-[var(--white-4)] text-[var(--color-fg-disabled)]'
   }
 }
 
@@ -235,7 +235,7 @@ export { StatCard } from './common/stat-card'
 
 export function EmptySignal({ text }: { text: string }) {
   return html`
-    <div class="rounded border border-dashed border-[var(--white-8)] bg-[var(--white-3)] px-3 py-2 text-sm text-[var(--text-dim)]">
+    <div class="rounded border border-dashed border-[var(--white-8)] bg-[var(--white-3)] px-3 py-2 text-sm text-[var(--color-fg-disabled)]">
       ${text}
     </div>
   `
@@ -251,7 +251,7 @@ export function GateChart({ distribution }: { distribution: GateDistribution }) 
     <div class="space-y-2">
       ${entries.map(([gate, count]) => html`
         <div class="flex items-center gap-2">
-          <span class="w-20 text-right font-mono text-xs text-[var(--text-muted)]">${gate}</span>
+          <span class="w-20 text-right font-mono text-xs text-[var(--color-fg-muted)]">${gate}</span>
           <div class="h-4 flex-1 overflow-hidden rounded bg-[var(--white-6)]">
             <div
               class="h-full rounded opacity-80 transition-all"
@@ -283,7 +283,7 @@ export function HeroRailCard({
         <${StatusPill} status=${status} />
       </div>
       <div class="mt-3 text-lg font-semibold text-[var(--text-body)]">${detail}</div>
-      <div class="mt-1 text-xs text-[var(--text-dim)]">최근 신호 ${freshness}</div>
+      <div class="mt-1 text-xs text-[var(--color-fg-disabled)]">최근 신호 ${freshness}</div>
     </div>
   `
 }
@@ -300,7 +300,7 @@ export function ScopePairing() {
             </div>
             <button
               type="button"
-              class="rounded border border-[var(--white-8)] px-2.5 py-1 text-2xs text-[var(--text-muted)] transition-colors hover:border-[var(--ok-30)] hover:text-[var(--text-body)]"
+              class="rounded border border-[var(--white-8)] px-2.5 py-1 text-2xs text-[var(--color-fg-muted)] transition-colors hover:border-[var(--ok-30)] hover:text-[var(--text-body)]"
               onClick=${() => navigate('lab', { section: 'autoresearch' })}
             >오토리서치 열기</button>
           </div>
@@ -341,9 +341,9 @@ export function RailHeader({
           <div class="text-sm font-medium text-[var(--text-strong)]">${title}</div>
           <${StatusPill} status=${status} />
         </div>
-        <div class="mt-1 text-sm leading-loose text-[var(--text-muted)]">${description}</div>
+        <div class="mt-1 text-sm leading-loose text-[var(--color-fg-muted)]">${description}</div>
       </div>
-      <div class="text-xs text-[var(--text-dim)]">최근 신호 ${freshnessLabel(lastEventAt)}</div>
+      <div class="text-xs text-[var(--color-fg-disabled)]">최근 신호 ${freshnessLabel(lastEventAt)}</div>
     </div>
   `
 }
@@ -371,17 +371,17 @@ export function RecentVerdictsList({ items }: { items: HarnessVerdictItem[] }) {
           placeholder="task / agent / gate / cascade 필터"
           aria-label="판정 필터"
           onInput=${(e: Event) => { query.value = (e.target as HTMLInputElement).value }}
-          class="min-w-40 max-w-65 flex-1 rounded border border-[var(--white-10)] bg-[var(--white-4)] px-2 py-1 text-2xs text-[var(--text-body)] placeholder:text-[var(--text-dim)] focus:outline-none focus:border-[var(--accent)]"
+          class="min-w-40 max-w-65 flex-1 rounded border border-[var(--white-10)] bg-[var(--white-4)] px-2 py-1 text-2xs text-[var(--text-body)] placeholder:text-[var(--color-fg-disabled)] focus:outline-none focus:border-[var(--accent)]"
         />
       </div>
       ${isFiltering && visibleItems.length === 0
-        ? html`<div class="py-4 text-center text-2xs text-[var(--text-dim)]">필터 결과 없음 (${items.length} items)</div>`
+        ? html`<div class="py-4 text-center text-2xs text-[var(--color-fg-disabled)]">필터 결과 없음 (${items.length} items)</div>`
         : visibleItems.map(item => html`
           <div class="rounded border border-[var(--white-8)] bg-[var(--white-4)] p-3">
             <div class="flex items-start justify-between gap-3">
               <div>
                 <div class="text-sm font-medium text-[var(--text-strong)]">${item.task_title || item.task_id}</div>
-                <div class="mt-1 text-xs text-[var(--text-muted)]">
+                <div class="mt-1 text-xs text-[var(--color-fg-muted)]">
                   ${item.agent_name || 'agent'} · ${item.gate || 'gate'} · ${item.evaluator_cascade || 'cascade'} · ${formatTimestamp(item.timestamp)}
                 </div>
               </div>
@@ -418,16 +418,16 @@ export function PreCompactList({ section }: { section: HarnessSignalSection<PreC
           placeholder="keeper / trigger / model / strategy 필터"
           aria-label="압축 이벤트 필터"
           onInput=${(e: Event) => { query.value = (e.target as HTMLInputElement).value }}
-          class="min-w-40 max-w-65 flex-1 rounded border border-[var(--white-10)] bg-[var(--white-4)] px-2 py-1 text-2xs text-[var(--text-body)] placeholder:text-[var(--text-dim)] focus:outline-none focus:border-[var(--accent)]"
+          class="min-w-40 max-w-65 flex-1 rounded border border-[var(--white-10)] bg-[var(--white-4)] px-2 py-1 text-2xs text-[var(--text-body)] placeholder:text-[var(--color-fg-disabled)] focus:outline-none focus:border-[var(--accent)]"
         />
       </div>
       ${isFiltering && visibleItems.length === 0
-        ? html`<div class="py-4 text-center text-2xs text-[var(--text-dim)]">필터 결과 없음 (${section.recent_events.length} items)</div>`
+        ? html`<div class="py-4 text-center text-2xs text-[var(--color-fg-disabled)]">필터 결과 없음 (${section.recent_events.length} items)</div>`
         : visibleItems.map(item => html`
           <div class="rounded border border-[var(--white-8)] bg-[var(--white-4)] p-3">
             <div class="flex items-start justify-between gap-3">
               <div class="text-sm font-medium text-[var(--text-strong)]">${item.keeper_name}</div>
-              <div class="text-xs text-[var(--text-muted)]">${formatTimestamp(item.timestamp)}</div>
+              <div class="text-xs text-[var(--color-fg-muted)]">${formatTimestamp(item.timestamp)}</div>
             </div>
             <div class="mt-2 grid grid-cols-2 gap-2 text-xs text-[var(--text-body)]">
               <span>컨텍스트 ${Math.round(item.context_ratio * 100)}%</span>
@@ -435,11 +435,11 @@ export function PreCompactList({ section }: { section: HarnessSignalSection<PreC
               <span>토큰 ${item.token_count.toLocaleString()}</span>
               <span>${item.model_family || '모델 미확인'}</span>
             </div>
-            <div class="mt-2 text-xs text-[var(--text-muted)]">${item.trigger}</div>
+            <div class="mt-2 text-xs text-[var(--color-fg-muted)]">${item.trigger}</div>
             ${item.strategies.length > 0 ? html`
               <div class="mt-2 flex flex-wrap gap-1">
                 ${item.strategies.map(strategy => html`
-                  <span class="rounded-sm border border-[var(--white-8)] px-2 py-0.5 text-3xs text-[var(--text-muted)]">${strategy}</span>
+                  <span class="rounded-sm border border-[var(--white-8)] px-2 py-0.5 text-3xs text-[var(--color-fg-muted)]">${strategy}</span>
                 `)}
               </div>
             ` : null}
@@ -470,16 +470,16 @@ export function HandoffList({ section }: { section: HarnessSignalSection<Handoff
           placeholder="keeper / model / trace_id 필터"
           aria-label="세대 교체 필터"
           onInput=${(e: Event) => { query.value = (e.target as HTMLInputElement).value }}
-          class="min-w-40 max-w-65 flex-1 rounded border border-[var(--white-10)] bg-[var(--white-4)] px-2 py-1 text-2xs text-[var(--text-body)] placeholder:text-[var(--text-dim)] focus:outline-none focus:border-[var(--accent)]"
+          class="min-w-40 max-w-65 flex-1 rounded border border-[var(--white-10)] bg-[var(--white-4)] px-2 py-1 text-2xs text-[var(--text-body)] placeholder:text-[var(--color-fg-disabled)] focus:outline-none focus:border-[var(--accent)]"
         />
       </div>
       ${isFiltering && visibleItems.length === 0
-        ? html`<div class="py-4 text-center text-2xs text-[var(--text-dim)]">필터 결과 없음 (${section.recent_events.length} items)</div>`
+        ? html`<div class="py-4 text-center text-2xs text-[var(--color-fg-disabled)]">필터 결과 없음 (${section.recent_events.length} items)</div>`
         : visibleItems.map(item => html`
           <div class="rounded border border-[var(--white-8)] bg-[var(--white-4)] p-3">
             <div class="flex items-start justify-between gap-3">
               <div class="text-sm font-medium text-[var(--text-strong)]">${item.keeper_name}</div>
-              <div class="text-xs text-[var(--text-muted)]">${formatTimestamp(item.timestamp)}</div>
+              <div class="text-xs text-[var(--color-fg-muted)]">${formatTimestamp(item.timestamp)}</div>
             </div>
             <div class="mt-2 grid grid-cols-2 gap-2 text-xs text-[var(--text-body)]">
               <span>${item.generation}세대</span>
@@ -491,7 +491,7 @@ export function HandoffList({ section }: { section: HarnessSignalSection<Handoff
               <span>${item.to_model ?? '모델 미확인'}</span>
             </div>
             ${item.prev_trace_id ? html`
-              <div class="mt-2 text-xs text-[var(--text-muted)]">이전 ${item.prev_trace_id.slice(0, 8)} → 새 ${item.new_trace_id?.slice(0, 8) ?? '-'}</div>
+              <div class="mt-2 text-xs text-[var(--color-fg-muted)]">이전 ${item.prev_trace_id.slice(0, 8)} → 새 ${item.new_trace_id?.slice(0, 8) ?? '-'}</div>
             ` : null}
           </div>
         `)}

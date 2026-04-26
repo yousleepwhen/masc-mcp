@@ -147,7 +147,7 @@ function keeperLastLatencyMs(keeper: Keeper): number {
 }
 
 export function successClass(rate: number | null): string {
-  if (rate == null || !Number.isFinite(rate)) return 'text-[var(--text-dim)]'
+  if (rate == null || !Number.isFinite(rate)) return 'text-[var(--color-fg-disabled)]'
   if (rate >= 97) return 'text-[var(--ok)]'
   if (rate >= 90) return 'text-[var(--warn)]'
   return 'text-[var(--bad-light)]'
@@ -488,7 +488,7 @@ export function sourceCountClass(source: TelemetrySourceSummary): string {
       return 'text-[var(--ok)]'
   }
   if (source.exists === false) return 'text-[var(--bad-light)]'
-  if (source.entry_count <= 0) return 'text-[var(--text-dim)]'
+  if (source.entry_count <= 0) return 'text-[var(--color-fg-disabled)]'
   const age = numericAge(source.latest_age_s)
   if (age != null && age >= TELEMETRY_SOURCE_STALE_SEC) return 'text-[var(--warn)]'
   return 'text-[var(--ok)]'
