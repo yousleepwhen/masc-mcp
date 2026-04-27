@@ -1323,7 +1323,7 @@ function ChannelCard({ ch }: { ch: ChannelInfo }) {
         </div>
       </div>
 
-      <div class="grid grid-cols-3 gap-2 text-xs">
+      <div class="grid grid-cols-3 gap-2 text-xs" role="group" aria-label="채널 통계">
         <div>
           <div class="text-[var(--color-fg-disabled)]">messages</div>
           <div class="font-mono text-[var(--color-fg-primary)]">${ch.message_count}</div>
@@ -1519,7 +1519,7 @@ function GateAnalyticsSection({
           `
         : html`
             <div>
-              <div class="mb-3 grid grid-cols-4 gap-2 max-[720px]:grid-cols-2">
+              <div class="mb-3 grid grid-cols-4 gap-2 max-[720px]:grid-cols-2" role="group" aria-label="게이트 통계">
                 <${StatCard} label="메시지" value=${gate.total_messages} />
                 <${StatCard} label="성공" value=${gate.total_success} />
                 <${StatCard} label="오류" value=${gate.total_errors} />
