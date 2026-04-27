@@ -141,7 +141,7 @@ function CommentItem({
   const authorTitle = boardActorTitle(comment.author, comment.author_identity)
 
   return html`
-    <div class="${indent}">
+    <div class="${indent}" role="listitem">
       <div class="board-comment rounded p-3 bg-[var(--white-3)] border border-[var(--border-slate-12)] ${depth > 0 ? 'border-l-2 border-l-[var(--accent-20)]' : ''}">
         <div class="flex items-center gap-2 mb-1.5">
           <span class="text-xs">${authorAvatar(authorAvatarKey)}</span>

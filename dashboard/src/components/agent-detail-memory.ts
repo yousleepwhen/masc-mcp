@@ -235,7 +235,7 @@ export function AgentDetailMemory({ agentName }: Props) {
                               ? 'text-[var(--color-status-warn)]'
                               : 'text-[var(--bad-light)]'
                         return html`
-                          <div class="border border-[var(--white-10)] rounded px-2 py-1.5 text-xs">
+                          <div class="border border-[var(--white-10)] rounded px-2 py-1.5 text-xs" role="listitem">
                             <div class="flex items-center justify-between gap-2">
                               <div class="flex items-center gap-2 min-w-0">
                                 <span class="${outcomeColor}">${outcomeIcon}</span>

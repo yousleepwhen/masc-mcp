@@ -215,6 +215,7 @@ export function PromptRegistryPanel() {
             ${visiblePrompts.map(prompt => html`
               <button
                 type="button"
+                role="listitem"
                 class="rounded border px-3 py-2 text-left transition-colors ${selectedPrompt?.key === prompt.key
                   ? 'border-[var(--accent-30)] bg-[var(--accent-10)]'
                   : 'border-[var(--color-border-default)] bg-[var(--white-2)] hover:bg-[var(--white-4)]'}"
