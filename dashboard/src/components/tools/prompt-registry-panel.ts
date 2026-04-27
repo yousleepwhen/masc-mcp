@@ -270,7 +270,7 @@ export function PromptRegistryPanel() {
 
             <div class="mb-4">
               <div class="mb-2 text-2xs uppercase tracking-1 text-[var(--color-fg-muted)]">파일 기준값</div>
-              <div class="max-h-55 overflow-auto rounded border border-[var(--color-border-default)] bg-[var(--color-bg-page)] custom-scrollbar"><${Markdown} text=${'```markdown\n' + (selectedPrompt.file_value ?? '없음') + '\n```'} /></div>
+              <div class="max-h-55 overflow-auto rounded border border-[var(--color-border-default)] bg-[var(--color-bg-page)] custom-scrollbar" role="region" aria-label="프롬프트 기준값"><${Markdown} text=${'```markdown\n' + (selectedPrompt.file_value ?? '없음') + '\n```'} /></div>
             </div>
 
             <div class="mb-2 flex items-center justify-between gap-2">
