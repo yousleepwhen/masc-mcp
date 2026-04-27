@@ -300,7 +300,7 @@ export function PromptRegistryPanel() {
               <//>
             </div>
           ` : html`
-            <div class="rounded border border-dashed border-[var(--color-border-default)] px-4 py-10 text-center text-xs text-[var(--color-fg-muted)]">
+            <div class="rounded border border-dashed border-[var(--color-border-default)] px-4 py-10 text-center text-xs text-[var(--color-fg-muted)]" role=${loading ? 'status' : undefined}>
               ${loading ? '프롬프트 목록을 불러오는 중입니다.' : '표시할 프롬프트가 없습니다.'}
             </div>
           `}

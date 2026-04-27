@@ -402,7 +402,7 @@ function ToolSearchPicker({
         </ul>
         ${showMenu && filtered.length === 0
           ? html`
-            <div class="absolute z-10 top-full left-0 right-0 mt-1 px-3 py-2 rounded border border-[var(--color-border-default)] bg-[var(--backdrop-modal)] text-2xs text-[var(--color-fg-muted)]">
+            <div class="absolute z-10 top-full left-0 right-0 mt-1 px-3 py-2 rounded border border-[var(--color-border-default)] bg-[var(--backdrop-modal)] text-2xs text-[var(--color-fg-muted)]" role="status">
               ${allNames.length === 0
                 ? '도구 목록 로딩 중... Enter로 직접 추가 가능'
                 : '일치하는 도구 없음. Enter로 직접 추가 가능'}
