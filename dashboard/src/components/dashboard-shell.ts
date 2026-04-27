@@ -135,7 +135,7 @@ export function ErrorCounterBadge() {
       >
         <${Bell} size=${14} />
         ${count > 0 ? html`
-          <span class="inline-flex items-center justify-center min-w-4 h-4 px-1 rounded-full bg-[var(--color-status-err)] text-2xs font-semibold text-white tabular-nums">${count > 99 ? '99+' : count}</span>
+          <span class="inline-flex items-center justify-center min-w-4 h-4 px-1 rounded-full bg-[var(--color-status-err)] text-2xs font-semibold text-white tabular-nums" aria-hidden="true">${count > 99 ? '99+' : count}</span><span class="sr-only">미확인 에러 ${count}건</span>
         ` : null}
       </button>
       ${open ? html`<${ErrorPanel} onClose=${() => { errorPanelOpen.value = false }} />` : null}
