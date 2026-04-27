@@ -256,7 +256,7 @@ function KeeperCard({ item }: { item: KeeperItem }) {
             `
             : null}
         </div>
-        <div class="grid grid-cols-2 gap-2 text-xs lg:min-w-[220px]">
+        <div class="grid grid-cols-2 gap-2 text-xs lg:min-w-[220px]" role="group" aria-label="에이전트 통계">
           <${StatCard} label="score" value=${item.score.toFixed(1)} />
           <${StatCard} label="approvals" value=${item.approval_pending_count} />
           <${StatCard} label="turns" value=${item.total_turns} />
@@ -274,9 +274,9 @@ function FindingsList({ findings }: { findings: FindingItem[] }) {
     return html`<${EmptyState} message="현재 기록된 세이프 오토노미 finding이 없습니다." compact />`
   }
   return html`
-    <div class="space-y-2">
+    <div class="space-y-2" role="list" aria-label="세이프 오토노미 발견 목록">
       ${findings.map(item => html`
-        <div class="rounded border border-[var(--white-8)] bg-[var(--white-4)] p-3">
+        <div class="rounded border border-[var(--white-8)] bg-[var(--white-4)] p-3" role="listitem">
           <div class="flex items-start justify-between gap-3">
             <div class="min-w-0">
               <div class="flex flex-wrap items-center gap-2">
@@ -359,7 +359,7 @@ export function SafeAutonomyPanel() {
                       generated ${data.generated_at ? formatTimeAgo(data.generated_at) : '정보 없음'}
                     </div>
                   </div>
-                  <div class="grid grid-cols-2 gap-2 xl:grid-cols-4">
+                  <div class="grid grid-cols-2 gap-2 xl:grid-cols-4" role="group" aria-label="전체 요약">
                     <${StatCard} label="keepers" value=${data.summary.keeper_count} />
                     <${StatCard} label="active goals" value=${data.summary.active_goal_count} />
                     <${StatCard} label="findings" value=${data.summary.findings_total} />
@@ -370,7 +370,7 @@ export function SafeAutonomyPanel() {
                 </div>
               </div>
 
-              <div class="grid grid-cols-1 gap-3 xl:grid-cols-2">
+              <div class="grid grid-cols-1 gap-3 xl:grid-cols-2" role="list" aria-label="도메인 카드">
                 ${data.domains.map(item => html`<${DomainCard} key=${item.id} item=${item} />`)}
               </div>
 
@@ -382,7 +382,7 @@ export function SafeAutonomyPanel() {
                 </div>
               <//>
 
-              <div class="grid grid-cols-1 gap-4 xl:grid-cols-2">
+              <div class="grid grid-cols-1 gap-4 xl:grid-cols-2" role="group" aria-label="발견 및 보류">
                 <${Card} title="발견" class="section">
                   <${FindingsList} findings=${data.findings} />
                 <//>
