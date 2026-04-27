@@ -369,7 +369,7 @@ export function HandoffTimeline({
                           onClick=${() => onSelectKeeper?.(row.keeper)}
                         >${row.keeper}</button>`
                       : html`<div class=${rowLabelCls} title=${row.keeper}>${row.keeper}</div>`}
-                    <div class="relative flex-1 h-6 rounded bg-bg-1/40 border border-card-border/50">
+                    <div class="relative flex-1 h-6 rounded bg-bg-1/40 border border-card-border/50" role="img" aria-label=${`${row.keeper} 타임라인: ${row.chips.length}개 이벤트`}>
                       ${row.chips.map(chip => {
                         const pct = ((chip.ts - windowStart) / span) * 100
                         const cls = CHIP_CLASS_BY_KIND[chip.kind]
@@ -380,6 +380,7 @@ export function HandoffTimeline({
                             class="absolute top-1 bottom-1 w-[2px] ${cls} hover:w-1 transition-all cursor-default"
                             style=${`left: ${pct}%;`}
                             title=${`${new Date(chip.ts).toLocaleTimeString()} · ${chip.eventType}${peer}${task}`}
+                            aria-hidden="true"
                           ></span>
                         `
                       })}
