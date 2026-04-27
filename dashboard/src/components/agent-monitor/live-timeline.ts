@@ -165,7 +165,7 @@ export function AgentLiveTimeline({ name }: { name: string }) {
         </div>
       </div>
 
-      <div class="flex flex-col gap-0.5 max-h-80 overflow-y-auto" ref=${scrollRef}>
+      <div class="flex flex-col gap-0.5 max-h-80 overflow-y-auto" role="log" aria-label="에이전트 이벤트 타임라인" ref=${scrollRef}>
         ${filtered.length === 0
           ? html`<${EmptyState} message="필터에 맞는 이벤트 없음" compact />`
           : filtered.map((entry: JournalEntry, idx: number) => html`
@@ -173,7 +173,7 @@ export function AgentLiveTimeline({ name }: { name: string }) {
                 <span class="agent-event-badge ${eventKindBadgeClass(entry)}">
                   ${eventKindLabel(entry.eventType)}
                 </span>
-                <span class="flex-1 text-[var(--color-fg-primary)] truncate">${compactText(entry.text)}</span>
+                <span class="flex-1 text-[var(--color-fg-primary)] truncate" title=${compactText(entry.text)}>${compactText(entry.text)}</span>
                 ${entry.timestamp ? html`
                   <span class="text-[var(--color-fg-disabled)] text-2xs whitespace-nowrap"><${TimeAgo} timestamp=${entry.timestamp} /></span>
                 ` : null}
