@@ -184,6 +184,8 @@ export function SessionTraceView({ agentName, isKeeper, keeperStatus, keeperGene
       <div
         ref=${listRef}
         class="flex flex-col gap-0.5 max-h-[500px] overflow-y-auto rounded border border-[var(--color-border-default)] bg-[var(--white-2)]"
+        role="log"
+        aria-label="세션 트레이스 이벤트"
       >
         ${events.map(evt => html`<${SessionTraceEntry} key=${evt.id} event=${evt} searchQuery=${searchQuery} />`)}
         <${LiveIndicator} events=${events} />

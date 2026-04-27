@@ -548,7 +548,7 @@ function EntryRow({ entry }: { entry: TelemetryEntry }) {
                 size=${13}
               />
             </div>
-            <pre class="m-0 text-3xs font-mono text-[var(--text-muted)] overflow-x-auto max-h-75 overflow-y-auto whitespace-pre-wrap break-all">
+            <pre class="m-0 text-3xs font-mono text-[var(--text-muted)] overflow-x-auto max-h-75 overflow-y-auto whitespace-pre-wrap break-all" role="region" aria-label="텔레메트리 원본 JSON">
 ${rawJson}</pre>
           </div>
         </div>
@@ -627,7 +627,7 @@ function GroupRow({ item }: { item: Extract<TelemetryDisplayItem, { kind: 'group
             <div class="flex items-start justify-between gap-2">
               <details class="min-w-0 flex-1">
                 <summary class="cursor-pointer text-3xs text-[var(--text-dim)]">원본 JSON</summary>
-                <pre class="mt-2 text-3xs font-mono text-[var(--text-muted)] overflow-x-auto max-h-70 overflow-y-auto whitespace-pre-wrap break-all">
+                <pre class="mt-2 text-3xs font-mono text-[var(--text-muted)] overflow-x-auto max-h-70 overflow-y-auto whitespace-pre-wrap break-all" role="region" aria-label="텔레메트리 상세 JSON">
 ${rawJson}</pre>
               </details>
               <${CopyIdButton}

@@ -329,6 +329,8 @@ export function ChatTranscript({
           : 'gap-3 rounded-[var(--radius-xl)] px-3 py-4'
       }`}
       data-chat-variant=${variant}
+      role="log"
+      aria-label="채팅 메시지"
       ref=${scrollerRef}
     >
       ${entries.length === 0

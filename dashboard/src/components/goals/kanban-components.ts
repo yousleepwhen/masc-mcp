@@ -201,7 +201,7 @@ function TaskColumn({
         </div>
         <span class="rounded px-2.5 py-1 text-xs font-semibold ${badgeClass}">${count}</span>
       </div>
-      <div ref=${listRef} class="flex max-h-170 flex-col gap-3 overflow-y-auto pr-1 custom-scrollbar">
+      <div ref=${listRef} class="flex max-h-170 flex-col gap-3 overflow-y-auto pr-1 custom-scrollbar" role="list" aria-label="${title} 카드 목록">
         ${children}
       </div>
     </section>

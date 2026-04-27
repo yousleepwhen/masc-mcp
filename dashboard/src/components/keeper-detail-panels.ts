@@ -1192,7 +1192,7 @@ export function RawDataDebug({ keeper }: { keeper: Keeper }) {
     : fields
 
   return html`
-    <div class="max-h-[460px] overflow-y-auto">
+    <div class="max-h-[460px] overflow-y-auto" role="region" aria-label="키퍼 필드 목록">
       <${TextInput}
         placeholder="필드 검색..."
         value=${fieldSearch.value}
@@ -1239,7 +1239,7 @@ export function RelationshipList({ rels }: { rels: Record<string, string> }) {
   if (entries.length === 0) return html`<div class="py-2 px-3 text-xs text-[var(--color-fg-muted)] italic">관계 없음</div>`
 
   return html`
-    <div class="max-h-55 overflow-y-auto flex flex-col gap-1.5">
+    <div class="max-h-55 overflow-y-auto flex flex-col gap-1.5" role="list" aria-label="키퍼 관계 목록">
       ${entries.map(([name, relation]) => html`
         <div class="flex items-center gap-2 py-2 px-3 bg-[var(--white-3)] rounded">
           <span class="inline-flex items-center py-0.5 px-2 rounded-sm text-2xs font-medium bg-[var(--accent-12)] text-[var(--color-accent-fg)] border border-[var(--accent-30)]">${name}</span>

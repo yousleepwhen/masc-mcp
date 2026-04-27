@@ -217,7 +217,7 @@ export function AgentDetailMemory({ agentName }: Props) {
                     필터 결과 없음 (${episodes.length}개 중 0)
                   </div>`
                 : html`
-                  <div class="space-y-1.5 max-h-60 overflow-y-auto pr-1 custom-scrollbar">
+                  <div class="space-y-1.5 max-h-60 overflow-y-auto pr-1 custom-scrollbar" role="list" aria-label="에피소드 목록">
                     ${visibleEpisodes
                       .slice()
                       .reverse()
