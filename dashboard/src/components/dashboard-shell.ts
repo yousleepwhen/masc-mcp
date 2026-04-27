@@ -356,7 +356,7 @@ function HealthIndicator({ collapsed }: { collapsed?: boolean }) {
   const attentionLines = attentionCount > 0 ? summarizeAttentionPreview(attentionQueue) : []
   const titleText = composeHealthIndicatorTitle(label, attentionLines)
 
-  const dot = html`<span class="block size-2 shrink-0 rounded-sm ${dotClass} shadow-[0_0_6px_rgba(0,0,0,0.4)]"></span>`
+  const dot = html`<span class="block size-2 shrink-0 rounded-sm ${dotClass} shadow-[0_0_6px_rgba(0,0,0,0.4)]" aria-hidden="true"></span>`
 
   if (collapsed) {
     return html`<div class="flex justify-center" title=${titleText} role="img" aria-label=${label}>${dot}</div>`

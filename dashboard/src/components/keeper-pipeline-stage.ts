@@ -26,11 +26,13 @@ export function PipelineStageBar({ stage }: { stage?: PipelineStage | null }) {
   const current = stage ?? 'offline'
   const currentIdx = STAGE_ORDER[current] ?? -1
 
+  const currentLabel = STAGES.find((s) => s.key === current)?.label ?? current
+
   if (current === 'offline' || currentIdx === -1) {
     return html`
-      <div class="flex items-center py-1.5">
+      <div class="flex items-center py-1.5" role="status" aria-label=${`파이프라인: ${currentLabel}`}>
         <div class="pipeline-stage-node active stage-${current}">
-          <span class="pipeline-stage-dot transition-all duration-300"></span>
+          <span class="pipeline-stage-dot transition-all duration-300" aria-hidden="true"></span>
           <span class="pipeline-stage-label">${current}</span>
         </div>
       </div>
@@ -38,7 +40,7 @@ export function PipelineStageBar({ stage }: { stage?: PipelineStage | null }) {
   }
 
   return html`
-    <div class="flex items-center py-1.5">
+    <div class="flex items-center py-1.5" role="status" aria-label=${`파이프라인: ${currentLabel}`}>
       ${STAGES.map((s, i) => {
         const isActive = s.key === current
         const isPassed = i < currentIdx
@@ -52,9 +54,9 @@ export function PipelineStageBar({ stage }: { stage?: PipelineStage | null }) {
           .join(' ')
 
         return html`
-          ${i > 0 ? html`<span class="pipeline-stage-connector"></span>` : null}
+          ${i > 0 ? html`<span class="pipeline-stage-connector" aria-hidden="true"></span>` : null}
           <div class=${nodeClass}>
-            <span class="pipeline-stage-dot transition-all duration-300"></span>
+            <span class="pipeline-stage-dot transition-all duration-300" aria-hidden="true"></span>
             ${isActive
               ? html`<span class="pipeline-stage-label">${s.label}</span>`
               : null}
