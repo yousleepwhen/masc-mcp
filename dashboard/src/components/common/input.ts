@@ -73,7 +73,7 @@ export function TextInput({
       required=${required}
       name=${name}
       aria-label=${ariaLabel}
-      autocomplete=${autoComplete}
+      autocomplete=${type === 'search' ? (autoComplete ?? 'off') : autoComplete}
       data-testid=${testId}
       autofocus=${autoFocus}
       onInput=${onInput}
