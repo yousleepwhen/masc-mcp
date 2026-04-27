@@ -116,7 +116,7 @@ export function SetupGuideCard({ connectorId }: { connectorId: string }) {
     >
       <button
         type="button"
-        class="flex w-full cursor-pointer items-center justify-between gap-2 px-3 py-2 text-left text-xs text-[var(--color-fg-primary)] hover:bg-[var(--white-4)]"
+        class="flex w-full cursor-pointer items-center justify-between gap-2 px-3 py-2 text-left text-xs text-[var(--color-fg-primary)] hover:bg-[var(--white-4)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)]"
         aria-expanded=${isOpen}
         aria-controls=${`setup-guide-${connectorId}`}
         onClick=${toggle}
@@ -200,7 +200,7 @@ export function SetupGuideCard({ connectorId }: { connectorId: string }) {
                       />
                       <label
                         for=${`setup-step-${connectorId}-${idx}`}
-                        class=${`min-w-0 flex-1 cursor-pointer ${done ? 'text-[var(--color-fg-disabled)] line-through decoration-[var(--white-10)]' : ''}`}
+                        class=${`min-w-0 flex-1 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] rounded ${done ? 'text-[var(--color-fg-disabled)] line-through decoration-[var(--white-10)]' : ''}`}
                       >
                         <span>${step.text}</span>
                         ${step.link

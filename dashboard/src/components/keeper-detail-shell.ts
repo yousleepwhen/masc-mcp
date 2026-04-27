@@ -80,7 +80,7 @@ function KeeperCascadeSelector({ keeper }: { keeper: Keeper }) {
     <div class="flex items-center gap-1.5">
       <select
         aria-label="Cascade 프로필 선택"
-        class="py-0.5 px-1 rounded text-3xs font-mono bg-[var(--white-5)] text-[var(--text-muted)] border border-[var(--white-8)] cursor-pointer"
+        class="py-0.5 px-1 rounded text-3xs font-mono bg-[var(--white-5)] text-[var(--text-muted)] border border-[var(--white-8)] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)]"
         title=${invalidProfiles.length > 0
           ? `Cascade 프로필\n\n비활성화된 잘못된 preset:\n${invalidSummary}`
           : 'Cascade 프로필'}

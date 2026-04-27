@@ -28,7 +28,7 @@ function FilterBar() {
       ${FILTER_OPTIONS.map(opt => html`
         <button type="button"
           key=${opt.kind}
-          class="px-3 py-1.5 text-2xs rounded-sm border cursor-pointer transition-all duration-150 ${active.has(opt.kind)
+          class="px-3 py-1.5 text-2xs rounded-sm border cursor-pointer transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] ${active.has(opt.kind)
             ? 'border-[var(--border-slate-22)] bg-[var(--accent-soft)] text-[var(--color-fg-secondary)]'
             : 'border-[var(--white-10)] bg-[var(--white-4)] text-[var(--color-fg-disabled)] hover:bg-[var(--white-8)] hover:border-[var(--border-slate-22)] hover:text-[var(--color-fg-primary)]'}"
           onClick=${() => toggleLiveFilter(opt.kind)}

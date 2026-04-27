@@ -209,7 +209,7 @@ export function KeeperCheckpointPanel({
           >새로고침<//>
           <button
             type="button"
-            class="rounded border border-[var(--bad-30)] bg-[var(--bad-10)] px-3 py-1.5 text-2xs font-semibold text-[var(--rose-light)] hover:bg-[var(--bad-soft)] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+            class="rounded border border-[var(--bad-30)] bg-[var(--bad-10)] px-3 py-1.5 text-2xs font-semibold text-[var(--rose-light)] hover:bg-[var(--bad-soft)] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] disabled:cursor-not-allowed disabled:opacity-50"
             disabled=${deleting || selectedIds.length === 0}
             onClick=${deleteSelected}
           >${deleting ? '삭제 중...' : `선택 삭제 (${selectedIds.length})`}</button>

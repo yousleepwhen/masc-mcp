@@ -440,7 +440,7 @@ export function TransportHealthPanel() {
       </div>
 
       <details class="group rounded border border-card-border/50 bg-card/18 overflow-hidden" open=${hasAnyBadTransport}>
-        <summary class="flex items-center gap-3 px-4 py-3 cursor-pointer text-sm font-semibold text-text-strong bg-card/28 hover:bg-card/44 transition-colors">
+        <summary class="flex items-center gap-3 px-4 py-3 cursor-pointer text-sm font-semibold text-text-strong bg-card/28 hover:bg-card/44 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-accent-fg)]">
           <span>트랜스포트 상세</span>
           <span class="ml-auto flex items-center gap-2 text-2xs font-normal text-text-muted">
             <span class="inline-flex items-center gap-1"><${StatusDot} size="xs" class=${statusDot(sseStatus)} />SSE</span>
@@ -537,7 +537,7 @@ export function TransportHealthPanel() {
             const isFiltered = query.trim() !== ''
             return html`
             <details class="group rounded border border-card-border/50 bg-card/18 overflow-hidden" open=${data.sse.hot_sessions.length >= 3}>
-              <summary class="flex items-center gap-3 px-4 py-3 cursor-pointer text-sm font-semibold text-text-strong bg-card/28 hover:bg-card/44 transition-colors">
+              <summary class="flex items-center gap-3 px-4 py-3 cursor-pointer text-sm font-semibold text-text-strong bg-card/28 hover:bg-card/44 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-accent-fg)]">
                 <span>핫 큐</span>
                 <span class="ml-auto text-2xs font-normal text-text-muted">${data.sse.hot_sessions.length}개 세션 -- SSE 백프레셔 위험</span>
               </summary>
@@ -586,7 +586,7 @@ export function TransportHealthPanel() {
         : null}
 
       <details class="group rounded border border-card-border/50 bg-card/18 overflow-hidden">
-        <summary class="flex items-center gap-3 px-4 py-3 cursor-pointer text-sm font-semibold text-text-strong bg-card/28 hover:bg-card/44 transition-colors">
+        <summary class="flex items-center gap-3 px-4 py-3 cursor-pointer text-sm font-semibold text-text-strong bg-card/28 hover:bg-card/44 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-accent-fg)]">
           <span>실용 경로</span>
           <span class="ml-auto text-2xs font-normal text-text-muted">각 트랜스포트의 실제 연결 방법 레퍼런스</span>
         </summary>

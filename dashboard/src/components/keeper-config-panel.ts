@@ -442,7 +442,7 @@ function InlineToggleRow({ label, value, onChange }: { label: string; value: boo
     <div class="flex items-center justify-between py-2 px-3 rounded border border-card-border/50 bg-card/20 backdrop-blur-sm hover:bg-card/40 transition-colors shadow-sm mb-1.5">
       <span class="text-xs font-medium text-text-muted">${label}</span>
       <button type="button"
-        class="relative inline-flex h-5 w-9 items-center rounded-sm transition-colors cursor-pointer ${value ? 'bg-ok/60' : 'bg-white/10'}"
+        class="relative inline-flex h-5 w-9 items-center rounded-sm transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] ${value ? 'bg-ok/60' : 'bg-white/10'}"
         aria-label=${`${label} ${value ? '비활성화' : '활성화'}`}
         aria-pressed=${value ? 'true' : 'false'}
         onClick=${() => onChange(!value)}
@@ -687,7 +687,7 @@ export function KeeperConfigPanel({ keeperName }: { keeperName: string }) {
     }
   }
 
-  const btnBase = 'py-1.5 px-4 rounded text-xs font-semibold cursor-pointer border-none'
+  const btnBase = 'py-1.5 px-4 rounded text-xs font-semibold cursor-pointer border-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)]'
 
   // --- Toolbar ---
   const toolbar = html`
@@ -749,7 +749,7 @@ export function KeeperConfigPanel({ keeperName }: { keeperName: string }) {
     <${PromptBlock} title="세계관" block=${c.prompt.system_prompt_blocks.world} />
     <${PromptBlock} title="능력" block=${c.prompt.system_prompt_blocks.capabilities} />
     <details class="mt-3">
-      <summary class="cursor-pointer py-2 px-3 text-3xs font-semibold uppercase tracking-wider text-[var(--text-muted)] list-none select-none rounded hover:bg-[var(--white-3)] transition-colors">컴파일된 시스템 프롬프트 보기</summary>
+      <summary class="cursor-pointer py-2 px-3 text-3xs font-semibold uppercase tracking-wider text-[var(--text-muted)] list-none select-none rounded hover:bg-[var(--white-3)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-accent-fg)]">컴파일된 시스템 프롬프트 보기</summary>
       <${LongText} text=${c.prompt.effective_system_prompt} truncateAt=${null} />
     </details>
   `

@@ -415,7 +415,7 @@ export function LogViewer() {
 
           <div class="logs-actions flex flex-wrap gap-3 items-center text-2xs text-[color:var(--color-fg-muted)]">
             <span class="rounded-sm border border-[var(--white-10)] bg-[var(--white-3)] px-2.5 py-1 tabular-nums">${logEntries.length.toLocaleString()} / ${logTotal.toLocaleString()}</span>
-            <label class="logs-auto-label flex items-center gap-1.5 cursor-pointer">
+            <label class="logs-auto-label flex items-center gap-1.5 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] rounded">
               <${Checkbox}
                 name="log-auto-refresh"
                 ariaLabel="자동 새로고침"

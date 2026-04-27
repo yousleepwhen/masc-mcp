@@ -165,7 +165,7 @@ function labelPills(labels: Record<string, string>): ReturnType<typeof html> | n
   return html`<span class="ml-2 inline-flex gap-1 flex-wrap">${entries.map(([k, v]) => {
     if (k === 'keeper') {
       return html`<button type="button"
-        class="rounded bg-[var(--accent-10)] px-1 py-0.5 text-3xs text-[var(--accent)] font-mono hover:bg-[var(--accent-10)] hover:text-[var(--accent)] transition-colors cursor-pointer"
+        class="rounded bg-[var(--accent-10)] px-1 py-0.5 text-3xs text-[var(--accent)] font-mono hover:bg-[var(--accent-10)] hover:text-[var(--accent)] transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)]"
         title="키퍼 상세 보기"
         aria-label="키퍼 상세 보기"
         onClick=${(e: Event) => {
@@ -176,7 +176,7 @@ function labelPills(labels: Record<string, string>): ReturnType<typeof html> | n
     }
     if (k === 'tool_name' || k === 'tool') {
       return html`<button type="button"
-        class="rounded bg-[var(--warn-10)] px-1 py-0.5 text-3xs text-[var(--warn)] font-mono hover:bg-[var(--warn-10)] hover:text-[var(--warn)] transition-colors cursor-pointer"
+        class="rounded bg-[var(--warn-10)] px-1 py-0.5 text-3xs text-[var(--warn)] font-mono hover:bg-[var(--warn-10)] hover:text-[var(--warn)] transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)]"
         title="도구 품질 보기"
         aria-label="도구 품질 보기"
         onClick=${(e: Event) => {
