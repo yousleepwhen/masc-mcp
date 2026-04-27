@@ -202,6 +202,13 @@ export function PersonaGenerator() {
             </div>
             <div class="max-h-56 overflow-auto">
               <table class="w-full text-left text-3xs" aria-label="페르소나 스키마 규칙">
+                <thead>
+                  <tr class="border-b border-[var(--white-8)]">
+                    <th scope="col" class="px-2 py-1 text-[var(--color-fg-muted)] font-medium">경로</th>
+                    <th scope="col" class="px-2 py-1 text-[var(--color-fg-muted)] font-medium">타입</th>
+                    <th scope="col" class="px-2 py-1 text-[var(--color-fg-muted)] font-medium">효과</th>
+                  </tr>
+                </thead>
                 <tbody>
                   ${schema.fieldCatalog.map(field => html`
                     <tr key=${field.path} class="border-b border-[var(--white-6)] align-top">
