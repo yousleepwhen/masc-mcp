@@ -77,7 +77,7 @@ export function ExcusePatterns() {
           형식은 두 개의 문자열을 담은 배열들의 JSON 배열이어야 합니다: <code>["pattern", "reason"]</code>.
         </p>
 
-        <form onSubmit=${handleSave}>
+        <form aria-label="패턴 편집" onSubmit=${handleSave}>
           <textarea
             name="patterns"
             aria-label="패턴 JSON 편집"
