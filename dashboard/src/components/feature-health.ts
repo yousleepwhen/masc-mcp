@@ -227,7 +227,7 @@ export function FeatureHealth() {
                     >새로고침</button>
                   </div>
 
-                  <div class="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-6">
+                  <div class="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-6" role="group" aria-label="기능 플래그 요약">
                     <${StatCard} label="총 기능" value=${overview.total_features} />
                     <${StatCard} label="활성화" value=${overview.enabled_count} />
                     <${StatCard} label="정상" value=${overview.healthy_count} />

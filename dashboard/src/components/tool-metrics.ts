@@ -66,13 +66,13 @@ function categoryBarColor(colorClass: string): string {
 function BarChart({ items, maxCount }: { items: ToolMetricsTopEntry[]; maxCount: number }) {
   if (items.length === 0) return html`<p class="muted">아직 도구 호출 기록이 없습니다.</p>`
   return html`
-    <div class="flex flex-col gap-1.5">
+    <div class="flex flex-col gap-1.5" role="list" aria-label="도구 호출 순위">
       ${items.map(item => {
         const pct = maxCount > 0 ? (item.call_count / maxCount) * 100 : 0
         const cat = toolCategory(item.name)
         const barBg = categoryBarColor(cat.color)
         return html`
-          <div class="tool-bar-row" key=${item.name}>
+          <div class="tool-bar-row" key=${item.name} role="listitem">
             <div class="flex items-center gap-1.5 overflow-hidden">
               <span class="flex-shrink-0 size-4 rounded text-3xs font-mono font-bold flex items-center justify-center bg-[var(--white-5)] ${cat.color}">${cat.icon}</span>
               <span class="text-[var(--color-fg-primary)] overflow-hidden text-ellipsis whitespace-nowrap font-mono text-2xs" title=${item.name}>${item.name}</span>
@@ -147,7 +147,7 @@ export function ToolMetrics() {
         <div class="text-2xs text-[var(--color-fg-muted)] mb-3">
           서버 시작 이후 메모리 기반 집계. 재시작 시 초기화됩니다.
         </div>
-        <div class="grid grid-cols-[repeat(5,minmax(0,1fr))] gap-3 max-[880px]:grid-cols-[repeat(2,minmax(0,1fr))]">
+        <div class="grid grid-cols-[repeat(5,minmax(0,1fr))] gap-3 max-[880px]:grid-cols-[repeat(2,minmax(0,1fr))]" role="group" aria-label="도구 사용 요약">
           <div class="flex flex-col items-center gap-1 rounded border border-[var(--color-border-default)] bg-[var(--card)] p-3">
             <span class="mt-1.5 text-[var(--color-fg-secondary)] text-3xl font-bold leading-none tabular-nums">${data.total_calls}</span>
             <span class="text-2xs text-[var(--color-fg-muted)] font-medium">총 호출 수</span>
