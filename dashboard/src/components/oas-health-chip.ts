@@ -163,7 +163,7 @@ export function OasHealthChip() {
                   <li class="flex items-baseline justify-between gap-2 text-2xs">
                     <span class="text-[var(--color-fg-primary)] truncate">
                       <span class="font-mono text-[var(--color-fg-disabled)]">${evt.agent_name}</span>
-                      <span class="text-[var(--color-fg-muted)]"> · </span>
+                      <span class="text-[var(--color-fg-muted)]" aria-hidden="true"> · </span>
                       ${describeAgentEvent(evt)}
                     </span>
                     <span class="text-[var(--color-fg-muted)] tabular-nums shrink-0">

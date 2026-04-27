@@ -86,11 +86,11 @@ export function Tools() {
               </div>
               <div class="text-3xs text-[var(--color-fg-muted)] mb-2">
                 <span class="font-mono">${usage.source ?? 'tool_usage'}</span>
-                <span class="mx-1">·</span>
+                <span class="mx-1" aria-hidden="true">·</span>
                 <span class="font-mono ${sourceHealthClass(usage.health)}">${usage.health ?? 'unknown'}</span>
-                <span class="mx-1">·</span>
+                <span class="mx-1" aria-hidden="true">·</span>
                 <span>${usage.stale_reason ?? sourceFreshnessLabel(usage.latest_age_s)}</span>
-                <span class="mx-1">·</span>
+                <span class="mx-1" aria-hidden="true">·</span>
                 <span>${(usage.entry_count ?? 0).toLocaleString()} durable rows</span>
               </div>
             `
