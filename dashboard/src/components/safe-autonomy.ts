@@ -210,7 +210,7 @@ function StatusPill({ status }: { status: DomainStatus }) {
 
 function DomainCard({ item }: { item: ScorecardItem }) {
   return html`
-    <div class="rounded border border-[var(--white-8)] bg-[var(--white-4)] p-3">
+    <div class="rounded border border-[var(--white-8)] bg-[var(--white-4)] p-3" role="listitem">
       <div class="flex items-start justify-between gap-3">
         <div class="min-w-0">
           <div class="flex items-center gap-2">
