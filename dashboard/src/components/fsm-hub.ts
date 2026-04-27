@@ -603,7 +603,7 @@ export function FsmHub(props: FsmHubProps = {}) {
           open=${graphOpen}
           onToggle=${(e: Event) => setGraphOpen((e.target as HTMLDetailsElement).open)}
         >
-          <summary class="cursor-pointer select-none px-4 py-2.5 text-3xs font-semibold uppercase tracking-1 text-[var(--color-fg-muted)] hover:text-[var(--color-fg-primary)]">
+          <summary class="cursor-pointer select-none px-4 py-2.5 text-3xs font-semibold uppercase tracking-1 text-[var(--color-fg-muted)] hover:text-[var(--color-fg-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-accent-fg)]">
             Compound Graph — 5 sub-FSMs (Cytoscape)
           </summary>
           <div class="px-3 pb-3">
