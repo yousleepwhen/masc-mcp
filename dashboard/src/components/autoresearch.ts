@@ -274,7 +274,7 @@ function CycleHistoryTable({ cycles }: { cycles: AutoresearchCycleRecord[] }) {
           placeholder="가설 / 판정 / # 필터"
           aria-label="사이클 필터"
           onInput=${(e: Event) => { query.value = (e.target as HTMLInputElement).value }}
-          class="min-w-40 max-w-60 flex-1 rounded border border-[var(--white-10)] bg-[var(--white-4)] px-2 py-1 text-2xs text-[var(--text-body)] placeholder:text-[var(--text-dim)] focus:outline-none focus:border-[var(--accent)]"
+          class="min-w-40 max-w-60 flex-1 rounded border border-[var(--white-10)] bg-[var(--white-4)] px-2 py-1 text-2xs text-[var(--text-body)] placeholder:text-[var(--text-dim)] focus:border-[var(--accent)]"
         />
       </div>
       ${isFiltering && visibleCycles.length === 0

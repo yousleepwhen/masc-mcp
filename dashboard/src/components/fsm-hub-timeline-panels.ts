@@ -219,7 +219,7 @@ export function SwimlaneTimeline({
                       data-lane-key=${lane.key}
                       data-lane-index=${laneIndex}
                       data-seg-index=${segIndex}
-                      class=${`${swimlaneSegmentColor(seg.value)} h-full transition-all duration-200 border-r border-[rgba(0,0,0,0.25)] last:border-r-0 cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] focus-visible:ring-inset ${isHovered ? 'ring-1 ring-[var(--color-accent-fg)] brightness-125' : ''} ${dimmed ? 'opacity-40' : ''}`}
+                      class=${`${swimlaneSegmentColor(seg.value)} h-full transition-all duration-200 border-r border-[rgba(0,0,0,0.25)] last:border-r-0 cursor-pointer focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] focus-visible:ring-inset ${isHovered ? 'ring-1 ring-[var(--color-accent-fg)] brightness-125' : ''} ${dimmed ? 'opacity-40' : ''}`}
                       style=${`width: ${pct.toFixed(2)}%`}
                       title=${`${lane.label} (${lane.short}) · ${displayState(seg.value)} (${seg.value})\n${fmtAbs(seg.from)} → ${fmtAbs(seg.to)} · ${holdFor}`}
                       aria-label=${ariaLabel}

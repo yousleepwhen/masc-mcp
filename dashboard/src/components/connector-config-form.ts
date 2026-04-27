@@ -346,7 +346,7 @@ function FieldWidget({ id, field, value, revealed }: {
   // baseInput — preserved for the type=number branch which still uses
   // a raw <input type="number"> until NumberInput migration handles
   // signal-typed numeric values across the form.
-  const baseInput = 'w-full rounded border border-[var(--white-8)] bg-[var(--color-bg-page)] px-2 py-1 font-mono text-2xs text-[var(--color-fg-primary)] focus:border-[var(--accent-1)] focus:outline-none'
+  const baseInput = 'w-full rounded border border-[var(--white-8)] bg-[var(--color-bg-page)] px-2 py-1 font-mono text-2xs text-[var(--color-fg-primary)] focus:border-[var(--accent-1)]'
   // tightMonoOverride — TextInput class extension. INPUT_BASE owns
   // border/text/placeholder/focus-visible. Only the size/font/bg need
   // overrides to match the compact mono-style of the connector form
