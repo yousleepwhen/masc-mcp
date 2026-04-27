@@ -85,7 +85,7 @@ export function ErrorPanel({ onClose }: ErrorPanelProps) {
           const label = CODE_LABELS[e.errorCode]
           return html`
           <div key=${e.id} class="flex items-start gap-2 px-3 py-2 hover:bg-[var(--white-4)] transition-colors group">
-            <span class="mt-0.5 shrink-0 ${iconColor}">
+            <span class="mt-0.5 shrink-0 ${iconColor}" aria-hidden="true">
               ${sev === 'info' ? html`<${Info} size=${13} />` : html`<${AlertTriangle} size=${13} />`}
             </span>
             <div class="min-w-0 flex-1">
