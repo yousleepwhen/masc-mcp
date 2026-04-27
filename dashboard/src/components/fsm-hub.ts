@@ -544,6 +544,7 @@ export function FsmHub(props: FsmHubProps = {}) {
       ` : error ? html`
         <${EmptyState} message=${error} compact />
       ` : snapshot ? html`
+        <div role="tabpanel" id="fsm-tabpanel" aria-labelledby=${`fsm-tab-${activeSelected?.replace(/[^a-zA-Z0-9_-]/g, '_') ?? ''}`} class="flex flex-col ${rootGap}">
         <${OperationalMeaningPanel}
           snapshot=${snapshot}
           observations=${view.observations}
@@ -609,6 +610,7 @@ export function FsmHub(props: FsmHubProps = {}) {
             <${CompositeGraphPanel} snapshot=${snapshot} />
           </div>
         </details>
+        </div>
       ` : null}
       <${ShortcutsOverlay} open=${shortcutsOpen} onClose=${() => setShortcutsOpen(false)} />
     </div>
@@ -810,8 +812,10 @@ function StatusBar({
               : 'bg-[var(--white-3)] border-[var(--white-8)] text-[var(--color-fg-disabled)] hover:text-[var(--color-fg-primary)] hover:border-[var(--accent-30)]'
             return html`
               <button type="button"
+                id=${`fsm-tab-${name.replace(/[^a-zA-Z0-9_-]/g, '_')}`}
                 role="tab"
                 aria-selected=${active}
+                aria-controls="fsm-tabpanel"
                 tabindex=${active ? 0 : -1}
                 class=${`rounded-sm border px-2.5 py-0.5 text-3xs font-mono transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--color-bg-page)] ${cls}`}
                 onClick=${() => onSelect(name)}

@@ -49,42 +49,42 @@ export function FilterChips<T extends string>({
     onChange?.(key)
   }
 
-  // WAI-ARIA Tabs: arrow keys move focus + activate; Home/End jump to
-  // first/last. Activation on focus is the natural pattern for filter
-  // chips — the user expects the filtered content to update immediately.
-  function handleTabKeyDown(e: KeyboardEvent) {
-    const tablist = (e.target as HTMLElement).closest('[role="tablist"]')
-    if (!tablist) return
-    const tabs = Array.from(tablist.querySelectorAll<HTMLElement>('[role="tab"]'))
-    const idx = tabs.indexOf(e.target as HTMLElement)
+  // WAI-ARIA Radiogroup: arrow keys move focus + activate; Home/End jump to
+  // first/last. Filter chips select one option from a set, which maps to
+  // the radiogroup pattern rather than tabs (no tabpanel needed).
+  function handleRadioKeyDown(e: KeyboardEvent) {
+    const group = (e.target as HTMLElement).closest('[role="radiogroup"]')
+    if (!group) return
+    const radios = Array.from(group.querySelectorAll<HTMLElement>('[role="radio"]'))
+    const idx = radios.indexOf(e.target as HTMLElement)
     if (idx < 0) return
 
     let next = -1
-    if (e.key === 'ArrowRight') next = (idx + 1) % tabs.length
-    else if (e.key === 'ArrowLeft') next = (idx - 1 + tabs.length) % tabs.length
+    if (e.key === 'ArrowRight') next = (idx + 1) % radios.length
+    else if (e.key === 'ArrowLeft') next = (idx - 1 + radios.length) % radios.length
     else if (e.key === 'Home') next = 0
-    else if (e.key === 'End') next = tabs.length - 1
+    else if (e.key === 'End') next = radios.length - 1
     else return
 
     e.preventDefault()
-    tabs[next].focus()
+    radios[next].focus()
     activateChip(chips[next].key)
   }
 
   return html`
-    <div class="flex flex-wrap gap-1.5 ${cx ?? ''}" role="tablist" aria-orientation="horizontal" aria-label=${ariaLabel}>
+    <div class="flex flex-wrap gap-1.5 ${cx ?? ''}" role="radiogroup" aria-label=${ariaLabel}>
       ${chips.map(chip => html`
         <button type="button"
           key=${chip.key}
           title=${chip.title}
-          role="tab"
-          aria-selected=${activeKey === chip.key}
+          role="radio"
+          aria-checked=${activeKey === chip.key}
           tabIndex=${activeKey === chip.key ? 0 : -1}
           class="${chipClass} cursor-pointer transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--color-bg-page)] ${activeKey === chip.key
             ? activeToneClass
             : idleToneClass}"
           onClick=${() => activateChip(chip.key)}
-          onKeyDown=${handleTabKeyDown}
+          onKeyDown=${handleRadioKeyDown}
         >
           ${chip.label}
           ${chip.count != null ? html`
