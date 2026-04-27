@@ -365,6 +365,7 @@ function ToolSearchPicker({
         <input
           ...${getInputProps({
             placeholder,
+            'aria-label': placeholder,
             class: 'w-full px-3 py-1.5 rounded border border-[var(--color-border-default)] bg-[var(--white-3)] text-2xs text-[var(--color-fg-primary)] placeholder:text-[var(--color-fg-muted)]',
           })}
         />
