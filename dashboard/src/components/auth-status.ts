@@ -190,6 +190,7 @@ function AuthPopover({ id }: { id?: string }) {
     <div class="absolute right-0 top-full mt-1.5 w-80 rounded border border-[var(--color-border-default)] bg-[rgba(10,18,34,0.97)] shadow-sm backdrop-blur-sm p-3 z-50"
       id=${id}
       role="dialog"
+      aria-modal="true"
       aria-label="인증 상태 설정"
       onKeyDown=${(e: KeyboardEvent) => { if (e.key === 'Escape') popoverOpen.value = false }}
     >
