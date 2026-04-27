@@ -510,7 +510,7 @@ function EntryRow({ entry }: { entry: TelemetryEntry }) {
             ${timeAgoSafe(ts)}
           </span>
           ${success != null ? html`
-            <span class="flex-shrink-0 w-4 ${success ? 'text-[var(--ok)]' : 'text-[var(--bad-light)]'}">
+            <span class="flex-shrink-0 w-4 ${success ? 'text-[var(--ok)]' : 'text-[var(--bad-light)]'}" role="img" aria-label=${success ? '성공' : '실패'}>
               ${success ? 'O' : 'X'}
             </span>
           ` : html`<span class="w-4"></span>`}

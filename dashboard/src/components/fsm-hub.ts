@@ -751,7 +751,7 @@ function StatusBar({
             aria-label="강제 새로고침"
             aria-keyshortcuts="r"
           >
-            ${refreshFlash ? '✓' : '↻'}
+            <span aria-hidden="true">${refreshFlash ? '✓' : '↻'}</span>
           </button>
           <button
             type="button"
