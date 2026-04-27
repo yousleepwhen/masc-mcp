@@ -204,7 +204,7 @@ function ToolTable({
                 <td class="text-right py-0.5 text-[var(--color-fg-disabled)]">${t.avg_ms.toFixed(0)}</td>
                 <td class="text-right py-0.5 font-mono ${t.output_truncated_count > 0 ? 'text-[var(--color-status-warn)]' : 'text-[var(--color-fg-disabled)]'}">${
                   t.output_truncated_count > 0
-                    ? `${(t.avg_output_chars / 1000).toFixed(1)}k ✂${t.output_truncated_count}`
+                    ? `${(t.avg_output_chars / 1000).toFixed(1)}k <span aria-hidden="true">✂</span>${t.output_truncated_count}`
                     : `${(t.avg_output_chars / 1000).toFixed(1)}k`
                 }</td>
               </tr>

@@ -187,7 +187,7 @@ export function SwimlaneTimeline({
         </div>
         <div class="text-3xs font-mono text-[var(--color-fg-disabled)]">
           <span>${fmtAbs(spanStart)}</span>
-          <span class="mx-1 text-[var(--color-fg-muted)]">→</span>
+          <span class="mx-1 text-[var(--color-fg-muted)]" aria-hidden="true">→</span>
           <span>${fmtAbs(spanEnd)}</span>
           · window <span class="text-[var(--color-fg-primary)]">${windowDuration}</span>
           · <span class="text-[var(--color-fg-primary)]">${observations.length}</span> obs
@@ -425,9 +425,9 @@ export function TransitionTrail({
               <span class="w-[52px] shrink-0 text-right text-[var(--color-fg-disabled)]">${ago} ago</span>
               <span class=${`w-[28px] shrink-0 font-semibold ${color}`}>${entry.field}</span>
               <span class="text-[var(--color-fg-disabled)]">${entry.from}</span>
-              <span class="text-[var(--color-fg-muted)]">→</span>
+              <span class="text-[var(--color-fg-muted)]" aria-hidden="true">→</span>
               <span class="text-[var(--color-fg-secondary)]">${entry.to}</span>
-              ${reason ? html`<span class="ml-1 text-3xs text-[var(--color-fg-disabled)] opacity-50">ⓘ</span>` : null}
+              ${reason ? html`<span class="ml-1 text-3xs text-[var(--color-fg-disabled)] opacity-50" aria-hidden="true">ⓘ</span>` : null}
             </div>
           `
         })}
@@ -480,7 +480,7 @@ export function TopTransitionsPanel({
             >
               <span class=${`w-[28px] shrink-0 font-semibold ${color}`}>${entry.field}</span>
               <span class="text-[var(--color-fg-disabled)]">${displayState(entry.from)}</span>
-              <span class="text-[var(--color-fg-muted)]">→</span>
+              <span class="text-[var(--color-fg-muted)]" aria-hidden="true">→</span>
               <span class="text-[var(--color-fg-secondary)]">${displayState(entry.to)}</span>
               <span class="ml-auto flex items-center gap-1.5 shrink-0">
                 <span class="h-1 w-12 rounded-sm bg-[var(--white-8)] overflow-hidden">

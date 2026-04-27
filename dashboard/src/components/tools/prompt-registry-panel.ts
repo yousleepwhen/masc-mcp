@@ -172,7 +172,7 @@ export function PromptRegistryPanel() {
       </div>
 
       ${error ? html`<${ErrorState} message=${error} class="mb-4" />` : null}
-      ${status ? html`<div class="mb-4 rounded border border-[var(--sky-28)] bg-[var(--sky-8)] px-3 py-2 text-xs text-[#bae6fd]">${status}</div>` : null}
+      ${status ? html`<div class="mb-4 rounded border border-[var(--sky-28)] bg-[var(--sky-8)] px-3 py-2 text-xs text-[#bae6fd]" role="status">${status}</div>` : null}
 
       <div class="grid gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
         <div class="min-h-65 rounded border border-[var(--color-border-default)] bg-[var(--white-3)] p-2">
@@ -206,7 +206,7 @@ export function PromptRegistryPanel() {
               onInput=${(e: Event) => { searchQuery.value = (e.target as HTMLInputElement).value }}
             />
           </div>
-          <div class="flex max-h-130 flex-col gap-2 overflow-y-auto pr-1" role="list" aria-label="프롬프트 목록">
+          <div class="flex max-h-130 flex-col gap-2 overflow-y-auto pr-1" role="group" aria-label="프롬프트 목록">
             ${visiblePrompts.length === 0 ? html`
               <div class="rounded border border-dashed border-[var(--color-border-default)] px-3 py-6 text-center text-2xs text-[var(--color-fg-muted)]">
                 조건에 맞는 프롬프트가 없습니다.
@@ -215,10 +215,10 @@ export function PromptRegistryPanel() {
             ${visiblePrompts.map(prompt => html`
               <button
                 type="button"
-                role="listitem"
                 class="rounded border px-3 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--color-bg-page)] ${selectedPrompt?.key === prompt.key
                   ? 'border-[var(--accent-30)] bg-[var(--accent-10)]'
                   : 'border-[var(--color-border-default)] bg-[var(--white-2)] hover:bg-[var(--white-4)]'}"
+                aria-pressed=${selectedPrompt?.key === prompt.key}
                 onClick=${() => {
                   setSelectedKey(prompt.key)
                   setDraft(normalizeDraft(prompt))

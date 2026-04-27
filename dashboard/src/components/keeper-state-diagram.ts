@@ -228,7 +228,7 @@ export function KeeperStateDiagramPanel({ keeperName, currentPhase }: KeeperStat
             <div class="rounded border border-[var(--white-8)] bg-[var(--white-3)] px-3 py-2 text-2xs leading-normal text-[var(--color-fg-primary)]">
               <div class="flex flex-wrap items-center gap-2">
                 <span class="font-mono text-[var(--color-fg-secondary)]">${normalizePhase(transition.prev_phase) ?? transition.prev_phase}</span>
-                <span class="text-[var(--color-fg-disabled)]">→</span>
+                <span class="text-[var(--color-fg-disabled)]" aria-hidden="true">→</span>
                 <span class="font-mono text-[var(--color-accent-fg)]">${normalizePhase(transition.new_phase) ?? transition.new_phase}</span>
                 <span class="rounded-sm border border-[var(--white-8)] bg-[var(--white-4)] px-2 py-0.5 text-3xs text-[var(--color-fg-muted)]">
                   ${transition.event_type ?? transitionType(transition.selected_event)}
