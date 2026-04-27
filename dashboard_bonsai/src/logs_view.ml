@@ -1485,7 +1485,12 @@ let view_heartbeat ?(entries : Logs_types.entry list = []) () =
     | [] -> heartbeat_bars
     | _ -> heartbeat_bars_of_entries entries
   in
-  let active = List.count ~f:(fun (_, l) -> l <> `Idle) bars in
+  let active =
+    List.count bars ~f:(fun (_, l) ->
+      match l with
+      | `Idle -> false
+      | `Error | `Warn | `Info -> true)
+  in
   let max_height = List.fold bars ~init:0 ~f:(fun acc (h, _) -> Int.max acc h) in
   let aria_desc =
     Printf.sprintf
@@ -1762,7 +1767,7 @@ let render_response
                      (fun el ->
                         el##setAttribute
                           (Js.string "aria-pressed")
-                          (Js.string (if lvl = level then "true" else "false")))
+                          (Js.string (if String.equal lvl level then "true" else "false")))
                  in
                  update "debug"; update "info"; update "warn"; update "error")
                ()
@@ -1772,10 +1777,10 @@ let render_response
                [ Style.chip
                ; Attr.create "data-filter-level" level
                ; Attr.role "button"
-               ; Attr.create "aria-pressed" (if level = "info" then "true" else "false")
+               ; Attr.create "aria-pressed" (if String.equal level "info" then "true" else "false")
                ; Attr.tabindex 0
                ; Attr.on_click (fun _ev -> fire ())
-               ; Attr.on_key_down (fun ev ->
+               ; Attr.on_keydown (fun ev ->
                    let open Virtual_dom.Vdom.Event.Keyboard in
                    if Key.equal ev.key Key.Enter
                       || Key.equal ev.key (Key.of_string " ")
@@ -1952,7 +1957,7 @@ let render_response
                ; Attr.create "aria-pressed" (if name = "dark" then "true" else "false")
                ; Attr.tabindex 0
                ; Attr.on_click (fun _ -> fire ())
-               ; Attr.on_key_down (fun ev ->
+               ; Attr.on_keydown (fun ev ->
                    let open Virtual_dom.Vdom.Event.Keyboard in
                    if Key.equal ev.key Key.Enter
                       || Key.equal ev.key (Key.of_string " ")
