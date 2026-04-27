@@ -145,7 +145,7 @@ function RateGauge({ rate, label }: { rate: number; label: string }) {
     <div class="flex flex-col gap-1">
       <div class="text-3xs text-[var(--color-fg-disabled)] uppercase tracking-wider">${label}</div>
       <div class="flex items-center gap-2">
-        <div class="flex-1 h-1.5 bg-[var(--bg-subtle)] rounded-sm overflow-hidden">
+        <div class="flex-1 h-1.5 bg-[var(--bg-subtle)] rounded-sm overflow-hidden" role="progressbar" aria-valuenow=${Math.round(rate)} aria-valuemin=${0} aria-valuemax=${100} aria-label=${`${label} 성공률`}>
           <div class="${color} h-full rounded-sm transition-all" style="width: ${Math.min(rate, 100)}%" />
         </div>
         <span class="text-xs font-mono ${rate >= 95 ? 'text-[var(--color-status-ok)]' : rate >= 90 ? 'text-[var(--color-status-warn)]' : 'text-[var(--bad-light)]'}">${rate.toFixed(1)}%</span>
@@ -263,14 +263,14 @@ function TrendSparkline({ points }: { points: HourlyPoint[] }) {
 function KeeperRateBars({ keepers }: { keepers: KeeperStat[] }) {
   if (keepers.length === 0) return null
   return html`
-    <div class="flex flex-col gap-1.5">
+    <div class="flex flex-col gap-1.5" role="list" aria-label="키퍼별 성공률">
       ${keepers.map(k => {
         const color = k.success_pct >= 95 ? 'bg-[var(--ok-10)]' : k.success_pct >= 90 ? 'bg-[var(--warn-10)]' : 'bg-[var(--bad-10)]'
         const textColor = k.success_pct >= 95 ? 'text-[var(--color-status-ok)]' : k.success_pct >= 90 ? 'text-[var(--color-status-warn)]' : 'text-[var(--bad-light)]'
         return html`
-          <div class="flex items-center gap-2 text-2xs">
+          <div class="flex items-center gap-2 text-2xs" role="listitem">
             <span class="w-24 truncate text-[var(--color-fg-disabled)] font-mono" title=${k.name}>${k.name}</span>
-            <div class="flex-1 h-1.5 bg-[var(--bg-subtle)] rounded-sm overflow-hidden">
+            <div class="flex-1 h-1.5 bg-[var(--bg-subtle)] rounded-sm overflow-hidden" role="progressbar" aria-valuenow=${Math.round(k.success_pct)} aria-valuemin=${0} aria-valuemax=${100} aria-label=${`${k.name} 성공률`}>
               <div class="${color} h-full rounded-sm transition-all" style="width:${Math.min(k.success_pct, 100)}%" />
             </div>
             <span class="w-12 text-right font-mono ${textColor}">${k.success_pct.toFixed(1)}%</span>
@@ -352,7 +352,7 @@ export function ToolQualityPanel() {
         <span class="text-3xs text-[var(--color-fg-disabled)]">${formatAutoRefreshLabel(TELEMETRY_AUTO_REFRESH_MS)}</span>
       </div>
 
-      <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-3" role="group" aria-label="도구 품질 요약">
         <div class="text-center">
           <div class="text-lg font-mono ${successColor.value}">${d.success_rate.toFixed(1)}%</div>
           <div class="text-3xs text-[var(--color-fg-disabled)] uppercase">성공률</div>

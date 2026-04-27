@@ -486,7 +486,7 @@ export function GenerationLineagePanel({ keeperName }: { keeperName: string }) {
           `
           : null}
 
-        <div class="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-3">
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-3" role="group" aria-label="세대 요약">
           <div class="px-3 py-2 rounded border border-[var(--white-8)] bg-[var(--white-2)]">
             <div class="text-3xs font-semibold uppercase tracking-wider text-[var(--color-fg-muted)]">현재 세대</div>
             <div class="mt-1 text-lg font-semibold text-[var(--color-fg-secondary)]">${currentGeneration ?? '-'}</div>
@@ -517,7 +517,7 @@ export function GenerationLineagePanel({ keeperName }: { keeperName: string }) {
                   ? html`<span class="text-3xs text-[var(--color-fg-disabled)]">created <${TimeAgo} timestamp=${manifest.created_at} /></span>`
                   : null}
               </div>
-              <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-2xs">
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-2xs" role="group" aria-label="매니페스트 상세">
                 <div class="rounded border border-[var(--white-8)] bg-[var(--white-2)] px-3 py-2">
                   <div class="text-3xs text-[var(--color-fg-muted)] uppercase tracking-wider mb-1">부모</div>
                   <div class="text-[var(--color-fg-secondary)]">${manifest.parent_generation != null ? `gen ${manifest.parent_generation}` : 'root generation'}</div>
@@ -568,7 +568,7 @@ export function GenerationLineagePanel({ keeperName }: { keeperName: string }) {
           <div class="text-2xs text-[var(--color-fg-disabled)] mb-2">최신 rollover 가 먼저 표시되어 operator 가 현재 trace 를 최근 이력과 비교할 수 있습니다.</div>
           ${recent.length > 0
             ? html`
-              <div class="flex flex-col gap-2">
+              <div class="flex flex-col gap-2" role="list" aria-label="최근 핸드오프 목록">
                 ${recent.map((entry, index) => {
                   const isLatest = index === 0
                   const entryMeta = lineageVerdictMeta(entry.continuity_verdict)
