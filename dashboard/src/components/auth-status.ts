@@ -1,6 +1,6 @@
 import { html } from 'htm/preact'
 import { signal } from '@preact/signals'
-import { useEffect, useRef } from 'preact/hooks'
+import { useEffect, useId, useRef } from 'preact/hooks'
 import {
   clearStoredToken,
   currentDashboardActor,
@@ -142,6 +142,7 @@ function AuthRow({ label, value }: { label: string; value: string }) {
 export function AuthStatus() {
   const { dotColor, label } = authBadgeSummary()
   const containerRef = useRef<HTMLDivElement>(null)
+  const popoverId = useId()
 
   useEffect(() => {
     if (!popoverOpen.value) return
@@ -162,17 +163,18 @@ export function AuthStatus() {
         title="인증 상태"
         aria-label="인증 상태"
         aria-expanded=${popoverOpen.value}
+        aria-controls=${popoverId}
         aria-haspopup="dialog"
       >
         <span class="size-[7px] rounded-sm inline-block ${dotColor}" aria-hidden="true"></span>
         <span>${label}</span>
       </button>
-      ${popoverOpen.value ? html`<${AuthPopover} />` : null}
+      ${popoverOpen.value ? html`<${AuthPopover} id=${popoverId} />` : null}
     </div>
   `
 }
 
-function AuthPopover() {
+function AuthPopover({ id }: { id?: string }) {
   const summary = shellAuthSummary.value
   const storedActor = readStoredDashboardActorName()
   const requestedActor = summary?.requested_agent ?? resolveDashboardActorName() ?? 'dashboard'
@@ -186,6 +188,7 @@ function AuthPopover() {
 
   return html`
     <div class="absolute right-0 top-full mt-1.5 w-80 rounded border border-[var(--color-border-default)] bg-[rgba(10,18,34,0.97)] shadow-sm backdrop-blur-sm p-3 z-50"
+      id=${id}
       role="dialog"
       aria-label="인증 상태 설정"
       onKeyDown=${(e: KeyboardEvent) => { if (e.key === 'Escape') popoverOpen.value = false }}

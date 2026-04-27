@@ -2,7 +2,7 @@
 // Fetches from GET /api/v1/keepers/:name/tool-calls
 
 import { html } from 'htm/preact'
-import { useEffect } from 'preact/hooks'
+import { useEffect, useId } from 'preact/hooks'
 import { useSignal } from '@preact/signals'
 import { fetchKeeperToolCalls } from '../api/dashboard'
 import type { ToolCallEntry, ToolCallsResponse, TelemetryFreshnessMetadata } from '../api/dashboard'
@@ -130,6 +130,7 @@ function CopyableToolCallBlock({
 
 function ToolCallRow({ entry }: { entry: ToolCallEntry }) {
   const expanded = useSignal(false)
+  const contentId = useId()
   const cat = toolCategory(entry.tool)
   const formattedInput = formatInput(entry.input)
   const formattedOutput = formatOutput(entry.output)
@@ -142,6 +143,7 @@ function ToolCallRow({ entry }: { entry: ToolCallEntry }) {
         type="button"
         class="w-full flex items-center gap-2 px-3 py-2 text-xs cursor-pointer text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
         aria-expanded=${expanded.value}
+        aria-controls=${contentId}
         onClick=${() => { expanded.value = !expanded.value }}
       >
         <span class="font-mono ${cat.color} w-4 text-center flex-shrink-0">${cat.icon}</span>
@@ -159,7 +161,7 @@ function ToolCallRow({ entry }: { entry: ToolCallEntry }) {
       </button>
 
       ${expanded.value ? html`
-        <div class="px-3 pb-3 space-y-2">
+        <div id=${contentId} class="px-3 pb-3 space-y-2">
           ${entry.model ? html`
             <div class="text-3xs text-[var(--color-fg-muted)]">model: <span class="text-[var(--color-fg-secondary)] font-mono">${entry.model}</span></div>
           ` : null}

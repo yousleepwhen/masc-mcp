@@ -39,15 +39,15 @@ const CODE_BADGE_BG: Record<ErrorSeverity, string> = {
 
 interface ErrorPanelProps {
   onClose: () => void
+  id?: string
 }
 
-export function ErrorPanel({ onClose }: ErrorPanelProps) {
+export function ErrorPanel({ onClose, id }: ErrorPanelProps) {
   const items = unacknowledgedErrors.value
 
   if (items.length === 0) {
     return html`
-      <div class="absolute right-0 top-full mt-1.5 z-[var(--z-overlay-dropdown,3050)] w-96 max-h-80 overflow-hidden rounded-lg border border-[var(--color-border-default)] bg-[rgba(10,18,34,0.98)] shadow-xl backdrop-blur-xl">
-        <div class="flex items-center justify-between px-3 py-2 border-b border-[var(--white-5)]">
+      <div id=${id} class="absolute right-0 top-full mt-1.5 z-[var(--z-overlay-dropdown,3050)] w-96 max-h-80 overflow-hidden rounded-lg border border-[var(--color-border-default)] bg-[rgba(10,18,34,0.98)] shadow-xl backdrop-blur-xl">
           <span class="text-xs font-medium text-[var(--color-fg-muted)]">에러 없음</span>
           <${ActionButton} variant="subtle" size="sm" class="p-0.5" ariaLabel="에러 패널 닫기" onClick=${onClose}>
             <${X} size=${14} />
@@ -61,7 +61,7 @@ export function ErrorPanel({ onClose }: ErrorPanelProps) {
   }
 
   return html`
-    <div class="absolute right-0 top-full mt-1.5 z-[var(--z-overlay-dropdown,3050)] w-96 max-h-80 overflow-hidden rounded-lg border border-[var(--color-border-default)] bg-[rgba(10,18,34,0.98)] shadow-xl backdrop-blur-xl flex flex-col" role="alert">
+    <div id=${id} class="absolute right-0 top-full mt-1.5 z-[var(--z-overlay-dropdown,3050)] w-96 max-h-80 overflow-hidden rounded-lg border border-[var(--color-border-default)] bg-[rgba(10,18,34,0.98)] shadow-xl backdrop-blur-xl flex flex-col" role="alert">
       <div class="flex items-center justify-between px-3 py-2 border-b border-[var(--white-5)] shrink-0">
         <span class="text-xs font-medium text-[var(--color-fg-muted)]">미확인 에러 <span class="text-[var(--color-status-err)]">${items.length}</span>건</span>
         <div class="flex items-center gap-1">

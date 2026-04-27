@@ -2,7 +2,7 @@
 // Renders broadcast messages as full markdown cards, shows task summary, agent meta info
 
 import { html } from 'htm/preact'
-import { useState } from 'preact/hooks'
+import { useId, useState } from 'preact/hooks'
 import { Card } from './common/card'
 import { TimeAgo } from './common/time-ago'
 import { Markdown } from './common/markdown'
@@ -203,7 +203,8 @@ function TaskEventTimeline({ events }: { events: AgentTimelineEvent[] }) {
 }
 
 function BroadcastReport({ report, index }: { report: { ts: string; content: string }; index: number }) {
-  const [expanded, setExpanded] = useState(index === 0) // first one expanded by default
+  const [expanded, setExpanded] = useState(index === 0)
+  const contentId = useId()
 
   // For long reports, show a preview when collapsed
   const isLong = report.content.length > 400
@@ -218,6 +219,7 @@ function BroadcastReport({ report, index }: { report: { ts: string; content: str
         class="w-full flex items-center justify-between px-4 py-2.5 bg-white/3 border-b border-card-border/40 cursor-pointer select-none text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
         onClick=${() => setExpanded(!expanded)}
         aria-expanded=${expanded}
+        aria-controls=${contentId}
       >
         <div class="flex items-center gap-2">
           <span class="size-2 rounded-sm ${index === 0 ? 'bg-accent' : 'bg-white/20'}"></span>
@@ -229,7 +231,7 @@ function BroadcastReport({ report, index }: { report: { ts: string; content: str
           </span>
         ` : null}
       </button>
-      <div class="px-4 py-3 text-sm leading-relaxed">
+      <div id=${contentId} class="px-4 py-3 text-sm leading-relaxed">
         <${Markdown} text=${expanded || !isLong ? report.content : preview} />
       </div>
     </div>

@@ -1,7 +1,7 @@
 import { html } from 'htm/preact'
 import { signal } from '@preact/signals'
 import { lazy, Suspense } from 'preact/compat'
-import { useEffect } from 'preact/hooks'
+import { useEffect, useId } from 'preact/hooks'
 import { route } from '../router'
 import { connected, reconnectCount, lastDisconnectedAt } from '../sse'
 import { dashboardLoading, serverStatus } from '../store'
@@ -124,6 +124,7 @@ const errorPanelOpen = signal(false)
 export function ErrorCounterBadge() {
   const count = unacknowledgedCount.value
   const open = errorPanelOpen.value
+  const panelId = useId()
 
   return html`
     <div class="relative" role="status">
@@ -134,6 +135,7 @@ export function ErrorCounterBadge() {
         aria-label=${count > 0 ? `미확인 에러 ${count}건` : '에러 없음'}
         onClick=${() => { errorPanelOpen.value = !errorPanelOpen.value }}
         aria-expanded=${open}
+        aria-controls=${panelId}
         aria-haspopup="true"
       >
         <${Bell} size=${14} aria-hidden="true" />
@@ -141,7 +143,7 @@ export function ErrorCounterBadge() {
           <span class="inline-flex items-center justify-center min-w-4 h-4 px-1 rounded-full bg-[var(--color-status-err)] text-2xs font-semibold text-white tabular-nums" aria-hidden="true">${count > 99 ? '99+' : count}</span><span class="sr-only">미확인 에러 ${count}건</span>
         ` : null}
       </button>
-      ${open ? html`<${ErrorPanel} onClose=${() => { errorPanelOpen.value = false }} />` : null}
+      ${open ? html`<${ErrorPanel} id=${panelId} onClose=${() => { errorPanelOpen.value = false }} />` : null}
     </div>
   `
 }
@@ -217,6 +219,7 @@ export function composeBuildBadgeTitle(
 }
 
 export function BuildIdentityBadge() {
+  const buildPanelId = useId()
   const status = serverStatus.value
   const build = status?.build
   const label = build
@@ -231,6 +234,7 @@ export function BuildIdentityBadge() {
       <button type="button"
         class="cursor-pointer rounded-sm border border-[var(--white-10)] bg-[var(--white-4)] px-2.5 py-[5px] text-3xs text-[var(--color-fg-muted)] transition-colors duration-150 hover:border-[var(--accent-20)] hover:text-[var(--color-fg-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-45)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-bg-page)]"
         aria-expanded=${buildIdentityOpen.value}
+        aria-controls=${buildPanelId}
         aria-label=${`서버 빌드 정보 ${label}`}
         title=${hoverTitle}
         onClick=${() => {
@@ -241,7 +245,7 @@ export function BuildIdentityBadge() {
       </button>
       ${buildIdentityOpen.value
         ? html`
-            <div class="absolute top-[calc(100%+8px)] right-0 min-w-70 rounded border border-solid border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-2.5 shadow-[0_10px_24px_rgba(0,0,0,0.22)] grid gap-1.5">
+            <div id=${buildPanelId} class="absolute top-[calc(100%+8px)] right-0 min-w-70 rounded border border-solid border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-2.5 shadow-[0_10px_24px_rgba(0,0,0,0.22)] grid gap-1.5">
               <div class="flex justify-between gap-3 text-xs text-[color:var(--color-fg-muted)]">
                 <span>릴리즈</span>
                 <strong class="text-[color:var(--color-fg-secondary)] text-right">${build?.release_version ?? status?.version ?? 'unknown'}</strong>

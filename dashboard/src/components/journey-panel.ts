@@ -1,5 +1,6 @@
 import { html } from 'htm/preact'
 import { useSignal } from '@preact/signals'
+import { useId } from 'preact/hooks'
 
 import { missionSnapshot } from '../mission-store'
 import { journal } from '../sse'
@@ -495,6 +496,7 @@ function JourneyCard({ record }: { record: JourneyRecord }) {
   const keeperActivity = keeper ? keeperActivityDisplay(keeper, keeper.agent?.last_seen) : null
   const keeperModel = keeper ? keeperDisplayModel(keeper) : null
   const showExtended = useSignal(false)
+  const extendedId = useId()
 
   return html`
     <${Card} class="flex flex-col gap-5 bg-gradient-to-br from-[rgba(var(--white-rgb,255),0.08)] via-[rgba(var(--white-rgb,255),0.04)] to-[rgba(var(--white-rgb,255),0.06)] border border-[var(--white-10)] backdrop-blur-md">
@@ -635,6 +637,7 @@ function JourneyCard({ record }: { record: JourneyRecord }) {
           <button type="button"
             class="inline-flex items-center rounded px-3 py-1.5 text-xs font-medium text-[var(--color-fg-muted)] transition hover:text-[var(--color-fg-primary)] hover:bg-[var(--white-5)]"
             aria-expanded=${showExtended.value ? 'true' : 'false'}
+            aria-controls=${extendedId}
             onClick=${() => { showExtended.value = !showExtended.value }}
           >
             ${showExtended.value ? '▼' : '▶'} 추가 정보
@@ -646,7 +649,7 @@ function JourneyCard({ record }: { record: JourneyRecord }) {
 
         ${showExtended.value
           ? html`
-              <div class="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+              <div id=${extendedId} class="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
                 <${JourneyTile} label="사고">
                   ${keeper?.pipeline_stage
                     ? html`<${StatusChip} tone=${pipelineTone(keeper.pipeline_stage)}>${keeper.pipeline_stage}<//>`
