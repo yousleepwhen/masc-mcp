@@ -1,7 +1,7 @@
 import { html } from 'htm/preact'
 import { signal } from '@preact/signals'
 import { lazy, Suspense } from 'preact/compat'
-import { useEffect, useId } from 'preact/hooks'
+import { useEffect, useId, useRef } from 'preact/hooks'
 import { route } from '../router'
 import { connected, reconnectCount, lastDisconnectedAt } from '../sse'
 import { dashboardLoading, serverStatus } from '../store'
@@ -125,9 +125,28 @@ export function ErrorCounterBadge() {
   const count = unacknowledgedCount.value
   const open = errorPanelOpen.value
   const panelId = useId()
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const handleClick = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        errorPanelOpen.value = false
+      }
+    }
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') errorPanelOpen.value = false
+    }
+    document.addEventListener('mousedown', handleClick)
+    document.addEventListener('keydown', handleKey)
+    return () => {
+      document.removeEventListener('mousedown', handleClick)
+      document.removeEventListener('keydown', handleKey)
+    }
+  }, [open])
 
   return html`
-    <div class="relative" role="status">
+    <div class="relative" role="status" ref=${containerRef}>
       <button
         type="button"
         class="flex items-center gap-1.5 cursor-pointer rounded px-1 py-0.5 transition-colors hover:bg-[var(--white-5)] ${count > 0 ? 'text-[var(--color-status-err)]' : 'text-[var(--color-fg-muted)]'}"
@@ -220,6 +239,7 @@ export function composeBuildBadgeTitle(
 
 export function BuildIdentityBadge() {
   const buildPanelId = useId()
+  const buildContainerRef = useRef<HTMLDivElement>(null)
   const status = serverStatus.value
   const build = status?.build
   const label = build
@@ -229,8 +249,26 @@ export function BuildIdentityBadge() {
       : '버전 정보 없음'
   const hoverTitle = composeBuildBadgeTitle(build, status?.version)
 
+  useEffect(() => {
+    if (!buildIdentityOpen.value) return
+    const handleClick = (e: MouseEvent) => {
+      if (buildContainerRef.current && !buildContainerRef.current.contains(e.target as Node)) {
+        buildIdentityOpen.value = false
+      }
+    }
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') buildIdentityOpen.value = false
+    }
+    document.addEventListener('mousedown', handleClick)
+    document.addEventListener('keydown', handleKey)
+    return () => {
+      document.removeEventListener('mousedown', handleClick)
+      document.removeEventListener('keydown', handleKey)
+    }
+  }, [buildIdentityOpen.value])
+
   return html`
-    <div class="relative">
+    <div class="relative" ref=${buildContainerRef}>
       <button type="button"
         class="cursor-pointer rounded-sm border border-[var(--white-10)] bg-[var(--white-4)] px-2.5 py-[5px] text-3xs text-[var(--color-fg-muted)] transition-colors duration-150 hover:border-[var(--accent-20)] hover:text-[var(--color-fg-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-45)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-bg-page)]"
         aria-expanded=${buildIdentityOpen.value}
