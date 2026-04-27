@@ -64,6 +64,10 @@
   [style*="keeperPulse"] { animation: none; }
   [style*="activityFadeIn"] { animation: none; }
   [style*="loadingPulse"] { animation: none; }
+  [style*="keeper-heartbeat"] { animation: none; }
+
+  /* Tailwind arbitrary animation classes */
+  [class*="slideInRight"] { animation: none; }
 
   /* Tailwind animation utilities */
   .animate-pulse { animation: none; }
