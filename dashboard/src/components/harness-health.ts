@@ -334,9 +334,9 @@ export function HarnessHealth() {
                 ${fallbackReasons.length > 0 ? html`
                   <details class="mt-2">
                     <summary class="cursor-pointer text-xs text-[var(--color-status-warn)] opacity-70">최근 에러 (${fallbackReasons.length}건)</summary>
-                    <div class="mt-1 space-y-1">
+                    <div class="mt-1 space-y-1" role="list" aria-label="최근 에러 목록">
                       ${fallbackReasons.map(reason => html`
-                        <div class="break-all font-mono text-xs text-[var(--color-status-warn)] opacity-70">${reason}</div>
+                        <div class="break-all font-mono text-xs text-[var(--color-status-warn)] opacity-70" role="listitem">${reason}</div>
                       `)}
                     </div>
                   </details>

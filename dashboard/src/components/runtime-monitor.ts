@@ -397,10 +397,10 @@ export function RuntimeMonitor() {
             detail=${`Cloud ${providers?.summary?.cloud_models ?? 0} · CLI ${providers?.summary?.cli_models ?? 0}`}
           />
         </div>
-        <div class="flex flex-col gap-3">
+        <div class="flex flex-col gap-3" role="list" aria-label="Provider 런타임 목록">
           ${(providers?.providers ?? []).length > 0
             ? providers?.providers.map(provider => html`
-                <article class="p-4 rounded border border-card-border bg-card/40 backdrop-blur-sm shadow-sm flex flex-col gap-2">
+                <article class="p-4 rounded border border-card-border bg-card/40 backdrop-blur-sm shadow-sm flex flex-col gap-2" role="listitem">
                   <div class="flex justify-between gap-3 items-start flex-wrap">
                     <div class="grid gap-1">
                       <strong class="text-sm text-text-strong">${provider.provider}</strong>
@@ -463,7 +463,7 @@ export function RuntimeMonitor() {
         ${(metrics?.models ?? []).length > 0 && filterModelMetrics(metrics?.models ?? [], modelSearch.value).length === 0
           ? html`<div class="text-2xs text-[var(--color-fg-muted)] mb-2">검색 결과 없음 (${metrics?.models.length ?? 0}개 중)</div>`
           : null}
-        <div class="flex flex-col gap-3">
+        <div class="flex flex-col gap-3" role="list" aria-label="모델 메트릭 목록">
           ${(metrics?.models ?? []).length > 0
             ? sortModelMetricsByUrgency(filterModelMetrics(metrics?.models ?? [], modelSearch.value)).map(metric => {
                 const isFailing = (metric.error_count ?? 0) > 0
@@ -484,7 +484,7 @@ export function RuntimeMonitor() {
                 <article
                   key=${metric.model_id}
                   class=${articleClass}
-                  role=${isFailing ? 'alert' : undefined}
+                  role="listitem"
                   aria-label=${ariaLabel}
                 >
                   <div class="flex justify-between gap-3 items-start flex-wrap">
