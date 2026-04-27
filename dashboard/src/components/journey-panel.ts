@@ -574,13 +574,13 @@ function JourneyCard({ record }: { record: JourneyRecord }) {
 
           <${JourneyTile} label="실행">
             ${record.sessionId
-              ? html`<div><span class="text-[var(--color-fg-disabled)]">session</span><div class="mt-1 font-mono text-xs text-[var(--color-fg-secondary)]">${truncate(record.sessionId, 24)}</div></div>`
+              ? html`<div><span class="text-[var(--color-fg-disabled)]">session</span><div class="mt-1 font-mono text-xs text-[var(--color-fg-secondary)]" title=${record.sessionId}>${truncate(record.sessionId, 24)}</div></div>`
               : html`<${TileHint} text="아직 session_id가 연결되지 않았습니다." />`}
             ${record.operationId
-              ? html`<div><span class="text-[var(--color-fg-disabled)]">operation</span><div class="mt-1 font-mono text-xs text-[var(--color-fg-secondary)]">${truncate(record.operationId, 24)}</div></div>`
+              ? html`<div><span class="text-[var(--color-fg-disabled)]">operation</span><div class="mt-1 font-mono text-xs text-[var(--color-fg-secondary)]" title=${record.operationId}>${truncate(record.operationId, 24)}</div></div>`
               : null}
             ${record.workerRunId
-              ? html`<div><span class="text-[var(--color-fg-disabled)]">worker run</span><div class="mt-1 font-mono text-xs text-[var(--color-fg-secondary)]">${truncate(record.workerRunId, 24)}</div></div>`
+              ? html`<div><span class="text-[var(--color-fg-disabled)]">worker run</span><div class="mt-1 font-mono text-xs text-[var(--color-fg-secondary)]" title=${record.workerRunId}>${truncate(record.workerRunId, 24)}</div></div>`
               : null}
             ${trimText(record.executionSession?.goal ?? record.missionSession?.goal, 90)
               ? html`<div class="text-xs leading-relaxed text-[var(--color-fg-muted)]">${trimText(record.executionSession?.goal ?? record.missionSession?.goal, 90)}</div>`

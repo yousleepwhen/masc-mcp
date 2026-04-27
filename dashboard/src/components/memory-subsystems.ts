@@ -347,6 +347,7 @@ function HebbianTopLinks({ synapses }: { synapses: MemorySubsystemsSynapse[] }) 
               <button
                 type="button"
                 class="text-[var(--color-fg-muted)] hover:text-[var(--color-accent-fg)] truncate w-32 text-right focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+                title=${s.from_agent}
                 onClick=${() => openAgentDetail(s.from_agent)}
               >${shortAgentLabel(s.from_agent)}</button>
               <button
@@ -360,6 +361,7 @@ function HebbianTopLinks({ synapses }: { synapses: MemorySubsystemsSynapse[] }) 
               <button
                 type="button"
                 class="text-[var(--color-fg-muted)] hover:text-[var(--color-accent-fg)] truncate w-32 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+                title=${s.to_agent}
                 onClick=${() => openAgentDetail(s.to_agent)}
               >${shortAgentLabel(s.to_agent)}</button>
               <div class="flex-1 bg-[var(--white-5)] rounded h-1.5 min-w-15" role="progressbar" aria-valuenow=${pct.toFixed(0)} aria-valuemin=${0} aria-valuemax=${100} aria-label="가중치">
@@ -423,7 +425,7 @@ function EpisodeCard({ ep }: { ep: MemorySubsystemsEpisode }) {
       <div class="flex items-start justify-between gap-2 mb-1">
         <div class="flex items-center gap-2 min-w-0">
           <span class="${outcomeColor} text-xs">${outcomeIcon}</span>
-          <span class="text-sm font-medium text-[var(--color-fg-muted)] truncate">${ep.summary}</span>
+          <span class="text-sm font-medium text-[var(--color-fg-muted)] truncate" title=${ep.summary}>${ep.summary}</span>
         </div>
         <span class="text-xs text-[var(--color-fg-muted)] shrink-0">${formatTimeAgo(ep.timestamp * 1000)}</span>
       </div>

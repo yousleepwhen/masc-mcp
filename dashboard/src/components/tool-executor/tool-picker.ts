@@ -25,7 +25,7 @@ function ToolRow({ tool, isSelected }: { tool: McpToolSchema; isSelected: boolea
       class=${`text-left px-3 py-2 ${isDeprecated ? 'opacity-50' : ''}`}
       onClick=${() => selectTool(tool)}>
       <div class="flex items-center gap-1.5">
-        <span class="text-xs text-[var(--color-fg-secondary)] font-mono truncate flex-1">${tool.name}</span>
+        <span class="text-xs text-[var(--color-fg-secondary)] font-mono truncate flex-1" title=${tool.name}>${tool.name}</span>
         ${isDestructive ? html`<${CountBadge} tone="bad">D<//>` : null}
         ${isReadOnly ? html`<${CountBadge} tone="ok">R<//>` : null}
       </div>

@@ -161,7 +161,7 @@ export function OasHealthChip() {
               <ul class="space-y-1" aria-label="최근 자율성 이벤트 목록">
                 ${recentEvents.value.map(evt => html`
                   <li class="flex items-baseline justify-between gap-2 text-2xs">
-                    <span class="text-[var(--color-fg-primary)] truncate">
+                    <span class="text-[var(--color-fg-primary)] truncate" title=${`${evt.agent_name}: ${describeAgentEvent(evt)}`}>
                       <span class="font-mono text-[var(--color-fg-disabled)]">${evt.agent_name}</span>
                       <span class="text-[var(--color-fg-muted)]" aria-hidden="true"> · </span>
                       ${describeAgentEvent(evt)}
@@ -182,7 +182,7 @@ export function OasHealthChip() {
               <ul class="space-y-1" aria-label="활성 keeper 목록">
                 ${recentKeepers.value.map(snap => html`
                   <li class="flex items-baseline justify-between gap-2 text-2xs">
-                    <span class="text-[var(--color-fg-primary)] truncate">
+                    <span class="text-[var(--color-fg-primary)] truncate" title=${`${snap.keeper_name} · gen ${snap.generation} · ${Math.round(snap.context_ratio * 100)}%`}>
                       <span class="font-mono text-[var(--color-fg-disabled)]">${snap.keeper_name}</span>
                       <span class="text-[var(--color-fg-muted)]"> · gen ${snap.generation} · ${Math.round(snap.context_ratio * 100)}%</span>
                     </span>

@@ -671,11 +671,11 @@ function PlaygroundReposPanel({ keeperName }: { keeperName: string }) {
                 <div class="flex items-center gap-3 px-3 py-2 rounded border border-[var(--white-8)] bg-[var(--white-2)]">
                   <div class="flex-1 min-w-0">
                     <div class="flex items-center gap-2">
-                      <span class="text-xs font-medium text-[var(--color-fg-secondary)] truncate">${r.name}</span>
+                      <span class="text-xs font-medium text-[var(--color-fg-secondary)] truncate" title=${r.name}>${r.name}</span>
                       <span class="text-3xs font-mono px-1.5 py-0.5 rounded bg-[var(--accent-12)] text-[var(--color-accent-fg)] border border-[var(--accent-15)]">${r.branch}</span>
                       ${r.shallow ? html`<span class="text-3xs px-1 py-0.5 rounded bg-[var(--warn-10)] text-[var(--color-status-warn)] border border-[var(--warn-20)]">shallow</span>` : null}
                     </div>
-                    <div class="text-3xs text-[var(--color-fg-muted)] font-mono mt-0.5 truncate">${r.latest_commit}</div>
+                    <div class="text-3xs text-[var(--color-fg-muted)] font-mono mt-0.5 truncate" title=${r.latest_commit}>${r.latest_commit}</div>
                   </div>
                   <span class="text-3xs text-[var(--color-fg-disabled)] flex-shrink-0">${r.last_action}</span>
                 </div>
@@ -690,7 +690,7 @@ function PlaygroundReposPanel({ keeperName }: { keeperName: string }) {
             <div class="flex flex-col gap-1.5">
               ${prs.map(pr => html`
                 <div class="flex items-center gap-2 px-3 py-1.5 rounded border border-[var(--white-8)] bg-[var(--white-2)]">
-                  <span class="text-xs text-[var(--color-fg-secondary)] truncate flex-1">${pr.title}</span>
+                  <span class="text-xs text-[var(--color-fg-secondary)] truncate flex-1" title=${pr.title}>${pr.title}</span>
                   <span class="text-3xs font-mono px-1.5 py-0.5 rounded bg-[var(--accent-12)] text-[var(--color-accent-fg)] border border-[var(--accent-15)]">${pr.branch}</span>
                   ${pr.draft ? html`<span class="text-3xs px-1 py-0.5 rounded bg-[var(--warn-10)] text-[var(--color-status-warn)] border border-[var(--warn-20)]">draft</span>` : null}
                   <a href=${pr.pr_url} target="_blank" rel="noopener" class="text-3xs text-[var(--color-accent-fg)] hover:underline flex-shrink-0">PR</a>

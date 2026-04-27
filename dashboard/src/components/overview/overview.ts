@@ -155,7 +155,7 @@ function Highlight({ attention }: { attention: OperatorAttentionItem | null }) {
         <span class=${`text-2xs font-semibold uppercase tracking-wider shrink-0 ${severityToneClass(severity)}`}>
           ${severity.toUpperCase()}
         </span>
-        <span class="truncate text-sm text-[var(--color-fg-secondary)]">${attention.summary}</span>
+        <span class="truncate text-sm text-[var(--color-fg-secondary)]" title=${attention.summary}>${attention.summary}</span>
       </div>
     </section>
   `
@@ -294,7 +294,7 @@ function KeeperStrip({ keeperList }: { keeperList: readonly Keeper[] }) {
                 tab="monitoring"
                 params=${{ section: 'keepers', keeper: k.name }}
                 class="text-sm text-[var(--color-fg-secondary)] truncate hover:underline"
-              >
+                title=${k.koreanName !== undefined && k.koreanName !== '' ? k.koreanName : k.name}
                 ${k.koreanName !== undefined && k.koreanName !== '' ? k.koreanName : k.name}
               <//>
               ${k.last_heartbeat !== undefined

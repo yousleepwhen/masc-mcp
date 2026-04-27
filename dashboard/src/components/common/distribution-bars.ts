@@ -92,8 +92,8 @@ export function DistributionBars({
                   <div class="flex flex-col gap-1">
                     <div class="flex items-center justify-between gap-2">
                       <div class="min-w-0">
-                        <div class="truncate text-xs font-semibold text-[var(--color-fg-secondary)]">${item.label}</div>
-                        ${item.detail ? html`<div class="truncate text-3xs text-[var(--color-fg-muted)]">${item.detail}</div>` : null}
+                        <div class="truncate text-xs font-semibold text-[var(--color-fg-secondary)]" title=${item.label}>${item.label}</div>
+                        ${item.detail ? html`<div class="truncate text-3xs text-[var(--color-fg-muted)]" title=${item.detail}>${item.detail}</div>` : null}
                       </div>
                       <span
                         class="shrink-0 rounded-sm border px-2 py-0.5 text-3xs font-semibold"
