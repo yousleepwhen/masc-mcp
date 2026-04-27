@@ -41,19 +41,19 @@ import type { Task, TaskGateEvaluation } from '../../types'
 function eventBadge(label: string): { icon: any; color: string } {
   switch (label) {
     case 'claim':
-    case 'claimed': return { icon: html`<${UserPlus} size=${14} />`, color: 'text-accent' }
+    case 'claimed': return { icon: html`<${UserPlus} size=${14} aria-hidden="true" />`, color: 'text-accent' }
     case 'done':
-    case 'completed': return { icon: html`<${Check} size=${14} />`, color: 'text-ok' }
+    case 'completed': return { icon: html`<${Check} size=${14} aria-hidden="true" />`, color: 'text-ok' }
     case 'cancel':
-    case 'cancelled': return { icon: html`<${X} size=${14} />`, color: 'text-bad' }
+    case 'cancelled': return { icon: html`<${X} size=${14} aria-hidden="true" />`, color: 'text-bad' }
     case 'submit_for_verification':
-    case 'awaiting_verification': return { icon: html`<${ArrowRight} size=${14} />`, color: 'text-accent' }
+    case 'awaiting_verification': return { icon: html`<${ArrowRight} size=${14} aria-hidden="true" />`, color: 'text-accent' }
     case 'approve':
-    case 'approved': return { icon: html`<${Check} size=${14} />`, color: 'text-ok' }
+    case 'approved': return { icon: html`<${Check} size=${14} aria-hidden="true" />`, color: 'text-ok' }
     case 'reject':
-    case 'rejected': return { icon: html`<${X} size=${14} />`, color: 'text-warn' }
-    case 'transition': return { icon: html`<${ArrowRight} size=${14} />`, color: 'text-warn' }
-    default: return { icon: html`<${Dot} size=${14} />`, color: 'text-text-muted' }
+    case 'rejected': return { icon: html`<${X} size=${14} aria-hidden="true" />`, color: 'text-warn' }
+    case 'transition': return { icon: html`<${ArrowRight} size=${14} aria-hidden="true" />`, color: 'text-warn' }
+    default: return { icon: html`<${Dot} size=${14} aria-hidden="true" />`, color: 'text-text-muted' }
   }
 }
 
@@ -434,7 +434,7 @@ export function TaskDetailOverlay() {
           class="shrink-0 size-8 flex items-center justify-center rounded border border-[var(--white-10)] bg-[var(--white-5)] text-text-muted cursor-pointer transition-colors hover:bg-[var(--white-10)] hover:text-text-strong"
           onClick=${closeTaskDetail}
           aria-label="닫기"
-        ><${X} size=${16} /></button>
+        ><${X} size=${16} aria-hidden="true" /></button>
       </div>
 
       ${'' /* Tab bar */}

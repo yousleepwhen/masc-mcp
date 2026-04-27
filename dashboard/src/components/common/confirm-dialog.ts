@@ -94,7 +94,7 @@ export function ConfirmDialogOverlay() {
       <div class="p-5">
         <div class="flex items-start gap-4">
           <div class="shrink-0 size-10 rounded-sm border flex items-center justify-center ${iconBg} ${iconColor}">
-            <${IconComponent} size=${20} />
+            <${IconComponent} size=${20} aria-hidden="true" />
           </div>
           <div class="flex-1 min-w-0 pt-0.5">
             <h2 id="confirm-dialog-title" class="text-lg font-semibold text-text-strong mb-1 leading-snug">${state.title}</h2>

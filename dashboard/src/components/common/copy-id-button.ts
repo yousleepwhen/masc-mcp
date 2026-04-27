@@ -38,7 +38,7 @@ export function CopyIdButton({ value, label, ariaLabel, size = 12 }: CopyIdButto
       title=${ariaLabel || (label ? `${label} 복사` : '복사')}
       onClick=${onCopy}
     >
-      ${justCopied ? html`<${Check} size=${size} />` : html`<${Copy} size=${size} />`}
+      ${justCopied ? html`<${Check} size=${size} aria-hidden="true" />` : html`<${Copy} size=${size} aria-hidden="true" />`}
     </button>
   `
 }

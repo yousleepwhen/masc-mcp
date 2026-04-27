@@ -133,7 +133,7 @@ export function ErrorCounterBadge() {
         aria-expanded=${open}
         aria-haspopup="true"
       >
-        <${Bell} size=${14} />
+        <${Bell} size=${14} aria-hidden="true" />
         ${count > 0 ? html`
           <span class="inline-flex items-center justify-center min-w-4 h-4 px-1 rounded-full bg-[var(--color-status-err)] text-2xs font-semibold text-white tabular-nums" aria-hidden="true">${count > 99 ? '99+' : count}</span><span class="sr-only">미확인 에러 ${count}건</span>
         ` : null}
@@ -390,7 +390,7 @@ export function SideRail({ collapsed, onToggle }: { collapsed?: boolean; onToggl
           onClick=${onToggle}
           title=${collapsed ? '사이드바 펼치기' : '사이드바 접기'}
         >
-          ${collapsed ? html`<${ChevronRight} size=${16} />` : html`<${ChevronLeft} size=${16} />`}
+          ${collapsed ? html`<${ChevronRight} size=${16} aria-hidden="true" />` : html`<${ChevronLeft} size=${16} aria-hidden="true" />`}
         </button>
       </div>
 
