@@ -787,7 +787,7 @@ function StatusBar({
             </span>
           ` : null}
         </div>
-        <div class="flex items-center gap-1.5 flex-wrap" role="tablist" aria-label="Keeper 선택">
+        <div class="flex items-center gap-1.5 flex-wrap" role="tablist" aria-label="Keeper 선택" aria-orientation="horizontal">
           ${keeperNames.length > 0 ? html`
             <${TextInput}
               type="search"

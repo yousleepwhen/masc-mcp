@@ -43,7 +43,7 @@ export function FilterChips<T extends string>({
     : 'border-[var(--white-10)] bg-[var(--white-4)] text-[var(--color-fg-disabled)] hover:bg-[var(--white-8)] hover:border-[rgba(200,168,78,0.4)]'
 
   return html`
-    <div class="flex flex-wrap gap-1.5 ${cx ?? ''}" role="tablist">
+    <div class="flex flex-wrap gap-1.5 ${cx ?? ''}" role="tablist" aria-orientation="horizontal">
       ${chips.map(chip => html`
         <button type="button"
           key=${chip.key}
