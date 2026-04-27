@@ -166,7 +166,7 @@ function OperationalHealth({ keeper }: { keeper: Keeper }) {
   return html`
     <div class="rounded border border-[var(--color-border-default)] bg-[var(--white-2)] p-3">
       <div class="mb-2 text-3xs font-semibold tracking-1 uppercase text-[var(--color-fg-muted)]">운영 건강도</div>
-      <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-2" role="group" aria-label="운영 건강도 지표">
         ${hb ? html`
           <div class="p-2 rounded border ${KPI_TONE[hbTone]} flex flex-col gap-0.5">
             <span class="text-3xs uppercase tracking-wider text-[var(--color-fg-muted)]">하트비트</span>
