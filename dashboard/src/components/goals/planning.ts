@@ -139,7 +139,7 @@ function KeeperToolActivity() {
 
   return html`
     <details class="overview-section-collapsible group overflow-hidden rounded border border-card-border/60 bg-[var(--backdrop-deep)]" open=${true}>
-      <summary class="flex items-center gap-3 border-b border-card-border/60 px-4 py-3.5 cursor-pointer text-base font-bold text-text-strong transition-colors hover:bg-white/3">
+      <summary class="flex items-center gap-3 border-b border-card-border/60 px-4 py-3.5 cursor-pointer text-base font-bold text-text-strong transition-colors hover:bg-white/3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent">
         <div class="min-w-0">
           <div>도구 활동 요약</div>
           <div class="mt-1 text-xs font-normal text-text-muted">

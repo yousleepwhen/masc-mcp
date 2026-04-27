@@ -122,7 +122,7 @@ function KanbanCard({ task }: { task: Task }) {
 
       <button
         type="button"
-        class="text-left text-base font-semibold leading-snug text-text-strong whitespace-pre-wrap break-words cursor-pointer bg-transparent border-none p-0 font-[inherit] transition-colors hover:text-accent"
+        class="text-left text-base font-semibold leading-snug text-text-strong whitespace-pre-wrap break-words cursor-pointer bg-transparent border-none p-0 font-[inherit] transition-colors hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
         onClick=${() => openTaskDetail(task)}
       >${task.title}</button>
 

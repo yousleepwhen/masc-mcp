@@ -850,7 +850,7 @@ function ConnectorLivePanel({
             ? html`
                 <button
                   type="button"
-                  class="cursor-pointer rounded border border-[var(--bad-20)] bg-[var(--bad-10)] px-2 py-0.5 text-3xs uppercase tracking-4 text-[var(--bad-light)] hover:bg-[var(--bad-10)] disabled:opacity-50"
+                  class="cursor-pointer rounded border border-[var(--bad-20)] bg-[var(--bad-10)] px-2 py-0.5 text-3xs uppercase tracking-4 text-[var(--bad-light)] hover:bg-[var(--bad-10)] disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)]"
                   disabled=${isActionLoading}
                   aria-label=${`stop ${connectorName} sidecar`}
                   onClick=${() => { void stopSidecar(connectorId) }}
@@ -864,7 +864,7 @@ function ConnectorLivePanel({
             : null}
           <button
             type="button"
-            class="cursor-pointer rounded border border-[var(--color-border-default)] px-1.5 text-2xs text-[var(--color-fg-disabled)] hover:text-[var(--color-fg-primary)]"
+            class="cursor-pointer rounded border border-[var(--color-border-default)] px-1.5 text-2xs text-[var(--color-fg-disabled)] hover:text-[var(--color-fg-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)]"
             aria-label="toggle header details"
             onClick=${() => { patchConnectorUiState(connectorId, { headerExpanded: !ui.headerExpanded }) }}
           >${ui.headerExpanded ? '▴' : '▾'}</button>
@@ -1180,7 +1180,7 @@ function ConnectorLivePanel({
                           <div class="mt-2">
                             <button
                               type="button"
-                              class="cursor-pointer text-2xs text-[var(--color-fg-disabled)] hover:text-[var(--color-fg-primary)]"
+                              class="cursor-pointer text-2xs text-[var(--color-fg-disabled)] hover:text-[var(--color-fg-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)]"
                               aria-label=${`add channel to ${group.name}`}
                               onClick=${toggleExpand}
                             >${expanded ? '− close' : '+ add channel'}</button>
@@ -1475,7 +1475,7 @@ function DisclosurePanel({
 }) {
   return html`
     <details class="mb-4 rounded border border-[var(--color-border-default)] bg-[var(--color-bg-surface)]" data-testid=${testId}>
-      <summary class="cursor-pointer list-none px-3 py-2.5">
+      <summary class="cursor-pointer list-none px-3 py-2.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-accent-fg)]">
         <div class="flex items-center justify-between gap-3">
           <div>
             <div class="text-2xs font-semibold uppercase tracking-4 text-[var(--color-fg-primary)]">${title}</div>

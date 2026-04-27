@@ -404,7 +404,7 @@ export function KeeperRuntimeActions({
   const recommended = diagnostic?.next_action_path ?? null
   const canRecover = diagnostic?.recoverable === true
 
-  const btnBase = 'py-1.5 px-4 rounded text-xs font-medium cursor-pointer transition-colors border'
+  const btnBase = 'py-1.5 px-4 rounded text-xs font-medium cursor-pointer transition-colors border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)]'
   const ghostBtn = `${btnBase} border-[var(--color-border-default)] bg-[var(--white-3)] text-[var(--color-fg-muted)] hover:bg-[var(--white-6)] hover:text-[var(--color-fg-primary)]`
   const activeGhostBtn = `${btnBase} border-[rgba(71,184,255,0.4)] bg-[var(--accent-12)] text-[var(--color-accent-fg)] hover:bg-[var(--accent-20)]`
   const secondaryBtn = `${btnBase} border-[rgba(251,191,36,0.3)] bg-[var(--warn-10)] text-[var(--color-status-warn)] hover:bg-[var(--warn-soft)]`

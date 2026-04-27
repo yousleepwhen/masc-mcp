@@ -42,7 +42,7 @@ export function CollapsibleSection({
         if ((event.currentTarget as HTMLDetailsElement).open) setHasOpened(true)
       }}
     >
-      <summary class="flex items-center gap-2 px-4 py-3 cursor-pointer text-sm font-medium text-[var(--color-fg-secondary)] select-none hover:bg-[var(--white-3)] transition-colors list-none">
+      <summary class="flex items-center gap-2 px-4 py-3 cursor-pointer text-sm font-medium text-[var(--color-fg-secondary)] select-none hover:bg-[var(--white-3)] transition-colors list-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-accent-fg)]">
         ${title}
         ${badge ?? null}
       </summary>

@@ -108,7 +108,7 @@ export function ConfirmDialogOverlay() {
             onClick=${state.onCancel}
           >${state.cancelText}<//>
           <button type="button"
-            class="px-4 py-2 rounded text-sm font-medium border border-transparent transition-colors cursor-pointer ${confirmBtnClass}"
+            class="px-4 py-2 rounded text-sm font-medium border border-transparent transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] ${confirmBtnClass}"
             onClick=${state.onConfirm}
           >${state.confirmText}</button>
         </div>

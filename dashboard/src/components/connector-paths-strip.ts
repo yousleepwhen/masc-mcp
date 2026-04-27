@@ -87,7 +87,7 @@ export function ConnectorPathsStrip({ connectors }: { connectors: GateConnectorI
     >
       <button
         type="button"
-        class="flex w-full cursor-pointer items-center justify-between gap-3 px-3 py-2 text-left text-2xs text-[var(--color-fg-disabled)] hover:text-[var(--color-fg-primary)]"
+        class="flex w-full cursor-pointer items-center justify-between gap-3 px-3 py-2 text-left text-2xs text-[var(--color-fg-disabled)] hover:text-[var(--color-fg-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)]"
         onClick=${() => { pathsExpanded.value = !open }}
         aria-expanded=${open}
         aria-controls="connector-paths-body"

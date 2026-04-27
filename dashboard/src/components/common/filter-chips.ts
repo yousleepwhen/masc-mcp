@@ -80,7 +80,7 @@ export function FilterChips<T extends string>({
           role="tab"
           aria-selected=${activeKey === chip.key}
           tabIndex=${activeKey === chip.key ? 0 : -1}
-          class="${chipClass} cursor-pointer transition-all duration-150 ${activeKey === chip.key
+          class="${chipClass} cursor-pointer transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--color-bg-page)] ${activeKey === chip.key
             ? activeToneClass
             : idleToneClass}"
           onClick=${() => activateChip(chip.key)}

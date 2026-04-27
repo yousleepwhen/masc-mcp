@@ -268,7 +268,7 @@ function OverviewTile({ id, connector, keeperCount, selected, onSelectConnector,
     >
       <button
         type="button"
-        class="flex min-w-0 cursor-pointer items-start gap-3 text-left"
+        class="flex min-w-0 cursor-pointer items-start gap-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)]"
         onClick=${() => selectConnector(true)}
         aria-label=${`${displayName} 상세 보기`}
         aria-pressed=${selected ? 'true' : 'false'}
@@ -387,7 +387,7 @@ function TilePrimaryAction({ id, sidecarUp }: { id: KnownConnectorId; sidecarUp:
   return html`
     <button
       type="button"
-      class=${`w-full cursor-pointer rounded border px-2 py-1.5 text-xs font-semibold tracking-wide transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${tone}`}
+      class=${`w-full cursor-pointer rounded border px-2 py-1.5 text-xs font-semibold tracking-wide transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] disabled:cursor-not-allowed disabled:opacity-50 ${tone}`}
       disabled=${view.busy}
       aria-busy=${view.busy ? 'true' : 'false'}
       aria-label=${sidecarUp ? `${id} sidecar 정지` : `${id} sidecar 시작`}
