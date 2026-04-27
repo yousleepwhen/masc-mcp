@@ -71,7 +71,7 @@ export function ExcusePatterns() {
   return html`
     <${Card} title="Anti-Rationalization 핑계 패턴">
       <div class="p-4">
-        <p class="text-sm text-[var(--color-fg-muted)] mb-4">
+        <p id="excuse-patterns-help" class="text-sm text-[var(--color-fg-muted)] mb-4">
           이 패턴들은 에이전트 completion note 와 매칭됩니다. 매칭되면 해당 task 는 거부됩니다.
           변경 사항은 <code>config/excuse_patterns.json</code> 에 저장되며 재시작 없이 즉시 적용됩니다.
           형식은 두 개의 문자열을 담은 배열들의 JSON 배열이어야 합니다: <code>["pattern", "reason"]</code>.
@@ -81,6 +81,7 @@ export function ExcusePatterns() {
           <textarea
             name="patterns"
             aria-label="패턴 JSON 편집"
+            aria-describedby="excuse-patterns-help"
             class="w-full h-96 p-3 bg-[var(--bg-card)] border border-[var(--color-border-divider)] rounded font-mono text-sm mb-4 text-[var(--text-primary)]"
             spellcheck="false"
           >${jsonStr}</textarea>
