@@ -73,6 +73,7 @@ function TransitionDot({ t, idx }: { t: KeeperTransition; idx: number }) {
       <div
         class="w-3 h-3 rounded-full border-2 cursor-default transition-transform hover:scale-125"
         style="border-color: ${color}; background: ${color}33"
+        aria-hidden="true"
       />
       <div class="absolute bottom-full mb-2 hidden group-hover:flex group-focus-within:flex flex-col items-center z-10">
         <div class="rounded border border-[var(--color-border-default)] bg-[var(--card)] px-3 py-2 shadow-sm text-2xs whitespace-nowrap">
