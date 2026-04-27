@@ -607,7 +607,7 @@ export function TokenTrendChart({ keeper }: { keeper: Keeper }) {
               <span class="font-mono text-[var(--cyan)]">${formatTokens(lastInput)}</span>
             </span>
             <span class="flex items-center gap-1 text-3xs text-[var(--color-fg-muted)]">
-              <span class="inline-block w-2.5 h-0.5 rounded bg-[var(--color-status-ok)]"></span> output
+              <span class="inline-block w-2.5 h-0.5 rounded bg-[var(--color-status-ok)]" aria-hidden="true"></span> output
               <span class="font-mono text-[var(--good)]">${formatTokens(lastOutput)}</span>
             </span>
           </div>
@@ -1241,7 +1241,7 @@ export function RelationshipList({ rels }: { rels: Record<string, string> }) {
   return html`
     <div class="max-h-55 overflow-y-auto flex flex-col gap-1.5" role="list" aria-label="키퍼 관계 목록">
       ${entries.map(([name, relation]) => html`
-        <div class="flex items-center gap-2 py-2 px-3 bg-[var(--white-3)] rounded">
+        <div class="flex items-center gap-2 py-2 px-3 bg-[var(--white-3)] rounded" role="listitem">
           <span class="inline-flex items-center py-0.5 px-2 rounded-sm text-2xs font-medium bg-[var(--accent-12)] text-[var(--color-accent-fg)] border border-[var(--accent-30)]">${name}</span>
           <span class="text-2xs text-[var(--color-fg-muted)] font-mono">${relation}</span>
         </div>
