@@ -1148,6 +1148,7 @@ export function KeeperConfigPanel({ keeperName }: { keeperName: string }) {
             <span class="text-3xs text-text-muted">${allEntries.length} slots</span>
             <input
               type="search"
+              autocomplete="off"
               value=${hookFilterQuery.value}
               placeholder="슬롯 이름 / source / gate 필터"
               aria-label="훅 슬롯 필터"

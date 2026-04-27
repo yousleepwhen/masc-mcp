@@ -310,6 +310,7 @@ export function HandoffTimeline({
       <div class="flex items-center justify-end">
         <input
           type="search"
+          autocomplete="off"
           value=${query.value}
           placeholder="keeper / event / task / peer 필터"
           aria-label="Handoff timeline 필터"

@@ -900,6 +900,7 @@ export function TelemetryUnified() {
         />
         <input
           type="search"
+          autocomplete="off"
           placeholder="엔트리 검색..."
           aria-label="엔트리 텍스트 검색"
           class="rounded border border-[var(--card-border)] bg-[var(--color-bg-page)] px-2 py-1 text-xs text-[var(--text-strong)] w-48"
