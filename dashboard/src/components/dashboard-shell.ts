@@ -639,9 +639,9 @@ function SurfaceLead() {
           </nav>`
         : null}
       <div class="flex items-center gap-2">
-        <h1 class="text-[22px] font-bold tracking-tight text-[var(--color-fg-secondary)]">
+        <h2 class="text-[22px] font-bold tracking-tight text-[var(--color-fg-secondary)]">
           ${title}
-        </h1>
+        </h2>
         ${shareUrl !== ''
           ? html`<${CopyIdButton}
               value=${shareUrl}
