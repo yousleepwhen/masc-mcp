@@ -483,7 +483,7 @@ export function TopTransitionsPanel({
               <span class="text-[var(--color-fg-muted)]" aria-hidden="true">→</span>
               <span class="text-[var(--color-fg-secondary)]">${displayState(entry.to)}</span>
               <span class="ml-auto flex items-center gap-1.5 shrink-0">
-                <span class="h-1 w-12 rounded-sm bg-[var(--white-8)] overflow-hidden">
+                <span class="h-1 w-12 rounded-sm bg-[var(--white-8)] overflow-hidden" aria-hidden="true">
                   <span
                     class="block h-full bg-[var(--color-accent-fg)]"
                     style=${`width: ${widthPct}%`}

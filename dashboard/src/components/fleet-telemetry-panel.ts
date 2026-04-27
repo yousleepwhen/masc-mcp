@@ -526,6 +526,7 @@ function FailureCategoryPanel({ toolQuality }: { toolQuality: ToolQualityRespons
             <div
               class="h-1.5 rounded-sm bg-[var(--bad-10)]"
               style="width: ${Math.max(6, (category.count / maxCount) * 100)}%"
+              aria-hidden="true"
             ></div>
             <span class="truncate font-mono text-[var(--bad-light)]" title=${category.category}>${category.category}</span>
           </div>
