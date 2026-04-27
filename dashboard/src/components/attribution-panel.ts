@@ -144,10 +144,10 @@ function GateCard({
             <span class="text-3xs text-[var(--color-fg-muted)]">${total}건</span>
           </div>
           <div class="grid grid-cols-2 gap-1 text-2xs">
-            <span class="text-[var(--color-status-ok)]">✓ ${passed}</span>
-            <span class="text-[var(--color-status-warn)]">◐ ${partial}</span>
-            <span class="text-[var(--bad-light)]">✗ ${policyFailed}</span>
-            <span class="text-[var(--bad-light)]">⊘ ${blocked}</span>
+            <span class="text-[var(--color-status-ok)]">✓ 통과 ${passed}</span>
+            <span class="text-[var(--color-status-warn)]">◐ 부분 ${partial}</span>
+            <span class="text-[var(--bad-light)]">✗ 실패 ${policyFailed}</span>
+            <span class="text-[var(--bad-light)]">⊘ 차단 ${blocked}</span>
           </div>
         </div>
       </${SurfaceCard}>
