@@ -83,7 +83,7 @@ export function TaskCreateForm(props: { goalId?: string | null; goalTitle?: stri
 
         <div class="grid gap-3 md:grid-cols-[minmax(0,1fr)_180px]">
           <div class="flex flex-col gap-1.5">
-            <label class="text-2xs font-medium text-text-muted">설명</label>
+            <label for="task-create-description" class="text-2xs font-medium text-text-muted">설명</label>
             <${RichComposer}
               value=${description.value}
               placeholder="배경, 재현 조건, 원하는 결과를 적으면 backlog 카드와 Task 상세에서 그대로 렌더링됩니다."
@@ -95,8 +95,9 @@ export function TaskCreateForm(props: { goalId?: string | null; goalTitle?: stri
           </div>
 
           <div class="flex flex-col gap-1.5">
-            <label class="text-2xs font-medium text-text-muted">우선순위</label>
+            <label for="task-create-priority" class="text-2xs font-medium text-text-muted">우선순위</label>
             <${Select}
+              id="task-create-priority"
               value=${String(priority.value)}
               options=${PRIORITY_OPTIONS}
               onInput=${(v: string) => { priority.value = Number(v) }}
