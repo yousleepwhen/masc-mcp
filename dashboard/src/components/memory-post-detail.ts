@@ -317,7 +317,7 @@ export function PostDetail({ post }: { post: BoardPost }) {
       <${Card}>
         <div class="flex flex-col gap-4">
           <div>
-            <h1 class="m-0 text-2xl font-semibold leading-tight text-[var(--color-fg-secondary)]">${post.title}</h1>
+            <h2 class="m-0 text-2xl font-semibold leading-tight text-[var(--color-fg-secondary)]">${post.title}</h2>
           </div>
 
           <div class="text-sm text-[var(--color-fg-primary)] leading-loose">
