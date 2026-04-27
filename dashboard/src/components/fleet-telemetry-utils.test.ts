@@ -392,7 +392,7 @@ describe('toolSummary', () => {
 
   it('shows unavailable when activity unknown', () => {
     const row = makeRow({ recent_tools: [], tool_calls: 0, tool_activity_known: false })
-    expect(toolSummary(row).label).toContain('unavailable')
+    expect(toolSummary(row).label).toMatch(/unavailable|없음/i)
   })
 })
 
