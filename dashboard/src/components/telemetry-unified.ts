@@ -956,7 +956,7 @@ export function TelemetryUnified() {
             })}
           </div>
         ` : null}
-        <div class="max-h-150 overflow-y-auto">
+        <div class="max-h-150 overflow-y-auto" role="region" aria-label="텔레메트리 항목">
           ${displayItems.length > 0
             ? displayItems.map(item => item.kind === 'group'
               ? html`<${GroupRow} key=${item.key} item=${item} />`
