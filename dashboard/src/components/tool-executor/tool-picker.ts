@@ -39,7 +39,7 @@ export function ToolPicker() {
   const selected = selectedTool.value
   return html`
     <div class="flex flex-col gap-2 h-full">
-      <${TextInput} value=${searchQuery.value} placeholder="도구 검색..."
+      <${TextInput} value=${searchQuery.value} placeholder="도구 검색..." ariaLabel="도구 검색"
         onInput=${(e: Event) => { searchQuery.value = (e.target as HTMLInputElement).value }} />
       <div class="flex gap-1">
         ${TIER_OPTIONS.map(opt => html`

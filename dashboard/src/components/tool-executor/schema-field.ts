@@ -51,7 +51,7 @@ export function SchemaField({ name, schema, value, required, onChange }: SchemaF
       <div class="flex flex-col gap-1">
         <label class="text-2xs text-[var(--color-fg-muted)] font-medium">${name}${requiredMark}</label>
         ${hint}
-        <${TextInput} value=${(value as string) ?? (schema.default as string) ?? ''} placeholder=${name}
+        <${TextInput} value=${(value as string) ?? (schema.default as string) ?? ''} placeholder=${name} ariaLabel=${name}
           onInput=${(e: Event) => onChange(name, (e.target as HTMLInputElement).value)} />
       </div>
     `
