@@ -4,7 +4,7 @@
 
 import { html } from 'htm/preact'
 import { signal } from '@preact/signals'
-import { useEffect, useState } from 'preact/hooks'
+import { useEffect, useId, useState } from 'preact/hooks'
 import { DistributionBars, type DistributionItem } from './common/distribution-bars'
 import { TextInput } from './common/input'
 import { TimeAgo } from './common/time-ago'
@@ -101,6 +101,7 @@ export function AllowlistPreview({
   previewLimit?: number
 }) {
   const [expanded, setExpanded] = useState(false)
+  const toolListId = useId()
   const firstTool = tools[0] ?? null
   const lastTool = tools.length > 0 ? tools[tools.length - 1] : null
 
@@ -118,7 +119,7 @@ export function AllowlistPreview({
 
   return html`
     <div class="flex flex-col gap-2">
-      <div class="flex flex-wrap gap-1.5">
+      <div id=${toolListId} class="flex flex-wrap gap-1.5">
         ${visibleTools.map(tool => html`<${ToolChip} name=${tool} />`)}
         ${!expanded && hiddenCount > 0
           ? html`
@@ -133,6 +134,7 @@ export function AllowlistPreview({
             <button type="button"
               class="self-start text-3xs text-[var(--color-fg-muted)] hover:text-[var(--color-fg-primary)] cursor-pointer transition-colors"
               aria-expanded=${expanded}
+              aria-controls=${toolListId}
               aria-label=${expanded ? '허용된 도구 접기' : `허용된 도구 나머지 ${hiddenCount}개 보기`}
               onClick=${() => setExpanded(value => !value)}
             >

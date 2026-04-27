@@ -1,6 +1,6 @@
 import { html } from 'htm/preact'
 import { Markdown } from "./common/markdown"
-import { useState } from 'preact/hooks'
+import { useId, useState } from 'preact/hooks'
 import { keeperDirectChatAccess } from '../lib/keeper-chat-access'
 import { relativeTime } from '../lib/format-time'
 import type { Keeper, KeeperDiagnostic } from '../types'
@@ -240,6 +240,7 @@ export function KeeperConversationPanel({
   const [draft, setDraft] = useState('')
   const [showMetadata, setShowMetadata] = useState(readKeeperChatMetadataVisible())
   const [showInternal, setShowInternal] = useState(readKeeperChatInternalVisible())
+  const transcriptId = useId()
 
   const toggleMetadata = () => {
     setShowMetadata(prev => {
@@ -310,6 +311,7 @@ export function KeeperConversationPanel({
               class="rounded border border-[var(--color-border-default)] bg-[var(--white-3)] px-3 py-1.5 text-2xs text-[var(--color-fg-muted)] transition-colors hover:bg-[var(--white-6)] hover:text-[var(--color-fg-primary)]"
               onClick=${toggleMetadata}
               aria-expanded=${showMetadata}
+              aria-controls=${transcriptId}
             >
               ${showMetadata ? '메타데이터 숨김' : '메타데이터 표시'}
             </button>
@@ -318,6 +320,7 @@ export function KeeperConversationPanel({
               class="rounded border border-[var(--color-border-default)] bg-[var(--white-3)] px-3 py-1.5 text-2xs text-[var(--color-fg-muted)] transition-colors hover:bg-[var(--white-6)] hover:text-[var(--color-fg-primary)] ${showInternal ? 'border-[rgba(167,139,250,0.3)] text-[var(--purple)]' : ''}"
               onClick=${toggleInternal}
               aria-expanded=${showInternal}
+              aria-controls=${transcriptId}
             >
               ${showInternal ? '내부 메시지 숨김' : '내부 메시지 표시'}
             </button>
@@ -340,7 +343,7 @@ export function KeeperConversationPanel({
           </div>
         </div>
 
-        <div class="px-4 py-4">
+        <div id=${transcriptId} class="px-4 py-4">
           ${chatAccess.message
             ? html`
                 <div class="mb-4 rounded-[16px] border border-[var(--warn-20)] bg-[var(--warn-10)] px-3 py-2.5 text-xs leading-loose text-[var(--warn-bright)]">
