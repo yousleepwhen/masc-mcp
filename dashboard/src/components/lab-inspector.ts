@@ -62,7 +62,7 @@ function InspectorTabButton({
     <button
       type="button"
       class=${[
-        'rounded-sm border px-3 py-1.5 text-2xs font-semibold transition-colors',
+        'rounded-sm border px-3 py-1.5 text-2xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--color-bg-page)]',
         active
           ? 'border-accent/30 bg-[var(--accent-10)] text-[var(--color-accent-fg)]'
           : 'border-card-border bg-[var(--white-3)] text-[var(--color-fg-muted)] hover:text-[var(--color-fg-primary)] hover:bg-[var(--white-6)]',
@@ -93,7 +93,7 @@ function InspectorOverview() {
                 <div class="mt-2 text-2xs leading-loose text-[var(--color-fg-muted)]">${surface.description}</div>
                 <button
                   type="button"
-                  class="mt-3 rounded border border-accent/25 bg-[var(--accent-10)] px-2.5 py-1.5 text-2xs font-semibold text-[var(--color-accent-fg)] transition-colors hover:bg-[var(--accent-20)]"
+                  class="mt-3 rounded border border-accent/25 bg-[var(--accent-10)] px-2.5 py-1.5 text-2xs font-semibold text-[var(--color-accent-fg)] transition-colors hover:bg-[var(--accent-20)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--color-bg-page)]"
                   onClick=${() => navigate(surface.tab, surface.params)}
                 >
                   ${surface.action}

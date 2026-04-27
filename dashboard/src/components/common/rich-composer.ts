@@ -32,7 +32,7 @@ export function RichComposer({
             <button
               key=${tab}
               type="button"
-              class=${`rounded border px-2.5 py-1 text-2xs font-medium transition-colors ${
+              class=${`rounded border px-2.5 py-1 text-2xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--color-bg-page)] ${
                 mode === tab
                   ? 'border-[rgba(71,184,255,0.35)] bg-[var(--accent-12)] text-[var(--color-accent-fg)]'
                   : 'border-transparent bg-transparent text-[var(--color-fg-muted)] hover:bg-[var(--white-6)] hover:text-[var(--color-fg-primary)]'

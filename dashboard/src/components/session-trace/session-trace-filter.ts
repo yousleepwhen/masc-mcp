@@ -73,7 +73,7 @@ export function SessionTraceFilter({ agentName }: { agentName: string }) {
         ${searchQuery ? html`
           <button type="button"
             onClick=${() => setTraceSearchQuery(agentName, '')}
-            class="absolute right-2 top-1/2 -translate-y-1/2 text-[var(--color-fg-disabled)] hover:text-[var(--color-fg-primary)] text-base leading-none"
+            class="absolute right-2 top-1/2 -translate-y-1/2 text-[var(--color-fg-disabled)] hover:text-[var(--color-fg-primary)] text-base leading-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--color-bg-page)]"
           >\u00d7</button>
         ` : null}
       </div>

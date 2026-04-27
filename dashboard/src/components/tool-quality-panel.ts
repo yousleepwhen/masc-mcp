@@ -345,7 +345,7 @@ export function ToolQualityPanel() {
           </div>
         </div>
         <button type="button"
-          class="text-3xs px-2 py-0.5 rounded bg-[var(--bg-subtle)] text-[var(--color-fg-disabled)] hover:text-[var(--text)]"
+          class="text-3xs px-2 py-0.5 rounded bg-[var(--bg-subtle)] text-[var(--color-fg-disabled)] hover:text-[var(--text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--color-bg-page)]"
           onClick=${handleRefreshToolQualityClick}
           aria-label="도구 품질 새로고침"
         >새로고침</button>

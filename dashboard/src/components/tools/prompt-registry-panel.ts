@@ -216,7 +216,7 @@ export function PromptRegistryPanel() {
               <button
                 type="button"
                 role="listitem"
-                class="rounded border px-3 py-2 text-left transition-colors ${selectedPrompt?.key === prompt.key
+                class="rounded border px-3 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--color-bg-page)] ${selectedPrompt?.key === prompt.key
                   ? 'border-[var(--accent-30)] bg-[var(--accent-10)]'
                   : 'border-[var(--color-border-default)] bg-[var(--white-2)] hover:bg-[var(--white-4)]'}"
                 onClick=${() => {

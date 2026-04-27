@@ -301,7 +301,7 @@ export function ScopePairing() {
             </div>
             <button
               type="button"
-              class="rounded border border-[var(--white-8)] px-2.5 py-1 text-2xs text-[var(--color-fg-muted)] transition-colors hover:border-[var(--ok-30)] hover:text-[var(--color-fg-primary)]"
+              class="rounded border border-[var(--white-8)] px-2.5 py-1 text-2xs text-[var(--color-fg-muted)] transition-colors hover:border-[var(--ok-30)] hover:text-[var(--color-fg-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--color-bg-page)]"
               onClick=${() => navigate('lab', { section: 'autoresearch' })}
             >오토리서치 열기</button>
           </div>

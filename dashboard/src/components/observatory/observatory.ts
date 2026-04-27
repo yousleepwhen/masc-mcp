@@ -127,7 +127,7 @@ function RangeSelector() {
       ${TIME_RANGE_PRESETS.map((preset: TimeRangePreset) => html`
         <button
           type="button"
-          class="rounded px-2 py-0.5 font-medium transition-colors ${
+          class="rounded px-2 py-0.5 font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--color-bg-page)] ${
             current === preset
               ? 'bg-accent/20 text-accent'
               : 'text-text-muted hover:text-text-strong hover:bg-white/5'
@@ -157,7 +157,7 @@ function ViewSelector({
       ] as const).map(view => html`
         <button
           type="button"
-          class="rounded px-2 py-0.5 font-medium transition-colors ${
+          class="rounded px-2 py-0.5 font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--color-bg-page)] ${
             current === view.key
               ? 'bg-accent/20 text-accent'
               : 'text-text-muted hover:text-text-strong hover:bg-white/5'
@@ -291,7 +291,7 @@ export function Observatory() {
             <${RangeSelector} />
             <button
               type="button"
-              class="inline-flex items-center gap-1.5 rounded border px-2.5 py-1 text-2xs font-medium transition-colors ${
+              class="inline-flex items-center gap-1.5 rounded border px-2.5 py-1 text-2xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--color-bg-page)] ${
                 liveMode.value
                   ? 'border-[var(--ok-20)] bg-[var(--ok-10)] text-[var(--color-status-ok)]'
                   : 'border-card-border text-text-muted hover:text-text-strong hover:bg-white/5'

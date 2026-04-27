@@ -33,7 +33,7 @@ function Chip({
       <span class="font-mono text-text-strong">${value}</span>
       <button
         type="button"
-        class="ml-0.5 rounded-sm min-w-6 min-h-6 p-1 text-text-muted hover:bg-white/10 hover:text-text-strong transition-colors inline-flex items-center justify-center"
+        class="ml-0.5 rounded-sm min-w-6 min-h-6 p-1 text-text-muted hover:bg-white/10 hover:text-text-strong transition-colors inline-flex items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--color-bg-page)]"
         onClick=${onClear}
         aria-label=${`${label} 필터 제거`}
       >
@@ -88,7 +88,7 @@ export function ObservatoryFilterBar() {
       ` : null}
       <button
         type="button"
-        class="ml-auto rounded text-2xs font-medium text-text-muted underline decoration-dotted underline-offset-2 hover:text-text-strong transition-colors"
+        class="ml-auto rounded text-2xs font-medium text-text-muted underline decoration-dotted underline-offset-2 hover:text-text-strong transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--color-bg-page)]"
         onClick=${() => clearObservatoryFilters()}
       >
         모두 해제

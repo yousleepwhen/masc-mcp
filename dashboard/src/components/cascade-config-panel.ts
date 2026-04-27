@@ -429,7 +429,7 @@ function ProfileCard({
                   </select>
                   <button
                     type="submit"
-                    class="rounded border border-[var(--accent-primary)] bg-[var(--accent-primary)] px-3 py-1 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
+                    class="rounded border border-[var(--accent-primary)] bg-[var(--accent-primary)] px-3 py-1 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--color-bg-page)]"
                     disabled=${assigning.value || selectedKeeper.value === ''}
                   >
                     ${assigning.value ? '할당 중...' : '키퍼 할당'}
@@ -1160,14 +1160,14 @@ function CascadeRawConfigEditor({
           <div class="flex items-center gap-3 flex-wrap">
             <button
               type="submit"
-              class="rounded border border-[var(--accent-primary)] bg-[var(--accent-primary)] px-3 py-1 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
+              class="rounded border border-[var(--accent-primary)] bg-[var(--accent-primary)] px-3 py-1 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--color-bg-page)]"
               disabled=${saveDisabled}
             >
               ${saving.value ? '저장 중...' : mode.saveLabel}
             </button>
             <button
               type="button"
-              class="rounded border border-[var(--card-border)] bg-[var(--color-bg-page)] px-3 py-1 text-xs text-[var(--text-strong)] hover:bg-[var(--bg-panel-hover)] disabled:opacity-50"
+              class="rounded border border-[var(--card-border)] bg-[var(--color-bg-page)] px-3 py-1 text-xs text-[var(--text-strong)] hover:bg-[var(--bg-panel-hover)] disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--color-bg-page)]"
               onClick=${handleReset}
               disabled=${saving.value || !editorDirty.value}
             >
@@ -1175,7 +1175,7 @@ function CascadeRawConfigEditor({
             </button>
             <button
               type="button"
-              class="rounded border border-[var(--card-border)] bg-[var(--color-bg-page)] px-3 py-1 text-xs text-[var(--text-strong)] hover:bg-[var(--bg-panel-hover)] disabled:opacity-50"
+              class="rounded border border-[var(--card-border)] bg-[var(--color-bg-page)] px-3 py-1 text-xs text-[var(--text-strong)] hover:bg-[var(--bg-panel-hover)] disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--color-bg-page)]"
               onClick=${() => void onRefresh()}
               disabled=${saving.value}
             >
@@ -1233,7 +1233,7 @@ export function CascadeConfigPanel() {
       <div class="flex items-center gap-3 flex-wrap">
         <button
           type="button"
-          class="rounded border border-[var(--card-border)] bg-[var(--color-bg-page)] px-3 py-1 text-xs text-[var(--text-strong)] hover:bg-[var(--bg-panel-hover)]"
+          class="rounded border border-[var(--card-border)] bg-[var(--color-bg-page)] px-3 py-1 text-xs text-[var(--text-strong)] hover:bg-[var(--bg-panel-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--color-bg-page)]"
           onClick=${() => void loadCascadeData(resource)}
         >
           새로고침

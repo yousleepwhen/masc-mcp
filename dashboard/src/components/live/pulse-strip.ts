@@ -29,7 +29,7 @@ export function PulseStrip() {
       ${pulses.map(p => html`
         <button type="button"
           key=${p.name}
-          class="pulse-bubble ${pulseStateClass(p.state)} ${selected === p.name ? 'pulse-selected' : ''}"
+          class="pulse-bubble focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--color-bg-page)] ${pulseStateClass(p.state)} ${selected === p.name ? 'pulse-selected' : ''}"
           onClick=${() => openAgentDetail(p.name)}
           title="${p.koreanName ? `${p.name} (${p.koreanName})` : p.name}${p.currentTask ? ` — ${p.currentTask}` : ''}"
         >

@@ -147,7 +147,7 @@ export function KeeperPhaseTimeline() {
         <div class="text-2xs text-[var(--color-fg-muted)] uppercase tracking-wider font-medium">페이즈 전환 (최근 30건)</div>
         <button
           type="button"
-          class="text-2xs text-[var(--color-fg-disabled)] hover:text-[var(--color-fg-primary)] transition-colors"
+          class="text-2xs text-[var(--color-fg-disabled)] hover:text-[var(--color-fg-primary)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--color-bg-page)]"
           onClick=${() => { void loadAll() }}
         >새로고침</button>
       </div>
