@@ -1055,7 +1055,7 @@ export function KeeperConfigPanel({ keeperName }: { keeperName: string }) {
         ${goalState.status === 'loading' ? html`
           <div class="text-2xs text-[var(--text-muted)]" role="status">목표 목록 로딩 중...</div>
         ` : goalState.status === 'error' ? html`
-          <div class="text-2xs text-[var(--bad)]">${goalState.message}</div>
+          <div class="text-2xs text-[var(--bad)]" role="alert">${goalState.message}</div>
         ` : goalOptions.length > 0 && rd ? html`
           <div class="grid gap-1.5">
             ${goalOptions.map((goal) => {
