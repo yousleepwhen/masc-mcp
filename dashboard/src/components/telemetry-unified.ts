@@ -916,6 +916,7 @@ export function TelemetryUnified() {
           <option value="500">500</option>
         </select>
         <button
+          type="button"
           class="rounded border border-[var(--card-border)] bg-[var(--color-bg-page)] px-3 py-1 text-xs text-[var(--text-strong)] hover:bg-[var(--bg-panel-hover)]"
           onClick=${() => void load()}
         >

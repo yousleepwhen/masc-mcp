@@ -644,7 +644,7 @@ function ShortcutsOverlay({
         <h2 id="shortcuts-title" class="m-0 text-2xs font-semibold uppercase tracking-2 text-[var(--color-fg-muted)]">
           키보드 단축키
         </h2>
-        <button
+        <button type="button"
           class="text-3xs text-[var(--color-fg-disabled)] hover:text-[var(--color-fg-primary)] cursor-pointer"
           onClick=${onClose}
           aria-label="닫기"
@@ -739,7 +739,7 @@ function StatusBar({
         <div class="flex items-center gap-3">
           <span class="text-3xs font-semibold uppercase tracking-3 text-[var(--color-fg-muted)]">FSM Hub</span>
           <${Kbd} size="sm" class="hidden md:inline-flex" title="단축키 목록 (?)">?<//>
-          <button
+          <button type="button"
             class=${`text-3xs font-mono px-1.5 py-0.5 rounded border cursor-pointer transition-all ${
               refreshFlash
                 ? 'border-[var(--accent-30)] bg-[var(--accent-10)] text-[var(--color-accent-fg)]'
@@ -808,7 +808,7 @@ function StatusBar({
               ? 'bg-[var(--accent-10)] border-[var(--accent-30)] text-[var(--color-accent-fg)]'
               : 'bg-[var(--white-3)] border-[var(--white-8)] text-[var(--color-fg-disabled)] hover:text-[var(--color-fg-primary)] hover:border-[var(--accent-30)]'
             return html`
-              <button
+              <button type="button"
                 role="tab"
                 aria-selected=${active}
                 tabindex=${active ? 0 : -1}

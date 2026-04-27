@@ -1231,6 +1231,7 @@ export function CascadeConfigPanel() {
     <div class="flex flex-col gap-4">
       <div class="flex items-center gap-3 flex-wrap">
         <button
+          type="button"
           class="rounded border border-[var(--card-border)] bg-[var(--color-bg-page)] px-3 py-1 text-xs text-[var(--text-strong)] hover:bg-[var(--bg-panel-hover)]"
           onClick=${() => void loadCascadeData(resource)}
         >

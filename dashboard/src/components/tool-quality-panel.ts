@@ -344,7 +344,7 @@ export function ToolQualityPanel() {
             <span>${(d.entry_count ?? d.total).toLocaleString()} rows</span>
           </div>
         </div>
-        <button
+        <button type="button"
           class="text-3xs px-2 py-0.5 rounded bg-[var(--bg-subtle)] text-[var(--color-fg-disabled)] hover:text-[var(--text)]"
           onClick=${handleRefreshToolQualityClick}
           aria-label="도구 품질 새로고침"

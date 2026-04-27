@@ -378,14 +378,14 @@ function SynapseRow({ s }: { s: MemorySubsystemsSynapse }) {
   return html`
     <tr class="border-b border-[var(--white-10)]">
       <td class="py-1.5 px-2 text-sm font-mono">
-        <button
+        <button type="button"
           class="hover:text-[var(--color-accent-fg)] hover:underline focus:outline-none focus:text-[var(--color-accent-fg)]"
           onClick=${() => openAgentDetail(s.from_agent)}
         >${s.from_agent}</button>
       </td>
       <td class="py-1.5 px-2 text-sm text-[var(--color-fg-muted)] text-center">→</td>
       <td class="py-1.5 px-2 text-sm font-mono">
-        <button
+        <button type="button"
           class="hover:text-[var(--color-accent-fg)] hover:underline focus:outline-none focus:text-[var(--color-accent-fg)]"
           onClick=${() => openAgentDetail(s.to_agent)}
         >${s.to_agent}</button>
@@ -564,7 +564,7 @@ export function MemorySubsystems() {
 
       <!-- Architecture Flow (collapsible) -->
       <section aria-label="아키텍처 데이터 흐름도">
-        <button
+        <button type="button"
           onClick=${() => (showArch.value = !showArch.value)}
           class="w-full flex items-center justify-between p-2 bg-[var(--white-5)] rounded hover:bg-[var(--white-5)] transition-colors"
         >
@@ -679,7 +679,7 @@ export function MemorySubsystems() {
             ? html`<div class="flex items-center gap-2 mb-2 px-2 py-1 bg-[var(--white-5)] border border-[var(--white-10)] rounded text-xs">
                 <span class="text-[var(--color-fg-muted)]">시냅스 쌍 필터</span>
                 <span class="text-[var(--color-fg-muted)] font-mono">${shortAgentLabel(pairFilter.from)} → ${shortAgentLabel(pairFilter.to)}</span>
-                <button
+                <button type="button"
                   class="ml-auto text-[var(--color-fg-muted)] hover:text-[var(--color-fg-muted)]"
                   onClick=${() => setSynapsePairFilter(null)}
                   aria-label="시냅스 쌍 필터 해제"
@@ -720,7 +720,7 @@ export function MemorySubsystems() {
           />
           ${
             hasFilter
-              ? html`<button
+              ? html`<button type="button"
                   onClick=${clearFilters}
                   class="text-xs text-[var(--color-fg-muted)] hover:text-[var(--color-fg-muted)] px-2 py-1 border border-[var(--white-10)] rounded hover:border-[var(--white-10)]0"
                 >

@@ -593,7 +593,7 @@ export function RuntimeMonitor() {
                     : null}
                   ${(metric.recent_entries ?? []).length > 0
                     ? html`
-                      <button
+                      <button type="button"
                         class="text-2xs text-[var(--color-fg-muted)] hover:text-[var(--color-fg-secondary)] mt-1 text-left"
                         onClick=${() => { expandedModel.value = expandedModel.value === metric.model_id ? null : metric.model_id }}
                       >

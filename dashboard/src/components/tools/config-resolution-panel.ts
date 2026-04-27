@@ -401,7 +401,7 @@ function RuntimeProbePanel() {
               <${StatusChip} tone="neutral" uppercase=${false}>${state.value.data.cache_hit ? 'cached' : 'fresh'} · age ${fmtNumber(state.value.data.cache_age_sec, 1)}s<//>
             `
           : null}
-        <button
+        <button type="button"
           class="ml-auto rounded border border-[var(--color-border-default)] bg-[var(--color-bg-page)] px-3 py-1 text-2xs text-[var(--color-fg-secondary)] hover:bg-[var(--color-bg-hover)]"
           onClick=${() => void load(true)}
         >

@@ -102,7 +102,7 @@ function CategoryPanel({ name, entries }: { name: string; entries: ConfigEntry[]
 
   return html`
     <div class="border border-[var(--color-border-divider)] rounded overflow-hidden mb-3">
-      <button
+      <button type="button"
         class="w-full flex items-center justify-between px-4 py-2.5 bg-[var(--bg-surface)] hover:bg-[var(--color-bg-hover)] transition-colors text-left"
         aria-expanded=${isExpanded ? 'true' : 'false'}
         onClick=${() => toggleCategory(name)}
@@ -176,7 +176,7 @@ export function ServerConfig() {
           value=${searchQuery.value}
           onInput=${(e: Event) => { searchQuery.value = (e.target as HTMLInputElement).value }}
         />
-        <button
+        <button type="button"
           class="px-3 py-1.5 text-xs rounded bg-[var(--bg-surface)] border border-[var(--color-border-divider)] text-[var(--color-fg-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--color-bg-hover)] transition-colors"
           onClick=${() => void refreshServerConfig()}
           disabled=${loading}

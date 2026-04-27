@@ -321,7 +321,7 @@ export function AttributionPanel() {
           ? html`
             <div class="text-2xs text-[var(--color-fg-muted)]">
               필터: <span class="font-mono text-[var(--text-primary)]">${filterGate.value}</span>
-              <button
+              <button type="button"
                 class="ml-2 underline"
                 onClick=${() => { filterGate.value = null }}
               >

@@ -249,11 +249,11 @@ function RowActions({
     return html`
       <div class="flex items-center gap-1 flex-wrap">
         <span class="text-2xs text-[var(--color-fg-secondary)]">승인 확정?</span>
-        <button
+        <button type="button"
           class=${BTN_PRIMARY}
           onClick=${() => void submitResolve(row, 'approve', '', refresh)}
         >예</button>
-        <button
+        <button type="button"
           class=${BTN_SECONDARY}
           onClick=${() => setRowAction(requestId, { kind: 'idle' })}
         >취소</button>
@@ -285,12 +285,12 @@ function RowActions({
             }
           }}
         />
-        <button
+        <button type="button"
           class=${BTN_PRIMARY}
           disabled=${!canSubmit}
           onClick=${() => void submitResolve(row, 'reject', reason.trim(), refresh)}
         >확정</button>
-        <button
+        <button type="button"
           class=${BTN_SECONDARY}
           onClick=${() => setRowAction(requestId, { kind: 'idle' })}
         >취소</button>
@@ -301,11 +301,11 @@ function RowActions({
   // idle or error — show primary action buttons; error surfaces retry hint
   return html`
     <div class="flex items-center gap-1 flex-wrap">
-      <button
+      <button type="button"
         class=${BTN_PRIMARY}
         onClick=${() => setRowAction(requestId, { kind: 'confirm-approve' })}
       >승인</button>
-      <button
+      <button type="button"
         class=${BTN_SECONDARY}
         onClick=${() => setRowAction(requestId, { kind: 'compose-reject', reason: '' })}
       >반려</button>
@@ -570,7 +570,7 @@ export function VerificationRequestsPanel() {
   return html`
     <div class="flex flex-col gap-4">
       <div class="flex items-center gap-3 flex-wrap">
-        <button
+        <button type="button"
           class="rounded border border-[var(--color-border-default)] bg-[var(--color-bg-page)] px-3 py-1 text-xs text-[var(--color-fg-secondary)] hover:bg-[var(--color-bg-hover)]"
           onClick=${() => void loadData(resource)}
         >
