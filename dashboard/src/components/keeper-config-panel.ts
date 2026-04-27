@@ -939,9 +939,9 @@ export function KeeperConfigPanel({ keeperName }: { keeperName: string }) {
         <div class="py-2 px-3 rounded bg-[var(--white-3)]">
           <div class="flex items-center justify-between mb-1">
             <span class="text-xs text-[var(--text-body)]">allowed_paths</span>
-            <span class="text-3xs text-[var(--text-muted)]">한 줄에 하나씩. 명시 경로만 허용됩니다.</span>
+            <span id="allowed-paths-hint" class="text-3xs text-[var(--text-muted)]">한 줄에 하나씩. 명시 경로만 허용됩니다.</span>
           </div>
-          <textarea aria-label="allowed_paths" class="w-full text-xs font-mono bg-[var(--white-6)] border border-[var(--card-border)] rounded px-2 py-1.5 text-[var(--text-body)] resize-y"
+          <textarea aria-label="allowed_paths" aria-describedby="allowed-paths-hint" class="w-full text-xs font-mono bg-[var(--white-6)] border border-[var(--card-border)] rounded px-2 py-1.5 text-[var(--text-body)] resize-y"
             rows=${3}
             value=${rd.allowed_paths_text}
             placeholder=".masc/keepers/<name>/"

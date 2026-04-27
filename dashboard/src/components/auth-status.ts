@@ -1,5 +1,6 @@
 import { html } from 'htm/preact'
 import { signal } from '@preact/signals'
+import { useEffect, useRef } from 'preact/hooks'
 import {
   clearStoredToken,
   currentDashboardActor,
@@ -140,16 +141,30 @@ function AuthRow({ label, value }: { label: string; value: string }) {
 
 export function AuthStatus() {
   const { dotColor, label } = authBadgeSummary()
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!popoverOpen.value) return
+    const handleClickOutside = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        popoverOpen.value = false
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [popoverOpen.value])
 
   return html`
-    <div class="relative">
+    <div class="relative" ref=${containerRef}>
       <button type="button"
         class="flex items-center gap-1.5 text-2xs py-1 px-2 rounded border border-solid border-[var(--color-border-default)] bg-[var(--white-4)] cursor-pointer font-[inherit] transition-colors duration-150 hover:bg-[var(--white-8)] text-[var(--color-fg-muted)]"
         onClick=${() => { popoverOpen.value ? (popoverOpen.value = false) : openPopover() }}
         title="인증 상태"
         aria-label="인증 상태"
+        aria-expanded=${popoverOpen.value}
+        aria-haspopup="dialog"
       >
-        <span class="size-[7px] rounded-sm inline-block ${dotColor}"></span>
+        <span class="size-[7px] rounded-sm inline-block ${dotColor}" aria-hidden="true"></span>
         <span>${label}</span>
       </button>
       ${popoverOpen.value ? html`<${AuthPopover} />` : null}
@@ -170,7 +185,11 @@ function AuthPopover() {
   const actorOverrideLocked = authenticated
 
   return html`
-    <div class="absolute right-0 top-full mt-1.5 w-80 rounded border border-[var(--color-border-default)] bg-[rgba(10,18,34,0.97)] shadow-sm backdrop-blur-sm p-3 z-50">
+    <div class="absolute right-0 top-full mt-1.5 w-80 rounded border border-[var(--color-border-default)] bg-[rgba(10,18,34,0.97)] shadow-sm backdrop-blur-sm p-3 z-50"
+      role="dialog"
+      aria-label="인증 상태 설정"
+      onKeyDown=${(e: KeyboardEvent) => { if (e.key === 'Escape') popoverOpen.value = false }}
+    >
       <div class="flex flex-col gap-3">
         <div class="grid grid-cols-[auto,1fr] gap-x-2 gap-y-1 text-2xs">
           <${AuthRow} label="stored actor" value=${storedActor ? `@${storedActor}` : '-'} />
