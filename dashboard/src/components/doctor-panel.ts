@@ -187,7 +187,7 @@ function SidecarChecksList({ checks }: { checks: SidecarCheckView[] }) {
     return html`<div class="text-xs text-[var(--color-fg-muted)]">세부 검사 없음.</div>`
   }
   return html`
-    <ul class="mt-3 space-y-2">
+    <ul class="mt-3 space-y-2" aria-label="세부 검사 목록">
       ${checks.map((c) => {
         const chip = chipClassForSidecarSeverity(c.severity)
         return html`
@@ -236,7 +236,7 @@ function ConfigNotesList({ notes }: { notes: ConfigNotesView }) {
         ? html`
             <div>
               <div class="text-[11px] uppercase tracking-wider text-[var(--color-fg-muted)]">경고</div>
-              <ul class="mt-1 list-disc space-y-1 pl-5 text-[11px] text-[var(--color-fg-primary)]">
+              <ul class="mt-1 list-disc space-y-1 pl-5 text-[11px] text-[var(--color-fg-primary)]" aria-label="경고 목록">
                 ${warnings.map((w) => html`<li>${w}</li>`)}
               </ul>
             </div>
@@ -246,7 +246,7 @@ function ConfigNotesList({ notes }: { notes: ConfigNotesView }) {
         ? html`
             <div>
               <div class="text-[11px] uppercase tracking-wider text-[var(--color-fg-muted)]">다음 조치</div>
-              <ul class="mt-1 list-disc space-y-1 pl-5 text-[11px] text-[var(--color-fg-primary)]">
+              <ul class="mt-1 list-disc space-y-1 pl-5 text-[11px] text-[var(--color-fg-primary)]" aria-label="다음 조치 목록">
                 ${next_actions.map((a) => html`<li>${a}</li>`)}
               </ul>
             </div>

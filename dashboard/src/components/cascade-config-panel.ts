@@ -459,7 +459,7 @@ function ProfileCard({
       ${profile.candidates.length === 0
         ? html`<div class="text-xs text-[var(--text-muted)]">no candidates resolved</div>`
         : html`
-          <ol class="flex flex-col gap-1 text-xs">
+          <ol class="flex flex-col gap-1 text-xs" aria-label="cascade candidate 목록">
             ${profile.candidates.map((c, idx) => {
               const expanded = c.expanded_models ?? []
               const displayModel = c.display_model ?? c.model
@@ -486,7 +486,7 @@ function ProfileCard({
                     : null}
                   ${expanded.length > 1
                     ? html`
-                      <ol class="mt-1 flex flex-col gap-0.5 text-[11px] text-[var(--text-muted)]">
+                      <ol class="mt-1 flex flex-col gap-0.5 text-[11px] text-[var(--text-muted)]" aria-label="확장 모델 목록">
                         ${expanded.map((model, expandedIdx) => html`
                           <li><span class="tabular-nums">${expandedIdx + 1}.</span> <code>${model}</code></li>
                         `)}
@@ -515,7 +515,7 @@ function OrphanKeeperList({ orphans }: { orphans: readonly CascadeKeeperProfile[
       <div class="text-[var(--text-muted)] mb-2">
         아래 keeper 는 canonical cascade 가 현재 profile 목록에 없어 해당 cascade 로 라우팅할 수 없습니다.
       </div>
-      <ul class="flex flex-col gap-1">
+      <ul class="flex flex-col gap-1" aria-label="orphan keeper 목록">
         ${orphans.map(o => html`
           <li class="flex gap-2">
             <span class="font-semibold text-[var(--text-strong)]">${o.keeper}</span>
@@ -567,7 +567,7 @@ function CascadeValidationBanner({ config }: { config: CascadeConfigResponse }) 
       </div>
       ${visibleErrors.length > 0
         ? html`
-          <ul class="flex flex-col gap-1 mb-2 text-[var(--text-muted)]">
+          <ul class="flex flex-col gap-1 mb-2 text-[var(--text-muted)]" aria-label="검증 오류 목록">
             ${visibleErrors.map(error => html`<li>${error}</li>`)}
           </ul>
         `
@@ -575,7 +575,7 @@ function CascadeValidationBanner({ config }: { config: CascadeConfigResponse }) 
       ${visibleProfiles.length > 0
         ? html`
           <div class="text-[var(--text-strong)] mb-1">거부된 프로파일</div>
-          <ul class="flex flex-col gap-1 text-[var(--text-muted)]">
+          <ul class="flex flex-col gap-1 text-[var(--text-muted)]" aria-label="거부된 프로파일 목록">
             ${visibleProfiles.map(invalidProfile => html`
               <${InvalidProfileSummary} invalidProfile=${invalidProfile} />
             `)}
