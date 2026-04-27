@@ -603,7 +603,7 @@ export function TokenTrendChart({ keeper }: { keeper: Keeper }) {
         <div class="md:col-span-2 p-3 rounded border border-[var(--color-border-default)] bg-[var(--white-3)]">
           <div class="flex items-center gap-4 mb-1.5">
             <span class="flex items-center gap-1 text-3xs text-[var(--color-fg-muted)]">
-              <span class="inline-block w-2.5 h-0.5 rounded bg-[#67e8f9]"></span> input
+              <span class="inline-block w-2.5 h-0.5 rounded bg-[#67e8f9]" aria-hidden="true"></span> input
               <span class="font-mono text-[var(--cyan)]">${formatTokens(lastInput)}</span>
             </span>
             <span class="flex items-center gap-1 text-3xs text-[var(--color-fg-muted)]">
