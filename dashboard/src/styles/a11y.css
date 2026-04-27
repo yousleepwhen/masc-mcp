@@ -76,3 +76,25 @@
   /* Transition duration — reduce to instant for motion-sensitive users */
   * { transition-duration: 0s !important; animation-duration: 0s !important; }
 }
+
+/* WCAG 1.4.6 / 1.4.11 — prefers-contrast: more.
+   For users who enabled OS-level "Increase contrast" (macOS Accessibility → Display). */
+@media (prefers-contrast: more) {
+  :root {
+    --color-text-dim: #c0c8d4;
+    --color-text-muted: #d0dff0;
+    --color-text-body: #dce8ff;
+    --color-text-strong: #ffffff;
+  }
+
+  /* Subtle borders become visible */
+  .border-white\/5, .border-white\/8, .border-white\/10 {
+    border-color: rgba(255, 255, 255, 0.25) !important;
+  }
+
+  /* Focus ring thicker and higher contrast */
+  :focus-visible {
+    outline-width: 3px;
+    outline-color: rgba(71, 184, 255, 0.95);
+  }
+}
