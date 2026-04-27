@@ -57,7 +57,7 @@ function outcomeToneClass(kind: Attribution['outcome']['kind']): string {
 
 function originBadgeClass(origin: Attribution['origin']): string {
   return origin === 'det'
-    ? 'bg-[var(--accent-10)]0/20 text-[var(--color-accent-fg)] border border-[var(--accent-20)]0/40'
+    ? 'bg-[var(--ok-10)]/20 text-[var(--color-status-ok)] border border-[var(--ok-10)]/40'
     : 'bg-[var(--accent-10)]0/20 text-[var(--color-accent-fg)] border border-[var(--accent-20)]0/40'
 }
 

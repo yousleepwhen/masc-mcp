@@ -123,12 +123,22 @@ export function ToolCallTrack({ events, windowStart, windowEnd }: Props) {
               const ringClass = isSelected ? 'ring-2 ring-accent ring-offset-1 ring-offset-bg-1' : ''
               return html`
                 <span
+                  tabindex="0"
+                  role="button"
+                  aria-label=${`${name} · ${outcome}${count > 1 ? ` · ${count}건` : ''}`}
                   class="absolute top-1 bottom-1 w-[3px] ${color} rounded-[1px] hover:w-1.5 transition-all cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] ${ringClass}"
                   style="left: ${pct}%;"
                   title=${`${new Date(ts).toLocaleTimeString()} · ${name} · ${outcome}${count > 1 ? ` · ${count} calls` : ''}`}
                   onClick=${(e: MouseEvent) => {
                     e.stopPropagation()
                     selectEntity({ kind: 'tool_call', entry, ts, bucketCount: count })
+                  }}
+                  onKeyDown=${(e: KeyboardEvent) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      selectEntity({ kind: 'tool_call', entry, ts, bucketCount: count })
+                    }
                   }}
                 >${count > 1 ? html`
                   <span class="absolute -top-4 left-1/2 -translate-x-1/2 rounded bg-bg-0/90 px-1 py-0.5 text-3xs font-mono text-text-dim" aria-hidden="true">
