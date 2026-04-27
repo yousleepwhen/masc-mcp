@@ -7,7 +7,7 @@
 
 import { html } from 'htm/preact'
 import { useSignal } from '@preact/signals'
-import { useEffect } from 'preact/hooks'
+import { useEffect, useId } from 'preact/hooks'
 import { get } from '../api/core'
 import { createAsyncResource, type AsyncResource } from '../lib/async-state'
 import { AsyncContainer } from './common/async-container'
@@ -260,6 +260,7 @@ function DoctorEntryCard({ entry }: { entry: DoctorEntry }) {
   const label = severityLabel(entry.exit_code)
   const chip = severityChipClass(entry.exit_code)
   const expanded = useSignal(false)
+  const contentId = useId()
   const onToggle = () => { expanded.value = !expanded.value }
   return html`
     <div class="rounded border border-[var(--white-8)] bg-[var(--white-4)] p-3">
@@ -267,6 +268,7 @@ function DoctorEntryCard({ entry }: { entry: DoctorEntry }) {
         type="button"
         class="flex w-full items-baseline justify-between gap-2 text-left"
         aria-expanded=${expanded.value}
+        aria-controls=${contentId}
         onClick=${onToggle}
       >
         <div class="text-sm font-semibold text-[var(--color-fg-secondary)]">
@@ -281,9 +283,10 @@ function DoctorEntryCard({ entry }: { entry: DoctorEntry }) {
         ${entry.kind === 'config' ? '설정 진단' : `${entry.name} sidecar`} · exit ${entry.exit_code}
       </div>
       ${expanded.value
-        ? entry.kind === 'sidecar'
-          ? html`<${SidecarChecksList} checks=${extractSidecarChecks(entry.payload)} />`
-          : html`<${ConfigNotesList} notes=${extractConfigNotes(entry.payload)} />`
+        ? html`<div id=${contentId}>${entry.kind === 'sidecar'
+            ? html`<${SidecarChecksList} checks=${extractSidecarChecks(entry.payload)} />`
+            : html`<${ConfigNotesList} notes=${extractConfigNotes(entry.payload)} />`
+          }</div>`
         : ''}
     </div>
   `

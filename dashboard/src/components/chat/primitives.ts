@@ -1,6 +1,6 @@
 import { html } from 'htm/preact'
 import { JsonViewerCard } from '../common/json-viewer'
-import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
+import { useEffect, useId, useMemo, useRef, useState } from 'preact/hooks'
 import { ActionButton } from '../common/button'
 import { formatTimeHms } from '../../lib/format-time'
 import type { KeeperConversationDetails, KeeperConversationEntry } from '../../types'
@@ -115,6 +115,7 @@ function ChatMessageBubble({
 }) {
   const [expandedRaw, setExpandedRaw] = useState(false)
   const [rawExpandedRaw, setRawExpandedRaw] = useState(false)
+  const detailId = useId()
   const expanded = showMetadata && expandedRaw
   const rawExpanded = showMetadata && rawExpandedRaw
   const tone = bubbleTone(entry)
@@ -206,6 +207,7 @@ function ChatMessageBubble({
                 }`}
                 onClick=${() => { setExpandedRaw(!expandedRaw) }}
                 aria-expanded=${expanded}
+                aria-controls=${detailId}
               >
                 ${expanded ? '상세 숨기기' : '상세 보기'}
               </button>
@@ -236,7 +238,7 @@ function ChatMessageBubble({
 
       ${expanded && entry.details
         ? html`
-            <div class="chat-detail-panel rounded-card border border-[var(--slate-gray-14)] px-3 py-3">
+            <div id=${detailId} class="chat-detail-panel rounded-card border border-[var(--slate-gray-14)] px-3 py-3">
               ${overview.length > 0
                 ? html`
                     <div class="grid grid-cols-[repeat(auto-fit,minmax(116px,1fr))] gap-2">

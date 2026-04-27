@@ -1,5 +1,6 @@
 import { html } from 'htm/preact'
 import { signal } from '@preact/signals'
+import { useId } from 'preact/hooks'
 import { Card } from './common/card'
 import { TextInput } from './common/input'
 import { TransportHealthPanel } from './transport-health'
@@ -96,6 +97,7 @@ function CategoryPanel({ name, entries }: { name: string; entries: ConfigEntry[]
   const query = searchQuery.value
   const filtered = entries.filter(e => matchesSearch(e, query))
   const isExpanded = expandedCategories.value.has(name)
+  const contentId = useId()
   const customCount = filtered.filter(e => e.source === 'env').length
 
   if (filtered.length === 0) return null
@@ -105,6 +107,7 @@ function CategoryPanel({ name, entries }: { name: string; entries: ConfigEntry[]
       <button type="button"
         class="w-full flex items-center justify-between px-4 py-2.5 bg-[var(--bg-surface)] hover:bg-[var(--color-bg-hover)] transition-colors text-left"
         aria-expanded=${isExpanded ? 'true' : 'false'}
+        aria-controls=${contentId}
         onClick=${() => toggleCategory(name)}
       >
         <div class="flex items-center gap-2">
@@ -119,7 +122,7 @@ function CategoryPanel({ name, entries }: { name: string; entries: ConfigEntry[]
         ` : null}
       </button>
       ${isExpanded ? html`
-        <div class="divide-y divide-[var(--color-border-divider)]">
+        <div id=${contentId} class="divide-y divide-[var(--color-border-divider)]">
           ${filtered.map(entry => html`<${EntryRow} entry=${entry} />`)}
         </div>
       ` : null}

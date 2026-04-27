@@ -1,5 +1,5 @@
 import { html } from 'htm/preact'
-import { useState } from 'preact/hooks'
+import { useId, useState } from 'preact/hooks'
 
 export function parseJsonLikeData(data: unknown): unknown {
   if (typeof data !== 'string') return data
@@ -14,6 +14,7 @@ export function parseJsonLikeData(data: unknown): unknown {
 
 export function JsonViewer({ data, label, initialCollapsed = false, level = 0, ancestors = [] }: { data: unknown; label?: string; initialCollapsed?: boolean; level?: number; ancestors?: object[] }) {
   const [collapsed, setCollapsed] = useState(initialCollapsed)
+  const contentId = useId()
 
   const isObject = data !== null && typeof data === 'object'
   const isArray = Array.isArray(data)
@@ -70,6 +71,7 @@ export function JsonViewer({ data, label, initialCollapsed = false, level = 0, a
         class="flex items-center gap-1.5 cursor-pointer hover:bg-[var(--white-4)] rounded px-1 -mx-1 select-none w-max max-w-full text-left bg-transparent border-0"
         onClick=${() => setCollapsed(!collapsed)}
         aria-expanded=${!collapsed}
+        aria-controls=${contentId}
         aria-label=${`${collapsed ? 'Expand' : 'Collapse'} ${toggleLabel}`}
       >
         <span aria-hidden="true" class="text-[var(--color-fg-muted)] shrink-0 w-4 inline-flex justify-center transition-transform duration-150 ${collapsed ? '-rotate-90' : ''}">▼</span>
@@ -80,7 +82,7 @@ export function JsonViewer({ data, label, initialCollapsed = false, level = 0, a
       </button>
 
       ${!collapsed && html`
-        <div class="pl-4 ml-1.5 border-l border-[var(--white-4)] mt-1 flex flex-col gap-0.5 w-full min-w-0">
+        <div id=${contentId} class="pl-4 ml-1.5 border-l border-[var(--white-4)] mt-1 flex flex-col gap-0.5 w-full min-w-0">
           ${isArray
             ? (data as unknown[]).map((val, idx) => html`<${JsonViewer} key=${idx} data=${val} label=${String(idx)} level=${level + 1} initialCollapsed=${level >= 2} ancestors=${nextAncestors} />`)
             : (entries as [string, unknown][]).map(([k, v]) => html`<${JsonViewer} key=${k} data=${v} label=${k} level=${level + 1} initialCollapsed=${level >= 2} ancestors=${nextAncestors} />`)
