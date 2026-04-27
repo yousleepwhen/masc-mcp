@@ -197,6 +197,7 @@ export function ToolMetrics() {
                   <${FilterChips}
                     chips=${categoryChips}
                     active=${categoryFilter}
+                    ariaLabel="도구 카테고리 필터"
                   />
                   <${TextInput}
                     class="sm:max-w-60"

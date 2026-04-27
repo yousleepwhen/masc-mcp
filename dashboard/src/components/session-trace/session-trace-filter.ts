@@ -83,6 +83,7 @@ export function SessionTraceFilter({ agentName }: { agentName: string }) {
         chips=${categoryChips}
         value=${currentFilter}
         onChange=${(key: FilterKey) => { setTraceFilter(agentName, key) }}
+        ariaLabel="트레이스 카테고리"
         size="sm"
         tone="accent"
       />
@@ -95,6 +96,7 @@ export function SessionTraceFilter({ agentName }: { agentName: string }) {
             chips=${statusChips}
             value=${currentStatus}
             onChange=${(key: StatusKey) => { setTraceStatusFilter(agentName, key) }}
+            ariaLabel="트레이스 상태"
             size="sm"
             tone="neutral"
           />

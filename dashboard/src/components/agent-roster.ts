@@ -605,6 +605,7 @@ export function AgentRoster({ keeperFilter = 'all' }: { keeperFilter?: KeeperFil
                 chips=${statusChips}
                 value=${filter}
                 onChange=${(key: StatusFilter) => setFilter(key)}
+                ariaLabel="에이전트 상태 필터"
                 size="md"
                 tone="accent"
               />

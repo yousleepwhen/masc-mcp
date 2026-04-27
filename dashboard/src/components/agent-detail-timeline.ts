@@ -163,6 +163,7 @@ export function AgentTimelineSection() {
                   { key: 'other' as TimelineEventCategory, label: '기타', count: counts.other },
                 ]}
                 active=${timelineCategoryFilter}
+                ariaLabel="타임라인 이벤트 카테고리"
                 size="sm"
                 tone="accent"
               />

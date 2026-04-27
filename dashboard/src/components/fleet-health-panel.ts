@@ -72,6 +72,7 @@ export function FleetHealthPanel() {
         chips=${VIEW_CHIPS}
         value=${view}
         onChange=${updateViewParam}
+        ariaLabel="Fleet 뷰 선택"
         size="sm"
         tone="accent"
       />

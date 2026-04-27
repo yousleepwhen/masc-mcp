@@ -193,6 +193,7 @@ export function SupervisorDiagnosticsPanel({ keeper }: { keeper: Keeper }) {
                 <${FilterChips}
                   chips=${chips}
                   active=${crashCategoryFilter}
+                  ariaLabel="크래시 카테고리"
                   size="sm"
                   tone="accent"
                   class="mb-2"

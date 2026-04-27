@@ -167,6 +167,7 @@ export function VerificationSpecsPanel() {
             { key: 'other' as CategoryFilter, label: '기타', count: otherCount },
           ]}
           active=${categoryFilter}
+          ariaLabel="검증 스펙 카테고리"
           size="sm"
           tone="accent"
         />

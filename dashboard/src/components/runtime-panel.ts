@@ -65,6 +65,7 @@ export function RuntimePanel() {
         chips=${VIEW_CHIPS}
         value=${view}
         onChange=${updateViewParam}
+        ariaLabel="런타임 뷰 선택"
       />
       <div class="grid gap-4">
         ${view === 'cascade'

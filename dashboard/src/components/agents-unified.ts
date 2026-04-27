@@ -86,6 +86,7 @@ export function AgentsUnified() {
         onChange=${(key: AgentsView) => {
           navigate('monitoring', key === 'all' ? { section: 'agents' } : { section: 'agents', view: key })
         }}
+        ariaLabel="에이전트 뷰 선택"
         size="md"
         tone="accent"
         class="monitor-muted-panel w-fit p-1.5 shadow-[inset_0_1px_0_var(--white-3)]"

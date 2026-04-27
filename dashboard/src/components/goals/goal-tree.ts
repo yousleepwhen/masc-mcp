@@ -1079,6 +1079,7 @@ export function GoalTree() {
                 count: phaseCounts[filter],
               }))}
               active=${treePhaseFilter}
+              ariaLabel="목표 단계 필터"
               tone="accent"
               size="sm"
             />
