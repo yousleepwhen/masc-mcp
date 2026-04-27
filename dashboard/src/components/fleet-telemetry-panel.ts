@@ -368,7 +368,7 @@ function FleetComparisonTable({ rows, onReset }: { rows: FleetRow[]; onReset: (n
             <th scope="col" class="py-1 text-right font-normal">지연</th>
             <th scope="col" class="py-1 text-right font-normal">모델</th>
             <th scope="col" class="py-1 text-center font-normal">예산</th>
-            <th scope="col" class="w-8 py-1"></th>
+            <th scope="col" class="w-8 py-1" aria-label="초기화"></th>
           </tr>
         </thead>
         <tbody>

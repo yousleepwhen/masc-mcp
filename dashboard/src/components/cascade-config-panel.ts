@@ -715,7 +715,7 @@ function HealthTable({
         <table class="w-full text-xs" aria-label="cascade provider 상태">
           <thead>
             <tr class="text-[var(--text-muted)] border-b border-[var(--card-border)]">
-              <th scope="col" class="text-left py-1 w-4"></th>
+              <th scope="col" class="text-left py-1 w-4" aria-label="상태 표시"></th>
               <th scope="col" class="text-left py-1">제공자</th>
               <th
                 scope="col"
@@ -1006,7 +1006,7 @@ function ClientCapacityTable({ capacity }: { capacity: CascadeClientCapacityResp
     <table class="w-full text-xs" aria-label="client capacity 슬롯">
       <thead>
         <tr class="text-[var(--text-muted)] border-b border-[var(--card-border)]">
-          <th scope="col" class="text-left py-1 w-4"></th>
+          <th scope="col" class="text-left py-1 w-4" aria-label="상태 표시"></th>
           <th scope="col" class="text-left py-1">종류</th>
           <th scope="col" class="text-left py-1">키</th>
           <th scope="col" class="text-right py-1">활성</th>
@@ -1019,7 +1019,7 @@ function ClientCapacityTable({ capacity }: { capacity: CascadeClientCapacityResp
           const tone = capacityTone(e)
           return html`
           <tr class="border-b border-[var(--card-border)] last:border-b-0">
-            <td class="py-1"><span class=${`inline-block w-2 h-2 rounded-full ${TONE_DOT[tone]}`}></span></td>
+            <td class="py-1"><span class=${`inline-block w-2 h-2 rounded-full ${TONE_DOT[tone]}`} aria-hidden="true"></span></td>
             <td class="py-1"><${StatusChip} tone=${tone === 'ok' ? 'neutral' : tone}>${capacityKindLabel(e.kind)}<//></td>
             <td class="py-1"><code class="text-[var(--text-strong)]">${e.key}</code></td>
             <td class="py-1 text-right tabular-nums">${e.active}</td>
