@@ -499,7 +499,7 @@ function JourneyCard({ record }: { record: JourneyRecord }) {
   const extendedId = useId()
 
   return html`
-    <${Card} class="flex flex-col gap-5 bg-gradient-to-br from-[rgba(var(--white-rgb,255),0.08)] via-[rgba(var(--white-rgb,255),0.04)] to-[rgba(var(--white-rgb,255),0.06)] border border-[var(--white-10)] backdrop-blur-md">
+    <${Card} role="listitem" class="flex flex-col gap-5 bg-gradient-to-br from-[rgba(var(--white-rgb,255),0.08)] via-[rgba(var(--white-rgb,255),0.04)] to-[rgba(var(--white-rgb,255),0.06)] border border-[var(--white-10)] backdrop-blur-md">
       <div class="flex flex-wrap items-start justify-between gap-4">
         <div class="min-w-0 flex-1">
           <div class="flex flex-wrap items-center gap-2">
