@@ -291,7 +291,7 @@ export function HeroRailCard({
 
 export function ScopePairing() {
   return html`
-    <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
+    <div class="grid grid-cols-1 gap-3 md:grid-cols-2" role="group" aria-label="스코프 페어링">
       <${SurfaceCard} variant="compact">
         <div class="flex flex-col gap-2">
           <div class="flex items-center justify-between gap-3">
@@ -364,7 +364,7 @@ export function RecentVerdictsList({ items }: { items: HarnessVerdictItem[] }) {
   }
 
   return html`
-    <div class="space-y-2">
+    <div class="space-y-2" role="list" aria-label="최근 판정 목록">
       <div class="flex justify-end">
         <${TextInput}
           type="search"
@@ -411,7 +411,7 @@ export function PreCompactList({ section }: { section: HarnessSignalSection<PreC
   }
 
   return html`
-    <div class="space-y-2">
+    <div class="space-y-2" role="list" aria-label="압축 이벤트 목록">
       <div class="flex justify-end">
         <${TextInput}
           type="search"
@@ -463,7 +463,7 @@ export function HandoffList({ section }: { section: HarnessSignalSection<Handoff
   }
 
   return html`
-    <div class="space-y-2">
+    <div class="space-y-2" role="list" aria-label="세대 교체 목록">
       <div class="flex justify-end">
         <${TextInput}
           type="search"
