@@ -432,7 +432,7 @@ export function SideRail({ collapsed, onToggle }: { collapsed?: boolean; onToggl
                 <//>
 
                 ${sections.length > 0 ? html`
-                  <div class="ml-7 flex flex-col gap-0.5 border-l border-[var(--color-border-divider)] pl-3" role="list">
+                  <div class="ml-7 flex flex-col gap-0.5 border-l border-[var(--color-border-divider)] pl-3" role="list" aria-label="${surface.label} 섹션">
                     ${sections.map(item => {
                       const isSectionActive = isSurfaceActive && currentSection?.id === item.id
                       return html`
