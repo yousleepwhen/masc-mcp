@@ -69,7 +69,7 @@ function TransitionDot({ t, idx }: { t: KeeperTransition; idx: number }) {
   const signal = t.operator_signal
   const transitionLabel = `${t.prev_phase} → ${t.new_phase}, ${t.event_type ?? eventLabel(t.selected_event)}`
   return html`
-    <div class="group relative flex flex-col items-center outline-none" key=${idx} tabindex="0" role="group" aria-label=${transitionLabel}>
+    <div class="group relative flex flex-col items-center outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-bg-page)] rounded" key=${idx} tabindex="0" role="group" aria-label=${transitionLabel}>
       <div
         class="w-3 h-3 rounded-full border-2 cursor-default transition-transform hover:scale-125"
         style="border-color: ${color}; background: ${color}33"
