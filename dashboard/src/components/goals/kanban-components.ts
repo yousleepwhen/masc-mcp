@@ -199,7 +199,7 @@ function TaskColumn({
           <h3 class="text-md font-semibold text-text-strong">${title}</h3>
           <p class="mt-1 text-xs leading-relaxed text-text-muted">${description}</p>
         </div>
-        <span class="rounded px-2.5 py-1 text-xs font-semibold ${badgeClass}">${count}</span>
+        <span class="rounded px-2.5 py-1 text-xs font-semibold ${badgeClass}" aria-label="${count}개 항목">${count}</span>
       </div>
       <div ref=${listRef} class="flex max-h-170 flex-col gap-3 overflow-y-auto pr-1 custom-scrollbar" role="list" aria-label="${title} 카드 목록">
         ${children}
