@@ -253,7 +253,7 @@ export function GateChart({ distribution }: { distribution: GateDistribution }) 
       ${entries.map(([gate, count]) => html`
         <div class="flex items-center gap-2">
           <span class="w-20 text-right font-mono text-xs text-[var(--color-fg-muted)]">${gate}</span>
-          <div class="h-4 flex-1 overflow-hidden rounded bg-[var(--white-6)]">
+          <div class="h-4 flex-1 overflow-hidden rounded bg-[var(--white-6)]" role="progressbar" aria-valuenow=${count} aria-valuemin=${0} aria-valuemax=${max} aria-label=${`${gate} 통과 수`}>
             <div
               class="h-full rounded opacity-80 transition-all"
               style=${{ width: `${(count / max) * 100}%`, background: 'var(--color-accent-fg)' }}

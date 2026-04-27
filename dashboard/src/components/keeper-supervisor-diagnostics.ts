@@ -65,7 +65,7 @@ function CrashCohortBar({ crash_log }: { crash_log: KeeperSupervisorCrashLogEntr
   return html`
     <div>
       <div class="text-3xs font-semibold uppercase tracking-widest text-[var(--color-fg-muted)] mb-2">장애 유형 분포</div>
-      <div class="flex w-full h-3 rounded-sm overflow-hidden bg-[var(--white-5)]">
+      <div class="flex w-full h-3 rounded-sm overflow-hidden bg-[var(--white-5)]" role="img" aria-label="장애 유형 분포">
         ${entries.map(([key, count]) => html`
           <div style="width: ${(count / total * 100).toFixed(1)}%; background: ${COHORT_COLORS[key]}"
                title="${key}: ${count}건 (${(count / total * 100).toFixed(0)}%)"
@@ -144,7 +144,7 @@ export function SupervisorDiagnosticsPanel({ keeper }: { keeper: Keeper }) {
             <span class="text-xs text-[var(--color-fg-muted)]">재시작 예산</span>
             <span class="text-xs font-mono text-[var(--color-fg-primary)]">${restart_count}/${max_restarts}</span>
           </div>
-          <div class="w-full h-1.5 rounded-sm bg-[var(--white-5)] overflow-hidden">
+          <div class="w-full h-1.5 rounded-sm bg-[var(--white-5)] overflow-hidden" role="progressbar" aria-valuenow=${budgetPct.toFixed(0)} aria-valuemin=${0} aria-valuemax=${100} aria-label="재시작 예산 사용률">
             <div class="h-full rounded-sm transition-all duration-300" style="width: ${budgetPct}%; background: ${budgetColor}"></div>
           </div>
         </div>

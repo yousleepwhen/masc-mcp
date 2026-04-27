@@ -102,7 +102,7 @@ export function DistributionBars({
                         ${valueFormatter(item.value)}
                       </span>
                     </div>
-                    <div class="h-2 overflow-hidden rounded-sm bg-[var(--white-5)]">
+                    <div class="h-2 overflow-hidden rounded-sm bg-[var(--white-5)]" role="progressbar" aria-valuenow=${Math.min(Math.round(item.value / maxValue * 100), 100)} aria-valuemin=${0} aria-valuemax=${100} aria-label=${`${item.label} 비율`}>
                       <div
                         class="h-full rounded-sm transition-[width] duration-300"
                         style=${`width:${Math.min(width, 100)}%;background:${palette.fill};opacity:0.8;`}

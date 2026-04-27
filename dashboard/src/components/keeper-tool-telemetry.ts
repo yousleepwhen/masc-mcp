@@ -148,7 +148,7 @@ function SuccessRateBar({ stat }: { stat: ToolStat }) {
 
   return html`
     <div class="flex items-center gap-2 w-full">
-      <div class="flex-1 h-1.5 rounded-sm bg-[var(--white-5)] overflow-hidden">
+      <div class="flex-1 h-1.5 rounded-sm bg-[var(--white-5)] overflow-hidden" role="progressbar" aria-valuenow=${successPct.toFixed(0)} aria-valuemin=${0} aria-valuemax=${100} aria-label="성공률">
         <div class="h-full rounded-sm transition-all duration-300" style="width: ${successPct}%; background: ${barColor}"></div>
       </div>
       <span class="text-3xs font-mono w-10 text-right" style="color: ${barColor}">
@@ -307,7 +307,7 @@ export function KeeperToolTelemetry({ keeperName }: KeeperToolTelemetryProps) {
               <div class="w-28 flex-shrink-0 text-2xs font-mono text-[var(--color-fg-muted)] truncate" title=${stat.name}>
                 ${stat.name.replace(/^(keeper_|masc_)/, '')}
               </div>
-              <div class="flex-1 h-3 rounded bg-[var(--white-5)] overflow-hidden">
+              <div class="flex-1 h-3 rounded bg-[var(--white-5)] overflow-hidden" role="progressbar" aria-valuenow=${barWidth.toFixed(0)} aria-valuemin=${0} aria-valuemax=${100} aria-label=${`${stat.name} 호출 수`}>
                 <div class="h-full rounded transition-all duration-300"
                   style="width: ${barWidth}%; background: ${stat.failure_count > 0 ? 'var(--color-status-warn)' : 'var(--color-accent-fg)'}; opacity: 0.7">
                 </div>
