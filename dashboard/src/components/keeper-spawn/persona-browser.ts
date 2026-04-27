@@ -46,7 +46,7 @@ function PersonaCard({ persona }: { persona: PersonaSummary }) {
       <div class="text-base text-[var(--color-fg-secondary)] font-medium">${title}</div>
       ${persona.role ? html`<div class="text-2xs text-[var(--color-fg-muted)]">${persona.role}</div>` : null}
       ${persona.mode ? html`<div class="text-3xs text-[var(--color-fg-muted)]">모드: ${persona.mode}</div>` : null}
-      ${persona.description ? html`<div class="text-2xs text-[var(--color-fg-primary)] mt-1 line-clamp-2">${persona.description}</div>` : null}
+      ${persona.description ? html`<div class="text-2xs text-[var(--color-fg-primary)] mt-1 line-clamp-2" title=${persona.description}>${persona.description}</div>` : null}
       <div class="mt-auto pt-2">
         ${isConfirming ? html`
           <div class="flex flex-col gap-1.5">

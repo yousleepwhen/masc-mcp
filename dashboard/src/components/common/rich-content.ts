@@ -42,7 +42,7 @@ function previewCard(preview: LinkPreview) {
           ${title}
         </div>
         ${description
-          ? html`<div class="mt-1 line-clamp-3 text-2xs leading-relaxed text-[var(--color-fg-muted)]">${description}</div>`
+          ? html`<div class="mt-1 line-clamp-3 text-2xs leading-relaxed text-[var(--color-fg-muted)]" title=${description}>${description}</div>`
           : null}
       </div>
     </a>

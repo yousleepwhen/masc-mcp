@@ -95,7 +95,7 @@ export function ErrorPanel({ onClose }: ErrorPanelProps) {
                 ${e.taskId ? html`<span class="text-[var(--color-fg-muted)] truncate max-w-20">${e.taskId}</span>` : null}
                 ${e.count > 1 ? html`<span class="shrink-0 text-2xs text-[var(--color-status-warn)]">×${e.count}</span>` : null}
               </div>
-              <p class="mt-0.5 text-xs text-[var(--color-fg-primary)] leading-[1.4] line-clamp-2">${e.message}</p>
+              <p class="mt-0.5 text-xs text-[var(--color-fg-primary)] leading-[1.4] line-clamp-2" title=${e.message}>${e.message}</p>
               <span class="mt-0.5 block text-2xs text-[var(--color-fg-muted)]">${formatElapsedCompact((Date.now() - e.timestamp) / 1000)} 전</span>
             </div>
             <${ActionButton}
