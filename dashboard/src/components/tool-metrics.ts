@@ -78,7 +78,7 @@ function BarChart({ items, maxCount }: { items: ToolMetricsTopEntry[]; maxCount:
               <span class="text-[var(--color-fg-primary)] overflow-hidden text-ellipsis whitespace-nowrap font-mono text-2xs" title=${item.name}>${item.name}</span>
             </div>
             <span class="px-1.5 py-px rounded-xs text-3xs font-medium text-center text-[var(--color-fg-disabled)] bg-[var(--white-4)]">${cat.label}</span>
-            <div class="h-3.5 rounded-xs bg-[var(--white-6)] overflow-hidden">
+            <div class="h-3.5 rounded-xs bg-[var(--white-6)] overflow-hidden" role="progressbar" aria-valuenow=${item.call_count} aria-valuemin=${0} aria-valuemax=${maxCount} aria-label=${`${item.name} 호출 수`}>
               <div class="h-full rounded-xs min-w-0.5 transition-[width] duration-300 ease-in-out" style=${{ width: `${pct}%`, backgroundColor: barBg }} />
             </div>
             <span class="text-[var(--color-fg-muted)] text-2xs text-right font-mono">${item.call_count}</span>
