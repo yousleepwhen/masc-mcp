@@ -1,6 +1,6 @@
 import { html } from 'htm/preact'
 import { signal, computed } from '@preact/signals'
-import { useEffect, useState, useMemo } from 'preact/hooks'
+import { useEffect, useId, useState, useMemo } from 'preact/hooks'
 import { useCombobox } from 'downshift'
 import { editKeeperTools, type ToolEditResponse } from '../../api/keeper'
 import { TextInput, TextArea } from '../common/input'
@@ -193,6 +193,7 @@ export function filterResolvedTools(
 export function ResolvedPreview({ tools, catMap }: { tools: string[]; catMap: Map<string, string> }) {
   const [expanded, setExpanded] = useState(false)
   const [query, setQuery] = useState('')
+  const listId = useId()
   const firstTool = tools[0] ?? null
   const lastTool = tools.length > 0 ? tools[tools.length - 1] : null
 
@@ -238,7 +239,7 @@ export function ResolvedPreview({ tools, catMap }: { tools: string[]; catMap: Ma
       ${isFiltering && visibleTools.length === 0
         ? html`<div class="py-3 text-center text-2xs text-[var(--color-fg-muted)]" role="status" aria-live="polite">필터 결과 없음 (${tools.length}개 도구)</div>`
         : html`
-          <div class="flex flex-col gap-2">
+          <div id=${listId} class="flex flex-col gap-2">
             ${visibleGroups.map(group => {
               const visibleNames = expanded ? group.names : group.names.slice(0, RESOLVED_TOOLS_PER_CATEGORY_LIMIT)
               const hiddenToolCount = Math.max(0, group.names.length - visibleNames.length)
@@ -264,6 +265,7 @@ export function ResolvedPreview({ tools, catMap }: { tools: string[]; catMap: Ma
                 <button type="button"
                   class="self-start text-3xs text-[var(--color-fg-muted)] hover:text-[var(--color-fg-primary)] cursor-pointer transition-colors"
                   aria-expanded=${expanded}
+                  aria-controls=${listId}
                   aria-label=${expanded ? 'resolved allowlist 접기' : `resolved allowlist 전체 ${tools.length}개 보기`}
                   onClick=${() => setExpanded(value => !value)}
                 >

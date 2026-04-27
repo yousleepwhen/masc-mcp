@@ -1,7 +1,7 @@
 // Telemetry Unified — MASC runtime diagnosis view.
 
 import { html } from 'htm/preact'
-import { useEffect, useMemo, useRef } from 'preact/hooks'
+import { useEffect, useId, useMemo, useRef } from 'preact/hooks'
 import { useSignal } from '@preact/signals'
 import {
   fetchDashboardShell,
@@ -485,6 +485,7 @@ function DiagnosisCard({ title, value, detail, tone }: { title: string; value: s
 
 function EntryRow({ entry }: { entry: TelemetryEntry }) {
   const expanded = useSignal(false)
+  const rowContentId = useId()
   const meta = sourceMeta(entry.source)
   const ts = entryTimestamp(entry)
   const success = entry.success as boolean | undefined
@@ -502,6 +503,7 @@ function EntryRow({ entry }: { entry: TelemetryEntry }) {
           class="min-w-0 flex-1 flex items-center gap-2 px-3 py-1.5 text-xs cursor-pointer select-none text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
           onClick=${() => { expanded.value = !expanded.value }}
           aria-expanded=${expanded.value}
+          aria-controls=${rowContentId}
         >
           <span class="font-mono font-bold ${meta.color} w-4 text-center flex-shrink-0">${meta.icon}</span>
           <span class="font-mono text-[var(--text-muted)] w-28 flex-shrink-0" title=${formatTs(ts)}>
@@ -532,7 +534,7 @@ function EntryRow({ entry }: { entry: TelemetryEntry }) {
         </span>
       </div>
       ${expanded.value ? html`
-        <div class="px-3 pb-3 flex flex-col gap-2">
+        <div id=${rowContentId} class="px-3 pb-3 flex flex-col gap-2">
           ${scopeBadges.length > 0 ? html`
             <div class="flex flex-wrap gap-1.5">
               ${scopeBadges.map(badge => html`<span class="rounded bg-[var(--white-4)] px-2 py-1 text-3xs text-[var(--text-dim)] font-mono">${badge}</span>`)}
