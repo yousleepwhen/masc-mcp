@@ -154,7 +154,7 @@ export function KeeperPhaseTimeline() {
         return d
           ? html`<${KeeperStrip} name=${k.name} data=${d} key=${k.name} />`
           : html`
-            <div class="flex items-center gap-3 py-2 px-3 rounded border border-[var(--white-6)] bg-[var(--white-3)]" key=${k.name}>
+            <div class="flex items-center gap-3 py-2 px-3 rounded border border-[var(--white-6)] bg-[var(--white-3)]" role="listitem" key=${k.name}>
               <div class="w-24 text-sm font-semibold text-[var(--color-fg-secondary)] truncate">${k.name}</div>
               <span class="text-2xs text-[var(--color-fg-muted)]">데이터 없음</span>
             </div>
