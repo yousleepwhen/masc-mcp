@@ -253,10 +253,12 @@ function HebbianMatrix({ synapses }: { synapses: MemorySubsystemsSynapse[] }) {
                   stroke-dasharray=${isDiag ? '2 2' : ''}
                   stroke-width=${active ? '1.5' : '0.5'}
                   class="cursor-pointer hover:stroke-[var(--color-fg-muted)]"
+                  tabindex="0"
                   role="button"
                   aria-label=${`${from} to ${to}: ${pct}% — filter episodes for this pair`}
                   aria-pressed=${active ? 'true' : 'false'}
                   onClick=${() => toggleSynapsePairFilter(from, to)}
+                  onKeyDown=${(e: KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleSynapsePairFilter(from, to) } }}
                 />
               </g>
             `
