@@ -194,7 +194,7 @@ export function FullInventoryView({
 
     ${error ? html`<${ErrorState} message=${error} class="mt-2" />` : null}
 
-    <div ref=${listContainerRef} class="overflow-y-auto max-h-[calc(100vh-420px)] min-h-75">
+    <div ref=${listContainerRef} class="overflow-y-auto max-h-[calc(100vh-420px)] min-h-75" role="region" aria-label="도구 인벤토리 목록">
       ${filtered.length > 0
         ? html`<${VirtualList}
             items=${filtered}
