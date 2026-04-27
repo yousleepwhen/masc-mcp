@@ -483,11 +483,11 @@ function ProfileCard({
                       : null}
                   </div>
                   ${c.model !== displayModel
-                    ? html`<div class="text-[11px] text-[var(--text-muted)] mt-0.5">config: <code>${c.model}</code></div>`
+                    ? html`<div class="text-2xs text-[var(--text-muted)] mt-0.5">config: <code>${c.model}</code></div>`
                     : null}
                   ${expanded.length > 1
                     ? html`
-                      <ol class="mt-1 flex flex-col gap-0.5 text-[11px] text-[var(--text-muted)]" aria-label="확장 모델 목록">
+                      <ol class="mt-1 flex flex-col gap-0.5 text-2xs text-[var(--text-muted)]" aria-label="확장 모델 목록">
                         ${expanded.map((model, expandedIdx) => html`
                           <li><span class="tabular-nums">${expandedIdx + 1}.</span> <code>${model}</code></li>
                         `)}
