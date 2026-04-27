@@ -835,7 +835,7 @@ function ConnectorLivePanel({
           : null}
         <span class="text-[var(--color-fg-disabled)]" aria-hidden="true">·</span>
         <span class=${`inline-flex items-center gap-1.5 rounded-sm border px-2 py-0.5 text-3xs uppercase tracking-4 ${directTone}`}>
-          <span class=${`inline-block h-2 w-2 rounded-full ${dotClassForLabel(directLabel)}`}></span>
+          <span class=${`inline-block h-2 w-2 rounded-full ${dotClassForLabel(directLabel)}`} aria-hidden="true"></span>
           <span>${directLabel}</span>
         </span>
         <span class="text-[var(--color-fg-disabled)]"><span aria-hidden="true">· </span>hb ${timeAgo(connector?.updated_at ?? '')}</span>
@@ -909,7 +909,7 @@ function ConnectorLivePanel({
               <div class="space-y-1.5">
                 ${livenessDots.map(dot => html`
                   <div class="flex min-w-0 flex-wrap items-center gap-2">
-                    <span class=${`inline-block h-2 w-2 rounded-full ${dotClass(dot.state)}`}></span>
+                    <span class=${`inline-block h-2 w-2 rounded-full ${dotClass(dot.state)}`} aria-hidden="true"></span>
                     <span class="font-medium">${dot.label}</span>
                     <span class="text-[var(--color-fg-disabled)]">${dot.detail}</span>
                     ${dot.hint && (dot.state === 'down' || dot.state === 'warn')

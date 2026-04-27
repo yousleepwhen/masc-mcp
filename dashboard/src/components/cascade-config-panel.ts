@@ -761,7 +761,7 @@ function HealthTable({
               const orphaned = p.declared === false
               return html`
               <tr class="border-b border-[var(--card-border)] last:border-b-0">
-                <td class="py-1"><span class=${`inline-block w-2 h-2 rounded-full ${TONE_DOT[tone]}`}></span></td>
+                <td class="py-1"><span class=${`inline-block w-2 h-2 rounded-full ${TONE_DOT[tone]}`} aria-hidden="true"></span></td>
                 <td class="py-1">
                   <code class="text-[var(--text-strong)]">${p.provider_key}</code>
                   ${orphaned
