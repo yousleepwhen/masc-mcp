@@ -323,10 +323,10 @@ export function KeeperToolTelemetry({ keeperName }: KeeperToolTelemetryProps) {
 
       ${'' /* Success rate table */}
       ${s.tools.some(st => st.failure_count > 0) ? html`
-        <div class="flex flex-col gap-1.5">
+        <div class="flex flex-col gap-1.5" role="list" aria-label="실패 도구 목록">
           <${SectionCap} tone="dim" weight="semibold" class="mb-1">성공률<//>
           ${s.tools.filter(st => st.failure_count > 0).map(stat => html`
-            <div class="flex items-center gap-2">
+            <div class="flex items-center gap-2" role="listitem">
               <span class="w-28 flex-shrink-0 text-2xs font-mono text-[var(--color-fg-muted)] truncate" title=${stat.name}>
                 ${stat.name.replace(/^(keeper_|masc_)/, '')}
               </span>
@@ -339,10 +339,10 @@ export function KeeperToolTelemetry({ keeperName }: KeeperToolTelemetryProps) {
 
       ${'' /* P95 latency (slowest tools) */}
       ${slowest.length > 0 && slowest[0]!.p95_duration_ms > 500 ? html`
-        <div class="flex flex-col gap-1.5">
+        <div class="flex flex-col gap-1.5" role="list" aria-label="P95 지연 도구">
           <${SectionCap} tone="dim" weight="semibold" class="mb-1">P95 지연 시간<//>
           ${slowest.map(stat => html`
-            <div class="flex items-center justify-between py-1 px-2 rounded bg-[var(--white-3)]">
+            <div class="flex items-center justify-between py-1 px-2 rounded bg-[var(--white-3)]" role="listitem">
               <span class="text-2xs font-mono text-[var(--color-fg-muted)]">${stat.name.replace(/^(keeper_|masc_)/, '')}</span>
               <div class="flex items-center gap-3">
                 <span class="text-3xs text-[var(--color-fg-disabled)]">avg ${formatDuration(stat.avg_duration_ms)}</span>
