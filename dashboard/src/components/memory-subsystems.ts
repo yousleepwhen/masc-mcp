@@ -324,6 +324,7 @@ function WeightSparkline({ history }: { history?: Array<[number, number]> }) {
       width=${sw}
       height=${sh}
       class="shrink-0"
+      role="img"
       aria-label=${`가중치 트렌드: ${n} 포인트`}
     >
       <polyline fill="none" stroke=${trendColor} stroke-width=${strokeWidth} points=${points} />

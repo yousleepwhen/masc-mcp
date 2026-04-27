@@ -63,6 +63,7 @@
   [style*="workingPulse"] { animation: none; }
   [style*="keeperPulse"] { animation: none; }
   [style*="activityFadeIn"] { animation: none; }
+  [style*="loadingPulse"] { animation: none; }
 
   /* Tailwind animation utilities */
   .animate-pulse { animation: none; }
