@@ -41,7 +41,7 @@ export class ErrorBoundary extends Component<Props, State> {
       return html`
         <div class="error-card rounded my-3 border border-[var(--color-status-err)]/30 bg-[rgba(10,22,40,0.92)] p-5 flex gap-4 items-start shadow-sm" role="alert">
           <div class="shrink-0 text-[var(--color-status-err)] mt-0.5">
-            <${AlertOctagon} size=${24} />
+            <${AlertOctagon} size=${24} aria-hidden="true" />
           </div>
           <div class="flex-1 min-w-0">
             <h3 class="text-base font-semibold text-[var(--color-status-err)] tracking-tight mb-1">${this.props.label ?? 'Component'} 렌더링 오류</h3>
@@ -50,7 +50,7 @@ export class ErrorBoundary extends Component<Props, State> {
               class="mt-3 inline-flex items-center justify-center gap-1.5 px-3 py-1.5 cursor-pointer rounded border border-[var(--color-border-default)] bg-[var(--white-5)] text-[var(--color-fg-secondary)] text-sm hover:bg-[var(--white-10)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-status-err)]"
               onClick=${this.reset}
             >
-              <${RefreshCcw} size=${14} />
+              <${RefreshCcw} size=${14} aria-hidden="true" />
               다시 시도
             </button>
           </div>
