@@ -17,6 +17,7 @@ interface FilterChipsProps<T extends string> {
   active?: Signal<T>
   value?: T
   onChange?: (key: T) => void
+  ariaLabel?: string
   class?: string
   size?: 'sm' | 'md'
   tone?: 'gold' | 'accent'
@@ -27,6 +28,7 @@ export function FilterChips<T extends string>({
   active,
   value,
   onChange,
+  ariaLabel,
   class: cx,
   size = 'sm',
   tone = 'gold',
@@ -43,13 +45,14 @@ export function FilterChips<T extends string>({
     : 'border-[var(--white-10)] bg-[var(--white-4)] text-[var(--color-fg-disabled)] hover:bg-[var(--white-8)] hover:border-[rgba(200,168,78,0.4)]'
 
   return html`
-    <div class="flex flex-wrap gap-1.5 ${cx ?? ''}" role="tablist" aria-orientation="horizontal">
+    <div class="flex flex-wrap gap-1.5 ${cx ?? ''}" role="tablist" aria-orientation="horizontal" aria-label=${ariaLabel}>
       ${chips.map(chip => html`
         <button type="button"
           key=${chip.key}
           title=${chip.title}
           role="tab"
           aria-selected=${activeKey === chip.key}
+          tabIndex=${activeKey === chip.key ? 0 : -1}
           class="${chipClass} cursor-pointer transition-all duration-150 ${activeKey === chip.key
             ? activeToneClass
             : idleToneClass}"
