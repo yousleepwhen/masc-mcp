@@ -242,9 +242,11 @@ function SortBar() {
   const grouped = splitVisiblePosts(boardPosts.value)
   return html`
     <div class="flex flex-col gap-3 mb-4 p-3 rounded border border-[var(--color-border-default)] bg-[var(--card)]">
-      <div class="flex items-center gap-1.5 flex-wrap">
+      <div class="flex items-center gap-1.5 flex-wrap" role="radiogroup" aria-label="정렬 기준">
         ${SORT_MODES.map(mode => html`
           <button type="button"
+            role="radio"
+            aria-checked=${current === mode.id}
             class="px-3 py-1.5 rounded text-xs font-medium transition-all duration-150 border cursor-pointer
               ${current === mode.id
                 ? 'bg-[var(--ok-soft)] text-[var(--color-status-ok)] border-[var(--ok-30)]'
@@ -268,6 +270,7 @@ function SortBar() {
           const isHidden = boardHiddenCategories.value.has(g.category)
           return html`
             <button type="button"
+              aria-pressed=${!isHidden}
               class="px-2.5 py-1 rounded text-2xs font-medium transition-all duration-150 border cursor-pointer
                 ${isHidden
                   ? 'bg-[var(--accent-12)] text-[var(--color-accent-fg)] border-[var(--accent-18)] line-through opacity-60'
@@ -445,11 +448,13 @@ function PostCard({ post }: { post: BoardPost }) {
         <div class="flex items-center gap-2 flex-wrap">
           <!-- Author line -->
           <span class="text-xs text-[var(--color-fg-muted)]">${authorAvatar(authorAvatarKey)}</span>
-          <a
-            class="text-xs text-[var(--color-fg-muted)] hover:text-[var(--color-accent-fg)] transition-colors cursor-pointer"
+          <button
+            type="button"
+            class="text-xs text-[var(--color-fg-muted)] hover:text-[var(--color-accent-fg)] transition-colors cursor-pointer bg-transparent border-0 p-0"
             title=${authorTitle}
+            aria-label=${`작성자: ${authorLabel}`}
             onClick=${(e: Event) => navigateToAuthor(post.author, e, post.author_identity)}
-          >${authorLabel}</a>
+          >${authorLabel}</button>
           <span class="text-2xs text-[var(--color-fg-muted)] opacity-60"><${TimeAgo} timestamp=${post.created_at} /></span>
           ${isUpdated(post) ? html`<span class="text-3xs text-[var(--color-fg-muted)] opacity-50">(수정됨)</span>` : null}
 
