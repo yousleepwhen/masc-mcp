@@ -128,7 +128,7 @@ function KanbanCard({ task }: { task: Task }) {
 
       ${hasDescription ? html`
         <div class="flex flex-col gap-2">
-          <div class=${`overflow-hidden text-sm leading-relaxed text-text-body ${isExpanded || !canExpand ? '' : 'max-h-[9rem]'}`}>
+          <div id=${`task-desc-${task.id}`} class=${`overflow-hidden text-sm leading-relaxed text-text-body ${isExpanded || !canExpand ? '' : 'max-h-[9rem]'}`}>
             <${RichContent} text=${description} previewLimit=${1} />
           </div>
           ${canExpand ? html`
@@ -137,6 +137,7 @@ function KanbanCard({ task }: { task: Task }) {
               class="w-fit rounded border border-card-border/70 bg-white/4 px-2 py-1 text-2xs text-text-muted transition-colors hover:text-text-strong"
               onClick=${() => toggleTaskExpand(task.id)}
               aria-expanded=${isExpanded}
+              aria-controls=${`task-desc-${task.id}`}
             >
               ${isExpanded ? '설명 접기' : '설명 더 보기'}
             </button>

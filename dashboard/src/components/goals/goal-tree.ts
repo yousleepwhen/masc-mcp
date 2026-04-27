@@ -455,6 +455,7 @@ function TreeNode({ node, depth }: { node: GoalTreeNode; depth: number }) {
           if (hasContent) toggleNode(node.id)
         }}
         aria-expanded=${hasContent ? isExpanded : undefined}
+        aria-controls=${hasContent ? `goal-content-${node.id}` : undefined}
       >
         ${hasContent ? html`
           <span class="mt-0.5 shrink-0 text-xs text-text-dim transition-transform ${isExpanded ? 'rotate-90' : ''}">\u25B6</span>
@@ -562,7 +563,7 @@ function TreeNode({ node, depth }: { node: GoalTreeNode; depth: number }) {
       </button>
 
       ${isExpanded ? html`
-        <div class="mt-1.5 flex flex-col gap-1.5">
+        <div id=${`goal-content-${node.id}`} class="mt-1.5 flex flex-col gap-1.5">
           ${verificationSummary.open_request ? html`
             <div class="ml-6 rounded border border-amber-400/20 bg-amber-400/8 p-2 text-xs text-amber-100">
               <div class="mb-1 text-3xs font-semibold uppercase tracking-widest text-amber-200/80">목표 검증</div>
