@@ -703,7 +703,7 @@ export function ToolAllowlistEditor({
       </div>
 
       ${lastError.value
-        ? html`<span class="text-3xs text-[var(--color-status-err)]">${lastError.value}</span>`
+        ? html`<span class="text-3xs text-[var(--color-status-err)]" role="alert">${lastError.value}</span>`
         : null}
       ${lastSuccess.value
         ? html`<span class="text-3xs text-[var(--color-status-ok)]">${lastSuccess.value}</span>`
