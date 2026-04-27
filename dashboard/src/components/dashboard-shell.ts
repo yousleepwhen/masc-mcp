@@ -477,12 +477,11 @@ export function SideRail({ collapsed, onToggle }: { collapsed?: boolean; onToggl
                 <//>
 
                 ${sections.length > 0 ? html`
-                  <div class="ml-7 flex flex-col gap-0.5 border-l border-[var(--color-border-divider)] pl-3" role="list" aria-label="${surface.label} 섹션">
+                  <div class="ml-7 flex flex-col gap-0.5 border-l border-[var(--color-border-divider)] pl-3" role="group" aria-label="${surface.label} 섹션">
                     ${sections.map(item => {
                       const isSectionActive = isSurfaceActive && currentSection?.id === item.id
                       return html`
                         <${RouteLink}
-                          role="listitem"
                           tab=${surface.id}
                           params=${item.params}
                           class="w-full rounded border px-2 py-1 text-left cursor-pointer text-sm transition-[background-color,border-color,color,box-shadow] duration-200 ${isSectionActive ? 'bg-[var(--accent-soft)] text-[var(--color-accent-fg)] font-medium shadow-[inset_0_1px_1px_var(--white-10)] border-[var(--accent-soft)]' : 'border-transparent text-[var(--color-fg-muted)] hover:bg-[var(--white-5)] hover:text-[var(--color-fg-primary)]'}"
