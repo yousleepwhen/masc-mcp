@@ -318,16 +318,6 @@ export function PostDetail({ post }: { post: BoardPost }) {
         <div class="flex flex-col gap-4">
           <div>
             <h1 class="m-0 text-2xl font-semibold leading-tight text-[var(--color-fg-secondary)]">${post.title}</h1>
-        variant="ghost"
-        size="sm"
-        class="mb-4 text-xs"
-        onClick=${() => navigate('workspace', { section: 'board' })}
-      >← 게시판으로 돌아가기<//>
-
-      <${Card}>
-        <div class="flex flex-col gap-4">
-          <div>
-            <h1 class="m-0 text-2xl font-semibold leading-tight text-[var(--color-fg-secondary)]">${post.title}</h1>
           </div>
 
           <div class="text-sm text-[var(--color-fg-primary)] leading-loose">
