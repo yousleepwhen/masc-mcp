@@ -361,7 +361,7 @@ function OasDetail({ event }: { event: UnifiedTraceEvent }) {
       <div class="mt-2 px-3 py-2 rounded bg-[var(--sky-4)] border border-[rgba(56,189,248,0.15)] space-y-2">
         <div class="flex items-center gap-3 text-xs">
           ${before != null ? html`<span><span class="text-[var(--color-fg-disabled)]">Before:</span> <span class="font-mono">${before.toLocaleString()}</span></span>` : null}
-          <span class="text-[var(--color-fg-disabled)]">→</span>
+          <span class="text-[var(--color-fg-disabled)]" aria-hidden="true">→</span>
           ${after != null ? html`<span><span class="text-[var(--color-fg-disabled)]">After:</span> <span class="font-mono">${after.toLocaleString()}</span></span>` : null}
         </div>
         ${saved != null && saved > 0 ? html`

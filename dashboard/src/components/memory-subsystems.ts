@@ -352,6 +352,7 @@ function HebbianTopLinks({ synapses }: { synapses: MemorySubsystemsSynapse[] }) 
               <button
                 type="button"
                 aria-pressed=${active ? 'true' : 'false'}
+                aria-label="${s.from_agent}→${s.to_agent} 필터"
                 title="이 쌍의 에피소드만 필터"
                 class="text-[var(--color-fg-muted)] hover:text-[var(--color-accent-fg)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent ${active ? 'text-[var(--color-accent-fg)]' : ''}"
                 onClick=${() => toggleSynapsePairFilter(s.from_agent, s.to_agent)}
@@ -386,7 +387,7 @@ function SynapseRow({ s }: { s: MemorySubsystemsSynapse }) {
           onClick=${() => openAgentDetail(s.from_agent)}
         >${s.from_agent}</button>
       </td>
-      <td class="py-1.5 px-2 text-sm text-[var(--color-fg-muted)] text-center">→</td>
+      <td class="py-1.5 px-2 text-sm text-[var(--color-fg-muted)] text-center" aria-hidden="true">→</td>
       <td class="py-1.5 px-2 text-sm font-mono">
         <button type="button"
           class="hover:text-[var(--color-accent-fg)] hover:underline focus-visible:underline focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] focus-visible:ring-offset-1"

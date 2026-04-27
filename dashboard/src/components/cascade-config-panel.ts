@@ -521,7 +521,7 @@ function OrphanKeeperList({ orphans }: { orphans: readonly CascadeKeeperProfile[
           <li class="flex gap-2">
             <span class="font-semibold text-[var(--text-strong)]">${o.keeper}</span>
             <code>${o.cascade_name}</code>
-            <span class="text-[var(--text-muted)]">→</span>
+            <span class="text-[var(--text-muted)]" aria-hidden="true">→</span>
             <code class="text-[var(--warn)]">${o.canonical}</code>
           </li>
         `)}

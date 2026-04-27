@@ -953,7 +953,7 @@ export function KeeperDetailPage() {
                       ? html`<span class="font-mono text-[var(--color-fg-primary)]">${keeper.configured_social_model}</span>`
                       : null}
                     ${keeper.configured_social_model && keeper.social_model_fallback
-                      ? html`<span>→</span>`
+                      ? html`<span aria-hidden="true">→</span>`
                       : null}
                     ${keeper.social_model_fallback
                       ? html`<span class="font-mono text-[var(--color-fg-primary)]">${keeper.social_model_fallback}</span>`
