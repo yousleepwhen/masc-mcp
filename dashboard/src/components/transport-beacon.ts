@@ -97,6 +97,7 @@ export function TransportBeacon() {
       class="flex items-center gap-1.5 whitespace-nowrap rounded border border-solid px-2 py-0.5 text-xs ${STATE_CLASS[view.state]}"
       title=${view.title}
       role="status"
+      aria-label=${`트랜스포트: ${view.label}`}
       data-beacon-state=${view.state}
     >
       <span class="status-text">${view.label}</span>

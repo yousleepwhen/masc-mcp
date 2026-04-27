@@ -104,6 +104,8 @@ export function ConnectionStatus() {
     <div
       class="flex items-center gap-1.5 whitespace-nowrap text-xs ${isConnected ? 'text-[#9af3ba]' : 'text-[#f7b7b7]'}"
       title=${titleAttr || undefined}
+      role="status"
+      aria-label=${statusLabel}
     >
       <span class="inline-block size-[8px] rounded-sm ${isConnected ? 'bg-[var(--color-status-ok)] shadow-[0_0_7px_rgba(74,222,128,0.75)]' : 'bg-[var(--color-status-err)]'}" aria-hidden="true"></span>
       <span class="status-text">${statusLabel}</span>
