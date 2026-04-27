@@ -219,7 +219,7 @@ export function CommentThread({ comments, postId }: { comments: BoardComment[]; 
     : filteredRoots.slice(-INITIAL_SHOW)
 
   return html`
-    <div class="flex flex-col gap-2">
+    <div class="flex flex-col gap-2" role="list" aria-label="댓글 목록">
       <div class="flex items-center gap-2 mb-1">
         <div class="text-2xs text-[var(--color-fg-muted)]">댓글 ${comments.length}개${isFiltering ? ` · 일치 ${filteredRoots.length}` : ''}</div>
         <${TextInput}
@@ -306,8 +306,18 @@ export function PostDetail({ post }: { post: BoardPost }) {
   const authorTitle = boardActorTitle(post.author, post.author_identity)
 
   return html`
-    <div>
+    <article aria-label="게시글 상세">
       <${ActionButton}
+        variant="ghost"
+        size="sm"
+        class="mb-4 text-xs"
+        onClick=${() => navigate('workspace', { section: 'board' })}
+      >← 게시판으로 돌아가기<//>
+
+      <${Card}>
+        <div class="flex flex-col gap-4">
+          <div>
+            <h1 class="m-0 text-2xl font-semibold leading-tight text-[var(--color-fg-secondary)]">${post.title}</h1>
         variant="ghost"
         size="sm"
         class="mb-4 text-xs"
@@ -390,6 +400,6 @@ export function PostDetail({ post }: { post: BoardPost }) {
           <${CommentForm} postId=${post.id} />
         <//>
       </div>
-    </div>
+    </article>
   `
 }
