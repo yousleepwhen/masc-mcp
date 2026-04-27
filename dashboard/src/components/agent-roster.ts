@@ -791,7 +791,7 @@ export function AgentRoster({ keeperFilter = 'all' }: { keeperFilter?: KeeperFil
                     ${contextMeta.detail ? html`
                       <span class="font-mono text-3xs text-[var(--color-fg-muted)]">${contextMeta.detail}</span>
                     ` : null}
-                    <span class="inline-block h-1.5 w-12 overflow-hidden rounded-sm bg-[var(--white-6)]">
+                    <span class="inline-block h-1.5 w-12 overflow-hidden rounded-sm bg-[var(--white-6)]" role="progressbar" aria-valuenow=${contextMeta.pct} aria-valuemin=${0} aria-valuemax=${100} aria-label="컨텍스트 사용률">
                       <span class="block h-full rounded-sm ${contextMeta.pct > 85 ? 'bg-[var(--color-status-err)]' : contextMeta.pct > 60 ? 'bg-[var(--color-status-warn)]' : 'bg-[var(--color-status-ok)]'}" style="width:${contextMeta.pct}%"></span>
                     </span>
                   </span>

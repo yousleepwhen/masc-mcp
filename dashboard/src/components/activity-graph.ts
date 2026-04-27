@@ -311,7 +311,7 @@ function NodeLeaderboard({ nodes }: { nodes: ActivityGraphNode[] }) {
                 <span class="text-base font-semibold text-[var(--text-near-white)] whitespace-nowrap overflow-hidden text-ellipsis">${node.label}</span>
                 <span class="text-2xs text-[var(--color-fg-muted)]">${node.weight}회</span>
               </div>
-              <div class="h-1 rounded-sm bg-[var(--slate-gray-10)] overflow-hidden">
+              <div class="h-1 rounded-sm bg-[var(--slate-gray-10)] overflow-hidden" role="progressbar" aria-valuenow=${pct.toFixed(0)} aria-valuemin=${0} aria-valuemax=${100} aria-label=${`${node.label} 활동 빈도`}>
                 <div class="h-full rounded-sm bg-[var(--cyan)] transition-[width] duration-300 ease-in-out" style="width:${pct}%"></div>
               </div>
             </div>

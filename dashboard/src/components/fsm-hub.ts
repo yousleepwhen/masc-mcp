@@ -752,6 +752,7 @@ function StatusBar({
             ${refreshFlash ? '✓' : '↻'}
           </button>
           <button
+            type="button"
             class="text-3xs font-mono px-1.5 py-0.5 rounded border border-[var(--white-10)] bg-[var(--white-3)] text-[var(--color-fg-disabled)] hover:text-[var(--color-fg-primary)] hover:border-[var(--accent-30)] cursor-pointer"
             onClick=${onDensityToggle}
             title=${`현재 밀도: ${density === 'compact' ? '조밀' : '여유'} (단축키 d)`}

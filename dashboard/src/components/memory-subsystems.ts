@@ -358,7 +358,7 @@ function HebbianTopLinks({ synapses }: { synapses: MemorySubsystemsSynapse[] }) 
                 class="text-[var(--color-fg-muted)] hover:text-[var(--color-accent-fg)] truncate w-32 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
                 onClick=${() => openAgentDetail(s.to_agent)}
               >${shortAgentLabel(s.to_agent)}</button>
-              <div class="flex-1 bg-[var(--white-5)] rounded h-1.5 min-w-15">
+              <div class="flex-1 bg-[var(--white-5)] rounded h-1.5 min-w-15" role="progressbar" aria-valuenow=${pct.toFixed(0)} aria-valuemin=${0} aria-valuemax=${100} aria-label="가중치">
                 <div class="${weightBarClass(s.weight)} rounded h-1.5" style="width:${pct}%"></div>
               </div>
               <span class="text-[var(--color-fg-muted)] w-10 text-right">${pct}%</span>
@@ -392,7 +392,7 @@ function SynapseRow({ s }: { s: MemorySubsystemsSynapse }) {
       </td>
       <td class="py-1.5 px-2 text-sm text-right">
         <div class="flex items-center gap-2 justify-end">
-          <div class="w-16 bg-[var(--white-5)] rounded h-1.5">
+          <div class="w-16 bg-[var(--white-5)] rounded h-1.5" role="progressbar" aria-valuenow=${pct.toFixed(0)} aria-valuemin=${0} aria-valuemax=${100} aria-label="가중치">
             <div class="${weightBarClass(s.weight)} rounded h-1.5" style="width:${pct}%"></div>
           </div>
           <span class="text-[var(--color-fg-muted)] w-10 text-right">${pct}%</span>

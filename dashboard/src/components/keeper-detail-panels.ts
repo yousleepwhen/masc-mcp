@@ -253,7 +253,7 @@ function OutcomesLedger({ keeper, outcomes }: {
           <span class="tabular-nums"><span class="text-[var(--color-status-warn)]">⚠️</span> ${failures.turn_failed} 실패</span>
           <span class="tabular-nums"><span class="text-[var(--color-status-err)]">🚫</span> ${failures.gate_rejected} 거절</span>
         </div>
-        <div class="mt-2 w-full h-1.5 bg-[var(--white-6)] rounded-sm overflow-hidden flex" aria-label="성공/실패 비율 바">
+        <div class="mt-2 w-full h-1.5 bg-[var(--white-6)] rounded-sm overflow-hidden flex" role="group" aria-label="성공/실패 비율 바">
           <div class="h-full bg-[var(--color-status-ok)]" style="width:${pctSuccess}%" title=${`성공 ${pctSuccess.toFixed(0)}%`}></div>
           <div class="h-full bg-[var(--color-status-warn)]" style="width:${pctFail}%" title=${`실패 ${pctFail.toFixed(0)}%`}></div>
           <div class="h-full bg-[var(--color-status-err)]" style="width:${pctReject}%" title=${`거절 ${pctReject.toFixed(0)}%`}></div>
@@ -509,7 +509,7 @@ export function ContextChart({ keeper }: { keeper: Keeper }) {
     const color = ctxColor(pct)
     return html`
       <div class="flex items-center gap-3 mb-5 p-3 rounded border border-[var(--color-border-default)] bg-[var(--white-3)]">
-        <div class="flex-1 h-2 bg-[var(--white-6)] rounded-sm overflow-hidden">
+        <div class="flex-1 h-2 bg-[var(--white-6)] rounded-sm overflow-hidden" role="progressbar" aria-valuenow=${pct.toFixed(0)} aria-valuemin=${0} aria-valuemax=${100} aria-label="컨텍스트 사용률">
           <div class="h-full rounded-sm transition-all duration-300" style="width:${pct.toFixed(1)}%;background:${color}"></div>
         </div>
         <span class="text-sm font-semibold tabular-nums text-[var(--color-fg-secondary)]">${pct.toFixed(1)}%</span>
@@ -813,7 +813,7 @@ export function CtxCompositionPanel({ keeper }: { keeper: Keeper }) {
             <span class="text-3xs uppercase tracking-wider text-[var(--color-fg-muted)]">latest turn input</span>
             <span class="text-xs font-mono tabular-nums text-[var(--color-accent-fg)]">${formatTokens(latestTotal)}</span>
           </div>
-          <div class="h-3 rounded-sm overflow-hidden border border-[var(--white-8)] bg-[var(--white-2)] flex">
+          <div class="h-3 rounded-sm overflow-hidden border border-[var(--white-8)] bg-[var(--white-2)] flex" role="group" aria-label="컨텍스트 세그먼트 분포">
             ${latestEntries.map(([key, segment]) => {
               const pct = latestTotal > 0 ? (segment.estimated_tokens / latestTotal) * 100 : 0
               return html`<div

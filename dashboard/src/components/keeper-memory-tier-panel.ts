@@ -200,7 +200,7 @@ export function KeeperMemoryTierPanel({
               <div class="w-24 truncate text-[var(--color-fg-primary)] font-mono" title=${row.kind}>
                 ${row.kind}
               </div>
-              <div class="relative flex-1 h-4 rounded-sm bg-[var(--white-4)] border border-[var(--white-8)] overflow-hidden">
+              <div class="relative flex-1 h-4 rounded-sm bg-[var(--white-4)] border border-[var(--white-8)] overflow-hidden" role="progressbar" aria-valuenow=${pct.toFixed(0)} aria-valuemin=${0} aria-valuemax=${100} aria-label=${`${row.kind} 사용률`}>
                 <div class=${`absolute inset-y-0 left-0 ${barColor}`} style=${`width: ${pct}%`}></div>
               </div>
               <div class="w-16 text-right text-[var(--color-fg-muted)] tabular-nums">

@@ -553,7 +553,7 @@ export function DwellHistogramPanel({
                       title=${`${displayState(entry.value)}: ${fmtDuration(entry.seconds)} (${entry.pct.toFixed(1)}%)`}
                     >
                       <span class="w-15 shrink-0 text-[var(--color-fg-primary)] truncate">${displayState(entry.value)}</span>
-                      <span class="flex-1 h-1.5 rounded-sm bg-[var(--white-8)] overflow-hidden">
+                      <span class="flex-1 h-1.5 rounded-sm bg-[var(--white-8)] overflow-hidden" role="progressbar" aria-valuenow=${entry.pct.toFixed(0)} aria-valuemin=${0} aria-valuemax=${100} aria-label=${`${displayState(entry.value)} 점유율`}>
                         <span
                           class=${`block h-full ${barColor}`}
                           style=${`width: ${Math.max(2, entry.pct)}%`}
