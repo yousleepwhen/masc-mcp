@@ -41,6 +41,9 @@ interface TextInputProps {
       in onKeyDown). Accepts FocusEvent so callers can use relatedTarget
       without a cast. */
   onBlur?: (e: FocusEvent) => void
+  /** Links a hint/description element by id so screen readers announce it
+      on focus. Pass the hint span's id (e.g. "sf-name-hint"). */
+  ariaDescribedby?: string
 }
 
 export function TextInput({
@@ -60,6 +63,7 @@ export function TextInput({
   onInput,
   onKeyDown,
   onBlur,
+  ariaDescribedby,
 }: TextInputProps) {
   return html`
     <input
@@ -73,6 +77,7 @@ export function TextInput({
       required=${required}
       name=${name}
       aria-label=${ariaLabel}
+      aria-describedby=${ariaDescribedby}
       autocomplete=${type === 'search' ? (autoComplete ?? 'off') : autoComplete}
       data-testid=${testId}
       autofocus=${autoFocus}
@@ -98,6 +103,8 @@ interface TextAreaProps {
       focus, dialog `initialFocusRef`, etc.). */
   inputRef?: { current: HTMLTextAreaElement | null }
   onInput?: (e: Event) => void
+  /** Links a hint/description element by id — mirrors TextInput. */
+  ariaDescribedby?: string
 }
 
 export function TextArea({
@@ -112,6 +119,7 @@ export function TextArea({
   required,
   inputRef,
   onInput,
+  ariaDescribedby,
 }: TextAreaProps) {
   return html`
     <textarea
@@ -122,6 +130,7 @@ export function TextArea({
       rows=${rows}
       name=${name}
       aria-label=${ariaLabel}
+      aria-describedby=${ariaDescribedby}
       disabled=${disabled}
       required=${required}
       value=${value}

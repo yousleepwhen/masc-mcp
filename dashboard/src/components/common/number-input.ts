@@ -34,6 +34,9 @@ interface NumberInputProps {
   /** Rendered as `data-testid` so E2E / unit tests can target this
       input without coupling to DOM position. */
   testId?: string
+  /** Links a hint/description element by id so screen readers announce it
+      on focus. Pass the hint span's id (e.g. "sf-name-hint"). */
+  ariaDescribedby?: string
   onInput?: (value: number | undefined) => void
   /** Raw keyboard handler — lets callers implement Enter-to-submit,
       arrow-key steppers, Escape-to-cancel without re-deriving them. */
@@ -57,6 +60,7 @@ export function NumberInput({
   ariaLabelledby,
   autoComplete,
   testId,
+  ariaDescribedby,
   onInput,
   onKeyDown,
   onBlur,
@@ -81,6 +85,7 @@ export function NumberInput({
       max=${max}
       aria-label=${ariaLabel}
       aria-labelledby=${ariaLabelledby}
+      aria-describedby=${ariaDescribedby}
       autocomplete=${autoComplete}
       data-testid=${testId}
       onInput=${handleInput}

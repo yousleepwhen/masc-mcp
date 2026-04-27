@@ -34,6 +34,9 @@ interface SelectProps {
   testId?: string
   /** Native required flag — participates in form validation. */
   required?: boolean
+  /** Links a hint/description element by id so screen readers announce it
+      on focus. Pass the hint span's id (e.g. "sf-name-hint"). */
+  ariaDescribedby?: string
   onInput?: (value: string) => void
   /** Fires when the select loses focus — the natural hook for
       validate-on-blur ("you must pick one"). */
@@ -52,6 +55,7 @@ export function Select({
   ariaLabelledby,
   testId,
   required,
+  ariaDescribedby,
   onInput,
   onBlur,
 }: SelectProps) {
@@ -66,6 +70,7 @@ export function Select({
       disabled=${disabled}
       aria-label=${ariaLabel}
       aria-labelledby=${ariaLabelledby}
+      aria-describedby=${ariaDescribedby}
       data-testid=${testId}
       required=${required}
       onChange=${handleChange}
