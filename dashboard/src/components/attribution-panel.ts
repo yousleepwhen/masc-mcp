@@ -303,7 +303,7 @@ export function AttributionPanel() {
         </p>
       </div>
 
-      <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-3" role="group" aria-label="gate 카드">
         ${KNOWN_GATES.map(gate => html`
           <${GateCard}
             gate=${gate}
@@ -342,7 +342,7 @@ export function AttributionPanel() {
         />
       </div>
 
-      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4" role="group" aria-label="이벤트 및 증거">
         <${SurfaceCard} variant="light">
           <div class="flex flex-col">
             <div class="px-3 py-2 border-b border-[var(--color-border-default)] text-2xs font-semibold uppercase tracking-1 text-[var(--color-fg-muted)]">
