@@ -962,7 +962,7 @@ export function TelemetryUnified() {
               ? html`<${GroupRow} key=${item.key} item=${item} />`
               : html`<${EntryRow} key=${item.key} entry=${item.entry} />`)
             : isFilteringEntries && allDisplayItems.length > 0
-              ? html`<div class="px-4 py-6 text-sm text-[var(--text-muted)]">필터 결과 없음 (${allDisplayItems.length} items)</div>`
+              ? html`<div class="px-4 py-6 text-sm text-[var(--text-muted)]" role="status" aria-live="polite">필터 결과 없음 (${allDisplayItems.length} items)</div>`
               : html`<div class="px-4 py-6 text-sm text-[var(--text-muted)]">선택한 scope에 해당하는 MASC telemetry entry가 없습니다.</div>`}
         </div>
       </div>

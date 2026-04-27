@@ -213,7 +213,7 @@ export function AgentDetailMemory({ agentName }: Props) {
                   이 키퍼의 에피소드 기록이 없습니다.
                 </div>`
               : visibleEpisodes.length === 0
-                ? html`<div class="py-4 text-center text-2xs text-[var(--color-fg-disabled)]">
+                ? html`<div class="py-4 text-center text-2xs text-[var(--color-fg-disabled)]" role="status" aria-live="polite">
                     필터 결과 없음 (${episodes.length}개 중 0)
                   </div>`
                 : html`

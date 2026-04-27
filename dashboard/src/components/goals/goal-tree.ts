@@ -1102,7 +1102,7 @@ export function GoalTree() {
       ` : data && data.tree.length === 0 ? html`
         <${EmptyState} message="등록된 목표가 없습니다. masc_goal_upsert로 목표를 등록하세요. 연결 태스크는 task.goal_id가 우선이고, 제목의 [goal:<id>]는 레거시 fallback으로만 읽습니다." />
       ` : data && isFiltering && visibleTree.length === 0 ? html`
-        <section class="py-4 text-center text-xs text-text-dim" aria-label="필터 결과 없음">
+        <section class="py-4 text-center text-xs text-text-dim" role="status" aria-live="polite" aria-label="필터 결과 없음">
           필터 결과 없음 (${data.tree.length} 목표)
         </section>
       ` : data ? html`

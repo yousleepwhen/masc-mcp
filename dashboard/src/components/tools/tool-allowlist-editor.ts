@@ -236,7 +236,7 @@ export function ResolvedPreview({ tools, catMap }: { tools: string[]; catMap: Ma
         />
       </div>
       ${isFiltering && visibleTools.length === 0
-        ? html`<div class="py-3 text-center text-2xs text-[var(--color-fg-muted)]">필터 결과 없음 (${tools.length}개 도구)</div>`
+        ? html`<div class="py-3 text-center text-2xs text-[var(--color-fg-muted)]" role="status" aria-live="polite">필터 결과 없음 (${tools.length}개 도구)</div>`
         : html`
           <div class="flex flex-col gap-2">
             ${visibleGroups.map(group => {

@@ -482,7 +482,7 @@ function RequestsTable({
     const hasFilter = statusFilter.value !== 'all' || searchQuery.value.trim() !== ''
     if (hasFilter && totalBeforeFilter > 0) {
       return html`
-        <${EmptyState}>
+        <${EmptyState} role="status" aria-live="polite">
           필터 결과 없음 (${totalBeforeFilter} items)
         <//>
       `

@@ -379,7 +379,7 @@ function GoalRelationSection({ goalIds }: { goalIds: string[] }) {
         ` : null}
       </div>
       ${isFiltering && visibleIds.length === 0
-        ? html`<div class="py-3 text-center text-2xs text-[var(--color-fg-disabled)]">필터 결과 없음 (${goalIds.length} goals)</div>`
+        ? html`<div class="py-3 text-center text-2xs text-[var(--color-fg-disabled)]" role="status" aria-live="polite">필터 결과 없음 (${goalIds.length} goals)</div>`
         : html`
       <div class="flex flex-col gap-1">
         ${visibleIds.map(id => {

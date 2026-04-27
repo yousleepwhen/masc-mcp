@@ -285,7 +285,7 @@ export function KeeperToolTelemetry({ keeperName }: KeeperToolTelemetryProps) {
               ariaLabel="도구 텔레메트리 검색"
               onInput=${(e: Event) => { setQuery((e.target as HTMLInputElement).value) }}
             />
-            <span class="text-3xs text-[var(--color-fg-muted)] tabular-nums">
+            <span class="text-3xs text-[var(--color-fg-muted)] tabular-nums" role="status" aria-live="polite">
               ${trimmedQuery
                 ? `${visibleTools.length} / ${s.tools.length}`
                 : `${s.tools.length}개`}
