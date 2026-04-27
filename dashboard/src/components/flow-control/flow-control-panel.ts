@@ -55,7 +55,7 @@ export function FlowControlPanel() {
     ${'' /* ── Maintenance ── */}
     <${SurfaceCard} variant="compact">
       <details>
-        <summary class="cursor-pointer text-sm text-[var(--color-fg-secondary)] font-medium select-none py-1">유지보수</summary>
+        <summary class="cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-accent-fg)] text-sm text-[var(--color-fg-secondary)] font-medium select-none py-1">유지보수</summary>
         <div class="mt-3 flex flex-wrap gap-2">
           <${ActionButton} variant="ghost" size="md" disabled=${maintenanceLoading.value || !mutationAccess.allowed}
             onClick=${async () => {

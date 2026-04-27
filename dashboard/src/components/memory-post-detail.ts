@@ -353,7 +353,7 @@ export function PostDetail({ post }: { post: BoardPost }) {
           ${post.meta
             ? html`
                 <details class="mt-1">
-                  <summary class="cursor-pointer text-xs text-[var(--color-fg-muted)] py-1.5 hover:text-[var(--color-fg-primary)] transition-colors">운영 메타</summary>
+                  <summary class="cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-accent-fg)] text-xs text-[var(--color-fg-muted)] py-1.5 hover:text-[var(--color-fg-primary)] transition-colors">운영 메타</summary>
                   <div class="mt-2 p-3 rounded bg-[var(--white-3)] border border-[var(--border-slate-12)]">
                     ${post.meta.source ? html`<div class="text-xs text-[var(--color-fg-primary)]"><span class="text-[var(--color-fg-muted)]">출처:</span> ${post.meta.source}</div>` : null}
                     ${post.meta.state_block

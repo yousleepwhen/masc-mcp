@@ -431,7 +431,7 @@ export function TaskDetailOverlay() {
         <button
           ref=${closeButtonRef}
           type="button"
-          class="shrink-0 size-8 flex items-center justify-center rounded border border-[var(--white-10)] bg-[var(--white-5)] text-text-muted cursor-pointer transition-colors hover:bg-[var(--white-10)] hover:text-text-strong"
+          class="shrink-0 size-8 flex items-center justify-center rounded border border-[var(--white-10)] bg-[var(--white-5)] text-text-muted cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] hover:bg-[var(--white-10)] hover:text-text-strong"
           onClick=${closeTaskDetail}
           aria-label="닫기"
         ><${X} size=${16} aria-hidden="true" /></button>
@@ -444,7 +444,7 @@ export function TaskDetailOverlay() {
             <button
               key=${tab}
               type="button"
-              class="px-3 py-1.5 rounded text-xs font-medium border cursor-pointer transition-colors ${
+              class="px-3 py-1.5 rounded text-xs font-medium border cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] ${
                 activeTab.value === tab
                   ? 'border-accent/40 bg-accent/12 text-[var(--color-accent-fg)]'
                   : 'border-transparent text-text-muted hover:bg-[var(--white-8)]'

@@ -68,7 +68,7 @@ function ToolChip({ name }: { name: string }) {
   const cat = toolCategory(name)
   return html`
     <button type="button"
-      class="inline-flex items-center gap-1 py-0.5 px-2 rounded-sm text-3xs font-medium bg-[var(--accent-12)] text-[var(--color-accent-fg)] border border-[var(--accent-30)] hover:bg-[var(--accent-20)] cursor-pointer transition-colors"
+      class="inline-flex items-center gap-1 py-0.5 px-2 rounded-sm text-3xs font-medium bg-[var(--accent-12)] text-[var(--color-accent-fg)] border border-[var(--accent-30)] hover:bg-[var(--accent-20)] cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)]"
       title=${`${cat.label}: ${name}`}
       aria-label=${`${cat.label}: ${name}`}
       onClick=${() => openToolsInventory(name)}
@@ -132,7 +132,7 @@ export function AllowlistPreview({
       ${tools.length > previewLimit
         ? html`
             <button type="button"
-              class="self-start text-3xs text-[var(--color-fg-muted)] hover:text-[var(--color-fg-primary)] cursor-pointer transition-colors"
+              class="self-start text-3xs text-[var(--color-fg-muted)] hover:text-[var(--color-fg-primary)] cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)]"
               aria-expanded=${expanded}
               aria-controls=${toolListId}
               aria-label=${expanded ? '허용된 도구 접기' : `허용된 도구 나머지 ${hiddenCount}개 보기`}
@@ -610,7 +610,7 @@ export function KeeperNeighborhood({ keeper }: { keeper: Keeper }) {
 
       <div class="flex justify-end mt-1">
         <button type="button"
-          class="py-1.5 px-3 rounded border border-[var(--color-border-default)] bg-[var(--white-3)] text-2xs text-[var(--color-fg-muted)] hover:bg-[var(--white-6)] hover:text-[var(--color-fg-primary)] transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-default"
+          class="py-1.5 px-3 rounded border border-[var(--color-border-default)] bg-[var(--white-3)] text-2xs text-[var(--color-fg-muted)] hover:bg-[var(--white-6)] hover:text-[var(--color-fg-primary)] transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] disabled:opacity-50 disabled:cursor-default"
           disabled=${!openToolsQuery}
           onClick=${() => { openToolsInventory(openToolsQuery) }}
         >
@@ -621,7 +621,7 @@ export function KeeperNeighborhood({ keeper }: { keeper: Keeper }) {
       <div class="flex items-center justify-between mt-3">
         <span class="text-3xs font-semibold uppercase tracking-wider text-[var(--color-fg-muted)]">허용된 도구</span>
         <button type="button"
-          class="text-3xs text-[var(--color-fg-muted)] hover:text-[var(--color-fg-primary)] cursor-pointer transition-colors disabled:opacity-50 disabled:cursor-default"
+          class="text-3xs text-[var(--color-fg-muted)] hover:text-[var(--color-fg-primary)] cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] disabled:opacity-50 disabled:cursor-default"
           disabled=${!policyEditable}
           onClick=${() => {
             showAllowlistEditor.value = !showAllowlistEditor.value

@@ -390,7 +390,7 @@ function VerificationRow({
         ${hasDetails
           ? html`
               <details class="text-2xs">
-                <summary class="cursor-pointer text-[var(--color-fg-muted)] hover:text-[var(--color-fg-primary)]">
+                <summary class="cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-accent-fg)] text-[var(--color-fg-muted)] hover:text-[var(--color-fg-primary)]">
                   자세히
                 </summary>
                 <div class="flex flex-col gap-2 mt-2 p-2 rounded border border-[var(--color-border-default)] bg-[var(--color-bg-page)]">

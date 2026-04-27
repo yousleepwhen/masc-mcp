@@ -101,7 +101,7 @@ export function DetailPane() {
         ` : null}
       </div>
       <details class="border-t border-card-border">
-        <summary class="cursor-pointer px-3 py-1.5 text-2xs text-text-dim hover:text-text-strong">
+        <summary class="cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-accent-fg)] px-3 py-1.5 text-2xs text-text-dim hover:text-text-strong">
           raw entry (JSON)
         </summary>
         <pre class="max-h-64 overflow-auto px-3 py-2 text-3xs font-mono text-text-strong bg-[var(--white-5)]/30">${formatJson(selection.entry)}</pre>
