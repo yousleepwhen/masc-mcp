@@ -233,7 +233,7 @@ export function StartAutoresearchForm() {
         ` : null}
 
         ${startFormError.value ? html`
-          <div class="px-3 py-2 rounded bg-[var(--bad-10)] border border-[var(--bad-20)] text-[var(--color-status-err)] text-xs">
+          <div class="px-3 py-2 rounded bg-[var(--bad-10)] border border-[var(--bad-20)] text-[var(--color-status-err)] text-xs" role="alert">
             ${startFormError.value}
           </div>
         ` : null}

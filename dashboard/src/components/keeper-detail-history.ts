@@ -180,7 +180,7 @@ export function KeeperCheckpointPanel({
 
   if (error) {
     return html`
-      <div class="rounded border border-[var(--bad-30)] bg-[var(--bad-10)] px-3 py-3 text-xs text-[#fda4af]">
+      <div class="rounded border border-[var(--bad-30)] bg-[var(--bad-10)] px-3 py-3 text-xs text-[#fda4af]" role="alert">
         ${error}
         <${ActionButton}
           variant="ghost"
