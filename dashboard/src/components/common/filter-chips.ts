@@ -44,6 +44,33 @@ export function FilterChips<T extends string>({
     ? 'border-[var(--white-10)] bg-[var(--white-4)] text-[var(--color-fg-disabled)] hover:bg-[var(--white-8)] hover:border-[var(--border-slate-22)] hover:text-[var(--color-fg-primary)]'
     : 'border-[var(--white-10)] bg-[var(--white-4)] text-[var(--color-fg-disabled)] hover:bg-[var(--white-8)] hover:border-[rgba(200,168,78,0.4)]'
 
+  function activateChip(key: T) {
+    if (active) active.value = key
+    onChange?.(key)
+  }
+
+  // WAI-ARIA Tabs: arrow keys move focus + activate; Home/End jump to
+  // first/last. Activation on focus is the natural pattern for filter
+  // chips — the user expects the filtered content to update immediately.
+  function handleTabKeyDown(e: KeyboardEvent) {
+    const tablist = (e.target as HTMLElement).closest('[role="tablist"]')
+    if (!tablist) return
+    const tabs = Array.from(tablist.querySelectorAll<HTMLElement>('[role="tab"]'))
+    const idx = tabs.indexOf(e.target as HTMLElement)
+    if (idx < 0) return
+
+    let next = -1
+    if (e.key === 'ArrowRight') next = (idx + 1) % tabs.length
+    else if (e.key === 'ArrowLeft') next = (idx - 1 + tabs.length) % tabs.length
+    else if (e.key === 'Home') next = 0
+    else if (e.key === 'End') next = tabs.length - 1
+    else return
+
+    e.preventDefault()
+    tabs[next].focus()
+    activateChip(chips[next].key)
+  }
+
   return html`
     <div class="flex flex-wrap gap-1.5 ${cx ?? ''}" role="tablist" aria-orientation="horizontal" aria-label=${ariaLabel}>
       ${chips.map(chip => html`
@@ -56,10 +83,8 @@ export function FilterChips<T extends string>({
           class="${chipClass} cursor-pointer transition-all duration-150 ${activeKey === chip.key
             ? activeToneClass
             : idleToneClass}"
-          onClick=${() => {
-            if (active) active.value = chip.key
-            onChange?.(chip.key)
-          }}
+          onClick=${() => activateChip(chip.key)}
+          onKeyDown=${handleTabKeyDown}
         >
           ${chip.label}
           ${chip.count != null ? html`
