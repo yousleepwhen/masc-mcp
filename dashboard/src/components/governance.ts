@@ -237,9 +237,9 @@ function JudgmentsSection() {
 
   return html`
     <${Card} title=${title} class="section mb-5" variant="compact">
-      <div class="flex flex-col gap-2.5">
+      <div class="flex flex-col gap-2.5" role="list" aria-label="판정 목록">
         ${judgments.map(j => html`
-          <div class="rounded border border-card-border bg-card/34 p-3.5 text-sm" data-testid="judgment-item">
+          <div class="rounded border border-card-border bg-card/34 p-3.5 text-sm" role="listitem" data-testid="judgment-item">
             <div class="flex items-center gap-2 mb-1.5">
               <span class="inline-flex items-center rounded border border-accent/20 bg-[var(--accent-10)] px-1.5 py-0.5 text-3xs font-bold text-accent">${j.target_kind ?? 'unknown'}</span>
               <span class="font-medium text-text-strong">${j.target_id ?? ''}</span>
@@ -512,11 +512,11 @@ function KeeperApprovalQueueSection() {
               </div>
             `
           : html`
-            <div class="flex flex-col gap-3.5" data-testid="governance-approval-queue">
+            <div class="flex flex-col gap-3.5" role="list" aria-label="승인 대기열" data-testid="governance-approval-queue">
               ${visibleItems.map(item => {
                 const disabled = actingId === item.id
                 return html`
-                  <div class="rounded border border-card-border bg-card/34 p-4 shadow-sm" data-testid="governance-approval-item">
+                  <div class="rounded border border-card-border bg-card/34 p-4 shadow-sm" role="listitem" data-testid="governance-approval-item">
                     <div class="flex flex-wrap items-start gap-2.5">
                       <span class="inline-flex items-center rounded border border-white/10 bg-[var(--white-3)] px-2 py-0.5 text-3xs font-bold text-text-muted">
                         keeper ${item.keeper_name}
@@ -605,11 +605,11 @@ function ApprovalRulesSection() {
       ${rules.length === 0
         ? html`<${EmptyState} message="저장된 Always 규칙이 없습니다." compact />`
         : html`
-            <div class="flex flex-col gap-3" data-testid="governance-approval-rules">
+            <div class="flex flex-col gap-3" role="list" aria-label="자동 승인 규칙" data-testid="governance-approval-rules">
               ${rules.map((rule: KeeperApprovalRule) => {
                 const deleting = actingId === `rule:${rule.id}`
                 return html`
-                  <div class="rounded border border-card-border bg-card/34 p-4 shadow-sm" data-testid="governance-approval-rule">
+                  <div class="rounded border border-card-border bg-card/34 p-4 shadow-sm" role="listitem" data-testid="governance-approval-rule">
                     <div class="flex flex-wrap items-start gap-2.5">
                       <span class="inline-flex items-center rounded border border-white/10 bg-[var(--white-3)] px-2 py-0.5 text-3xs font-bold text-text-muted">
                         keeper ${rule.keeper_name}
