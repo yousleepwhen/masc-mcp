@@ -369,7 +369,7 @@ function useActivityGraphState(since: TimeRangePreset) {
 function ActivityTimelinePanel({ data }: { data: ActivityGraphResponse }) {
   return html`
     <${Card} title="액션 타임라인" class="section" testId="activity_graph.timeline">
-      <div class="max-h-90 overflow-y-auto">
+      <div class="max-h-90 overflow-y-auto" role="log" aria-label="액션 타임라인">
         <${ActionTimeline} data=${data} />
       </div>
     <//>

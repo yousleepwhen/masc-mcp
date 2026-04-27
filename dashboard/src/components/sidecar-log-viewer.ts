@@ -259,7 +259,7 @@ export function SidecarLogViewer({ connectorId }: { connectorId: string }) {
                   </div>
                 `
               : html`
-                  <pre class="max-h-[40vh] overflow-auto whitespace-pre-wrap break-words rounded bg-[var(--color-bg-page)] p-2 font-mono text-3xs leading-[1.4] text-[var(--color-fg-primary)]">${filtered.join('\n')}</pre>
+                  <pre class="max-h-[40vh] overflow-auto whitespace-pre-wrap break-words rounded bg-[var(--color-bg-page)] p-2 font-mono text-3xs leading-[1.4] text-[var(--color-fg-primary)]" role="log" aria-label="sidecar 로그">${filtered.join('\n')}</pre>
                 `
             : html`
                 <div class="rounded border border-dashed border-[var(--white-8)] px-3 py-3 text-center text-2xs text-[var(--color-fg-disabled)]">
