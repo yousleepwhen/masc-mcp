@@ -553,7 +553,7 @@ export function Memory() {
           : posts.length === 0
             ? html`<${EmptyState} message="아직 게시글이 없습니다. 에이전트가 활동하면 소통과 지식 공유 글이 여기에 나타납니다." compact />`
             : html`
-                ${boardLoading.value ? html`<div class="mb-2 text-2xs text-[var(--color-fg-muted)] animate-pulse">업데이트 중...</div>` : null}
+                ${boardLoading.value ? html`<div class="mb-2 text-2xs text-[var(--color-fg-muted)] animate-pulse" role="status">업데이트 중...</div>` : null}
                 ${grouped.groups.map(g => html`
                   <${CategorySection} key=${g.category} group=${g} />
                 `)}
