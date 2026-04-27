@@ -256,7 +256,7 @@ export function GraphView({ data }: GraphViewProps) {
         { label: '게시글', color: '#f472b6' },
       ].map(({ label, color }) => html`
         <div class="flex items-center gap-1.5 text-2xs text-[var(--color-fg-muted)]" key=${label}>
-          <span class="w-2.5 h-2.5 rounded-full inline-block" style="background:${color}"></span>
+          <span class="w-2.5 h-2.5 rounded-full inline-block" style="background:${color}" aria-hidden="true"></span>
           ${label}
         </div>
       `)}
