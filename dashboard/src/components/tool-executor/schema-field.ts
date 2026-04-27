@@ -16,21 +16,22 @@ interface SchemaFieldProps {
 }
 
 export function SchemaField({ name, schema, value, required, onChange }: SchemaFieldProps) {
+  const fieldId = `sf-${name}`
   const requiredMark = required
-    ? html`<span class="text-[var(--color-status-err)] ml-0.5">*</span>`
+    ? html`<span class="text-[var(--color-status-err)] ml-0.5" aria-hidden="true">*</span>`
     : null
 
   const hint = schema.description
-    ? html`<span class="text-3xs text-[var(--color-fg-muted)] mt-0.5">${schema.description}</span>`
+    ? html`<span id=${`${fieldId}-hint`} class="text-3xs text-[var(--color-fg-muted)] mt-0.5">${schema.description}</span>`
     : null
 
   if (schema.type === 'string' && schema.enum) {
     return html`
       <div class="flex flex-col gap-1">
-        <label class="text-2xs text-[var(--color-fg-muted)] font-medium">${name}${requiredMark}</label>
+        <label for=${fieldId} class="text-2xs text-[var(--color-fg-muted)] font-medium">${name}${requiredMark}</label>
         ${hint}
-        <${Select} value=${(value as string) ?? ''} options=${schema.enum} placeholder="-- 선택 --"
-          onInput=${(v: string) => onChange(name, v)} />
+        <${Select} id=${fieldId} value=${(value as string) ?? ''} options=${schema.enum} placeholder="-- 선택 --"
+          required=${required} onInput=${(v: string) => onChange(name, v)} />
       </div>
     `
   }
@@ -40,19 +41,19 @@ export function SchemaField({ name, schema, value, required, onChange }: SchemaF
     if (isLong) {
       return html`
         <div class="flex flex-col gap-1">
-          <label class="text-2xs text-[var(--color-fg-muted)] font-medium">${name}${requiredMark}</label>
+          <label for=${fieldId} class="text-2xs text-[var(--color-fg-muted)] font-medium">${name}${requiredMark}</label>
           ${hint}
-          <${TextArea} value=${(value as string) ?? (schema.default as string) ?? ''} placeholder=${name} rows=${3}
-            onInput=${(e: Event) => onChange(name, (e.target as HTMLTextAreaElement).value)} />
+          <${TextArea} id=${fieldId} value=${(value as string) ?? (schema.default as string) ?? ''} placeholder=${name} rows=${3}
+            required=${required} onInput=${(e: Event) => onChange(name, (e.target as HTMLTextAreaElement).value)} />
         </div>
       `
     }
     return html`
       <div class="flex flex-col gap-1">
-        <label class="text-2xs text-[var(--color-fg-muted)] font-medium">${name}${requiredMark}</label>
+        <label for=${fieldId} class="text-2xs text-[var(--color-fg-muted)] font-medium">${name}${requiredMark}</label>
         ${hint}
-        <${TextInput} value=${(value as string) ?? (schema.default as string) ?? ''} placeholder=${name} ariaLabel=${name}
-          onInput=${(e: Event) => onChange(name, (e.target as HTMLInputElement).value)} />
+        <${TextInput} id=${fieldId} value=${(value as string) ?? (schema.default as string) ?? ''} placeholder=${name}
+          required=${required} onInput=${(e: Event) => onChange(name, (e.target as HTMLInputElement).value)} />
       </div>
     `
   }
@@ -60,10 +61,11 @@ export function SchemaField({ name, schema, value, required, onChange }: SchemaF
   if (schema.type === 'integer' || schema.type === 'number') {
     return html`
       <div class="flex flex-col gap-1">
-        <label class="text-2xs text-[var(--color-fg-muted)] font-medium">${name}${requiredMark}</label>
+        <label for=${fieldId} class="text-2xs text-[var(--color-fg-muted)] font-medium">${name}${requiredMark}</label>
         ${hint}
-        <${NumberInput} value=${(value as number) ?? (schema.default as number) ?? ''} placeholder=${name}
-          step=${schema.type === 'integer' ? 1 : 'any'} onInput=${(v: number | undefined) => onChange(name, v)} />
+        <${NumberInput} id=${fieldId} value=${(value as number) ?? (schema.default as number) ?? ''} placeholder=${name}
+          step=${schema.type === 'integer' ? 1 : 'any'}
+          onInput=${(v: number | undefined) => onChange(name, v)} />
       </div>
     `
   }
@@ -71,9 +73,9 @@ export function SchemaField({ name, schema, value, required, onChange }: SchemaF
   if (schema.type === 'boolean') {
     return html`
       <div class="flex items-center gap-2 py-1">
-        <${Checkbox} checked=${(value as boolean) ?? (schema.default as boolean) ?? false}
-          onChange=${(v: boolean) => onChange(name, v)} />
-        <label class="text-xs text-[var(--color-fg-primary)]">${name}${requiredMark}</label>
+        <${Checkbox} id=${fieldId} checked=${(value as boolean) ?? (schema.default as boolean) ?? false}
+          ariaLabel=${name} onChange=${(v: boolean) => onChange(name, v)} />
+        <label for=${fieldId} class="text-xs text-[var(--color-fg-primary)]">${name}${requiredMark}</label>
         ${schema.description ? html`<span class="text-3xs text-[var(--color-fg-muted)]">- ${schema.description}</span>` : null}
       </div>
     `
@@ -83,10 +85,10 @@ export function SchemaField({ name, schema, value, required, onChange }: SchemaF
     const strValue = Array.isArray(value) ? (value as string[]).join('\n') : ''
     return html`
       <div class="flex flex-col gap-1">
-        <label class="text-2xs text-[var(--color-fg-muted)] font-medium">${name}${requiredMark}
+        <label for=${fieldId} class="text-2xs text-[var(--color-fg-muted)] font-medium">${name}${requiredMark}
           <span class="font-normal"> (줄바꿈으로 구분)</span></label>
         ${hint}
-        <${TextArea} value=${strValue} placeholder=${name} rows=${3}
+        <${TextArea} id=${fieldId} value=${strValue} placeholder=${name} rows=${3}
           onInput=${(e: Event) => {
             const lines = (e.target as HTMLTextAreaElement).value.split('\n').filter(Boolean)
             onChange(name, lines)
@@ -99,10 +101,10 @@ export function SchemaField({ name, schema, value, required, onChange }: SchemaF
     : typeof value === 'string' ? value : JSON.stringify(value, null, 2)
   return html`
     <div class="flex flex-col gap-1">
-      <label class="text-2xs text-[var(--color-fg-muted)] font-medium">${name}${requiredMark}
+      <label for=${fieldId} class="text-2xs text-[var(--color-fg-muted)] font-medium">${name}${requiredMark}
         <span class="font-normal"> (JSON)</span></label>
       ${hint}
-      <${TextArea} value=${rawValue} placeholder=${'{ ... }'} rows=${4} class="font-mono text-xs"
+      <${TextArea} id=${fieldId} value=${rawValue} placeholder=${'{ ... }'} rows=${4} class="font-mono text-xs"
         onInput=${(e: Event) => {
           const raw = (e.target as HTMLTextAreaElement).value
           try { onChange(name, JSON.parse(raw)) } catch { /* typing */ }

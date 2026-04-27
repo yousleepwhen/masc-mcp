@@ -69,11 +69,13 @@ export function TaskCreateForm(props: { goalId?: string | null; goalTitle?: stri
         ` : null}
 
         <div class="flex flex-col gap-1.5">
-          <label class="text-2xs font-medium text-text-muted">
-            제목<span class="ml-0.5 text-[var(--color-status-err)]">*</span>
+          <label for="task-create-title" class="text-2xs font-medium text-text-muted">
+            제목<span class="ml-0.5 text-[var(--color-status-err)]" aria-hidden="true">*</span>
           </label>
           <${TextInput}
+            id="task-create-title"
             value=${title.value}
+            required=${true}
             placeholder="예: runtime config introspection 정리"
             onInput=${(e: Event) => { title.value = (e.target as HTMLInputElement).value }}
           />
