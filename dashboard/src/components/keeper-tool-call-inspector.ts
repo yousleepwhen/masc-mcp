@@ -150,7 +150,7 @@ function ToolCallRow({ entry }: { entry: ToolCallEntry }) {
         <span class=${`font-mono flex-shrink-0 w-16 text-right ${durationColor(entry.duration_ms)}`}>
           ${formatDuration(entry.duration_ms)}
         </span>
-        <span class=${`flex-shrink-0 w-5 text-center ${entry.success ? 'text-[var(--color-status-ok)]' : 'text-[var(--color-status-err)]'}`}>
+        <span class=${`flex-shrink-0 w-5 text-center ${entry.success ? 'text-[var(--color-status-ok)]' : 'text-[var(--color-status-err)]'}`} aria-label=${entry.success ? '성공' : '실패'}>
           ${entry.success ? 'O' : 'X'}
         </span>
         <span class="flex-shrink-0 w-4 text-[var(--color-fg-muted)] text-center">
