@@ -139,7 +139,7 @@ export function AgentDetailMemory({ agentName }: Props) {
                               ${outgoing.map(
                                 (s: MemorySubsystemsSynapse) => html`
                                   <div class="flex items-center gap-2 text-xs">
-                                    <span class="font-mono flex-1 truncate">${normalizeKeeperName(s.to_agent)}</span>
+                                    <span class="font-mono flex-1 truncate" title=${s.to_agent}>${normalizeKeeperName(s.to_agent)}</span>
                                     <div class="w-16 bg-[var(--white-5)] rounded h-1.5">
                                       <div
                                         class="${s.weight >= 0.7 ? 'bg-[var(--ok-10)]' : s.weight >= 0.4 ? 'bg-[var(--warn-10)]' : 'bg-[var(--bad-10)]'} rounded h-1.5"
@@ -164,7 +164,7 @@ export function AgentDetailMemory({ agentName }: Props) {
                               ${incoming.map(
                                 (s: MemorySubsystemsSynapse) => html`
                                   <div class="flex items-center gap-2 text-xs">
-                                    <span class="font-mono flex-1 truncate">${normalizeKeeperName(s.from_agent)}</span>
+                                    <span class="font-mono flex-1 truncate" title=${s.from_agent}>${normalizeKeeperName(s.from_agent)}</span>
                                     <div class="w-16 bg-[var(--white-5)] rounded h-1.5">
                                       <div
                                         class="${s.weight >= 0.7 ? 'bg-[var(--ok-10)]' : s.weight >= 0.4 ? 'bg-[var(--warn-10)]' : 'bg-[var(--bad-10)]'} rounded h-1.5"
@@ -239,7 +239,7 @@ export function AgentDetailMemory({ agentName }: Props) {
                             <div class="flex items-center justify-between gap-2">
                               <div class="flex items-center gap-2 min-w-0">
                                 <span class="${outcomeColor}">${outcomeIcon}</span>
-                                <span class="truncate text-[var(--color-fg-muted)]">${highlightMatch(ep.summary, episodeQuery.value)}</span>
+                                <span class="truncate text-[var(--color-fg-muted)]" title=${ep.summary}>${highlightMatch(ep.summary, episodeQuery.value)}</span>
                               </div>
                               <span class="text-3xs text-[var(--color-fg-muted)]0 shrink-0">${formatTimeAgo(ep.timestamp * 1000)}</span>
                             </div>
