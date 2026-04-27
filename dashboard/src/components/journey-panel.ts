@@ -635,7 +635,7 @@ function JourneyCard({ record }: { record: JourneyRecord }) {
 
         <div class="flex items-center gap-3 border-t border-[var(--white-8)] pt-3">
           <button type="button"
-            class="inline-flex items-center rounded px-3 py-1.5 text-xs font-medium text-[var(--color-fg-muted)] transition hover:text-[var(--color-fg-primary)] hover:bg-[var(--white-5)]"
+            class="inline-flex items-center rounded px-3 py-1.5 text-xs font-medium text-[var(--color-fg-muted)] transition hover:text-[var(--color-fg-primary)] hover:bg-[var(--white-5)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--color-bg-page)]"
             aria-expanded=${showExtended.value ? 'true' : 'false'}
             aria-controls=${extendedId}
             onClick=${() => { showExtended.value = !showExtended.value }}

@@ -202,7 +202,7 @@ function ChatMessageBubble({
           ? html`
               <button
                 type="button"
-                class=${`border border-[var(--color-border-default)] bg-[var(--white-3)] text-2xs font-medium text-[var(--color-fg-muted)] transition-colors hover:bg-[var(--white-10)] hover:text-[var(--color-fg-primary)] ${
+                class=${`border border-[var(--color-border-default)] bg-[var(--white-3)] text-2xs font-medium text-[var(--color-fg-muted)] transition-colors hover:bg-[var(--white-10)] hover:text-[var(--color-fg-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--color-bg-page)] ${
                   isMessenger ? 'rounded px-2.5 py-1' : 'rounded-sm px-3 py-1'
                 }`}
                 onClick=${() => { setExpandedRaw(!expandedRaw) }}

@@ -105,7 +105,7 @@ function CategoryPanel({ name, entries }: { name: string; entries: ConfigEntry[]
   return html`
     <div class="border border-[var(--color-border-divider)] rounded overflow-hidden mb-3">
       <button type="button"
-        class="w-full flex items-center justify-between px-4 py-2.5 bg-[var(--bg-surface)] hover:bg-[var(--color-bg-hover)] transition-colors text-left"
+        class="w-full flex items-center justify-between px-4 py-2.5 bg-[var(--bg-surface)] hover:bg-[var(--color-bg-hover)] transition-colors text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-accent-fg)]"
         aria-expanded=${isExpanded ? 'true' : 'false'}
         aria-controls=${contentId}
         onClick=${() => toggleCategory(name)}

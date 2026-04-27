@@ -266,7 +266,7 @@ function DoctorEntryCard({ entry }: { entry: DoctorEntry }) {
     <div class="rounded border border-[var(--white-8)] bg-[var(--white-4)] p-3">
       <button
         type="button"
-        class="flex w-full items-baseline justify-between gap-2 text-left"
+        class="flex w-full items-baseline justify-between gap-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-accent-fg)]"
         aria-expanded=${expanded.value}
         aria-controls=${contentId}
         onClick=${onToggle}

@@ -247,7 +247,7 @@ function ActionTimeline({ data }: { data: ActivityGraphResponse }) {
                     ` : null}
                     <button
                       type="button"
-                      class="rounded border border-[var(--white-10)] bg-[var(--white-4)] px-3 py-1.5 text-2xs text-[var(--color-fg-primary)] transition-all duration-150 hover:bg-[var(--white-8)]"
+                      class="rounded border border-[var(--white-10)] bg-[var(--white-4)] px-3 py-1.5 text-2xs text-[var(--color-fg-primary)] transition-all duration-150 hover:bg-[var(--white-8)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--color-bg-page)]"
                       onClick=${() => toggleExpandedGroup(group.id)}
                       aria-expanded=${expanded}
                       aria-controls=${`act-raw-${group.id}`}

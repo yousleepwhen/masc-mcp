@@ -1006,7 +1006,7 @@ function CollapsibleZone({
     <div class="rounded border border-[var(--white-8)] bg-[var(--white-2)] overflow-hidden">
       <button
         type="button"
-        class="w-full flex items-center justify-between px-4 py-2 text-left hover:bg-[var(--white-3)] transition-colors cursor-pointer select-none"
+        class="w-full flex items-center justify-between px-4 py-2 text-left hover:bg-[var(--white-3)] transition-colors cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-accent-fg)]"
         onClick=${toggle}
         aria-expanded=${!collapsed}
         aria-controls=${`zone-${id}`}
