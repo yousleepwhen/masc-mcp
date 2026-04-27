@@ -379,14 +379,14 @@ function SynapseRow({ s }: { s: MemorySubsystemsSynapse }) {
     <tr class="border-b border-[var(--white-10)]">
       <td class="py-1.5 px-2 text-sm font-mono">
         <button type="button"
-          class="hover:text-[var(--color-accent-fg)] hover:underline focus:outline-none focus:text-[var(--color-accent-fg)]"
+          class="hover:text-[var(--color-accent-fg)] hover:underline focus:outline-none focus-visible:underline focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] focus-visible:ring-offset-1"
           onClick=${() => openAgentDetail(s.from_agent)}
         >${s.from_agent}</button>
       </td>
       <td class="py-1.5 px-2 text-sm text-[var(--color-fg-muted)] text-center">→</td>
       <td class="py-1.5 px-2 text-sm font-mono">
         <button type="button"
-          class="hover:text-[var(--color-accent-fg)] hover:underline focus:outline-none focus:text-[var(--color-accent-fg)]"
+          class="hover:text-[var(--color-accent-fg)] hover:underline focus:outline-none focus-visible:underline focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] focus-visible:ring-offset-1"
           onClick=${() => openAgentDetail(s.to_agent)}
         >${s.to_agent}</button>
       </td>
