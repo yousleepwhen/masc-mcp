@@ -115,7 +115,7 @@ function LoopSelector() {
         <label for="autoresearch-author-filter" class="text-2xs text-[var(--text-muted)] font-medium">실행자 필터</label>
         <select
           id="autoresearch-author-filter"
-          class="bg-card border border-card-border text-[var(--text-body)] text-xs rounded px-2 py-1 outline-none focus:border-accent"
+          class="bg-card border border-card-border text-[var(--text-body)] text-xs rounded px-2 py-1 focus:border-accent"
           value=${authorFilter.value}
           onChange=${(e: Event) => {
             const target = e.target as HTMLSelectElement
