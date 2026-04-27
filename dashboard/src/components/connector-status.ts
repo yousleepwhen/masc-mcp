@@ -1100,7 +1100,7 @@ function ConnectorLivePanel({
 
       ${knownGroups.length > 0
         ? html`
-            <div class="mt-3 space-y-2" id=${`keepers-${connectorId}`}>
+            <div class="mt-3 space-y-2" role="list" aria-label="키퍼 그룹" id=${`keepers-${connectorId}`}>
               <div class="flex items-center justify-end">
                 <${TextInput}
                   type="search"
@@ -1129,7 +1129,7 @@ function ConnectorLivePanel({
                   }
                 }
                 return html`
-                  <div class="rounded border border-[var(--color-border-default)] bg-[var(--white-4)] px-3 py-2" data-keeper=${group.name}>
+                  <div class="rounded border border-[var(--color-border-default)] bg-[var(--white-4)] px-3 py-2" role="listitem" data-keeper=${group.name}>
                     <div class="flex flex-wrap items-baseline gap-3">
                       <div class="text-sm font-medium text-[var(--color-fg-primary)]">${group.name}</div>
                       ${keeper
@@ -1240,9 +1240,9 @@ function ConnectorLivePanel({
 
       ${unknownGroups.length > 0
         ? html`
-            <div class="mt-3 space-y-2">
+            <div class="mt-3 space-y-2" role="list" aria-label="알 수 없는 키퍼 경고">
               ${unknownGroups.map(group => html`
-                <div class="rounded border border-[var(--warn-20)] bg-[var(--warn-10)] px-3 py-2" data-keeper=${group.name}>
+                <div class="rounded border border-[var(--warn-20)] bg-[var(--warn-10)] px-3 py-2" role="listitem" data-keeper=${group.name}>
                   <div class="flex items-baseline gap-2">
                     <span class="text-[var(--color-status-warn)]">⚠</span>
                     <div class="min-w-0">
