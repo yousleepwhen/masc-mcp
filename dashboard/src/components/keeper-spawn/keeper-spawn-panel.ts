@@ -26,7 +26,13 @@ export function KeeperSpawnPanel() {
         <h3 class="text-sm text-[var(--color-fg-secondary)] font-medium">키퍼 생성</h3>
         <${ActionButton} variant="subtle" size="sm" onClick=${() => { showSpawnPanel.value = false }}>닫기<//>
       </div>
-      <div class="flex gap-2 mb-3" role="tablist" aria-label="키퍼 생성 모드">
+      <div class="flex gap-2 mb-3" role="tablist" aria-label="키퍼 생성 모드" onKeyDown=${(e: KeyboardEvent) => {
+        const idx = tabs.findIndex(t => t.id === spawnMode.value)
+        let next = -1
+        if (e.key === 'ArrowRight' || e.key === 'ArrowDown') next = (idx + 1) % tabs.length
+        else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') next = (idx - 1 + tabs.length) % tabs.length
+        if (next >= 0) { e.preventDefault(); spawnMode.value = tabs[next].id }
+      }}>
         ${tabs.map(tab => html`
           <${ActionButton}
             key=${tab.id}
@@ -34,6 +40,7 @@ export function KeeperSpawnPanel() {
             size="sm"
             role="tab"
             ariaSelected=${spawnMode.value === tab.id}
+            tabIndex=${spawnMode.value === tab.id ? 0 : -1}
             onClick=${() => { spawnMode.value = tab.id }}
           >${tab.label}<//>
         `)}

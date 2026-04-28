@@ -439,13 +439,21 @@ export function TaskDetailOverlay() {
 
       ${'' /* Tab bar */}
       ${hasActivityTab(task) ? html`
-        <div class="flex items-center gap-1 px-6 pt-3 pb-0" role="tablist" aria-label="태스크 상세 탭">
+        <div class="flex items-center gap-1 px-6 pt-3 pb-0" role="tablist" aria-label="태스크 상세 탭" onKeyDown=${(e: KeyboardEvent) => {
+          const allTabs: TaskDetailTab[] = ['overview', 'activity']
+          const idx = allTabs.indexOf(activeTab.value)
+          let next = -1
+          if (e.key === 'ArrowRight' || e.key === 'ArrowDown') next = (idx + 1) % allTabs.length
+          else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') next = (idx - 1 + allTabs.length) % allTabs.length
+          if (next >= 0) { e.preventDefault(); const t = allTabs[next]; t === 'activity' ? switchToActivityTab(task) : (activeTab.value = 'overview') }
+        }}>
           ${(['overview', 'activity'] as TaskDetailTab[]).map(tab => html`
             <button
               key=${tab}
               type="button"
               role="tab"
               ariaSelected=${activeTab.value === tab}
+              tabIndex=${activeTab.value === tab ? 0 : -1}
               class="px-3 py-1.5 rounded text-xs font-medium border cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] ${
                 activeTab.value === tab
                   ? 'border-accent/40 bg-accent/12 text-[var(--color-accent-fg)]'
