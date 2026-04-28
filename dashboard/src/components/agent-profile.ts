@@ -458,7 +458,7 @@ export function AgentProfile({ name }: { name: string }) {
                     />
                     ${isFiltering && visible.length === 0
                       ? html`<div class="py-4 text-center text-2xs text-[var(--color-fg-disabled)]" role="status" aria-live="polite">필터 결과 없음 (${lines.length} items)</div>`
-                      : html`<div class="max-h-[210px] overflow-y-auto flex flex-col gap-1.5">${visible.map((line: string, idx: number) =>
+                      : html`<div class="max-h-[210px] overflow-y-auto flex flex-col gap-1.5" role="region" aria-label="프로젝트 활동">${visible.map((line: string, idx: number) =>
                           html`<div key=${idx} class="border border-[var(--color-border-default)] bg-[var(--white-3)] px-2.5 py-2 font-[family-name:'IBM_Plex_Mono','Fira_Code',monospace] text-sm text-[var(--color-fg-primary)] leading-[1.4] rounded">${line}</div>`)}</div>`}
                   </div>
                 `
