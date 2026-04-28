@@ -220,6 +220,7 @@ function ResultViewer({ text, hint, isError: isErr }: { text: string; hint: Cont
           <button
             type="button"
             class="w-full py-1.5 text-3xs font-medium text-[var(--color-accent-fg)] hover:text-[var(--color-fg-secondary)] hover:bg-[var(--white-5)] transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] border-t border-[var(--white-6)] bg-transparent"
+            aria-expanded=${expanded.value}
             onClick=${() => { expanded.value = !expanded.value }}
           >
             ${expanded.value ? '접기' : `전체 보기 (${text.split('\n').length}줄)`}
