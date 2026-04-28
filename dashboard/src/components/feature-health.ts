@@ -5,7 +5,7 @@ import { signal } from '@preact/signals'
 import { useEffect } from 'preact/hooks'
 import { get } from '../api/core'
 import { createAsyncResource, type AsyncResource } from '../lib/async-state'
-import { formatTimeAgo } from '../lib/format-time'
+import { TimeAgo } from './common/time-ago'
 import { AsyncContainer } from './common/async-container'
 import { Card } from './common/card'
 import { FilterChips } from './common/filter-chips'
@@ -237,7 +237,7 @@ export function FeatureHealth() {
                   </div>
 
                   <div class="mt-4 text-xs text-[var(--color-fg-disabled)]">
-                    generated ${formatTimeAgo(data.generated_at)}
+                    generated <${TimeAgo} timestamp=${data.generated_at} />
                   </div>
                 </div>
 

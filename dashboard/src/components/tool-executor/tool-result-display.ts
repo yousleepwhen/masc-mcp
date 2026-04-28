@@ -1,6 +1,6 @@
 import { html } from 'htm/preact'
 import { useSignal } from '@preact/signals'
-import { formatTimeAgo } from '../../lib/format-time'
+import { TimeAgo } from '../common/time-ago'
 import { CountBadge } from '../common/badge'
 import { ActionButton } from '../common/button'
 import { JsonViewer } from '../common/json-viewer'
@@ -43,7 +43,6 @@ function StoredBlobView({
   const loading = useSignal(false)
   const error = useSignal<string | null>(null)
   const fullText = useSignal<string | null>(null)
-  const timeStr = formatTimeAgo(timestamp)
 
   const onLoad = async () => {
     if (fullText.value !== null) {
@@ -71,7 +70,7 @@ function StoredBlobView({
         <div class="flex items-center gap-2">
           <${CountBadge} tone=${success ? 'ok' : 'bad'}>${success ? 'OK' : 'ERR'}<//>
           <span class="text-2xs text-[var(--color-fg-muted)]">${toolName}</span>
-          <span class="text-3xs text-[var(--color-fg-muted)] ml-auto">${timeStr}</span>
+          <${TimeAgo} timestamp=${timestamp} class="text-3xs text-[var(--color-fg-muted)] ml-auto" />
         </div>
         <div class="rounded border border-[var(--color-border-default)] bg-[var(--color-bg-page)] overflow-hidden">
           <div class="flex items-center justify-between px-3 py-1.5 border-b border-[var(--color-border-default)]">
@@ -101,7 +100,7 @@ function StoredBlobView({
       <div class="flex items-center gap-2">
         <${CountBadge} tone=${success ? 'ok' : 'bad'}>${success ? 'OK' : 'ERR'}<//>
         <span class="text-2xs text-[var(--color-fg-muted)]">${toolName}</span>
-        <span class="text-3xs text-[var(--color-fg-muted)] ml-auto">${timeStr}</span>
+        <${TimeAgo} timestamp=${timestamp} class="text-3xs text-[var(--color-fg-muted)] ml-auto" />
       </div>
       <div class="rounded border border-[var(--color-border-default)] bg-[var(--color-bg-page)] overflow-hidden">
         <div class="flex items-center justify-between px-3 py-1.5 border-b border-[var(--color-border-default)]">
@@ -143,14 +142,13 @@ export function ToolResultDisplay({ success, text, toolName, timestamp }: ToolRe
 
   const expanded = useSignal(true)
   const { isJson, parsed } = tryParseJson(text)
-  const timeStr = formatTimeAgo(timestamp)
   const lines = text.split('\n').length
   return html`
     <div class="flex flex-col gap-2 mt-3">
       <div class="flex items-center gap-2">
         <${CountBadge} tone=${success ? 'ok' : 'bad'}>${success ? 'OK' : 'ERR'}<//>
         <span class="text-2xs text-[var(--color-fg-muted)]">${toolName}</span>
-        <span class="text-3xs text-[var(--color-fg-muted)] ml-auto">${timeStr}</span>
+        <${TimeAgo} timestamp=${timestamp} class="text-3xs text-[var(--color-fg-muted)] ml-auto" />
       </div>
       <div class="rounded border border-[var(--color-border-default)] bg-[var(--color-bg-page)] overflow-hidden">
         <div class="flex items-center justify-between px-3 py-1.5 border-b border-[var(--color-border-default)]">
