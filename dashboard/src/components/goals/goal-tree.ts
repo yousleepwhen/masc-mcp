@@ -420,7 +420,7 @@ function coordinationViolationsForGoal(goalId: string): DashboardCoordinationFsm
 function TreeTask({ task }: { task: GoalTreeTask }) {
   return html`
     <div class="flex flex-wrap items-center gap-2 rounded bg-white/3 px-2 py-1.5 text-xs">
-      <span class="size-2 rounded-sm shrink-0" style="background:${task.status_color}"></span>
+      <span class="size-2 rounded-sm shrink-0" style="background:${task.status_color}" aria-hidden="true"></span>
       <span class="min-w-0 flex-1 truncate text-fg-primary" title=${task.title}>${task.title}</span>
       <span class="rounded border border-card-border/60 bg-white/4 px-1.5 py-0.5 text-3xs font-medium text-fg-muted">
         ${task.linkage_source === 'explicit' ? 'goal_id' : 'title tag'}
