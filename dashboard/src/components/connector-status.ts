@@ -866,6 +866,7 @@ function ConnectorLivePanel({
             type="button"
             class="cursor-pointer rounded border border-[var(--color-border-default)] px-1.5 text-2xs text-[var(--color-fg-disabled)] hover:text-[var(--color-fg-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)]"
             aria-label="toggle header details"
+            aria-expanded=${ui.headerExpanded}
             onClick=${() => { patchConnectorUiState(connectorId, { headerExpanded: !ui.headerExpanded }) }}
           >${ui.headerExpanded ? '▴' : '▾'}</button>
         </span>
@@ -1182,6 +1183,7 @@ function ConnectorLivePanel({
                               type="button"
                               class="cursor-pointer text-2xs text-[var(--color-fg-disabled)] hover:text-[var(--color-fg-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)]"
                               aria-label=${`add channel to ${group.name}`}
+                              aria-expanded=${expanded}
                               onClick=${toggleExpand}
                             >${expanded ? '− close' : '+ add channel'}</button>
                           </div>
