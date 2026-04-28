@@ -176,6 +176,7 @@ export function ServerConfig() {
         <${TextInput}
           class="flex-1"
           placeholder="환경변수 또는 설명으로 검색..."
+          ariaLabel="서버 설정 검색"
           value=${searchQuery.value}
           onInput=${(e: Event) => { searchQuery.value = (e.target as HTMLInputElement).value }}
         />

@@ -1195,6 +1195,7 @@ export function RawDataDebug({ keeper }: { keeper: Keeper }) {
     <div class="max-h-[460px] overflow-y-auto" role="region" aria-label="키퍼 필드 목록">
       <${TextInput}
         placeholder="필드 검색..."
+        ariaLabel="키퍼 필드 검색"
         value=${fieldSearch.value}
         onInput=${(e: Event) => { fieldSearch.value = (e.target as HTMLInputElement).value }}
       />

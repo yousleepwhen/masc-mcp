@@ -370,6 +370,7 @@ function FieldWidget({ id, field, value, revealed }: {
       return html`
         <input
           type="number"
+          id=${`field-${id}-${field.name}`}
           value=${value}
           onInput=${onInput}
           step=${field.type === 'integer' ? 1 : 'any'}
@@ -383,6 +384,7 @@ function FieldWidget({ id, field, value, revealed }: {
         return html`
           <div class="flex items-center gap-1">
             <${TextInput}
+              id=${`field-${id}-${field.name}`}
               type=${revealed ? 'text' : 'password'}
               value=${value}
               onInput=${onInput}
@@ -402,6 +404,7 @@ function FieldWidget({ id, field, value, revealed }: {
       }
       return html`
         <${TextInput}
+          id=${`field-${id}-${field.name}`}
           type="text"
           value=${value}
           onInput=${onInput}
