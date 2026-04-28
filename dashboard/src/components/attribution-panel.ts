@@ -273,7 +273,7 @@ export function AttributionPanel() {
   }, [filterGate.value])
 
   if (loading.value && !summary.value) {
-    return html`<${LoadingState} message="attribution 로딩 중…" />`
+    return html`<${LoadingState} message="attribution 불러오는 중..." />`
   }
   if (error.value && !summary.value) {
     return html`<${ErrorState} message=${error.value} />`
