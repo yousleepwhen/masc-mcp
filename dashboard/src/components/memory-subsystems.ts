@@ -198,8 +198,12 @@ function HebbianMatrix({ synapses }: { synapses: MemorySubsystemsSynapse[] }) {
                 font-size="10"
                 fill="#cbd5e1"
                 font-family="monospace"
-                class="cursor-pointer hover:fill-sky-400"
+                class="cursor-pointer hover:fill-sky-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400"
+                tabindex="0"
+                role="button"
+                aria-label=${`Agent ${name} 상세`}
                 onClick=${() => openAgentDetail(name)}
+                onKeyDown=${(e: KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openAgentDetail(name) } }}
               >${shortAgentLabel(name)}</text>
             </g>
           `,
@@ -214,8 +218,12 @@ function HebbianMatrix({ synapses }: { synapses: MemorySubsystemsSynapse[] }) {
               font-size="10"
               fill="#cbd5e1"
               font-family="monospace"
-              class="cursor-pointer hover:fill-sky-400"
+              class="cursor-pointer hover:fill-sky-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400"
+              tabindex="0"
+              role="button"
+              aria-label=${`Agent ${name} 상세`}
               onClick=${() => openAgentDetail(name)}
+              onKeyDown=${(e: KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openAgentDetail(name) } }}
             >${shortAgentLabel(name)}</text>
           `,
         )}

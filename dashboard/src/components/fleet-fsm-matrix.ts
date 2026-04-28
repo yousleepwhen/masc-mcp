@@ -944,8 +944,12 @@ export function FleetFsmMatrix(props: FleetFsmMatrixProps = {}) {
               return html`
                 <tr
                   data-keeper=${name}
-                  class="border-t border-[var(--white-10)] hover:bg-[var(--white-5)] ${rowTone}"
+                  class="border-t border-[var(--white-10)] hover:bg-[var(--white-5)] focus-visible:bg-[var(--white-5)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-accent-fg)] ${rowTone}"
+                  tabindex=${props.onSelectKeeper ? '0' : undefined}
+                  role=${props.onSelectKeeper ? 'button' : undefined}
+                  aria-label=${props.onSelectKeeper ? `${name} 선택` : undefined}
                   onClick=${props.onSelectKeeper ? () => props.onSelectKeeper?.(name) : undefined}
+                  onKeyDown=${props.onSelectKeeper ? (e: KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); props.onSelectKeeper?.(name) } } : undefined}
                 >
                   <td class="px-3 py-2 font-mono text-[var(--color-fg-muted)]">${name}</td>
                   <td class="px-3 py-2 align-top">
