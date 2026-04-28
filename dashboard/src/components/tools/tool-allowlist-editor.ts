@@ -124,6 +124,7 @@ function RemovableChip({ name, onRemove }: { name: string; onRemove: () => void 
         class="text-[var(--color-accent-fg)]/50 hover:text-[#ff6b6b] cursor-pointer text-2xs leading-none transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)]"
         onClick=${onRemove}
         title="제거"
+        aria-label=${`${name} 제거`}
       >\u00d7</button>
     </span>
   `
