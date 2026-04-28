@@ -67,7 +67,9 @@ function InspectorTabButton({
           ? 'border-accent/30 bg-[var(--accent-10)] text-[var(--color-accent-fg)]'
           : 'border-card-border bg-[var(--white-3)] text-[var(--color-fg-muted)] hover:text-[var(--color-fg-primary)] hover:bg-[var(--white-6)]',
       ].join(' ')}
-      aria-pressed=${active ? 'true' : 'false'}
+      role="tab"
+      ariaSelected=${active}
+      tabIndex=${active ? 0 : -1}
       onClick=${() => {
         inspectorSection.value = id
       }}
@@ -117,7 +119,14 @@ export function LabInspector() {
           <div class="text-sm leading-airy text-[var(--color-fg-primary)]">
             피처 플래그와 서버 설정을 한 곳에서 보고, 대시보드에서 실제 자주 쓰는 운영 화면으로 빠르게 이동합니다.
           </div>
-          <div class="flex flex-wrap gap-2">
+          <div class="flex flex-wrap gap-2" role="tablist" aria-label="인스펙터 섹션" onKeyDown=${(e: KeyboardEvent) => {
+            const allTabs: InspectorSection[] = ['overview', 'features', 'config', 'doctor']
+            const idx = allTabs.indexOf(inspectorSection.value)
+            let next = -1
+            if (e.key === 'ArrowRight' || e.key === 'ArrowDown') next = (idx + 1) % allTabs.length
+            else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') next = (idx - 1 + allTabs.length) % allTabs.length
+            if (next >= 0) { e.preventDefault(); inspectorSection.value = allTabs[next] }
+          }}>
             <${InspectorTabButton} id="overview" label="개요" />
             <${InspectorTabButton} id="features" label="피처 플래그" />
             <${InspectorTabButton} id="config" label="서버 설정" />
@@ -126,6 +135,7 @@ export function LabInspector() {
         </div>
       <//>
 
+      <div role="tabpanel" aria-label=${current === 'overview' ? '개요' : current === 'features' ? '피처 플래그' : current === 'doctor' ? '진단' : '서버 설정'}>
       ${current === 'overview'
         ? html`<${InspectorOverview} />`
         : current === 'features'
@@ -138,6 +148,7 @@ export function LabInspector() {
                   <${ExcusePatterns} />
                 </div>
               `}
+      </div>
     </div>
   `
 }
