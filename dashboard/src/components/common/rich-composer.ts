@@ -27,11 +27,21 @@ export function RichComposer({
   return html`
     <div class="rounded border border-[var(--color-border-default)] bg-[rgba(8,13,22,0.88)]">
       <div class="flex items-center justify-between gap-3 border-b border-[var(--color-border-default)] px-3 py-2">
-        <div class="flex items-center gap-1.5">
+        <div class="flex items-center gap-1.5" role="tablist" aria-label="편집 모드" onKeyDown=${(e: KeyboardEvent) => {
+          const allTabs: ComposerMode[] = ['write', 'preview']
+          const idx = allTabs.indexOf(mode)
+          let next = -1
+          if (e.key === 'ArrowRight' || e.key === 'ArrowDown') next = (idx + 1) % allTabs.length
+          else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') next = (idx - 1 + allTabs.length) % allTabs.length
+          if (next >= 0 && !disabled) { e.preventDefault(); setMode(allTabs[next]) }
+        }}>
           ${(['write', 'preview'] as ComposerMode[]).map(tab => html`
             <button
               key=${tab}
               type="button"
+              role="tab"
+              ariaSelected=${mode === tab}
+              tabIndex=${mode === tab ? 0 : -1}
               class=${`rounded border px-2.5 py-1 text-2xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--color-bg-page)] ${
                 mode === tab
                   ? 'border-[rgba(71,184,255,0.35)] bg-[var(--accent-12)] text-[var(--color-accent-fg)]'
@@ -49,7 +59,7 @@ export function RichComposer({
         </div>
       </div>
 
-      <div class="p-3">
+      <div class="p-3" role="tabpanel" aria-label=${mode === 'write' ? 'Write' : 'Preview'}>
         ${mode === 'write'
           ? html`
               <${TextArea}
