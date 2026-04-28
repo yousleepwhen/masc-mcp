@@ -33,7 +33,7 @@ function KeeperToolPresetChip({ keeperName }: { keeperName: string }) {
     <span class="inline-flex items-center py-0.5 px-2 rounded text-3xs font-semibold uppercase tracking-wide
       ${canPR
         ? 'bg-[var(--ok-10)] text-[var(--ok)] border border-[var(--ok-20)]'
-        : 'bg-[var(--white-5)] text-[var(--text-muted)] border border-[var(--white-8)]'
+        : 'bg-[var(--white-5)] text-[var(--color-fg-muted)] border border-[var(--white-8)]'
       }"
       title=${`Tool preset: ${preset}${canPR ? ' (clone/PR 가능)' : ''}`}
     >${preset}</span>
@@ -80,7 +80,7 @@ function KeeperCascadeSelector({ keeper }: { keeper: Keeper }) {
     <div class="flex items-center gap-1.5">
       <select
         aria-label="Cascade 프로필 선택"
-        class="py-0.5 px-1 rounded text-3xs font-mono bg-[var(--white-5)] text-[var(--text-muted)] border border-[var(--white-8)] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)]"
+        class="py-0.5 px-1 rounded text-3xs font-mono bg-[var(--white-5)] text-[var(--color-fg-muted)] border border-[var(--white-8)] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)]"
         title=${invalidProfiles.length > 0
           ? `Cascade 프로필\n\n비활성화된 잘못된 preset:\n${invalidSummary}`
           : 'Cascade 프로필'}
@@ -137,15 +137,15 @@ export function KeeperDetailMissingState({
   return html`
     <div class="mx-auto flex w-full max-w-[1100px] flex-col gap-4">
       <div class="rounded-[28px] border border-[var(--card-border)] bg-[rgba(9,14,24,0.92)] px-6 py-6 shadow-[0_24px_48px_rgba(0,0,0,0.24)]">
-        <div class="text-3xs font-semibold uppercase tracking-[0.18em] text-[var(--text-muted)]">키퍼 상세</div>
-        <h2 class="m-0 mt-2 text-xl font-semibold text-[var(--text-strong)]">${keeperName}</h2>
+        <div class="text-3xs font-semibold uppercase tracking-[0.18em] text-[var(--color-fg-muted)]">키퍼 상세</div>
+        <h2 class="m-0 mt-2 text-xl font-semibold text-[var(--color-fg-secondary)]">${keeperName}</h2>
         <p class="m-0 mt-2 text-sm leading-relaxed text-[var(--text-secondary)]">
           현재 스냅샷에서 keeper를 찾지 못했습니다. 목록으로 돌아가서 다시 선택하거나, 최신 dashboard refresh 이후 다시 열어 보세요.
         </p>
         <div class="mt-4">
           <button
             type="button"
-            class="inline-flex items-center gap-2 rounded-full border border-[var(--white-10)] bg-[var(--white-4)] px-4 py-2 text-sm font-medium text-[var(--text-strong)] transition-colors hover:bg-[var(--white-8)]"
+            class="inline-flex items-center gap-2 rounded-full border border-[var(--white-10)] bg-[var(--white-4)] px-4 py-2 text-sm font-medium text-[var(--color-fg-secondary)] transition-colors hover:bg-[var(--white-8)]"
             onClick=${onClose}
           >
             목록으로 돌아가기
@@ -172,23 +172,23 @@ export function KeeperDetailHeaderInfo({
       <button
         type="button"
         onClick=${onClose}
-        class="inline-flex shrink-0 items-center gap-2 rounded-full border border-[var(--white-10)] bg-[var(--white-4)] px-3.5 py-2 text-sm font-medium text-[var(--text-strong)] transition-colors hover:bg-[var(--white-8)]"
+        class="inline-flex shrink-0 items-center gap-2 rounded-full border border-[var(--white-10)] bg-[var(--white-4)] px-3.5 py-2 text-sm font-medium text-[var(--color-fg-secondary)] transition-colors hover:bg-[var(--white-8)]"
       >
         <span aria-hidden="true">←</span>
         목록
       </button>
       <div class="size-12 shrink-0 rounded bg-[var(--white-5)] border border-[var(--white-8)] flex items-center justify-center text-2xl">${keeper.emoji}</div>
       <div class="flex flex-col gap-0.5">
-        <div class="text-3xs font-semibold uppercase tracking-[0.18em] text-[var(--text-muted)]">모니터링 / 에이전트 / 키퍼 상세</div>
+        <div class="text-3xs font-semibold uppercase tracking-[0.18em] text-[var(--color-fg-muted)]">모니터링 / 에이전트 / 키퍼 상세</div>
         <div class="mt-1 flex flex-wrap items-center gap-2.5">
-          <h2 id=${titleId} class="m-0 text-lg font-semibold text-[var(--text-strong)]">${keeper.name}</h2>
+          <h2 id=${titleId} class="m-0 text-lg font-semibold text-[var(--color-fg-secondary)]">${keeper.name}</h2>
           <${KeeperPhaseAndStage} phase=${keeper.phase} pipelineStage=${keeper.pipeline_stage} phaseEnteredAtSec=${phaseEnteredAtSec} />
           <${KeeperModelChip} keeper=${keeper} />
           <${KeeperToolPresetChip} keeperName=${keeper.name} />
           <${KeeperCascadeSelector} keeper=${keeper} />
         </div>
         ${keeper.koreanName || keeper.created_at ? html`
-          <div class="flex flex-wrap items-center gap-2 text-xs text-[var(--text-muted)]">
+          <div class="flex flex-wrap items-center gap-2 text-xs text-[var(--color-fg-muted)]">
             ${keeper.koreanName ? html`<span>${keeper.koreanName}</span>` : null}
             ${keeper.created_at ? html`<span class="font-mono tabular-nums opacity-60"><${TimeAgo} timestamp=${keeper.created_at} /></span>` : null}
           </div>
@@ -256,8 +256,8 @@ function KeeperDetailQuickFact({
 }) {
   return html`
     <div class="rounded-2xl border border-[var(--white-8)] bg-[rgba(255,255,255,0.03)] px-3.5 py-3">
-      <div class="text-3xs font-semibold uppercase tracking-[0.18em] text-[var(--text-muted)]">${label}</div>
-      <div class="mt-1 text-sm font-medium leading-snug text-[var(--text-strong)]">${children}</div>
+      <div class="text-3xs font-semibold uppercase tracking-[0.18em] text-[var(--color-fg-muted)]">${label}</div>
+      <div class="mt-1 text-sm font-medium leading-snug text-[var(--color-fg-secondary)]">${children}</div>
     </div>
   `
 }
@@ -289,7 +289,7 @@ export function KeeperDetailOverviewSidebar({
     <aside class="order-2 xl:order-1 xl:sticky xl:top-[104px] xl:self-start" aria-label="키퍼 프로필 요약">
       <div class="flex flex-col gap-4 rounded-[28px] border border-[var(--card-border)] bg-[rgba(9,14,24,0.84)] p-4 shadow-[0_20px_48px_rgba(0,0,0,0.18)]">
         <div>
-          <div class="text-3xs font-semibold uppercase tracking-[0.18em] text-[var(--text-muted)]">개요</div>
+          <div class="text-3xs font-semibold uppercase tracking-[0.18em] text-[var(--color-fg-muted)]">개요</div>
           <p class="m-0 mt-2 text-sm leading-relaxed text-[var(--text-secondary)]">
             긴 단일 모달 대신 keeper 상세를 별도 화면으로 펼쳤습니다. 운영자가 자주 오가는 맥락 단위로 나눠서 바로 점프할 수 있습니다.
           </p>
@@ -305,7 +305,7 @@ export function KeeperDetailOverviewSidebar({
         </div>
 
         <div class="rounded-2xl border border-[var(--white-8)] bg-[rgba(255,255,255,0.03)] p-3.5">
-          <div class="text-3xs font-semibold uppercase tracking-[0.18em] text-[var(--text-muted)]">빠른 이동</div>
+          <div class="text-3xs font-semibold uppercase tracking-[0.18em] text-[var(--color-fg-muted)]">빠른 이동</div>
           <div class="mt-3 flex flex-col gap-2">
             ${KEEPER_DETAIL_SECTIONS.map((section) => html`
               <button
@@ -313,8 +313,8 @@ export function KeeperDetailOverviewSidebar({
                 class="rounded-2xl border border-[var(--white-8)] bg-[var(--white-3)] px-3 py-2 text-left transition-colors hover:bg-[var(--white-6)]"
                 onClick=${() => scrollToKeeperDetailSection(section.id)}
               >
-                <div class="text-sm font-medium text-[var(--text-strong)]">${section.label}</div>
-                <div class="mt-1 text-2xs leading-relaxed text-[var(--text-muted)]">${section.summary}</div>
+                <div class="text-sm font-medium text-[var(--color-fg-secondary)]">${section.label}</div>
+                <div class="mt-1 text-2xs leading-relaxed text-[var(--color-fg-muted)]">${section.summary}</div>
               </button>
             `)}
           </div>
@@ -344,10 +344,10 @@ export function KeeperDetailSection({
       aria-label=${title}
     >
       <div class="border-b border-[var(--white-8)] px-5 py-4 sm:px-6">
-        <div class="text-3xs font-semibold uppercase tracking-[0.22em] text-[var(--text-muted)]">${eyebrow}</div>
+        <div class="text-3xs font-semibold uppercase tracking-[0.22em] text-[var(--color-fg-muted)]">${eyebrow}</div>
         <div class="mt-1 flex flex-col gap-1 lg:flex-row lg:items-end lg:justify-between">
           <div>
-            <h3 class="m-0 text-lg font-semibold text-[var(--text-strong)]">${title}</h3>
+            <h3 class="m-0 text-lg font-semibold text-[var(--color-fg-secondary)]">${title}</h3>
             <p class="m-0 mt-1 text-sm leading-relaxed text-[var(--text-secondary)]">${description}</p>
           </div>
         </div>

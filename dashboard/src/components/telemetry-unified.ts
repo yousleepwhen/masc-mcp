@@ -456,29 +456,29 @@ function SummaryCard({ src }: { src: TelemetrySourceSummary }) {
     <div class="rounded border border-[var(--card-border)] bg-[var(--white-1)] p-3 min-w-35">
       <div class="flex items-center gap-2 mb-1">
         <span class="font-mono font-bold ${meta.color}">${meta.icon}</span>
-        <span class="text-xs font-medium text-[var(--text-strong)]">${meta.label}</span>
+        <span class="text-xs font-medium text-[var(--color-fg-secondary)]">${meta.label}</span>
       </div>
-      ${meta.sublabel ? html`<div class="text-3xs text-[var(--text-dim)] mb-1">${meta.sublabel}</div>` : null}
-      <div class="text-2xl font-bold ${hasData ? 'text-[var(--text-strong)]' : 'text-[var(--text-muted)]'}">
+      ${meta.sublabel ? html`<div class="text-3xs text-[var(--color-fg-disabled)] mb-1">${meta.sublabel}</div>` : null}
+      <div class="text-2xl font-bold ${hasData ? 'text-[var(--color-fg-secondary)]' : 'text-[var(--color-fg-muted)]'}">
         ${src.entry_count.toLocaleString()}
       </div>
       ${src.keeper_count != null ? html`
-        <div class="text-xs text-[var(--text-muted)]">${src.keeper_count} keepers</div>
+        <div class="text-xs text-[var(--color-fg-muted)]">${src.keeper_count} keepers</div>
       ` : null}
       ${src.exists === false ? html`
-        <div class="text-xs text-[var(--text-muted)] italic">store not found</div>
+        <div class="text-xs text-[var(--color-fg-muted)] italic">store not found</div>
       ` : null}
     </div>
   `
 }
 
 function DiagnosisCard({ title, value, detail, tone }: { title: string; value: string; detail: string; tone: 'ok' | 'warn' | 'neutral' }) {
-  const toneColor = tone === 'ok' ? 'text-[var(--ok)]' : tone === 'warn' ? 'text-[var(--warn)]' : 'text-[var(--text-muted)]'
+  const toneColor = tone === 'ok' ? 'text-[var(--ok)]' : tone === 'warn' ? 'text-[var(--warn)]' : 'text-[var(--color-fg-muted)]'
   return html`
     <div class="rounded border border-[var(--card-border)] bg-[var(--white-1)] p-3 min-w-35">
-      <div class="text-xs font-medium text-[var(--text-muted)] mb-1">${title}</div>
+      <div class="text-xs font-medium text-[var(--color-fg-muted)] mb-1">${title}</div>
       <div class="text-2xl font-bold ${toneColor}">${value}</div>
-      <div class="text-3xs text-[var(--text-dim)]">${detail}</div>
+      <div class="text-3xs text-[var(--color-fg-disabled)]">${detail}</div>
     </div>
   `
 }
@@ -506,7 +506,7 @@ function EntryRow({ entry }: { entry: TelemetryEntry }) {
           aria-controls=${rowContentId}
         >
           <span class="font-mono font-bold ${meta.color} w-4 text-center flex-shrink-0">${meta.icon}</span>
-          <span class="font-mono text-[var(--text-muted)] w-28 flex-shrink-0" title=${formatTs(ts)}>
+          <span class="font-mono text-[var(--color-fg-muted)] w-28 flex-shrink-0" title=${formatTs(ts)}>
             ${timeAgoSafe(ts)}
           </span>
           ${success != null ? html`
@@ -514,15 +514,15 @@ function EntryRow({ entry }: { entry: TelemetryEntry }) {
               ${success ? 'O' : 'X'}
             </span>
           ` : html`<span class="w-4"></span>`}
-          <span class="font-mono text-[var(--text-strong)] truncate flex-1" title=${entryPreview(entry)}>
+          <span class="font-mono text-[var(--color-fg-secondary)] truncate flex-1" title=${entryPreview(entry)}>
             ${entryPreview(entry)}
           </span>
           ${scopeBadges.length > 0 ? html`
             <span class="hidden xl:flex items-center gap-1 flex-shrink-0">
-              ${scopeBadges.map(badge => html`<span class="rounded bg-[var(--white-4)] px-1.5 py-0.5 text-3xs text-[var(--text-dim)] font-mono">${badge}</span>`)}
+              ${scopeBadges.map(badge => html`<span class="rounded bg-[var(--white-4)] px-1.5 py-0.5 text-3xs text-[var(--color-fg-disabled)] font-mono">${badge}</span>`)}
             </span>
           ` : null}
-          <span class="flex-shrink-0 w-4 text-[var(--text-muted)]">${expanded.value ? '-' : '+'}</span>
+          <span class="flex-shrink-0 w-4 text-[var(--color-fg-muted)]">${expanded.value ? '-' : '+'}</span>
         </button>
         <span class="mr-2 inline-flex flex-shrink-0">
           <${CopyIdButton}
@@ -537,12 +537,12 @@ function EntryRow({ entry }: { entry: TelemetryEntry }) {
         <div id=${rowContentId} class="px-3 pb-3 flex flex-col gap-2">
           ${scopeBadges.length > 0 ? html`
             <div class="flex flex-wrap gap-1.5">
-              ${scopeBadges.map(badge => html`<span class="rounded bg-[var(--white-4)] px-2 py-1 text-3xs text-[var(--text-dim)] font-mono">${badge}</span>`)}
+              ${scopeBadges.map(badge => html`<span class="rounded bg-[var(--white-4)] px-2 py-1 text-3xs text-[var(--color-fg-disabled)] font-mono">${badge}</span>`)}
             </div>
           ` : null}
           <div class="rounded bg-[rgba(0,0,0,0.3)] p-2">
             <div class="mb-1.5 flex items-center justify-between gap-2">
-              <span class="text-3xs font-medium text-[var(--text-dim)]">원본 JSON</span>
+              <span class="text-3xs font-medium text-[var(--color-fg-disabled)]">원본 JSON</span>
               <${CopyIdButton}
                 value=${rawJson}
                 label="펼친 텔레메트리 항목 JSON"
@@ -550,7 +550,7 @@ function EntryRow({ entry }: { entry: TelemetryEntry }) {
                 size=${13}
               />
             </div>
-            <pre class="m-0 text-3xs font-mono text-[var(--text-muted)] overflow-x-auto max-h-75 overflow-y-auto whitespace-pre-wrap break-all" role="region" aria-label="텔레메트리 원본 JSON">
+            <pre class="m-0 text-3xs font-mono text-[var(--color-fg-muted)] overflow-x-auto max-h-75 overflow-y-auto whitespace-pre-wrap break-all" role="region" aria-label="텔레메트리 원본 JSON">
 ${rawJson}</pre>
           </div>
         </div>
@@ -581,24 +581,24 @@ function GroupRow({ item }: { item: Extract<TelemetryDisplayItem, { kind: 'group
           onClick=${() => { expanded.value = !expanded.value }}
         >
           <span class="font-mono font-bold ${meta.color} w-4 text-center flex-shrink-0">${meta.icon}</span>
-          <span class="font-mono text-[var(--text-muted)] w-28 flex-shrink-0" title=${`${formatTs(item.oldestTs)} → ${formatTs(item.latestTs)}`}>
+          <span class="font-mono text-[var(--color-fg-muted)] w-28 flex-shrink-0" title=${`${formatTs(item.oldestTs)} → ${formatTs(item.latestTs)}`}>
             ${timeAgoSafe(item.latestTs)}
           </span>
-          <span class="flex-shrink-0 w-4 text-[var(--text-dim)]">~</span>
-          <span class="font-mono text-[var(--text-strong)] truncate flex-1" title=${`${meta.label} · ${item.label} · ${item.count} events`}>
+          <span class="flex-shrink-0 w-4 text-[var(--color-fg-disabled)]">~</span>
+          <span class="font-mono text-[var(--color-fg-secondary)] truncate flex-1" title=${`${meta.label} · ${item.label} · ${item.count} events`}>
             ${meta.label} · ${item.label} · ${item.count} events
           </span>
           ${sourceIcons.length > 0 ? html`
-            <span class="hidden lg:flex items-center gap-1 flex-shrink-0 text-3xs text-[var(--text-dim)] font-mono">
+            <span class="hidden lg:flex items-center gap-1 flex-shrink-0 text-3xs text-[var(--color-fg-disabled)] font-mono">
               ${sourceIcons.join('/')}
             </span>
           ` : null}
           ${item.scopeBadges.length > 0 ? html`
             <span class="hidden xl:flex items-center gap-1 flex-shrink-0">
-              ${item.scopeBadges.map(badge => html`<span class="rounded bg-[var(--white-4)] px-1.5 py-0.5 text-3xs text-[var(--text-dim)] font-mono">${badge}</span>`)}
+              ${item.scopeBadges.map(badge => html`<span class="rounded bg-[var(--white-4)] px-1.5 py-0.5 text-3xs text-[var(--color-fg-disabled)] font-mono">${badge}</span>`)}
             </span>
           ` : null}
-          <span class="flex-shrink-0 w-4 text-[var(--text-muted)]">${expanded.value ? '-' : '+'}</span>
+          <span class="flex-shrink-0 w-4 text-[var(--color-fg-muted)]">${expanded.value ? '-' : '+'}</span>
         </button>
         <span class="mr-2 inline-flex flex-shrink-0">
           <${CopyIdButton}
@@ -611,8 +611,8 @@ function GroupRow({ item }: { item: Extract<TelemetryDisplayItem, { kind: 'group
       </div>
       <div id=${contentId} class=${expanded.value ? 'px-3 pb-3 flex flex-col gap-2' : 'hidden'}>
         ${expanded.value ? html`
-          <div class="rounded bg-[var(--white-3)] px-2 py-1.5 text-2xs text-[var(--text-dim)]">
-            Latest: <span class="font-mono text-[var(--text-strong)]">${latestPreview}</span>
+          <div class="rounded bg-[var(--white-3)] px-2 py-1.5 text-2xs text-[var(--color-fg-disabled)]">
+            Latest: <span class="font-mono text-[var(--color-fg-secondary)]">${latestPreview}</span>
           </div>
           ${item.entries.map((entry, index) => {
             const entryMeta = sourceMeta(entry.source)
@@ -620,16 +620,16 @@ function GroupRow({ item }: { item: Extract<TelemetryDisplayItem, { kind: 'group
             return html`
               <div class="flex items-center gap-2 rounded bg-[var(--black-20)] px-2 py-1.5 text-3xs" key=${`${item.key}:${index}`}>
                 <span class="font-mono font-bold ${entryMeta.color} w-4 text-center flex-shrink-0">${entryMeta.icon}</span>
-                <span class="font-mono text-[var(--text-dim)] w-24 flex-shrink-0" title=${formatTs(ts)}>${timeAgoSafe(ts)}</span>
-                <span class="font-mono text-[var(--text-strong)] truncate flex-1" title=${entryPreview(entry)}>${entryPreview(entry)}</span>
+                <span class="font-mono text-[var(--color-fg-disabled)] w-24 flex-shrink-0" title=${formatTs(ts)}>${timeAgoSafe(ts)}</span>
+                <span class="font-mono text-[var(--color-fg-secondary)] truncate flex-1" title=${entryPreview(entry)}>${entryPreview(entry)}</span>
               </div>
             `
           })}
           <div class="rounded bg-[var(--black-20)] px-2 py-1.5">
             <div class="flex items-start justify-between gap-2">
               <details class="min-w-0 flex-1">
-                <summary class="cursor-pointer text-3xs text-[var(--text-dim)]">원본 JSON</summary>
-                <pre class="mt-2 text-3xs font-mono text-[var(--text-muted)] overflow-x-auto max-h-70 overflow-y-auto whitespace-pre-wrap break-all" role="region" aria-label="텔레메트리 상세 JSON">
+                <summary class="cursor-pointer text-3xs text-[var(--color-fg-disabled)]">원본 JSON</summary>
+                <pre class="mt-2 text-3xs font-mono text-[var(--color-fg-muted)] overflow-x-auto max-h-70 overflow-y-auto whitespace-pre-wrap break-all" role="region" aria-label="텔레메트리 상세 JSON">
 ${rawJson}</pre>
               </details>
               <${CopyIdButton}
@@ -807,15 +807,15 @@ export function TelemetryUnified() {
   return html`
     <div class="flex flex-col gap-4">
       <div class="rounded border border-[var(--card-border)] bg-[var(--white-1)] p-4">
-        <div class="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">런타임 진단</div>
-        <div class="mt-1 text-base leading-relaxed text-[var(--text-body)]">
+        <div class="text-xs font-semibold uppercase tracking-wider text-[var(--color-fg-muted)]">런타임 진단</div>
+        <div class="mt-1 text-base leading-relaxed text-[var(--color-fg-primary)]">
           MASC telemetry store (keeper/tool/agent) 진단 뷰.
         </div>
         <div class="mt-3 flex flex-wrap gap-2">
-          <span class="rounded bg-[var(--white-4)] px-2 py-1 text-2xs text-[var(--text-dim)]">MASC: keeper/tool/agent store</span>
-          ${sessionFilter.value ? html`<span class="rounded bg-[var(--white-4)] px-2 py-1 text-2xs font-mono text-[var(--text-dim)]">session ${sessionFilter.value}</span>` : null}
-          ${operationFilter.value ? html`<span class="rounded bg-[var(--white-4)] px-2 py-1 text-2xs font-mono text-[var(--text-dim)]">operation ${operationFilter.value}</span>` : null}
-          ${workerRunFilter.value ? html`<span class="rounded bg-[var(--white-4)] px-2 py-1 text-2xs font-mono text-[var(--text-dim)]">worker_run ${workerRunFilter.value}</span>` : null}
+          <span class="rounded bg-[var(--white-4)] px-2 py-1 text-2xs text-[var(--color-fg-disabled)]">MASC: keeper/tool/agent store</span>
+          ${sessionFilter.value ? html`<span class="rounded bg-[var(--white-4)] px-2 py-1 text-2xs font-mono text-[var(--color-fg-disabled)]">session ${sessionFilter.value}</span>` : null}
+          ${operationFilter.value ? html`<span class="rounded bg-[var(--white-4)] px-2 py-1 text-2xs font-mono text-[var(--color-fg-disabled)]">operation ${operationFilter.value}</span>` : null}
+          ${workerRunFilter.value ? html`<span class="rounded bg-[var(--white-4)] px-2 py-1 text-2xs font-mono text-[var(--color-fg-disabled)]">worker_run ${workerRunFilter.value}</span>` : null}
         </div>
       </div>
 
@@ -824,8 +824,8 @@ export function TelemetryUnified() {
       <div class="flex flex-wrap gap-3">
         ${summary.map(src => html`<${SummaryCard} src=${src} />`)}
         <div class="rounded border border-[var(--card-border)] bg-[var(--white-1)] p-3 min-w-35">
-          <div class="text-xs font-medium text-[var(--text-muted)] mb-1">전체</div>
-          <div class="text-2xl font-bold text-[var(--text-strong)]">${totalEntries.toLocaleString()}</div>
+          <div class="text-xs font-medium text-[var(--color-fg-muted)] mb-1">전체</div>
+          <div class="text-2xl font-bold text-[var(--color-fg-secondary)]">${totalEntries.toLocaleString()}</div>
         </div>
       </div>
 
@@ -859,7 +859,7 @@ export function TelemetryUnified() {
       <div class="flex items-center gap-3 flex-wrap">
         <select
           aria-label="텔레메트리 소스 필터"
-          class="rounded border border-[var(--card-border)] bg-[var(--color-bg-page)] px-2 py-1 text-xs text-[var(--text-strong)]"
+          class="rounded border border-[var(--card-border)] bg-[var(--color-bg-page)] px-2 py-1 text-xs text-[var(--color-fg-secondary)]"
           value=${sourceFilter.value}
           onChange=${(e: Event) => { sourceFilter.value = (e.target as HTMLSelectElement).value as TelemetrySource | '' }}
         >
@@ -870,7 +870,7 @@ export function TelemetryUnified() {
           type="text"
           placeholder="키퍼 이름..."
           aria-label="키퍼 이름 필터"
-          class="rounded border border-[var(--card-border)] bg-[var(--color-bg-page)] px-2 py-1 text-xs text-[var(--text-strong)] w-32"
+          class="rounded border border-[var(--card-border)] bg-[var(--color-bg-page)] px-2 py-1 text-xs text-[var(--color-fg-secondary)] w-32"
           value=${keeperFilter.value}
           onInput=${(e: Event) => { keeperFilter.value = (e.target as HTMLInputElement).value }}
         />
@@ -878,7 +878,7 @@ export function TelemetryUnified() {
           type="text"
           placeholder="session_id"
           aria-label="session_id 필터"
-          class="rounded border border-[var(--card-border)] bg-[var(--color-bg-page)] px-2 py-1 text-xs text-[var(--text-strong)] w-40 font-mono"
+          class="rounded border border-[var(--card-border)] bg-[var(--color-bg-page)] px-2 py-1 text-xs text-[var(--color-fg-secondary)] w-40 font-mono"
           value=${sessionFilter.value}
           onInput=${(e: Event) => { sessionFilter.value = (e.target as HTMLInputElement).value.trim() }}
         />
@@ -886,7 +886,7 @@ export function TelemetryUnified() {
           type="text"
           placeholder="operation_id"
           aria-label="operation_id 필터"
-          class="rounded border border-[var(--card-border)] bg-[var(--color-bg-page)] px-2 py-1 text-xs text-[var(--text-strong)] w-40 font-mono"
+          class="rounded border border-[var(--card-border)] bg-[var(--color-bg-page)] px-2 py-1 text-xs text-[var(--color-fg-secondary)] w-40 font-mono"
           value=${operationFilter.value}
           onInput=${(e: Event) => { operationFilter.value = (e.target as HTMLInputElement).value.trim() }}
         />
@@ -894,7 +894,7 @@ export function TelemetryUnified() {
           type="text"
           placeholder="worker_run_id"
           aria-label="worker_run_id 필터"
-          class="rounded border border-[var(--card-border)] bg-[var(--color-bg-page)] px-2 py-1 text-xs text-[var(--text-strong)] w-40 font-mono"
+          class="rounded border border-[var(--card-border)] bg-[var(--color-bg-page)] px-2 py-1 text-xs text-[var(--color-fg-secondary)] w-40 font-mono"
           value=${workerRunFilter.value}
           onInput=${(e: Event) => { workerRunFilter.value = (e.target as HTMLInputElement).value.trim() }}
         />
@@ -903,13 +903,13 @@ export function TelemetryUnified() {
           autocomplete="off"
           placeholder="엔트리 검색..."
           aria-label="엔트리 텍스트 검색"
-          class="rounded border border-[var(--card-border)] bg-[var(--color-bg-page)] px-2 py-1 text-xs text-[var(--text-strong)] w-48"
+          class="rounded border border-[var(--card-border)] bg-[var(--color-bg-page)] px-2 py-1 text-xs text-[var(--color-fg-secondary)] w-48"
           value=${entrySearch.value}
           onInput=${(e: Event) => { entrySearch.value = (e.target as HTMLInputElement).value }}
         />
         <select
           aria-label="표시 개수 제한"
-          class="rounded border border-[var(--card-border)] bg-[var(--color-bg-page)] px-2 py-1 text-xs text-[var(--text-strong)]"
+          class="rounded border border-[var(--card-border)] bg-[var(--color-bg-page)] px-2 py-1 text-xs text-[var(--color-fg-secondary)]"
           value=${String(limit.value)}
           onChange=${(e: Event) => { limit.value = Number((e.target as HTMLSelectElement).value) }}
         >
@@ -920,13 +920,13 @@ export function TelemetryUnified() {
         </select>
         <button
           type="button"
-          class="rounded border border-[var(--card-border)] bg-[var(--color-bg-page)] px-3 py-1 text-xs text-[var(--text-strong)] hover:bg-[var(--bg-panel-hover)]"
+          class="rounded border border-[var(--card-border)] bg-[var(--color-bg-page)] px-3 py-1 text-xs text-[var(--color-fg-secondary)] hover:bg-[var(--bg-panel-hover)]"
           onClick=${() => void load()}
         >
           Refresh
         </button>
-        <span class="text-xs text-[var(--text-muted)]">${formatAutoRefreshLabel(TELEMETRY_AUTO_REFRESH_MS)}</span>
-        ${loading ? html`<span class="text-xs text-[var(--text-muted)]" role="status">로딩 중...</span>` : null}
+        <span class="text-xs text-[var(--color-fg-muted)]">${formatAutoRefreshLabel(TELEMETRY_AUTO_REFRESH_MS)}</span>
+        ${loading ? html`<span class="text-xs text-[var(--color-fg-muted)]" role="status">로딩 중...</span>` : null}
       </div>
 
       ${error ? html`
@@ -936,7 +936,7 @@ export function TelemetryUnified() {
       ` : null}
 
       <div class="rounded border border-[var(--card-border)] overflow-hidden">
-        <div class="px-3 py-2 border-b border-[var(--card-border)] bg-[var(--white-3)] text-xs text-[var(--text-muted)]">
+        <div class="px-3 py-2 border-b border-[var(--card-border)] bg-[var(--white-3)] text-xs text-[var(--color-fg-muted)]">
           MASC telemetry store entries ${entries.length.toLocaleString()}건
           ${isFilteringEntries
             ? ` · 검색 매치 ${displayItems.length.toLocaleString()}건`
@@ -950,7 +950,7 @@ export function TelemetryUnified() {
             ${Array.from(condensed.byCategory.entries()).map(([category, count]) => {
               const meta = CONDENSED_CATEGORY_META[category]
               return html`
-                <span class="rounded border border-[var(--card-border)] bg-[var(--white-3)] px-2 py-1 text-[var(--text-dim)]">
+                <span class="rounded border border-[var(--card-border)] bg-[var(--white-3)] px-2 py-1 text-[var(--color-fg-disabled)]">
                   <span class="font-mono ${meta.color}">${meta.icon}</span>
                   <span class="ml-1">${meta.label}</span>
                   <span class="ml-1 font-mono">${count}</span>
@@ -965,8 +965,8 @@ export function TelemetryUnified() {
               ? html`<${GroupRow} key=${item.key} item=${item} />`
               : html`<${EntryRow} key=${item.key} entry=${item.entry} />`)
             : isFilteringEntries && allDisplayItems.length > 0
-              ? html`<div class="px-4 py-6 text-sm text-[var(--text-muted)]" role="status" aria-live="polite">필터 결과 없음 (${allDisplayItems.length} items)</div>`
-              : html`<div class="px-4 py-6 text-sm text-[var(--text-muted)]">선택한 scope에 해당하는 MASC telemetry entry가 없습니다.</div>`}
+              ? html`<div class="px-4 py-6 text-sm text-[var(--color-fg-muted)]" role="status" aria-live="polite">필터 결과 없음 (${allDisplayItems.length} items)</div>`
+              : html`<div class="px-4 py-6 text-sm text-[var(--color-fg-muted)]">선택한 scope에 해당하는 MASC telemetry entry가 없습니다.</div>`}
         </div>
       </div>
     </div>

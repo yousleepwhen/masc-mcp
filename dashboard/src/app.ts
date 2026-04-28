@@ -172,15 +172,15 @@ export function App() {
   const currentSection = currentSectionForRoute(route.value)
 
   return html`
-    <div class="flex min-h-screen h-screen flex-col overflow-hidden bg-[var(--color-bg-page)] bg-[radial-gradient(ellipse_at_top,rgba(25,40,70,0.3)_0%,rgba(11,18,32,1)_80%)] text-[var(--text-body)]">
-      <a href="#main-content" class="sr-only focus:not-sr-only focus:fixed focus:top-4 focus:left-4 focus:z-[100] focus:rounded-md focus:bg-[var(--color-bg-page)] focus:px-4 focus:py-2 focus:text-sm focus:text-[var(--text-strong)] focus:shadow-lg focus:ring-2 focus:ring-[var(--accent-45)]">메인 콘텐츠로 건너뛰기</a>
+    <div class="flex min-h-screen h-screen flex-col overflow-hidden bg-[var(--color-bg-page)] bg-[radial-gradient(ellipse_at_top,rgba(25,40,70,0.3)_0%,rgba(11,18,32,1)_80%)] text-[var(--color-fg-primary)]">
+      <a href="#main-content" class="sr-only focus:not-sr-only focus:fixed focus:top-4 focus:left-4 focus:z-[100] focus:rounded-md focus:bg-[var(--color-bg-page)] focus:px-4 focus:py-2 focus:text-sm focus:text-[var(--color-fg-secondary)] focus:shadow-lg focus:ring-2 focus:ring-[var(--accent-45)]">메인 콘텐츠로 건너뛰기</a>
       <header class="relative z-10 shrink-0 border-b border-[var(--white-5)] bg-[rgba(8,14,26,0.36)] px-4 py-1.5 backdrop-blur-xl">
         <div class="absolute inset-x-0 bottom-0 h-[1px] bg-gradient-to-r from-transparent via-[var(--accent-15)] to-transparent"></div>
         <div class="flex w-full items-center justify-between gap-3 max-[900px]:flex-col max-[900px]:items-stretch">
           <div class="min-w-0 flex items-center gap-3">
             <div class="flex shrink-0 items-center gap-2">
               <button type="button"
-                class="hidden max-[768px]:flex size-9 items-center justify-center rounded border border-[var(--white-10)] bg-[var(--white-4)] text-[var(--text-body)] cursor-pointer transition-colors hover:bg-[rgba(255,255,255,0.1)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-45)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-bg-page)]"
+                class="hidden max-[768px]:flex size-9 items-center justify-center rounded border border-[var(--white-10)] bg-[var(--white-4)] text-[var(--color-fg-primary)] cursor-pointer transition-colors hover:bg-[rgba(255,255,255,0.1)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-45)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-bg-page)]"
                 aria-expanded=${mobileMenuOpen.value}
                 aria-label=${mobileMenuOpen.value ? '탐색 메뉴 닫기' : '탐색 메뉴 열기'}
                 aria-controls="dashboard-side-rail"
@@ -188,7 +188,7 @@ export function App() {
               >
                 ${mobileMenuOpen.value ? html`<${X} size=${20} aria-hidden="true" />` : html`<${Menu} size=${20} aria-hidden="true" />`}
               </button>
-              <div class="flex size-7 shrink-0 items-center justify-center rounded border border-[var(--white-10)] bg-[var(--white-4)] text-sm text-[var(--text-strong)]">
+              <div class="flex size-7 shrink-0 items-center justify-center rounded border border-[var(--white-10)] bg-[var(--white-4)] text-sm text-[var(--color-fg-secondary)]">
                 ${currentView?.icon ?? 'M'}
               </div>
             </div>
@@ -196,13 +196,13 @@ export function App() {
             <div class="min-w-0 flex flex-col justify-center">
               ${currentSection && currentSection.label !== currentView?.label
                 ? html`
-                    <div class="mb-0.5 flex flex-wrap items-center gap-1.5 text-2xs text-[var(--text-muted)]">
+                    <div class="mb-0.5 flex flex-wrap items-center gap-1.5 text-2xs text-[var(--color-fg-muted)]">
                       <span>${currentView?.label ?? '홈'}</span>
                       <span>/</span>
                     </div>
                   `
                 : null}
-              <h1 class="min-w-0 text-xl font-semibold tracking-[-0.02em] text-[var(--text-strong)] leading-none [overflow-wrap:anywhere]">
+              <h1 class="min-w-0 text-xl font-semibold tracking-[-0.02em] text-[var(--color-fg-secondary)] leading-none [overflow-wrap:anywhere]">
                 ${currentSection?.label ?? currentView?.label ?? 'Multi-Agent Namespace Console'}
               </h1>
             </div>
