@@ -68,6 +68,14 @@ interface ActionButtonProps {
   pressed?: boolean
   /** Hover tooltip text (native browser title). */
   title?: string
+  /** Whether the control is expanded (for collapsible/disclosure buttons). */
+  ariaExpanded?: boolean
+  /** WAI-ARIA role (e.g. "tab" for tablist pattern). */
+  role?: string
+  /** WAI-ARIA selected state for tab role. */
+  ariaSelected?: boolean
+  /** Tab index for roving tabindex pattern. */
+  tabIndex?: number
   /** Rendered as `data-testid` so E2E / unit tests can target this
       button without coupling to visible text (which may be i18n'd). */
   testId?: string
@@ -88,6 +96,10 @@ export function ActionButton({
   pressed,
   title,
   testId,
+  ariaExpanded,
+  role,
+  ariaSelected,
+  tabIndex,
   onClick,
   children,
 }: ActionButtonProps) {
@@ -106,11 +118,15 @@ export function ActionButton({
       type=${type}
       id=${id}
       class=${cls}
+      role=${role}
       onClick=${onClick}
       disabled=${disabled}
       aria-label=${ariaLabel}
       aria-busy=${ariaBusy === true ? 'true' : undefined}
       aria-pressed=${pressed === true ? 'true' : pressed === false ? 'false' : undefined}
+      aria-expanded=${ariaExpanded === true ? 'true' : ariaExpanded === false ? 'false' : undefined}
+      aria-selected=${ariaSelected === true ? 'true' : ariaSelected === false ? 'false' : undefined}
+      tabIndex=${tabIndex}
       title=${title}
       data-testid=${testId}
     >${children}</button>

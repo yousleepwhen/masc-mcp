@@ -60,6 +60,7 @@ export function QuickIntervene() {
         <${ActionButton}
           variant="subtle"
           size="sm"
+          ariaExpanded=${showAdvanced}
           onClick=${() => { setShowAdvanced(current => !current) }}
           disabled=${busy}
         >
