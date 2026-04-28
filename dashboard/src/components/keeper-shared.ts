@@ -186,7 +186,7 @@ export function KeeperDiagnosticSummary({
         <div class="text-2xs font-semibold uppercase tracking-4 text-[var(--color-fg-muted)]">명시적 상태 조회</div>
         <button
           type="button"
-          class="rounded border border-[var(--color-border-default)] bg-[var(--white-3)] px-3 py-1.5 text-2xs text-[var(--color-fg-muted)] transition-colors hover:bg-[var(--white-6)] hover:text-[var(--color-fg-primary)]"
+          class="rounded border border-[var(--color-border-default)] bg-[var(--white-3)] px-3 py-1.5 text-2xs text-[var(--color-fg-muted)] transition-colors hover:bg-[var(--white-6)] hover:text-[var(--color-fg-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)]"
           disabled=${busy}
           onClick=${() => { void refreshStatus() }}
         >
@@ -308,7 +308,7 @@ export function KeeperConversationPanel({
           <div class="flex flex-wrap items-center gap-2">
             <button
               type="button"
-              class="rounded border border-[var(--color-border-default)] bg-[var(--white-3)] px-3 py-1.5 text-2xs text-[var(--color-fg-muted)] transition-colors hover:bg-[var(--white-6)] hover:text-[var(--color-fg-primary)]"
+              class="rounded border border-[var(--color-border-default)] bg-[var(--white-3)] px-3 py-1.5 text-2xs text-[var(--color-fg-muted)] transition-colors hover:bg-[var(--white-6)] hover:text-[var(--color-fg-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)]"
               onClick=${toggleMetadata}
               aria-expanded=${showMetadata}
               aria-controls=${transcriptId}
@@ -328,7 +328,7 @@ export function KeeperConversationPanel({
               ? html`
                   <button
                     type="button"
-                    class="rounded border border-[var(--color-border-default)] bg-[var(--white-3)] px-3 py-1.5 text-2xs text-[var(--color-fg-muted)] transition-colors hover:bg-[var(--white-6)] hover:text-[var(--color-fg-primary)]"
+                    class="rounded border border-[var(--color-border-default)] bg-[var(--white-3)] px-3 py-1.5 text-2xs text-[var(--color-fg-muted)] transition-colors hover:bg-[var(--white-6)] hover:text-[var(--color-fg-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)]"
                     disabled=${hydrating}
                     onClick=${() => { void expandHistory() }}
                   >

@@ -159,7 +159,7 @@ function KeeperToolActivity() {
                 <button
                   key=${k.name}
                   type="button"
-                  class="inline-flex items-center gap-1.5 rounded border border-card-border/60 bg-white/4 px-3 py-1.5 text-xs text-fg-primary transition-colors hover:border-accent/35 hover:text-fg-secondary"
+                  class="inline-flex items-center gap-1.5 rounded border border-card-border/60 bg-white/4 px-3 py-1.5 text-xs text-fg-primary transition-colors hover:border-accent/35 hover:text-fg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
                   onClick=${() => navigate('monitoring', { section: 'agents', keeper: k.name })}
                 >
                   ${k.emoji ?? ''} ${k.koreanName ?? k.name}
@@ -275,7 +275,7 @@ export function Planning() {
           </div>
           <button
             type="button"
-            class="inline-flex items-center gap-1.5 rounded border border-accent/25 bg-[var(--accent-12)] px-3 py-1.5 text-xs font-medium text-accent transition-colors hover:border-accent/40 hover:bg-[var(--accent-15)]"
+            class="inline-flex items-center gap-1.5 rounded border border-accent/25 bg-[var(--accent-12)] px-3 py-1.5 text-xs font-medium text-accent transition-colors hover:border-accent/40 hover:bg-[var(--accent-15)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
             onClick=${() => navigate('workspace', { section: 'planning', view: 'goal-tree' })}
           >
             목표 트리에서 보기

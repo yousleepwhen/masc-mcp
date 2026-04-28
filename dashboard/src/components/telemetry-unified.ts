@@ -912,7 +912,7 @@ export function TelemetryUnified() {
         </select>
         <button
           type="button"
-          class="rounded border border-[var(--card-border)] bg-[var(--color-bg-page)] px-3 py-1 text-xs text-[var(--color-fg-secondary)] hover:bg-[var(--bg-panel-hover)]"
+          class="rounded border border-[var(--card-border)] bg-[var(--color-bg-page)] px-3 py-1 text-xs text-[var(--color-fg-secondary)] hover:bg-[var(--bg-panel-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)]"
           onClick=${() => void load()}
         >
           Refresh

@@ -79,7 +79,7 @@ export function DetailPane() {
         </div>
         <button
           type="button"
-          class="rounded px-2 py-0.5 text-2xs text-fg-disabled hover:text-fg-secondary hover:bg-white/5"
+          class="rounded px-2 py-0.5 text-2xs text-fg-disabled hover:text-fg-secondary hover:bg-white/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
           onClick=${clearSelection}
           aria-label="상세 패널 닫기"
         >

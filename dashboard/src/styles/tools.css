@@ -35,6 +35,10 @@
     background: rgba(30, 41, 59, 0.95);
     color: var(--text-near-white);
   }
+  &:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--color-accent-fg);
+  }
 }
 
 

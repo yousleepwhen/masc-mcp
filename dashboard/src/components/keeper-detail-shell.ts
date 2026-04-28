@@ -145,7 +145,7 @@ export function KeeperDetailMissingState({
         <div class="mt-4">
           <button
             type="button"
-            class="inline-flex items-center gap-2 rounded-full border border-[var(--white-10)] bg-[var(--white-4)] px-4 py-2 text-sm font-medium text-[var(--color-fg-secondary)] transition-colors hover:bg-[var(--white-8)]"
+            class="inline-flex items-center gap-2 rounded-full border border-[var(--white-10)] bg-[var(--white-4)] px-4 py-2 text-sm font-medium text-[var(--color-fg-secondary)] transition-colors hover:bg-[var(--white-8)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)]"
             onClick=${onClose}
           >
             목록으로 돌아가기
@@ -172,7 +172,7 @@ export function KeeperDetailHeaderInfo({
       <button
         type="button"
         onClick=${onClose}
-        class="inline-flex shrink-0 items-center gap-2 rounded-full border border-[var(--white-10)] bg-[var(--white-4)] px-3.5 py-2 text-sm font-medium text-[var(--color-fg-secondary)] transition-colors hover:bg-[var(--white-8)]"
+        class="inline-flex shrink-0 items-center gap-2 rounded-full border border-[var(--white-10)] bg-[var(--white-4)] px-3.5 py-2 text-sm font-medium text-[var(--color-fg-secondary)] transition-colors hover:bg-[var(--white-8)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)]"
       >
         <span aria-hidden="true">←</span>
         목록
@@ -310,7 +310,7 @@ export function KeeperDetailOverviewSidebar({
             ${KEEPER_DETAIL_SECTIONS.map((section) => html`
               <button
                 type="button"
-                class="rounded-2xl border border-[var(--white-8)] bg-[var(--white-3)] px-3 py-2 text-left transition-colors hover:bg-[var(--white-6)]"
+                class="rounded-2xl border border-[var(--white-8)] bg-[var(--white-3)] px-3 py-2 text-left transition-colors hover:bg-[var(--white-6)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)]"
                 onClick=${() => scrollToKeeperDetailSection(section.id)}
               >
                 <div class="text-sm font-medium text-[var(--color-fg-secondary)]">${section.label}</div>

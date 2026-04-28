@@ -221,10 +221,10 @@ async function submitResolve(
 // ── Row actions (approve/reject UI) ───────────────────
 
 const BTN_PRIMARY =
-  'rounded border border-[var(--color-border-default)] bg-[var(--color-bg-page)] px-2 py-1 text-2xs text-[var(--color-fg-secondary)] hover:bg-[var(--color-bg-hover)] disabled:opacity-50 disabled:cursor-not-allowed'
+  'rounded border border-[var(--color-border-default)] bg-[var(--color-bg-page)] px-2 py-1 text-2xs text-[var(--color-fg-secondary)] hover:bg-[var(--color-bg-hover)] disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)]'
 
 const BTN_SECONDARY =
-  'rounded border border-[var(--color-border-default)] bg-[var(--color-bg-page)] px-2 py-1 text-2xs text-[var(--color-fg-primary)] hover:bg-[var(--color-bg-hover)] disabled:opacity-50 disabled:cursor-not-allowed'
+  'rounded border border-[var(--color-border-default)] bg-[var(--color-bg-page)] px-2 py-1 text-2xs text-[var(--color-fg-primary)] hover:bg-[var(--color-bg-hover)] disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)]'
 
 function RowActions({
   row,
@@ -571,7 +571,7 @@ export function VerificationRequestsPanel() {
     <div class="flex flex-col gap-4">
       <div class="flex items-center gap-3 flex-wrap">
         <button type="button"
-          class="rounded border border-[var(--color-border-default)] bg-[var(--color-bg-page)] px-3 py-1 text-xs text-[var(--color-fg-secondary)] hover:bg-[var(--color-bg-hover)]"
+          class="rounded border border-[var(--color-border-default)] bg-[var(--color-bg-page)] px-3 py-1 text-xs text-[var(--color-fg-secondary)] hover:bg-[var(--color-bg-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)]"
           onClick=${() => void loadData(resource)}
         >
           새로고침

@@ -292,18 +292,18 @@ function KeeperRuntimeAlertStrip({ keeper }: { keeper: Keeper }) {
           ? html`<span class="inline-flex items-center rounded-sm px-2 py-0.5 text-2xs font-semibold bg-[var(--warn-14)] text-[var(--color-status-warn)]">일시정지</span>
             ${hasActivitySignal ? html`<span class="text-[var(--color-fg-muted)]">${renderActivitySignal()}</span>` : null}
             <button type="button"
-              class="inline-flex items-center rounded px-2 py-0.5 text-2xs font-medium bg-[var(--white-6)] hover:bg-[var(--white-8)] text-[var(--color-fg-secondary)] transition-colors disabled:opacity-50"
+              class="inline-flex items-center rounded px-2 py-0.5 text-2xs font-medium bg-[var(--white-6)] hover:bg-[var(--white-8)] text-[var(--color-fg-secondary)] transition-colors disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)]"
               disabled=${directiveLoading.value}
               onClick=${() => handleDirective('resume')}
             >재개</button>`
           : html`<button type="button"
-              class="inline-flex items-center rounded px-2 py-0.5 text-2xs font-medium bg-[var(--white-6)] hover:bg-[var(--white-8)] text-[var(--color-fg-secondary)] transition-colors disabled:opacity-50"
+              class="inline-flex items-center rounded px-2 py-0.5 text-2xs font-medium bg-[var(--white-6)] hover:bg-[var(--white-8)] text-[var(--color-fg-secondary)] transition-colors disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)]"
               disabled=${directiveLoading.value}
               onClick=${() => handleDirective('pause')}
             >일시정지</button>
             ${(hbStale || runtimeBlockerClass === 'oas_timeout_budget' || runtimeBlockerClass === 'cascade_exhausted' || runtimeBlockerClass === 'turn_timeout')
               ? html`<button type="button"
-                  class="inline-flex items-center rounded px-2 py-0.5 text-2xs font-medium bg-[var(--warn-14)] hover:bg-[var(--warn-24)] text-[var(--color-status-warn)] transition-colors disabled:opacity-50"
+                  class="inline-flex items-center rounded px-2 py-0.5 text-2xs font-medium bg-[var(--warn-14)] hover:bg-[var(--warn-24)] text-[var(--color-status-warn)] transition-colors disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)]"
                   disabled=${directiveLoading.value}
                   onClick=${() => handleDirective('wakeup')}
                   title="자고 있는 keeper의 sleep을 깨워 다음 turn을 시도합니다. fiber가 살아 있을 때만 효과가 있습니다."
