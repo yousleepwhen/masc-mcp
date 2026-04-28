@@ -50,7 +50,7 @@ export function ToolPicker() {
             class="text-3xs"
             onClick=${() => { tierFilter.value = opt.value }}>${opt.label}<//>
         `)}
-        <span class="text-3xs text-[var(--color-fg-muted)] ml-auto self-center">${tools.length}개</span>
+        <span class="text-3xs text-[var(--color-fg-muted)] ml-auto self-center" role="status" aria-live="polite">${tools.length}개</span>
       </div>
       <div class="flex flex-col gap-0.5 overflow-y-auto flex-1 min-h-0 pr-1" role="region" aria-label="도구 목록">
         ${tools.length === 0
