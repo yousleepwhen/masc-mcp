@@ -495,7 +495,7 @@ function InlineSelectRow({
       <span class="text-xs font-medium text-fg-muted">${label}</span>
       <select
         aria-label=${label}
-        class="text-xs bg-card/60 border border-card-border rounded px-2 py-1 text-fg-secondary"
+        class="text-xs bg-card/60 border border-card-border rounded px-2 py-1 text-fg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)]"
         value=${value}
         onChange=${(e: Event) => onChange((e.target as HTMLSelectElement).value)}
       >
@@ -809,7 +809,7 @@ export function KeeperConfigPanel({ keeperName }: { keeperName: string }) {
               <span class="text-xs font-medium text-fg-muted">활성 cascade profile</span>
               <select
                 aria-label="활성 cascade profile 선택"
-                class="rounded border border-card-border/60 bg-[var(--white-4)] px-3 py-2 text-xs font-semibold text-fg-secondary disabled:opacity-60"
+                class="rounded border border-card-border/60 bg-[var(--white-4)] px-3 py-2 text-xs font-semibold text-fg-secondary disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)]"
                 value=${currentCascade}
                 disabled=${cascadeSaving.value || cascadeState.status === 'loading' || cascadeOptions.length === 0}
                 onChange=${(event: Event) => {

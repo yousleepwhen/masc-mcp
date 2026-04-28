@@ -415,7 +415,7 @@ function ProfileCard({
                 <div class="flex items-center gap-2 flex-wrap">
                   <select
                     aria-label="키퍼 선택"
-                    class="min-w-44 rounded border border-[var(--card-border)] bg-[var(--color-bg-page)] px-2 py-1 text-xs text-[var(--color-fg-secondary)]"
+                    class="min-w-44 rounded border border-[var(--card-border)] bg-[var(--color-bg-page)] px-2 py-1 text-xs text-[var(--color-fg-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)]"
                     value=${selectedKeeper.value}
                     disabled=${assigning.value}
                     onChange=${(event: Event) => {

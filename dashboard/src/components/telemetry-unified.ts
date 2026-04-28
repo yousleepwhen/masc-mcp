@@ -851,7 +851,7 @@ export function TelemetryUnified() {
       <div class="flex items-center gap-3 flex-wrap">
         <select
           aria-label="텔레메트리 소스 필터"
-          class="rounded border border-[var(--card-border)] bg-[var(--color-bg-page)] px-2 py-1 text-xs text-[var(--color-fg-secondary)]"
+          class="rounded border border-[var(--card-border)] bg-[var(--color-bg-page)] px-2 py-1 text-xs text-[var(--color-fg-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)]"
           value=${sourceFilter.value}
           onChange=${(e: Event) => { sourceFilter.value = (e.target as HTMLSelectElement).value as TelemetrySource | '' }}
         >
@@ -901,7 +901,7 @@ export function TelemetryUnified() {
         />
         <select
           aria-label="표시 개수 제한"
-          class="rounded border border-[var(--card-border)] bg-[var(--color-bg-page)] px-2 py-1 text-xs text-[var(--color-fg-secondary)]"
+          class="rounded border border-[var(--card-border)] bg-[var(--color-bg-page)] px-2 py-1 text-xs text-[var(--color-fg-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)]"
           value=${String(limit.value)}
           onChange=${(e: Event) => { limit.value = Number((e.target as HTMLSelectElement).value) }}
         >
