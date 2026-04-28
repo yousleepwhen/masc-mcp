@@ -901,7 +901,7 @@ export function KeeperDetailPage() {
           >
         <${PipelineStageBar} stage=${keeper.pipeline_stage} />
         <details class="rounded border border-[var(--white-8)] bg-[var(--white-2)]">
-          <summary class="cursor-pointer py-2 px-4 text-3xs font-semibold uppercase tracking-widest text-[var(--color-fg-muted)] list-none select-none flex items-center gap-2">
+          <summary class="cursor-pointer py-2 px-4 text-3xs font-semibold uppercase tracking-widest text-[var(--color-fg-muted)] list-none select-none flex items-center gap-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-accent-fg)]">
             <span class="w-1.5 h-1.5 rounded-full bg-[rgba(71,184,255,0.5)]" aria-hidden="true"></span>
             Phase State Machine
           </summary>
@@ -911,7 +911,7 @@ export function KeeperDetailPage() {
         </details>
 
         <details class="rounded border border-[var(--white-8)] bg-[var(--white-2)]">
-          <summary class="cursor-pointer py-2 px-4 text-3xs font-semibold uppercase tracking-widest text-[var(--color-fg-muted)] list-none select-none flex items-center gap-2">
+          <summary class="cursor-pointer py-2 px-4 text-3xs font-semibold uppercase tracking-widest text-[var(--color-fg-muted)] list-none select-none flex items-center gap-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-accent-fg)]">
             <span class="w-1.5 h-1.5 rounded-full bg-[rgba(99,102,241,0.5)]" aria-hidden="true"></span>
             Memory Tier & Compaction
           </summary>
@@ -1016,7 +1016,7 @@ export function KeeperDetailPage() {
           open=${diagOpen}
           onToggle=${(e: Event) => setDiagOpen((e.currentTarget as HTMLDetailsElement).open)}
         >
-          <summary class="cursor-pointer py-3 px-5 text-2xs font-semibold uppercase tracking-widest text-fg-muted list-none select-none flex items-center gap-2">
+          <summary class="cursor-pointer py-3 px-5 text-2xs font-semibold uppercase tracking-widest text-fg-muted list-none select-none flex items-center gap-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-accent-fg)]">
             <span class="w-1.5 h-1.5 rounded-full bg-accent/50" aria-hidden="true"></span>
             런타임 진단
           </summary>
@@ -1035,7 +1035,7 @@ export function KeeperDetailPage() {
           </div>
         </details>
             <details class="p-5 rounded border border-card-border bg-card/40 backdrop-blur-sm shadow-sm">
-              <summary class="cursor-pointer text-2xs font-semibold uppercase tracking-widest text-fg-muted list-none select-none flex items-center gap-2">
+              <summary class="cursor-pointer text-2xs font-semibold uppercase tracking-widest text-fg-muted list-none select-none flex items-center gap-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-accent-fg)]">
                 <span class="w-1.5 h-1.5 rounded-full bg-accent/50" aria-hidden="true"></span>
                 품질 시그널 (고급 지표)
               </summary>
@@ -1102,7 +1102,7 @@ export function KeeperDetailPage() {
             </div>
 
           <details class="p-5 rounded border border-card-border bg-card/40 backdrop-blur-sm shadow-sm">
-            <summary class="cursor-pointer text-2xs font-semibold uppercase tracking-widest text-fg-muted list-none select-none flex items-center gap-2">
+            <summary class="cursor-pointer text-2xs font-semibold uppercase tracking-widest text-fg-muted list-none select-none flex items-center gap-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-accent-fg)]">
               <span class="w-1.5 h-1.5 rounded-full bg-accent/50" aria-hidden="true"></span>
               Checkpoint & Snapshots
             </summary>
@@ -1123,7 +1123,7 @@ export function KeeperDetailPage() {
           >
             <${TurnBudgetSection} keeper=${keeper} />
             <details class="p-5 rounded border border-card-border bg-card/40 backdrop-blur-sm shadow-sm">
-              <summary class="cursor-pointer text-2xs font-semibold uppercase tracking-widest text-fg-muted list-none select-none flex items-center gap-2">
+              <summary class="cursor-pointer text-2xs font-semibold uppercase tracking-widest text-fg-muted list-none select-none flex items-center gap-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-accent-fg)]">
                 <span class="w-1.5 h-1.5 rounded-full bg-accent/50" aria-hidden="true"></span>
                 도구 정책
               </summary>
@@ -1133,7 +1133,7 @@ export function KeeperDetailPage() {
             </details>
             <${PlaygroundReposPanel} keeperName=${keeper.name} />
             <details class="p-5 rounded border border-card-border bg-card/40 backdrop-blur-sm shadow-sm">
-              <summary class="cursor-pointer text-2xs font-semibold uppercase tracking-widest text-fg-muted list-none select-none flex items-center gap-2">
+              <summary class="cursor-pointer text-2xs font-semibold uppercase tracking-widest text-fg-muted list-none select-none flex items-center gap-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-accent-fg)]">
                 <span class="w-1.5 h-1.5 rounded-full bg-accent/50" aria-hidden="true"></span>
                 Keeper 설정
               </summary>
@@ -1150,7 +1150,7 @@ export function KeeperDetailPage() {
             description="운영 중에는 덜 자주 보지만, 문제를 깊게 파고들 때 필요한 raw surface를 마지막에 모았습니다."
           >
             <details class="mt-0">
-          <summary class="cursor-pointer py-3 px-4 text-2xs font-semibold uppercase tracking-widest text-[var(--color-fg-muted)] list-none select-none rounded border border-[var(--color-border-default)] bg-[var(--white-3)] hover:bg-[var(--white-6)] transition-colors flex items-center gap-2">
+          <summary class="cursor-pointer py-3 px-4 text-2xs font-semibold uppercase tracking-widest text-[var(--color-fg-muted)] list-none select-none rounded border border-[var(--color-border-default)] bg-[var(--white-3)] hover:bg-[var(--white-6)] transition-colors flex items-center gap-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-accent-fg)]">
             <span class="w-1.5 h-1.5 rounded-full bg-[var(--color-fg-disabled)]" aria-hidden="true"></span>
             디버그
           </summary>

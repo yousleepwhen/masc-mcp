@@ -541,7 +541,7 @@ export function SessionTraceEntry({ event, searchQuery }: { event: UnifiedTraceE
 
   return html`
     <details class="rounded hover:bg-[var(--white-3)] transition-colors group">
-      <summary class="list-none cursor-pointer relative pr-8">
+      <summary class="list-none cursor-pointer relative pr-8 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-accent-fg)]">
         ${row}
         <div class="absolute right-3 top-1/2 -translate-y-1/2 opacity-40 group-hover:opacity-100 transition-opacity">
           <svg aria-hidden="true" class="w-4 h-4 text-[var(--color-fg-muted)] group-open:rotate-90 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">

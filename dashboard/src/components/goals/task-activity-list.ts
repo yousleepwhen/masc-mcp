@@ -87,7 +87,7 @@ function ActivityEntry({ event }: { event: UnifiedTraceEvent }) {
         setIsOpen((evt.currentTarget as HTMLDetailsElement).open)
       }}
     >
-      <summary class="flex items-center gap-3 py-1.5 px-3 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
+      <summary class="flex items-center gap-3 py-1.5 px-3 cursor-pointer list-none [&::-webkit-details-marker]:hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-accent-fg)]">
         <span class="text-sm ${kindColor(event.kind)}">${kindIcon(event.kind)}</span>
         <span class="flex-1 text-xs text-fg-primary truncate" title=${event.summary}>${event.summary}</span>
         ${event.duration_ms != null ? html`<span class="text-3xs tabular-nums ${durationColor(event.duration_ms)}">${event.duration_ms}ms</span>` : null}
