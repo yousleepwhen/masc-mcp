@@ -60,6 +60,7 @@ export function OperationsPanel() {
         chips=${VIEW_CHIPS}
         value=${view}
         onChange=${updateViewParam}
+        ariaLabel="운영 뷰 선택"
         size="md"
         tone="accent"
         class="w-fit"
