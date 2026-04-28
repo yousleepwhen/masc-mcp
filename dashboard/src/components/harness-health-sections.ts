@@ -292,7 +292,7 @@ export function HeroRailCard({
 export function ScopePairing() {
   return html`
     <div class="grid grid-cols-1 gap-3 md:grid-cols-2" role="group" aria-label="스코프 페어링">
-      <${SurfaceCard} variant="compact">
+      <${SurfaceCard} variant="compact" ariaLabel="실험 루프">
         <div class="flex flex-col gap-2">
           <div class="flex items-center justify-between gap-3">
             <div>
@@ -311,7 +311,7 @@ export function ScopePairing() {
         </div>
       <//>
 
-      <${SurfaceCard} variant="compact">
+      <${SurfaceCard} variant="compact" ariaLabel="안전 감시">
         <div class="flex flex-col gap-2">
           <${SectionCap}>안전 감시<//>
           <div class="text-sm font-medium text-[var(--color-fg-secondary)]">하네스가 답하는 것</div>

@@ -67,16 +67,16 @@ function ToolDetail() {
 export function ToolExecutor() {
   useEffect(() => { void loadToolSchemas() }, [])
   if (schemasLoading.value && !selectedTool.value) {
-    return html`<${SurfaceCard}><p class="text-xs text-[var(--color-fg-muted)] py-8 text-center" role="status">도구 스키마 로딩 중...</p><//>`
+    return html`<${SurfaceCard} ariaLabel="도구 실행기"><p class="text-xs text-[var(--color-fg-muted)] py-8 text-center" role="status">도구 스키마 로딩 중...</p><//>`
   }
   if (schemasError.value) {
-    return html`<${SurfaceCard}><div class="py-4 text-center">
+    return html`<${SurfaceCard} ariaLabel="도구 실행기"><div class="py-4 text-center">
       <p class="text-xs text-[var(--color-status-err)] mb-2">${schemasError.value}</p>
       <${ActionButton} variant="ghost" size="sm" onClick=${() => void loadToolSchemas(true)}>재시도<//>
     </div><//>`
   }
   return html`
-    <${SurfaceCard} class="h-[calc(100vh-240px)] min-h-100">
+    <${SurfaceCard} ariaLabel="도구 실행기" class="h-[calc(100vh-240px)] min-h-100">
       <div class="flex gap-4 h-full">
         <div class="w-70 flex-shrink-0 border-r border-[var(--color-border-default)] pr-4"><${ToolPicker} /></div>
         <div class="flex-1 min-w-0"><${ToolDetail} /></div>
