@@ -835,7 +835,7 @@ export function KeeperConfigPanel({ keeperName }: { keeperName: string }) {
                 ? html`<span class="text-2xs text-[var(--bad)]" role="alert">${cascadeSaveError.value}</span>`
                 : null}
               ${invalidCascadeProfiles.length > 0
-                ? html`<span class="text-2xs text-[var(--warn)]">invalid profile ${invalidCascadeProfiles.length}개: ${invalidCascadeSummary}</span>`
+                ? html`<span class="text-2xs text-[var(--warn)]" role="status" aria-live="polite">invalid profile ${invalidCascadeProfiles.length}개: ${invalidCascadeSummary}</span>`
                 : null}
             </label>
           `
@@ -1050,7 +1050,7 @@ export function KeeperConfigPanel({ keeperName }: { keeperName: string }) {
       <div class="py-2 px-3 rounded border border-card-border/50 bg-card/20 backdrop-blur-sm mb-1.5">
         <div class="flex items-center justify-between gap-3 mb-2">
           <span class="text-xs font-medium text-fg-muted">active_goal_ids</span>
-          <span class="text-3xs text-[var(--color-fg-muted)]">${selectedActiveGoalIds.length}개 선택</span>
+          <span class="text-3xs text-[var(--color-fg-muted)]" role="status" aria-live="polite">${selectedActiveGoalIds.length}개 선택</span>
         </div>
         ${goalState.status === 'loading' ? html`
           <div class="text-2xs text-[var(--color-fg-muted)]" role="status">목표 목록 로딩 중...</div>

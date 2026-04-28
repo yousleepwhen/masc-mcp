@@ -539,7 +539,7 @@ export function TransportHealthPanel() {
             <details class="group rounded border border-card-border/50 bg-card/18 overflow-hidden" open=${data.sse.hot_sessions.length >= 3}>
               <summary class="flex items-center gap-3 px-4 py-3 cursor-pointer text-sm font-semibold text-fg-secondary bg-card/28 hover:bg-card/44 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-accent-fg)]">
                 <span>핫 큐</span>
-                <span class="ml-auto text-2xs font-normal text-fg-muted">${data.sse.hot_sessions.length}개 세션 -- SSE 백프레셔 위험</span>
+                <span class="ml-auto text-2xs font-normal text-fg-muted" role="status" aria-live="polite">${data.sse.hot_sessions.length}개 세션 -- SSE 백프레셔 위험</span>
               </summary>
               <div class="p-4">
                 <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
@@ -558,7 +558,7 @@ export function TransportHealthPanel() {
                   />
                 </div>
                 ${isFiltered ? html`
-                  <div class="mb-2 text-2xs text-fg-muted">${filtered.length} / ${data.sse.hot_sessions.length}개 세션</div>
+                  <div class="mb-2 text-2xs text-fg-muted" role="status" aria-live="polite">${filtered.length} / ${data.sse.hot_sessions.length}개 세션</div>
                 ` : null}
                 ${filtered.length === 0 ? html`
                   <div class="text-2xs text-fg-muted py-3" role="status" aria-live="polite">검색 결과 없음</div>

@@ -221,7 +221,7 @@ export function CommentThread({ comments, postId }: { comments: BoardComment[]; 
   return html`
     <div class="flex flex-col gap-2" role="list" aria-label="댓글 목록">
       <div class="flex items-center gap-2 mb-1">
-        <div class="text-2xs text-[var(--color-fg-muted)]">댓글 ${comments.length}개${isFiltering ? ` · 일치 ${filteredRoots.length}` : ''}</div>
+        <div class="text-2xs text-[var(--color-fg-muted)]" role="status" aria-live="polite">댓글 ${comments.length}개${isFiltering ? ` · 일치 ${filteredRoots.length}` : ''}</div>
         <${TextInput}
           type="search"
           value=${query.value}

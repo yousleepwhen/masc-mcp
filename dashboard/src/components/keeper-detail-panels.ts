@@ -677,7 +677,7 @@ export function PromptTelemetryPanel({ keeper }: { keeper: Keeper }) {
     <div class="mb-5">
       <div class="flex items-center gap-2 mb-2">
         <span class="text-2xs font-semibold uppercase tracking-wider text-[var(--color-fg-muted)]">프롬프트 핑거프린트</span>
-        <span class="text-3xs text-[var(--color-fg-disabled)]">${promptPoints.length}개 스냅샷</span>
+        <span class="text-3xs text-[var(--color-fg-disabled)]" role="status" aria-live="polite">${promptPoints.length}개 스냅샷</span>
         ${latest?.prompt_fingerprint
           ? html`<span class="inline-flex items-center gap-1">
               <span class="text-3xs px-1.5 py-0.5 rounded bg-[var(--white-5)] text-[var(--color-fg-disabled)] font-mono" title=${latest.prompt_fingerprint}>${formatFingerprint(latest.prompt_fingerprint)}</span>
@@ -985,7 +985,7 @@ export function InferenceTelemetryPanel({ keeper }: { keeper: Keeper }) {
     <div class="mb-5">
       <div class="flex items-center gap-2 mb-2">
         <span class="text-2xs font-semibold uppercase tracking-wider text-[var(--color-fg-muted)]">추론 텔레메트리</span>
-        <span class="text-3xs text-[var(--color-fg-disabled)]">${telemetryPoints.length}개 지점</span>
+        <span class="text-3xs text-[var(--color-fg-disabled)]" role="status" aria-live="polite">${telemetryPoints.length}개 지점</span>
         ${lastFp ? html`<span class="text-3xs px-1.5 py-0.5 rounded bg-[var(--white-5)] text-[var(--color-fg-disabled)] font-mono">${lastFp}</span>` : null}
       </div>
       <div class="grid grid-cols-2 md:grid-cols-5 gap-3">

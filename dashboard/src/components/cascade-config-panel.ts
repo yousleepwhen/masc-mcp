@@ -707,7 +707,7 @@ function HealthTable({
         onInput=${(e: Event) => { searchQuery.value = (e.target as HTMLInputElement).value }}
       />
       ${isFiltering
-        ? html`<span class="text-xs text-[var(--color-fg-muted)]">${filtered.length}/${health.providers.length}건</span>`
+        ? html`<span class="text-xs text-[var(--color-fg-muted)]" role="status" aria-live="polite">${filtered.length}/${health.providers.length}건</span>`
         : null}
     </div>
     ${isFiltering && filtered.length === 0
@@ -935,7 +935,7 @@ function StrategyTraceTable({
     ? trace.events.filter(e => traceEventMatchesSearch(e, query))
     : trace.events
   return html`
-    ${query ? html`<div class="text-xs text-[var(--color-fg-muted)] mb-2">${filtered.length}/${trace.events.length}건</div>` : null}
+    ${query ? html`<div class="text-xs text-[var(--color-fg-muted)] mb-2" role="status" aria-live="polite">${filtered.length}/${trace.events.length}건</div>` : null}
     <table class="w-full text-xs" aria-label="strategy trace 이벤트">
       <thead>
         <tr class="text-[var(--color-fg-muted)] border-b border-[var(--card-border)]">
