@@ -35,11 +35,11 @@ function FocusSidebarContent({ compact = false }: FocusSidebarProps) {
         ? null
         : html`
             <div class="focus-sidebar-head flex items-center justify-between gap-3 border-b border-[var(--border-slate-12)] pb-3">
-              <h3 class="m-0 text-[0.95rem] font-semibold text-[var(--color-fg-secondary)]">에이전트</h3>
+              <h3 id="focus-sidebar-heading" class="m-0 text-[0.95rem] font-semibold text-[var(--color-fg-secondary)]">에이전트</h3>
               <span class="text-xs text-[var(--color-fg-muted)]">${list.length}명 활성</span>
             </div>
           `}
-      <div class="grid content-start gap-1.5 overflow-y-auto pr-1 ${compact ? 'max-h-[32vh]' : 'max-h-140'}">
+      <div class="grid content-start gap-1.5 overflow-y-auto pr-1 ${compact ? 'max-h-[32vh]' : 'max-h-140'}" role="region" aria-labelledby="focus-sidebar-heading">
         ${list.length === 0
           ? html`<div class="py-6 text-center text-[var(--color-fg-muted)] text-sm">활성 에이전트 없음. masc_join으로 접속하면 여기에 표시됩니다.</div>`
           : list.map(agent => html`
