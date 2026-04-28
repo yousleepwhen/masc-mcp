@@ -180,7 +180,7 @@ export function ServerConfig() {
           onInput=${(e: Event) => { searchQuery.value = (e.target as HTMLInputElement).value }}
         />
         <button type="button"
-          class="px-3 py-1.5 text-xs rounded bg-[var(--bg-surface)] border border-[var(--color-border-divider)] text-[var(--color-fg-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--color-bg-hover)] transition-colors"
+          class="px-3 py-1.5 text-xs rounded bg-[var(--bg-surface)] border border-[var(--color-border-divider)] text-[var(--color-fg-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--color-bg-hover)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)]"
           onClick=${() => void refreshServerConfig()}
           disabled=${loading}
         >

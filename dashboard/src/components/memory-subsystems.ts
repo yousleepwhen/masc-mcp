@@ -582,7 +582,9 @@ export function MemorySubsystems() {
       <section aria-label="아키텍처 데이터 흐름도">
         <button type="button"
           onClick=${() => (showArch.value = !showArch.value)}
-          class="w-full flex items-center justify-between p-2 bg-[var(--white-5)] rounded hover:bg-[var(--white-5)] transition-colors"
+          aria-expanded=${showArch.value}
+          aria-controls="memory-arch-flow"
+          class="w-full flex items-center justify-between p-2 bg-[var(--white-5)] rounded hover:bg-[var(--white-5)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)]"
         >
           <span class="text-sm font-semibold text-[var(--color-fg-muted)] flex items-center gap-2">
             <span class="text-xs">${showArch.value ? '▼' : '▶'}</span>
@@ -595,7 +597,7 @@ export function MemorySubsystems() {
         ${
           showArch.value
             ? html`
-                <div class="mt-2 bg-[var(--white-5)] rounded p-3">
+                <div id="memory-arch-flow" class="mt-2 bg-[var(--white-5)] rounded p-3">
                   <${MermaidGraph}
                     source=${ARCHITECTURE_FLOW}
                     prefix="memory-arch"
@@ -696,7 +698,7 @@ export function MemorySubsystems() {
                 <span class="text-[var(--color-fg-muted)]">시냅스 쌍 필터</span>
                 <span class="text-[var(--color-fg-muted)] font-mono">${shortAgentLabel(pairFilter.from)} → ${shortAgentLabel(pairFilter.to)}</span>
                 <button type="button"
-                  class="ml-auto text-[var(--color-fg-muted)] hover:text-[var(--color-fg-muted)]"
+                  class="ml-auto text-[var(--color-fg-muted)] hover:text-[var(--color-fg-muted)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)]"
                   onClick=${() => setSynapsePairFilter(null)}
                   aria-label="시냅스 쌍 필터 해제"
                 >✕</button>
@@ -738,7 +740,7 @@ export function MemorySubsystems() {
             hasFilter
               ? html`<button type="button"
                   onClick=${clearFilters}
-                  class="text-xs text-[var(--color-fg-muted)] hover:text-[var(--color-fg-muted)] px-2 py-1 border border-[var(--white-10)] rounded hover:border-[var(--white-10)]0"
+                  class="text-xs text-[var(--color-fg-muted)] hover:text-[var(--color-fg-muted)] px-2 py-1 border border-[var(--white-10)] rounded hover:border-[var(--white-10)]0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)]"
                 >
                   필터 해제
                 </button>`

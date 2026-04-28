@@ -426,7 +426,7 @@ export function LogViewer() {
             </label>
             <button
               type="button"
-              class="logs-refresh-btn rounded border border-[var(--accent-22)] bg-[var(--accent-10)] px-3 py-2 text-2xs font-medium text-[#dff3ff]"
+              class="logs-refresh-btn rounded border border-[var(--accent-22)] bg-[var(--accent-10)] px-3 py-2 text-2xs font-medium text-[#dff3ff] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)]"
               onClick=${() => {
                 latestSeq.value = null
                 logResource.reset()
