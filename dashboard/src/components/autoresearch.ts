@@ -138,7 +138,7 @@ function LoopSelector() {
               pressed=${isSelected}
               class="text-xs"
               onClick=${() => selectLoop(loop.loop_id)}>
-              <span class="${statusColor(loop.status)} mr-1">\u25CF</span>
+              <span class="${statusColor(loop.status)} mr-1" aria-hidden="true">\u25CF</span>
               ${loop.loop_id.slice(0, 8)}
               <span class="ml-1 opacity-60">${statusLabel(loop.status)}</span>
               <span class="ml-1 opacity-60">${liveLabel(loop)}</span>
