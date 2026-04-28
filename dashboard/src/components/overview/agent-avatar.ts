@@ -120,6 +120,7 @@ export function AgentAvatar({
       onClick=${onClick}
       onKeyDown=${handleKeyActivate(onClick)}
       role=${onClick ? 'button' : undefined}
+      aria-label=${onClick ? name : undefined}
       tabindex=${onClick ? '0' : undefined}
     >
       ${cells}
