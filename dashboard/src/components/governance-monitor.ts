@@ -207,7 +207,7 @@ export function GovernanceMonitor() {
             : isFiltering && visibleRejections.length === 0
               ? html`<div class="py-4 text-center text-2xs text-[var(--color-fg-muted)]">필터 결과 없음 (${allRejections.length} items)</div>`
               : html`
-                <div class="overflow-x-auto">
+                <div class="overflow-x-auto" tabindex="0">
                   <table class="w-full text-xs" aria-label="도구 거부 현황">
                     <thead>
                       <tr class="text-left text-[var(--color-fg-muted)] border-b border-[var(--color-border-default)]">

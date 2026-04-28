@@ -658,7 +658,7 @@ export function MemorySubsystems() {
                     ? html`<div class="text-sm text-[var(--color-fg-muted)] bg-[var(--white-5)] rounded p-4 text-center" role="status" aria-live="polite">
                         필터 결과 없음 (${synapses.length} items)
                       </div>`
-                    : html`<div class="overflow-x-auto">
+                    : html`<div class="overflow-x-auto" tabindex="0">
                         <table class="w-full text-left" aria-label="Hebbian 시냅스 상세 테이블">
                           <thead>
                             <tr class="border-b border-[var(--white-10)] text-xs text-[var(--color-fg-muted)]">

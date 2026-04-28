@@ -369,7 +369,7 @@ export function PrometheusMetrics() {
             </button>
 
             ${expanded && html`
-              <div id=${`prom-cat-${cat}`} class="mt-3 overflow-x-auto">
+              <div id=${`prom-cat-${cat}`} class="mt-3 overflow-x-auto" tabindex="0">
                 <table class="w-full text-xs" aria-label="Prometheus 메트릭 시계열">
                   <thead>
                     <tr class="border-b border-[var(--card-border)] text-[var(--color-fg-muted)]">
