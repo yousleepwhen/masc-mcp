@@ -260,7 +260,7 @@ function HebbianMatrix({ synapses }: { synapses: MemorySubsystemsSynapse[] }) {
                   stroke=${active ? '#f1f5f9' : isDiag ? 'var(--slate-500)' : 'var(--panel-dark)'}
                   stroke-dasharray=${isDiag ? '2 2' : ''}
                   stroke-width=${active ? '1.5' : '0.5'}
-                  class="cursor-pointer hover:stroke-[var(--color-fg-muted)]"
+                  class="cursor-pointer hover:stroke-[var(--color-fg-muted)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400"
                   tabindex="0"
                   role="button"
                   aria-label=${`${from} to ${to}: ${pct}% — filter episodes for this pair`}
