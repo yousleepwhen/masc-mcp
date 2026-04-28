@@ -1029,7 +1029,7 @@ export function KeeperDetailPage() {
               onSocialSweep=${() => { void runSocialSweep() }}
             />
             <div class="pt-3 border-t border-[var(--border-slate-12)]">
-              <h4 class="m-0 mb-3 text-3xs font-semibold uppercase tracking-wider text-[var(--color-fg-muted)]">호출 검사기</h4>
+              <h3 class="m-0 mb-3 text-3xs font-semibold uppercase tracking-wider text-[var(--color-fg-muted)]">호출 검사기</h3>
               ${diagOpen ? html`<${KeeperToolCallInspector} keeperName=${keeper.name} />` : null}
             </div>
           </div>
@@ -1156,11 +1156,11 @@ export function KeeperDetailPage() {
           </summary>
           <div class="mt-2 flex flex-col gap-4">
             <div class="p-5 rounded border border-card-border bg-card/40 backdrop-blur-sm">
-              <h4 class="m-0 mb-3 text-3xs font-semibold uppercase tracking-wider text-[var(--color-fg-muted)]">저널</h4>
+              <h3 class="m-0 mb-3 text-3xs font-semibold uppercase tracking-wider text-[var(--color-fg-muted)]">저널</h3>
               <${AgentJournalStream} agentName=${keeper.name} />
             </div>
             <div class="p-5 rounded border border-card-border bg-card/40 backdrop-blur-sm">
-              <h4 class="m-0 mb-3 text-3xs font-semibold uppercase tracking-wider text-[var(--color-fg-muted)]">원시 데이터</h4>
+              <h3 class="m-0 mb-3 text-3xs font-semibold uppercase tracking-wider text-[var(--color-fg-muted)]">원시 데이터</h3>
               <${RawDataDebug} keeper=${keeper} />
             </div>
           </div>

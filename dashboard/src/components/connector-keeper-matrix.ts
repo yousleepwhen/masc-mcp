@@ -230,7 +230,7 @@ export function ConnectorKeeperMatrix({ matrix }: { matrix: MatrixData }) {
     <section class="mb-4 rounded border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3" data-panel="connector-keeper-matrix" aria-label="Keeper × Connector 매트릭스">
       <header class="mb-2 flex items-baseline justify-between gap-3">
         <div>
-          <h4 class="text-xs font-semibold uppercase tracking-4 text-[var(--color-fg-primary)]">
+          <h2 class="text-xs font-semibold uppercase tracking-4 text-[var(--color-fg-primary)]">
             Keeper × Connector Matrix
           </h4>
           <p class="mt-0.5 text-3xs text-[var(--color-fg-disabled)]">
