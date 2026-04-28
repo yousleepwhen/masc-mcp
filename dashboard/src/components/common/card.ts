@@ -25,6 +25,8 @@ interface SurfaceCardProps {
   class?: string
   /** Tone class: 'ok' | 'warn' | 'bad' */
   tone?: string
+  /** ARIA role forwarded to the container element (e.g. "listitem"). */
+  role?: string
   testId?: string
   children: ComponentChildren
 }
@@ -33,11 +35,12 @@ export function SurfaceCard({
   variant = 'standard',
   class: cx,
   tone,
+  role,
   testId,
   children,
 }: SurfaceCardProps) {
   const cls = [VARIANT_CLASSES[variant], tone, cx].filter(Boolean).join(' ')
-  return html`<div class=${cls} data-testid=${testId}>${children}</div>`
+  return html`<div class=${cls} role=${role} data-testid=${testId}>${children}</div>`
 }
 
 // ── Section card with label header ──
@@ -69,11 +72,12 @@ interface CardProps {
   title?: ComponentChildren
   class?: string
   variant?: CardVariant
+  role?: string
   testId?: string
   children: ComponentChildren
 }
 
-export function Card({ title, class: cx, variant = 'standard', testId, children }: CardProps) {
+export function Card({ title, class: cx, variant = 'standard', role, testId, children }: CardProps) {
   if (title) {
     return html`
       <${SectionCard} label=${title} class=${cx ?? ''} variant=${variant}>
@@ -81,5 +85,5 @@ export function Card({ title, class: cx, variant = 'standard', testId, children 
       <//>
     `
   }
-  return html`<${SurfaceCard} variant=${variant} class=${cx} testId=${testId}>${children}<//>`
+  return html`<${SurfaceCard} variant=${variant} class=${cx} role=${role} testId=${testId}>${children}<//>`
 }
