@@ -165,6 +165,7 @@ export function App() {
     cancelPendingSSERefreshes()
     void subscribeDashboardRoute(route.value)
     refreshCurrentRoute({ recordVisit: true })
+    document.getElementById('main-content')?.focus()
   }, [route.value.tab, route.value.params.section, route.value.params.view, route.value.params.q])
 
   const currentTab = route.value.tab
@@ -174,6 +175,7 @@ export function App() {
   return html`
     <div class="flex min-h-screen h-screen flex-col overflow-hidden bg-[var(--color-bg-page)] bg-[radial-gradient(ellipse_at_top,rgba(25,40,70,0.3)_0%,rgba(11,18,32,1)_80%)] text-[var(--color-fg-primary)]">
       <a href="#main-content" class="sr-only focus:not-sr-only focus:fixed focus:top-4 focus:left-4 focus:z-[100] focus:rounded-md focus:bg-[var(--color-bg-page)] focus:px-4 focus:py-2 focus:text-sm focus:text-[var(--color-fg-secondary)] focus:shadow-lg focus:ring-2 focus:ring-[var(--accent-45)]">메인 콘텐츠로 건너뛰기</a>
+      <div class="sr-only" role="status" aria-live="polite">${currentView?.label ?? currentTab}${currentSection ? ` — ${currentSection}` : ''}</div>
       <header class="relative z-10 shrink-0 border-b border-[var(--white-5)] bg-[rgba(8,14,26,0.36)] px-4 py-1.5 backdrop-blur-xl">
         <div class="absolute inset-x-0 bottom-0 h-[1px] bg-gradient-to-r from-transparent via-[var(--accent-15)] to-transparent"></div>
         <div class="flex w-full items-center justify-between gap-3 max-[900px]:flex-col max-[900px]:items-stretch">
