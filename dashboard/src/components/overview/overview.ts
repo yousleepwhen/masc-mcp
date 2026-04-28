@@ -290,7 +290,7 @@ function KeeperStrip({ keeperList }: { keeperList: readonly Keeper[] }) {
         ${top.map(
           k => html`
             <li class="flex items-center gap-2 min-w-0">
-              <${StatusDot} size="sm" class=${keeperStatusToneClass(k.status)} />
+              <${StatusDot} size="sm" class=${keeperStatusToneClass(k.status)} ariaLabel=${`상태: ${k.status}`} />
               <${RouteLink}
                 tab="monitoring"
                 params=${{ section: 'keepers', keeper: k.name }}
