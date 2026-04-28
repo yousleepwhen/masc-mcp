@@ -94,7 +94,9 @@ val list_rules_dashboard_json : ?base_path:string -> unit -> Yojson.Safe.t
 val policy_summary_json :
   base_path:string -> keeper_name:string -> Yojson.Safe.t
 
-(** Insert or replace an approval rule. Returns the persisted rule. *)
+(** Insert or replace an approval rule. Returns the persisted rule
+    paired with [true] iff the call created a new rule (vs. updated
+    an existing one keyed by the keeper / tool / input tuple). *)
 val upsert_rule :
   ?base_path:string ->
   keeper_name:string ->
@@ -105,7 +107,7 @@ val upsert_rule :
   ?created_by:string ->
   ?source_approval_id:string ->
   unit ->
-  (approval_rule, string) result
+  approval_rule * bool
 
 (** Delete the rule whose [id] matches. *)
 val delete_rule :
@@ -121,7 +123,7 @@ val find_matching_rule :
   risk_level:risk_level ->
   ?runtime_contract:Yojson.Safe.t ->
   unit ->
-  (approval_rule * rule_match) option
+  rule_match option
 
 (** {1 Audit log} *)
 
@@ -135,11 +137,14 @@ val audit_approval_event :
   ?turn_id:int ->
   ?task_id:string ->
   ?goal_id:string ->
-  goal_ids:string list ->
+  ?goal_ids:string list ->
   ?runtime_contract:Yojson.Safe.t ->
   ?selected_model:string ->
   ?disposition:string ->
   ?disposition_reason:string ->
+  ?rule_match:rule_match ->
+  ?source_approval_id:string ->
+  ?auto_approved:bool ->
   ?decision:string ->
   unit ->
   unit

@@ -23,8 +23,8 @@ val make_routes :
   port:int ->
   host:string ->
   sw:Eio.Switch.t ->
-  clock:[> float Eio.Time.clock_ty ] Eio.Resource.t ->
-  Http.Router.t
+  clock:float Eio.Time.clock_ty Eio.Resource.t ->
+  Http.Router.route list
 (** Compose the full route table. Side-effect: registers connectors
     ([Channel_gate_discord_state], [Channel_gate_imessage_state]) on
     [Channel_gate_connector] before wiring routes. *)
