@@ -315,7 +315,7 @@ export function Observatory() {
       </div>
 
       ${activeView.value === 'timeline' && data.error ? html`
-        <div class="rounded border border-[var(--warn-20)] bg-[var(--warn-10)] px-3 py-2 text-2xs text-[var(--color-status-warn)]">
+        <div class="rounded border border-[var(--warn-20)] bg-[var(--warn-10)] px-3 py-2 text-2xs text-[var(--color-status-warn)]" role="alert">
           일부 데이터 불러오기 실패: ${data.error}
         </div>
       ` : null}
@@ -329,7 +329,7 @@ export function Observatory() {
         : !hasTrackData && data.loading
         ? html`<${LoadingState}>관찰소 데이터 불러오는 중...<//>`
         : html`
-            <div class="flex flex-col gap-2 rounded border border-card-border bg-card/30 p-4">
+            <div class="flex flex-col gap-2 rounded border border-card-border bg-card/30 p-4" role="region" aria-label="관측 타임라인">
               <${TimeAxis} windowStart=${data.windowStart} windowEnd=${data.windowEnd} />
               <${EventTrack}
                 events=${data.events}
@@ -347,8 +347,8 @@ export function Observatory() {
                 windowEnd=${data.windowEnd}
               />
               ${cursorPosition.value === null ? html`
-                <div class="mt-1 text-3xs text-fg-disabled italic">
-                  hover any track for cross-signal readout
+                <div class="mt-1 text-3xs text-fg-disabled italic" aria-hidden="true">
+                  트랙에 포커스하면 교차 신호 요약이 표시됩니다
                 </div>
               ` : null}
             </div>
