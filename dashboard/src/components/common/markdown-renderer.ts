@@ -216,7 +216,7 @@ function renderMarkdown(text: string): string {
     }
     const innerHtml = md.parse((m[1] as string).trim()) as string
     parts.push(
-      `<details class="think-block rounded"><summary>생각 중...</summary><div>${innerHtml}</div></details>`
+      `<details class="think-block rounded"><summary class="cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-45)] focus-visible:rounded-sm">생각 중...</summary><div>${innerHtml}</div></details>`
     )
     lastIdx = m.index + m[0].length
   }

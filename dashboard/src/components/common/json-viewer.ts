@@ -97,7 +97,7 @@ export function JsonViewerCard({ data, title }: { data: unknown; title?: string 
   return html`
     <div class="bg-[var(--color-bg-page)] border border-[var(--color-border-default)] rounded overflow-hidden flex flex-col max-h-100" data-testid="json-viewer-card" data-title=${title ?? ''}>
       ${title ? html`<div class="px-3 py-2 border-b border-[var(--color-border-default)] bg-[var(--white-3)] text-2xs uppercase tracking-wider font-semibold text-[var(--color-fg-muted)]">${title}</div>` : null}
-      <div class="p-3 overflow-y-auto min-h-0 w-full">
+      <div class="p-3 overflow-y-auto min-h-0 w-full" role="region" aria-label=${title ? `${title} JSON` : 'JSON 뷰어'}>
         <${JsonViewer} data=${data} />
       </div>
     </div>
