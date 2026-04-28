@@ -439,11 +439,13 @@ export function TaskDetailOverlay() {
 
       ${'' /* Tab bar */}
       ${hasActivityTab(task) ? html`
-        <div class="flex items-center gap-1 px-6 pt-3 pb-0">
+        <div class="flex items-center gap-1 px-6 pt-3 pb-0" role="tablist" aria-label="태스크 상세 탭">
           ${(['overview', 'activity'] as TaskDetailTab[]).map(tab => html`
             <button
               key=${tab}
               type="button"
+              role="tab"
+              ariaSelected=${activeTab.value === tab}
               class="px-3 py-1.5 rounded text-xs font-medium border cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] ${
                 activeTab.value === tab
                   ? 'border-accent/40 bg-accent/12 text-[var(--color-accent-fg)]'

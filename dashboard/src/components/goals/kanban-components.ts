@@ -134,7 +134,7 @@ function KanbanCard({ task }: { task: Task }) {
           ${canExpand ? html`
             <button
               type="button"
-              class="w-fit rounded border border-card-border/70 bg-white/4 px-2 py-1 text-2xs text-fg-muted transition-colors hover:text-fg-secondary"
+              class="w-fit rounded border border-card-border/70 bg-white/4 px-2 py-1 text-2xs text-fg-muted transition-colors hover:text-fg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
               onClick=${() => toggleTaskExpand(task.id)}
               aria-expanded=${isExpanded}
               aria-controls=${`task-desc-${task.id}`}
@@ -292,7 +292,7 @@ export function TaskBacklog() {
         ${hasSearch ? html`
           <button
             type="button"
-            class="rounded border border-card-border/70 bg-white/4 px-3 py-2 text-xs text-fg-muted transition-colors hover:border-accent/35 hover:text-fg-secondary"
+            class="rounded border border-card-border/70 bg-white/4 px-3 py-2 text-xs text-fg-muted transition-colors hover:border-accent/35 hover:text-fg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
             onClick=${() => {
               resetTaskSearch()
               searchDoneVisibleCount.value = DONE_PAGE_SIZE
@@ -344,7 +344,7 @@ export function TaskBacklog() {
           ${hasMoreDone ? html`
             <button
               type="button"
-              class="w-full rounded border border-card-border/60 bg-white/3 px-3 py-2 text-xs font-medium text-fg-muted transition-colors hover:border-accent/35 hover:text-fg-secondary"
+              class="w-full rounded border border-card-border/60 bg-white/3 px-3 py-2 text-xs font-medium text-fg-muted transition-colors hover:border-accent/35 hover:text-fg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
               onClick=${() => {
                 if (hasSearch) searchDoneVisibleCount.value += DONE_PAGE_SIZE
                 else doneVisibleCount.value += DONE_PAGE_SIZE
