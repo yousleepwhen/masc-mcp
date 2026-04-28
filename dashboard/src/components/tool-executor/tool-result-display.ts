@@ -153,6 +153,7 @@ export function ToolResultDisplay({ success, text, toolName, timestamp }: ToolRe
       <div class="rounded border border-[var(--color-border-default)] bg-[var(--color-bg-page)] overflow-hidden">
         <div class="flex items-center justify-between px-3 py-1.5 border-b border-[var(--color-border-default)]">
           <${ActionButton} variant="subtle" size="sm" class="text-3xs"
+            ariaExpanded=${expanded.value}
             onClick=${() => { expanded.value = !expanded.value }}>
             ${expanded.value ? '접기' : '펼치기'} (${lines}줄)
           <//>
