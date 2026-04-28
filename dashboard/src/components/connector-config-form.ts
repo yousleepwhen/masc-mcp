@@ -318,7 +318,7 @@ export function ConnectorConfigToggle({ connectorId }: { connectorId: string }) 
   return html`
     <button
       type="button"
-      class="cursor-pointer rounded border border-[var(--white-8)] px-2 py-0.5 text-3xs uppercase tracking-4 text-[var(--color-fg-disabled)] hover:bg-[var(--white-8)] hover:text-[var(--color-fg-primary)]"
+      class="cursor-pointer rounded border border-[var(--white-8)] px-2 py-0.5 text-3xs uppercase tracking-4 text-[var(--color-fg-disabled)] hover:bg-[var(--white-8)] hover:text-[var(--color-fg-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-45)] focus-visible:ring-offset-1"
       aria-expanded=${entry.open}
       aria-controls=${`connector-config-${connectorId}`}
       onClick=${onClick}
@@ -391,7 +391,7 @@ function FieldWidget({ id, field, value, revealed }: {
             />
             <button
               type="button"
-              class="shrink-0 cursor-pointer rounded border border-[var(--white-8)] p-1 text-[var(--color-fg-disabled)] hover:bg-[var(--white-8)] hover:text-[var(--color-fg-primary)]"
+              class="shrink-0 cursor-pointer rounded border border-[var(--white-8)] p-1 text-[var(--color-fg-disabled)] hover:bg-[var(--white-8)] hover:text-[var(--color-fg-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-45)] focus-visible:ring-offset-1"
               aria-label=${revealed ? '값 숨기기' : '값 표시'}
               onClick=${toggleReveal}
             >
@@ -443,7 +443,7 @@ export function ConnectorConfigForm({ connectorId }: { connectorId: string }) {
         <div class="mt-1 text-3xs opacity-80">${entry.error}</div>
         <button
           type="button"
-          class="mt-2 cursor-pointer rounded border border-[var(--bad-20)] px-2 py-1 text-3xs hover:bg-[var(--bad-10)]"
+          class="mt-2 cursor-pointer rounded border border-[var(--bad-20)] px-2 py-1 text-3xs hover:bg-[var(--bad-10)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-45)] focus-visible:ring-offset-1"
           aria-label="config schema 다시 가져오기"
           onClick=${() => fetchSchema(connectorId)}
         >다시 시도</button>
@@ -471,7 +471,7 @@ export function ConnectorConfigForm({ connectorId }: { connectorId: string }) {
                 <span class="ml-2 text-[var(--color-status-ok)]">· 저장됨 ${new Date(entry.lastSavedAt).toLocaleTimeString()}</span>
                 <button
                   type="button"
-                  class="ml-2 cursor-pointer rounded border border-[var(--ok-20)] bg-[var(--ok-10)] px-1.5 py-0.5 text-3xs text-[var(--color-status-ok)] hover:bg-[var(--ok-10)] disabled:cursor-not-allowed disabled:opacity-50"
+                  class="ml-2 cursor-pointer rounded border border-[var(--ok-20)] bg-[var(--ok-10)] px-1.5 py-0.5 text-3xs text-[var(--color-status-ok)] hover:bg-[var(--ok-10)] disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-45)] focus-visible:ring-offset-1"
                   disabled=${entry.restarting}
                   title="POST /sidecar/stop → 800ms → POST /sidecar/start"
                   aria-label="sidecar 재시작"

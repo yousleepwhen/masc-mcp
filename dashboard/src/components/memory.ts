@@ -271,7 +271,7 @@ function SortBar() {
           return html`
             <button type="button"
               aria-pressed=${!isHidden}
-              class="px-2.5 py-1 rounded text-2xs font-medium transition-all duration-150 border cursor-pointer
+              class="px-2.5 py-1 rounded text-2xs font-medium transition-all duration-150 border cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-45)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-bg-surface)]
                 ${isHidden
                   ? 'bg-[var(--accent-12)] text-[var(--color-accent-fg)] border-[var(--accent-18)] line-through opacity-60'
                   : 'bg-transparent text-[var(--color-fg-muted)] border-[var(--border-slate-16)] hover:bg-[var(--white-6)]'
@@ -321,12 +321,12 @@ function SortBar() {
               ${bulkDeleting.value ? '삭제 중...' : `선택 삭제 (${selectedPostIds.value.size})`}
             <//>
             <button type="button"
-              class="px-2 py-1 rounded text-2xs font-medium transition-all duration-150 border cursor-pointer bg-transparent text-[var(--color-fg-muted)] border-[var(--border-slate-16)] hover:bg-[var(--white-6)]"
+              class="px-2 py-1 rounded text-2xs font-medium transition-all duration-150 border cursor-pointer bg-transparent text-[var(--color-fg-muted)] border-[var(--border-slate-16)] hover:bg-[var(--white-6)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-45)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-bg-surface)]"
               onClick=${() => { selectedPostIds.value = new Set() }}
             >선택 해제</button>
           ` : null}
           <button type="button"
-            class="px-3 py-1 rounded text-2xs font-medium transition-all duration-150 border cursor-pointer bg-transparent text-[var(--color-fg-muted)] border-[var(--border-slate-16)] hover:bg-[var(--white-6)] hover:text-[var(--color-fg-primary)] disabled:opacity-50 disabled:cursor-not-allowed"
+            class="px-3 py-1 rounded text-2xs font-medium transition-all duration-150 border cursor-pointer bg-transparent text-[var(--color-fg-muted)] border-[var(--border-slate-16)] hover:bg-[var(--white-6)] hover:text-[var(--color-fg-primary)] disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-45)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-bg-surface)]"
             onClick=${refreshBoard}
             disabled=${boardLoading.value}
           >
@@ -422,13 +422,13 @@ function PostCard({ post }: { post: BoardPost }) {
       <div class="flex flex-col items-center gap-0.5 pt-0.5 min-w-9">
         <button type="button"
           aria-label="추천"
-          class="vote-btn upvote w-7 h-5 flex items-center justify-center rounded text-2xs text-[var(--color-fg-muted)] hover:text-[var(--warn-bright)] hover:bg-[var(--warn-10)] transition-colors cursor-pointer border-0 bg-transparent"
+          class="vote-btn upvote w-7 h-5 flex items-center justify-center rounded text-2xs text-[var(--color-fg-muted)] hover:text-[var(--warn-bright)] hover:bg-[var(--warn-10)] transition-colors cursor-pointer border-0 bg-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-45)]"
           onClick=${(event: Event) => handleVote('up', event)}
         ><span aria-hidden="true">▲</span></button>
         <span class="text-sm font-semibold tabular-nums text-[var(--color-fg-secondary)]">${post.votes ?? 0}</span>
         <button type="button"
           aria-label="비추천"
-          class="vote-btn downvote w-7 h-5 flex items-center justify-center rounded text-2xs text-[var(--color-fg-muted)] hover:text-[var(--color-accent-fg)] hover:bg-[var(--accent-10)] transition-colors cursor-pointer border-0 bg-transparent"
+          class="vote-btn downvote w-7 h-5 flex items-center justify-center rounded text-2xs text-[var(--color-fg-muted)] hover:text-[var(--color-accent-fg)] hover:bg-[var(--accent-10)] transition-colors cursor-pointer border-0 bg-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-45)]"
           onClick=${(event: Event) => handleVote('down', event)}
         ><span aria-hidden="true">▼</span></button>
       </div>
@@ -450,7 +450,7 @@ function PostCard({ post }: { post: BoardPost }) {
           <span class="text-xs text-[var(--color-fg-muted)]">${authorAvatar(authorAvatarKey)}</span>
           <button
             type="button"
-            class="text-xs text-[var(--color-fg-muted)] hover:text-[var(--color-accent-fg)] transition-colors cursor-pointer bg-transparent border-0 p-0"
+            class="text-xs text-[var(--color-fg-muted)] hover:text-[var(--color-accent-fg)] transition-colors cursor-pointer bg-transparent border-0 p-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-45)] focus-visible:ring-offset-1"
             title=${authorTitle}
             aria-label=${`작성자: ${authorLabel}`}
             onClick=${(e: Event) => navigateToAuthor(post.author, e, post.author_identity)}
@@ -519,7 +519,7 @@ export function Memory() {
           <div>
             <${MemorySummary} />
             <button type="button"
-              class="mb-4 px-3 py-1.5 rounded text-xs font-medium text-[var(--color-fg-muted)] bg-transparent border border-[var(--border-slate-16)] hover:bg-[var(--white-6)] hover:text-[var(--color-fg-primary)] transition-all cursor-pointer"
+              class="mb-4 px-3 py-1.5 rounded text-xs font-medium text-[var(--color-fg-muted)] bg-transparent border border-[var(--border-slate-16)] hover:bg-[var(--white-6)] hover:text-[var(--color-fg-primary)] transition-all cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-45)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-bg-surface)]"
               onClick=${() => navigate('workspace', { section: 'board' })}
             >← 게시판으로 돌아가기</button>
             ${detailLoading.value
