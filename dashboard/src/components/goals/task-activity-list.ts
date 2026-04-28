@@ -7,6 +7,7 @@ import { EmptyState } from '../common/empty-state'
 import { ErrorState, LoadingState } from '../common/feedback-state'
 import { TimeAgo } from '../common/time-ago'
 import { TextInput } from '../common/input'
+import { FilterChips } from '../common/filter-chips'
 import { JsonViewerCard, parseJsonLikeData } from '../common/json-viewer'
 import { Settings, MessageSquare, CheckSquare, Heart, RefreshCcw, Dot, ChevronRight } from 'lucide-preact'
 import type { UnifiedTraceEvent, TraceEventKind } from '../session-trace/session-trace-state'
@@ -157,18 +158,7 @@ export function TaskActivityList({
         }}
       />
       <div class="flex items-center gap-1.5">
-        ${filterChips.map(chip => html`
-          <button
-            key=${chip.key}
-            type="button"
-            class="px-2 py-1 rounded text-2xs font-medium border cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] ${
-              filter === chip.key
-                ? 'border-accent/40 bg-accent/12 text-[var(--color-accent-fg)]'
-                : 'border-[var(--white-10)] bg-[var(--white-4)] text-fg-muted hover:bg-[var(--white-8)]'
-            }"
-            onClick=${() => { activeFilter.value = chip.key }}
-          >${chip.label}</button>
-        `)}
+        <${FilterChips} chips=${filterChips} active=${activeFilter} ariaLabel="활동 필터" size="sm" tone="accent" />
         <span class="ml-auto text-3xs text-fg-disabled tabular-nums">${filtered.length}건</span>
       </div>
       <div class="flex flex-col gap-0.5 max-h-100 overflow-y-auto" role="log" aria-label="작업 활동 목록">
