@@ -162,13 +162,15 @@ export function StartAutoresearchForm() {
 
         <button type="button"
           class="self-start text-2xs text-[var(--color-fg-muted)] hover:text-[var(--color-fg-primary)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--color-bg-page)]"
+          aria-expanded=${formShowAdvanced.value}
+          aria-controls="autoresearch-advanced-settings"
           onClick=${() => { formShowAdvanced.value = !formShowAdvanced.value }}
         >
           ${formShowAdvanced.value ? '고급 설정 접기 \u25B2' : '고급 설정 \u25BC'}
         </button>
 
         ${formShowAdvanced.value ? html`
-          <div class="grid grid-cols-2 gap-3 border-t border-card-border pt-3">
+          <div id="autoresearch-advanced-settings" class="grid grid-cols-2 gap-3 border-t border-card-border pt-3">
             <label class="flex flex-col gap-1">
               <span class="text-3xs uppercase tracking-wider text-[var(--color-fg-muted)]">작업 디렉토리</span>
               <${TextInput}
