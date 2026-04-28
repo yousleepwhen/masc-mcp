@@ -88,7 +88,7 @@ export function VirtualList<T>({
   // Below threshold: render all items directly, no virtualization
   if (!virtualize) {
     return html`
-      <div class=${className}>
+      <div class=${className} role="list" aria-setsize=${items.length}>
         ${items.map((item, i) => renderItem(item, i))}
       </div>
     `
@@ -99,7 +99,7 @@ export function VirtualList<T>({
   const visible = items.slice(range.start, range.end)
 
   return html`
-    <div ref=${containerRef} class=${className}>
+    <div ref=${containerRef} class=${className} role="list" aria-setsize=${items.length}>
       <div class="virtual-list-spacer" style=${{ height: `${totalHeight}px`, position: 'relative' }}>
         <div
           class="virtual-list-viewport"
@@ -114,7 +114,7 @@ export function VirtualList<T>({
         >
           ${visible.map((item, i) => {
             const idx = range.start + i
-            return html`<div key=${getKey(item)}>${renderItem(item, idx)}</div>`
+            return html`<div key=${getKey(item)} role="listitem" aria-posinset=${idx + 1}>${renderItem(item, idx)}</div>`
           })}
         </div>
       </div>
