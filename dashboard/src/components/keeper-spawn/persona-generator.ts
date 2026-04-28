@@ -103,7 +103,7 @@ export function PersonaGenerator() {
             value=${concept.value}
             placeholder="good evil chaos research keeper"
             onInput=${(e: Event) => { concept.value = (e.target as HTMLTextAreaElement).value }}
-            class="w-full rounded border border-[var(--white-10)] bg-[var(--white-4)] px-2 py-2 text-2xs text-[var(--color-fg-primary)] placeholder:text-[var(--color-fg-disabled)] focus:border-[var(--color-accent-fg)]"
+            class="w-full rounded border border-[var(--white-10)] bg-[var(--white-4)] px-2 py-2 text-2xs text-[var(--color-fg-primary)] placeholder:text-[var(--color-fg-disabled)] focus:border-[var(--color-accent-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)]"
           />
         </div>
 
@@ -236,7 +236,7 @@ export function PersonaGenerator() {
             value=${profileText.value}
             placeholder="초안을 생성하면 profile.json이 표시됩니다"
             onInput=${(e: Event) => { profileText.value = (e.target as HTMLTextAreaElement).value }}
-            class="w-full rounded border border-[var(--white-10)] bg-[var(--color-bg-page)] px-2 py-2 font-mono text-3xs leading-5 text-[var(--color-fg-primary)] placeholder:text-[var(--color-fg-disabled)] focus:border-[var(--color-accent-fg)]"
+            class="w-full rounded border border-[var(--white-10)] bg-[var(--color-bg-page)] px-2 py-2 font-mono text-3xs leading-5 text-[var(--color-fg-primary)] placeholder:text-[var(--color-fg-disabled)] focus:border-[var(--color-accent-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)]"
           />
         </div>
 

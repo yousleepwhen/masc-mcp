@@ -82,7 +82,7 @@ export function ExcusePatterns() {
             name="patterns"
             aria-label="패턴 JSON 편집"
             aria-describedby="excuse-patterns-help"
-            class="w-full h-96 p-3 bg-[var(--bg-card)] border border-[var(--color-border-divider)] rounded font-mono text-sm mb-4 text-[var(--text-primary)]"
+            class="w-full h-96 p-3 bg-[var(--bg-card)] border border-[var(--color-border-divider)] rounded font-mono text-sm mb-4 text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)]"
             spellcheck="false"
           >${jsonStr}</textarea>
           
