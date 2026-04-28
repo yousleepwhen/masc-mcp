@@ -3,6 +3,7 @@
 
 import { html } from 'htm/preact'
 import type { ComponentChildren } from 'preact'
+import { useId } from 'preact/hooks'
 import { SectionHeader } from './section-header'
 
 // ── Class constants (CARD_STANDARD exported for inline section usage) ──
@@ -53,11 +54,13 @@ export function SectionCard({
   variant = 'light',
   children,
 }: SectionCardProps) {
+  const headingId = useId()
+  const cls = [VARIANT_CLASSES[variant], 'flex flex-col gap-4', cx].filter(Boolean).join(' ')
   return html`
-    <${SurfaceCard} variant=${variant} class="flex flex-col gap-4 ${cx ?? ''}">
-      <${SectionHeader}>${label}<//>
+    <section class=${cls} aria-labelledby=${headingId}>
+      <${SectionHeader} id=${headingId}>${label}<//>
       ${children}
-    <//>
+    </section>
   `
 }
 

@@ -18,6 +18,8 @@ interface SectionHeaderProps {
   /** Heading element to render. Default 'h2' (top-level card sections). Use 'h3' for sub-sections. */
   as?: HeadingLevel
   class?: string
+  /** ID for aria-labelledby association from a parent <section>. */
+  id?: string
   /** Right-side slot (counts, actions) */
   right?: ComponentChildren
   children: ComponentChildren
@@ -28,12 +30,13 @@ export function SectionHeader({
   size = 'sm',
   as: Tag = 'h2',
   class: cx,
+  id,
   right,
   children,
 }: SectionHeaderProps) {
   return html`
     <div class="flex items-center justify-between gap-2 ${cx ?? ''}">
-      <${Tag} class="m-0 ${SIZE_CLASSES[size]} uppercase tracking-[0.06em] text-[var(--color-fg-muted)] font-medium">${children}<//>
+      <${Tag} id=${id} class="m-0 ${SIZE_CLASSES[size]} uppercase tracking-[0.06em] text-[var(--color-fg-muted)] font-medium">${children}<//>
       ${right ?? null}
     </div>
   `
