@@ -117,10 +117,11 @@ export function filterAttributionEvents(
 }
 
 function GateCard({
-  gate, summary, onSelect,
+  gate, summary, active, onSelect,
 }: {
   gate: string
   summary: GateSummary | null
+  active: boolean
   onSelect: () => void
 }) {
   const isLive = summary !== null && summary.total > 0
@@ -134,7 +135,8 @@ function GateCard({
   return html`
     <button
       type="button"
-      class="text-left w-full focus-visible:ring-2 focus:ring-[var(--accent-20)]0/50 rounded ${toneClass}"
+      class="text-left w-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-20)]0/50 rounded ${toneClass}"
+      aria-pressed=${active}
       onClick=${onSelect}
     >
       <${SurfaceCard} variant="compact">
@@ -172,6 +174,7 @@ function EventRow({
     <button
       type="button"
       class="w-full text-left px-3 py-2 border-b border-[var(--color-border-default)] flex items-center gap-3 text-xs ${rowBg}"
+      aria-pressed=${active}
       onClick=${onSelect}
     >
       <span class="text-2xs font-mono text-[var(--color-fg-muted)] w-20 shrink-0">
@@ -308,6 +311,7 @@ export function AttributionPanel() {
           <${GateCard}
             gate=${gate}
             summary=${byGate.get(gate) ?? null}
+            active=${filterGate.value === gate}
             onSelect=${() => {
               filterGate.value = filterGate.value === gate ? null : gate
               selectedEventIdx.value = null
