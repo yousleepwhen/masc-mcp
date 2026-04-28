@@ -20,7 +20,7 @@ import {
 import { route } from '../router'
 import { TELEMETRY_AUTO_REFRESH_MS } from '../config/constants'
 import { TELEMETRY_SOURCE_META, telemetrySourceMeta } from '../config/telemetry-sources'
-import { formatTimeAgo } from '../lib/format-time'
+import { TimeAgo } from './common/time-ago'
 import { formatAutoRefreshLabel, setupVisibleAutoRefresh } from '../lib/auto-refresh'
 import { isAbortError } from '../lib/async-state'
 import { OasHealthChip } from './oas-health-chip'
@@ -123,10 +123,6 @@ function formatTs(ts: number): string {
     month: '2-digit', day: '2-digit',
     hour: '2-digit', minute: '2-digit', second: '2-digit',
   })
-}
-
-function timeAgoSafe(ts: number): string {
-  return ts === 0 ? '' : formatTimeAgo(ts)
 }
 
 function normalizeText(value: unknown): string | null {
@@ -506,9 +502,7 @@ function EntryRow({ entry }: { entry: TelemetryEntry }) {
           aria-controls=${rowContentId}
         >
           <span class="font-mono font-bold ${meta.color} w-4 text-center flex-shrink-0">${meta.icon}</span>
-          <span class="font-mono text-[var(--color-fg-muted)] w-28 flex-shrink-0" title=${formatTs(ts)}>
-            ${timeAgoSafe(ts)}
-          </span>
+          <${TimeAgo} timestamp=${ts} class="font-mono text-[var(--color-fg-muted)] w-28 flex-shrink-0" />
           ${success != null ? html`
             <span class="flex-shrink-0 w-4 ${success ? 'text-[var(--ok)]' : 'text-[var(--bad-light)]'}" role="img" aria-label=${success ? '성공' : '실패'}>
               ${success ? 'O' : 'X'}
@@ -581,9 +575,7 @@ function GroupRow({ item }: { item: Extract<TelemetryDisplayItem, { kind: 'group
           onClick=${() => { expanded.value = !expanded.value }}
         >
           <span class="font-mono font-bold ${meta.color} w-4 text-center flex-shrink-0">${meta.icon}</span>
-          <span class="font-mono text-[var(--color-fg-muted)] w-28 flex-shrink-0" title=${`${formatTs(item.oldestTs)} → ${formatTs(item.latestTs)}`}>
-            ${timeAgoSafe(item.latestTs)}
-          </span>
+          <${TimeAgo} timestamp=${item.latestTs} class="font-mono text-[var(--color-fg-muted)] w-28 flex-shrink-0" />
           <span class="flex-shrink-0 w-4 text-[var(--color-fg-disabled)]">~</span>
           <span class="font-mono text-[var(--color-fg-secondary)] truncate flex-1" title=${`${meta.label} · ${item.label} · ${item.count} events`}>
             ${meta.label} · ${item.label} · ${item.count} events
@@ -620,7 +612,7 @@ function GroupRow({ item }: { item: Extract<TelemetryDisplayItem, { kind: 'group
             return html`
               <div class="flex items-center gap-2 rounded bg-[var(--black-20)] px-2 py-1.5 text-3xs" key=${`${item.key}:${index}`}>
                 <span class="font-mono font-bold ${entryMeta.color} w-4 text-center flex-shrink-0">${entryMeta.icon}</span>
-                <span class="font-mono text-[var(--color-fg-disabled)] w-24 flex-shrink-0" title=${formatTs(ts)}>${timeAgoSafe(ts)}</span>
+                <${TimeAgo} timestamp=${ts} class="font-mono text-[var(--color-fg-disabled)] w-24 flex-shrink-0" />
                 <span class="font-mono text-[var(--color-fg-secondary)] truncate flex-1" title=${entryPreview(entry)}>${entryPreview(entry)}</span>
               </div>
             `
