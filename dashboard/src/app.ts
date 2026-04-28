@@ -221,6 +221,10 @@ export function App() {
         </div>
       </header>
 
+      <a href="#main-content"
+        class="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-[100] focus:rounded focus:border focus:border-[var(--accent-30)] focus:bg-[var(--accent-20)] focus:px-3 focus:py-1.5 focus:text-sm focus:text-[var(--color-accent-fg)] focus:outline-none"
+      >메인 콘텐츠로 이동</a>
+
       <${Suspense} fallback=${null}>
         <${LazyRemoteWarningBanner} />
       <//>
