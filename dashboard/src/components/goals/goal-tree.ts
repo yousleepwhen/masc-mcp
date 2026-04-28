@@ -623,6 +623,7 @@ function DetailTabs({ active }: { active: GoalDetailTab }) {
         <button
           key=${tab}
           type="button"
+          aria-pressed=${active === tab}
           class="rounded border px-3 py-1.5 text-xs font-semibold uppercase tracking-wider transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${active === tab
             ? 'border-accent/35 bg-[var(--accent-10)] text-accent'
             : 'border-card-border/60 bg-white/3 text-fg-primary hover:border-card-border/90'}"

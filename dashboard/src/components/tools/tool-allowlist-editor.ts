@@ -568,6 +568,7 @@ export function ToolAllowlistEditor({
                 ? 'border-[var(--accent-30)] bg-[var(--accent-soft)] text-[var(--color-accent-fg)]'
                 : 'border-[var(--color-border-default)] bg-[var(--white-3)] text-[var(--color-fg-muted)]'
             }`}
+            aria-pressed=${policyMode.value === mode}
             onClick=${() => { policyMode.value = mode; textInputSection.value = null }}
           >${mode}</button>
         `)}

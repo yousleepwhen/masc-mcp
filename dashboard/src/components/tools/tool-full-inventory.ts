@@ -120,6 +120,7 @@ export function FullInventoryView({
       <div class="flex flex-wrap gap-2 mb-4">
         ${(Object.keys(SURFACE_LABELS) as SurfaceFilter[]).map(key => html`
           <button type="button"
+            aria-pressed=${surfaceFilter.value === key}
             class=${`px-3 py-1.5 rounded text-sm font-medium border transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] ${surfaceFilter.value === key ? 'border-[var(--color-accent-fg)]/40 text-[var(--color-accent-fg)] bg-[var(--accent-8)]' : 'border-[var(--color-border-default)] bg-[var(--white-4)] hover:bg-[var(--white-8)] text-[var(--color-fg-primary)]'}`}
             onClick=${() => { surfaceFilter.value = key }}
           >
