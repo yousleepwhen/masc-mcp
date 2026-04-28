@@ -149,7 +149,7 @@ export function AgentLiveTimeline({ name }: { name: string }) {
   return html`
     <div class="flex flex-col gap-2">
       <div class="flex items-center justify-between gap-2 flex-wrap">
-        <${FilterChips} chips=${FILTER_CHIPS} active=${activeFilter} />
+        <${FilterChips} chips=${FILTER_CHIPS} active=${activeFilter} ariaLabel="이벤트 필터" />
         <div class="flex items-center gap-2 text-2xs">
           <span class="px-2 py-0.5 rounded bg-[var(--white-4)] border border-[var(--white-8)] text-[var(--color-fg-muted)] text-3xs">${eventsPerMin}/min</span>
           <span class="text-[var(--color-fg-muted)]">${filtered.length} events</span>
@@ -158,6 +158,7 @@ export function AgentLiveTimeline({ name }: { name: string }) {
               ? 'border-[rgba(34,197,94,0.4)] text-[var(--color-status-ok)] bg-[var(--white-4)]'
               : 'border-[var(--white-10)] text-[var(--color-fg-disabled)] bg-[var(--white-4)]'}"
             onClick=${() => { autoScroll.value = !autoScroll.value }}
+            aria-pressed=${autoScroll.value}
             title=${autoScroll.value ? '자동 스크롤 ON' : '자동 스크롤 OFF'}
           >
             ${autoScroll.value ? 'AUTO' : 'MANUAL'}

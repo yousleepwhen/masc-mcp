@@ -182,7 +182,7 @@ function ActionTimeline({ data }: { data: ActivityGraphResponse }) {
           </div>
         </div>
         <div class="flex flex-wrap items-center gap-2">
-          <${FilterChips} chips=${chips} active=${actionFilter} tone="accent" />
+          <${FilterChips} chips=${chips} active=${actionFilter} ariaLabel="액션 필터" tone="accent" />
           <${TextInput}
             type="search"
             value=${query}

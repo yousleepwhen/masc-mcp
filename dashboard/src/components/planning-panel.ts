@@ -194,6 +194,7 @@ export function PlanningPanel() {
         chips=${VIEW_CHIPS}
         value=${view}
         onChange=${updateViewParam}
+        ariaLabel="기획 뷰 선택"
         size="sm"
         tone="accent"
       />
