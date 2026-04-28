@@ -87,6 +87,7 @@ export function ConfirmDialogOverlay() {
   return html`
     <${DialogOverlay}
       labelledBy="confirm-dialog-title"
+      describedBy="confirm-dialog-message"
       onClose=${handleClose}
       overlayClass="fixed inset-0 z-[100] flex items-center justify-center p-4"
       panelClass="w-full max-w-100 bg-[rgba(13,21,38,0.98)] rounded-md border border-[var(--color-border-default)] shadow-[0_24px_64px_rgba(0,0,0,0.6)] overflow-hidden"
@@ -98,7 +99,7 @@ export function ConfirmDialogOverlay() {
           </div>
           <div class="flex-1 min-w-0 pt-0.5">
             <h2 id="confirm-dialog-title" class="text-lg font-semibold text-fg-secondary mb-1 leading-snug">${state.title}</h2>
-            <p class="text-sm text-fg-primary leading-relaxed opacity-90 whitespace-pre-wrap">${state.message}</p>
+            <p id="confirm-dialog-message" class="text-sm text-fg-primary leading-relaxed opacity-90 whitespace-pre-wrap">${state.message}</p>
           </div>
         </div>
         <div class="mt-6 flex items-center justify-end gap-2">
