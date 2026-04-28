@@ -221,7 +221,7 @@ export function KeeperChatPanel({ name }: { name: string }) {
 
       <div class="px-4 py-4">
         ${chatAccess.message
-          ? html`<div class="mb-4 rounded-card border border-[var(--warn-20)] bg-[var(--warn-10)] px-3 py-2.5 text-xs leading-loose text-[var(--warn-bright)]">${chatAccess.message}</div>`
+          ? html`<div role="alert" class="mb-4 rounded-card border border-[var(--warn-20)] bg-[var(--warn-10)] px-3 py-2.5 text-xs leading-loose text-[var(--warn-bright)]">${chatAccess.message}</div>`
           : null}
         <${ChatTranscript}
           entries=${transcriptEntries}

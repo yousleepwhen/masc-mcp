@@ -233,6 +233,7 @@ function MissionPartyCard({ active }: { active: DashboardMissionSessionCard | nu
       ${blocker !== null && blocker !== undefined && blocker !== ''
         ? html`
             <div
+              role="alert"
               class="mt-3 rounded border border-[var(--color-status-warn)]/40 bg-[var(--color-status-warn)]/10 px-2 py-1 text-2xs text-[var(--color-status-warn)]"
               data-testid="overview-party-blocker"
             >
