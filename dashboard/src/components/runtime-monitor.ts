@@ -461,7 +461,7 @@ export function RuntimeMonitor() {
           />
         </div>
         ${(metrics?.models ?? []).length > 0 && filterModelMetrics(metrics?.models ?? [], modelSearch.value).length === 0
-          ? html`<div class="text-2xs text-[var(--color-fg-muted)] mb-2">검색 결과 없음 (${metrics?.models.length ?? 0}개 중)</div>`
+          ? html`<div class="text-2xs text-[var(--color-fg-muted)] mb-2" role="status" aria-live="polite">검색 결과 없음 (${metrics?.models.length ?? 0}개 중)</div>`
           : null}
         <div class="flex flex-col gap-3" role="list" aria-label="모델 메트릭 목록">
           ${(metrics?.models ?? []).length > 0

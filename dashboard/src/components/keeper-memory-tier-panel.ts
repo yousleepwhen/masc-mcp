@@ -182,7 +182,7 @@ export function KeeperMemoryTierPanel({
       </div>
 
       ${visible.length === 0 ? html`
-        <div class="py-4 text-center text-2xs text-[var(--color-fg-disabled)]">
+        <div class="py-4 text-center text-2xs text-[var(--color-fg-disabled)]" role="status" aria-live="polite">
           필터 결과 없음
         </div>
       ` : null}

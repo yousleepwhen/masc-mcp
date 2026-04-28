@@ -1113,7 +1113,7 @@ function ConnectorLivePanel({
                 />
               </div>
               ${isFilteringKeepers && visibleKnownGroups.length === 0
-                ? html`<div class="py-4 text-center text-2xs text-[var(--color-fg-disabled)]">필터 결과 없음 (${knownGroups.length} keepers)</div>`
+                ? html`<div class="py-4 text-center text-2xs text-[var(--color-fg-disabled)]" role="status" aria-live="polite">필터 결과 없음 (${knownGroups.length} keepers)</div>`
                 : null}
               ${visibleKnownGroups.map(group => {
                 const keeper = group.keeper

@@ -802,7 +802,7 @@ function StatusBar({
             />
           ` : null}
           ${keeperFilterHasNoMatch ? html`
-            <span class="text-3xs font-mono text-[var(--color-fg-disabled)]">
+            <span class="text-3xs font-mono text-[var(--color-fg-disabled)]" role="status" aria-live="polite">
               필터 결과 없음 (${keeperNames.length} keepers)
             </span>
           ` : visibleKeeperNames.map((name, i) => {

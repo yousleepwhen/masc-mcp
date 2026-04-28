@@ -310,13 +310,13 @@ export function AgentSessionReport({ agentName }: { agentName: string }) {
           `)}
         </div>
       ` : hasQuery && reports.length > 0 ? html`
-        <div class="text-xs text-fg-muted py-3">검색 결과 없음 (리포트)</div>
+        <div class="text-xs text-fg-muted py-3" role="status" aria-live="polite">검색 결과 없음 (리포트)</div>
       ` : null}
 
       <${TaskEventTimeline} events=${filteredTaskEvents} />
 
       ${hasQuery && filteredTaskEvents.length === 0 && taskEvents.length > 0 ? html`
-        <div class="text-xs text-fg-muted py-2">검색 결과 없음 (태스크)</div>
+        <div class="text-xs text-fg-muted py-2" role="status" aria-live="polite">검색 결과 없음 (태스크)</div>
       ` : null}
     <//>
   `

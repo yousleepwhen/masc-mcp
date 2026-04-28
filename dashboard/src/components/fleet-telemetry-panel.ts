@@ -766,7 +766,7 @@ export function FleetTelemetryPanel() {
           />
         </div>
         ${isFiltering && visibleRows.length === 0 && value.rows.length > 0
-          ? html`<div class="py-4 text-center text-2xs text-[var(--color-fg-disabled)]">필터 결과 없음 (${value.rows.length} keepers)</div>`
+          ? html`<div class="py-4 text-center text-2xs text-[var(--color-fg-disabled)]" role="status" aria-live="polite">필터 결과 없음 (${value.rows.length} keepers)</div>`
           : html`<${FleetComparisonTable} rows=${visibleRows} onReset=${handleReset} />`}
       </div>
 

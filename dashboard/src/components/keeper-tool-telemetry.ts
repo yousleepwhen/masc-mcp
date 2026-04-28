@@ -293,7 +293,7 @@ export function KeeperToolTelemetry({ keeperName }: KeeperToolTelemetryProps) {
           </div>
         </div>
         ${visibleTools.length === 0 ? html`
-          <div class="text-2xs text-[var(--color-fg-muted)] py-2 px-2">
+          <div class="text-2xs text-[var(--color-fg-muted)] py-2 px-2" role="status" aria-live="polite">
             필터 결과 없음 (${s.tools.length} items)
           </div>
         ` : visibleTools.slice(0, 15).map(stat => {

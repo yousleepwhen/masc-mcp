@@ -711,7 +711,7 @@ function HealthTable({
         : null}
     </div>
     ${isFiltering && filtered.length === 0
-      ? html`<div class="py-4 text-center text-2xs text-[var(--color-fg-muted)]">필터 결과 없음 (${health.providers.length} providers)</div>`
+      ? html`<div class="py-4 text-center text-2xs text-[var(--color-fg-muted)]" role="status" aria-live="polite">필터 결과 없음 (${health.providers.length} providers)</div>`
       : html`
         <table class="w-full text-xs" aria-label="cascade provider 상태">
           <thead>

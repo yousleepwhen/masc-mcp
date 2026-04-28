@@ -1157,7 +1157,7 @@ export function KeeperConfigPanel({ keeperName }: { keeperName: string }) {
             />
           </div>
           ${isFiltering && visibleEntries.length === 0 && allEntries.length > 0
-            ? html`<div class="py-4 text-center text-2xs text-[var(--color-fg-disabled)]">필터 결과 없음 (${allEntries.length} slots)</div>`
+            ? html`<div class="py-4 text-center text-2xs text-[var(--color-fg-disabled)]" role="status" aria-live="polite">필터 결과 없음 (${allEntries.length} slots)</div>`
             : visibleEntries.map(([name, slot]) => html`
                 <div class="flex items-start gap-2 py-2 px-3 rounded border border-card-border/50 bg-card/20 mb-1.5">
                   <span class="mt-1 w-2 h-2 rounded-full shrink-0 ${slot.active ? 'bg-[var(--ok)] shadow-[0_0_6px_var(--ok-48)]' : 'bg-[var(--color-fg-disabled)]'}" aria-hidden="true"></span>

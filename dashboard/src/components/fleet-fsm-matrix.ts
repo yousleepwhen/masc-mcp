@@ -909,7 +909,9 @@ export function FleetFsmMatrix(props: FleetFsmMatrixProps = {}) {
         ? html`
             <div
               data-testid="fleet-fsm-matrix-empty"
-              class="p-4 text-center text-xs text-[var(--color-fg-muted)]0"
+              class="p-4 text-center text-xs text-[var(--color-fg-muted)]"
+              role="status"
+              aria-live="polite"
             >
               필터 결과 없음 (${data.snapshots.length} keepers)
             </div>

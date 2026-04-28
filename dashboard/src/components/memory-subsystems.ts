@@ -651,7 +651,7 @@ export function MemorySubsystems() {
                 </div>
                 ${
                   isSynapseFiltering && visibleSynapses.length === 0
-                    ? html`<div class="text-sm text-[var(--color-fg-muted)] bg-[var(--white-5)] rounded p-4 text-center">
+                    ? html`<div class="text-sm text-[var(--color-fg-muted)] bg-[var(--white-5)] rounded p-4 text-center" role="status" aria-live="polite">
                         필터 결과 없음 (${synapses.length} items)
                       </div>`
                     : html`<div class="overflow-x-auto">

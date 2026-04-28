@@ -376,7 +376,7 @@ export function RecentVerdictsList({ items }: { items: HarnessVerdictItem[] }) {
         />
       </div>
       ${isFiltering && visibleItems.length === 0
-        ? html`<div class="py-4 text-center text-2xs text-[var(--color-fg-disabled)]">필터 결과 없음 (${items.length} items)</div>`
+        ? html`<div class="py-4 text-center text-2xs text-[var(--color-fg-disabled)]" role="status" aria-live="polite">필터 결과 없음 (${items.length} items)</div>`
         : visibleItems.map(item => html`
           <div class="rounded border border-[var(--white-8)] bg-[var(--white-4)] p-3" role="listitem">
             <div class="flex items-start justify-between gap-3">
@@ -423,7 +423,7 @@ export function PreCompactList({ section }: { section: HarnessSignalSection<PreC
         />
       </div>
       ${isFiltering && visibleItems.length === 0
-        ? html`<div class="py-4 text-center text-2xs text-[var(--color-fg-disabled)]">필터 결과 없음 (${section.recent_events.length} items)</div>`
+        ? html`<div class="py-4 text-center text-2xs text-[var(--color-fg-disabled)]" role="status" aria-live="polite">필터 결과 없음 (${section.recent_events.length} items)</div>`
         : visibleItems.map(item => html`
           <div class="rounded border border-[var(--white-8)] bg-[var(--white-4)] p-3" role="listitem">
             <div class="flex items-start justify-between gap-3">
@@ -475,7 +475,7 @@ export function HandoffList({ section }: { section: HarnessSignalSection<Handoff
         />
       </div>
       ${isFiltering && visibleItems.length === 0
-        ? html`<div class="py-4 text-center text-2xs text-[var(--color-fg-disabled)]">필터 결과 없음 (${section.recent_events.length} items)</div>`
+        ? html`<div class="py-4 text-center text-2xs text-[var(--color-fg-disabled)]" role="status" aria-live="polite">필터 결과 없음 (${section.recent_events.length} items)</div>`
         : visibleItems.map(item => html`
           <div class="rounded border border-[var(--white-8)] bg-[var(--white-4)] p-3" role="listitem">
             <div class="flex items-start justify-between gap-3">
