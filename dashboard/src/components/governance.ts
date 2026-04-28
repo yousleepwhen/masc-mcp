@@ -100,18 +100,18 @@ function GovernanceSummaryStrip() {
     ` : null}
     <div class="mb-2.5 flex items-center justify-between gap-3 px-0.5">
       <div class="flex items-center gap-3 min-w-0">
-        <h2 class="text-lg font-bold text-text-strong tracking-wide">실시간 판정</h2>
-        <span class="rounded border border-white/5 bg-[var(--white-3)] px-2 py-0.5 text-2xs font-medium text-text-muted">
+        <h2 class="text-lg font-bold text-fg-secondary tracking-wide">실시간 판정</h2>
+        <span class="rounded border border-white/5 bg-[var(--white-3)] px-2 py-0.5 text-2xs font-medium text-fg-muted">
           ${judgeOnlyLabel}
         </span>
       </div>
       <div class="flex items-center gap-3 shrink-0">
-        ${data?.generated_at ? html`<span class="text-2xs text-text-dim font-mono">${data.generated_at}</span>` : null}
-        <span class="text-2xs text-text-dim">${formatAutoRefreshLabel(TELEMETRY_AUTO_REFRESH_MS)}</span>
+        ${data?.generated_at ? html`<span class="text-2xs text-fg-disabled font-mono">${data.generated_at}</span>` : null}
+        <span class="text-2xs text-fg-disabled">${formatAutoRefreshLabel(TELEMETRY_AUTO_REFRESH_MS)}</span>
         <${ActionButton}
           variant="ghost"
           size="sm"
-          class="rounded border-transparent bg-[var(--white-3)] px-2.5 py-1 text-xs font-semibold text-text-muted hover:bg-white/10 hover:text-text-strong disabled:opacity-50 disabled:cursor-not-allowed"
+          class="rounded border-transparent bg-[var(--white-3)] px-2.5 py-1 text-xs font-semibold text-fg-muted hover:bg-white/10 hover:text-fg-secondary disabled:opacity-50 disabled:cursor-not-allowed"
           onClick=${refreshGovernance}
           disabled=${governanceLoading.value}
         >
@@ -160,14 +160,14 @@ function JudgeStatusBar() {
     <div class="mb-4 flex items-center gap-3 rounded border border-white/5 bg-white/3 px-3.5 py-2 text-xs" data-testid="judge-status">
       <span class="flex items-center gap-1.5">
         <${StatusDot} size="sm" class=${dotClass} />
-        <span class="font-medium text-text-muted">평가 모델 ${label}</span>
+        <span class="font-medium text-fg-muted">평가 모델 ${label}</span>
       </span>
-      ${judge.model_used ? html`<span class="text-text-dim">${judge.model_used}</span>` : null}
+      ${judge.model_used ? html`<span class="text-fg-disabled">${judge.model_used}</span>` : null}
       ${judge.generated_at || judge.last_error
         ? html`
             <span class="ml-auto flex items-center gap-3 min-w-0">
               ${judge.generated_at
-                ? html`<span class="text-text-dim"><${TimeAgo} timestamp=${judge.generated_at} /></span>`
+                ? html`<span class="text-fg-disabled"><${TimeAgo} timestamp=${judge.generated_at} /></span>`
                 : null}
               ${judge.last_error
                 ? html`<span class="${errorTone} truncate max-w-75" title=${judge.last_error}>${judge.last_error}</span>`
@@ -217,13 +217,13 @@ function JudgmentsSection() {
     const meta = [judge?.keeper_name, judge?.model_used].filter((value): value is string => typeof value === 'string' && value.length > 0).join(' · ')
     const chipClass = tone === 'warn'
       ? 'border-warn/30 bg-warn/10 text-warn'
-      : 'border-[var(--color-border-default)] bg-[var(--white-3)] text-text-muted'
+      : 'border-[var(--color-border-default)] bg-[var(--white-3)] text-fg-muted'
     return html`
       <div data-testid="live-judge-empty">
         <${Card} title=${title} class="section mb-5" variant="compact">
           <${EmptyState} message=${message} compact />
           ${lastSeen || meta ? html`
-            <div class="mt-1 flex flex-wrap items-center justify-center gap-2 text-2xs ${tone === 'warn' ? 'text-warn' : 'text-text-dim'}">
+            <div class="mt-1 flex flex-wrap items-center justify-center gap-2 text-2xs ${tone === 'warn' ? 'text-warn' : 'text-fg-disabled'}">
               ${lastSeen ? html`<span class="inline-flex items-center rounded border ${chipClass} px-2 py-0.5 font-medium">
                 마지막 판단 <${TimeAgo} timestamp=${lastSeen} />
               </span>` : null}
@@ -242,21 +242,21 @@ function JudgmentsSection() {
           <div class="rounded border border-card-border bg-card/34 p-3.5 text-sm" role="listitem" data-testid="judgment-item">
             <div class="flex items-center gap-2 mb-1.5">
               <span class="inline-flex items-center rounded border border-accent/20 bg-[var(--accent-10)] px-1.5 py-0.5 text-3xs font-bold text-accent">${j.target_kind ?? 'unknown'}</span>
-              <span class="font-medium text-text-strong">${j.target_id ?? ''}</span>
-              ${j.confidence != null ? html`<span class="ml-auto text-2xs text-text-muted">신뢰도 ${Math.round(j.confidence * 100)}%</span>` : null}
+              <span class="font-medium text-fg-secondary">${j.target_id ?? ''}</span>
+              ${j.confidence != null ? html`<span class="ml-auto text-2xs text-fg-muted">신뢰도 ${Math.round(j.confidence * 100)}%</span>` : null}
             </div>
-            <div class="text-text-muted/90 leading-relaxed">${j.summary ?? ''}</div>
+            <div class="text-fg-muted/90 leading-relaxed">${j.summary ?? ''}</div>
             ${j.recommended_action ? html`
               <div class="mt-2 flex items-center gap-1.5 text-2xs">
                 <span class="rounded border border-accent/20 bg-accent/8 px-1.5 py-0.5 font-medium text-accent">${j.recommended_action.action_kind ?? 'action'}</span>
-                ${j.recommended_action.resolved_tool ? html`<span class="text-text-dim font-mono">${j.recommended_action.resolved_tool}</span>` : null}
-                ${j.recommended_action.reason ? html`<span class="text-text-muted/80 truncate max-w-[250px]" title=${j.recommended_action.reason}>${j.recommended_action.reason}</span>` : null}
+                ${j.recommended_action.resolved_tool ? html`<span class="text-fg-disabled font-mono">${j.recommended_action.resolved_tool}</span>` : null}
+                ${j.recommended_action.reason ? html`<span class="text-fg-muted/80 truncate max-w-[250px]" title=${j.recommended_action.reason}>${j.recommended_action.reason}</span>` : null}
               </div>
             ` : null}
             ${j.guardrail_state?.requires_human_gate ? html`
               <div class="mt-1.5 inline-flex items-center rounded border border-warn/30 bg-warn/10 px-2 py-0.5 text-3xs font-bold text-warn">승인 필요</div>
             ` : null}
-            ${j.generated_at ? html`<div class="mt-1.5 text-2xs text-text-dim"><${TimeAgo} timestamp=${j.generated_at} /></div>` : null}
+            ${j.generated_at ? html`<div class="mt-1.5 text-2xs text-fg-disabled"><${TimeAgo} timestamp=${j.generated_at} /></div>` : null}
           </div>
         `)}
       </div>
@@ -296,7 +296,7 @@ export function approvalRiskToneClass(riskLevel: string): string {
   if (normalized === 'critical') return 'border-bad/30 bg-bad/10 text-bad'
   if (normalized === 'high') return 'border-warn/30 bg-warn/10 text-warn'
   if (normalized === 'medium') return 'border-accent/30 bg-[var(--accent-10)] text-accent'
-  return 'border-white/10 bg-[var(--white-3)] text-text-muted'
+  return 'border-white/10 bg-[var(--white-3)] text-fg-muted'
 }
 
 function approvalDispositionToneClass(disposition?: string | null): string {
@@ -304,7 +304,7 @@ function approvalDispositionToneClass(disposition?: string | null): string {
   if (normalized === 'alert') return 'border-bad/30 bg-bad/10 text-bad'
   if (normalized === 'pause') return 'border-warn/30 bg-warn/10 text-warn'
   if (normalized === 'pass') return 'border-ok/30 bg-ok/10 text-ok'
-  return 'border-white/10 bg-[var(--white-3)] text-text-muted'
+  return 'border-white/10 bg-[var(--white-3)] text-fg-muted'
 }
 
 const RISK_RANK: Record<string, number> = {
@@ -387,13 +387,13 @@ function KeeperApprovalEmptyState() {
     ? 'border-warn/30 bg-warn/10 text-warn'
     : ctx.tone === 'ok'
       ? 'border-accent/20 bg-[var(--accent-10)] text-accent'
-      : 'border-white/10 bg-white/5 text-text-muted'
+      : 'border-white/10 bg-white/5 text-fg-muted'
   return html`
     <div data-testid="keeper-hitl-empty">
       <${EmptyState} message=${ctx.primary} compact />
-      ${ctx.secondary ? html`<div class="mt-0.5 text-center text-2xs text-text-dim">${ctx.secondary}</div>` : null}
+      ${ctx.secondary ? html`<div class="mt-0.5 text-center text-2xs text-fg-disabled">${ctx.secondary}</div>` : null}
       ${ctx.lastActivity || meta ? html`
-        <div class="mt-1.5 flex flex-wrap items-center justify-center gap-2 text-2xs ${ctx.tone === 'warn' ? 'text-warn' : 'text-text-dim'}">
+        <div class="mt-1.5 flex flex-wrap items-center justify-center gap-2 text-2xs ${ctx.tone === 'warn' ? 'text-warn' : 'text-fg-disabled'}">
           ${ctx.lastActivity ? html`<span class="inline-flex items-center rounded border ${chipClass} px-2 py-0.5 font-medium">
             마지막 judge 활동 <${TimeAgo} timestamp=${ctx.lastActivity} />
           </span>` : null}
@@ -478,12 +478,12 @@ function KeeperApprovalQueueSection() {
     ? (maxRisk === 'critical' || maxRisk === 'high'
         ? 'border-bad/40 bg-bad/15 text-bad text-sm px-3 py-1 font-extrabold'
         : 'border-warn/40 bg-warn/15 text-warn text-sm px-3 py-1 font-extrabold')
-    : 'border-white/10 bg-[var(--white-3)] text-text-muted text-2xs px-2 py-0.5 font-bold'
+    : 'border-white/10 bg-[var(--white-3)] text-fg-muted text-2xs px-2 py-0.5 font-bold'
   return html`
     <div id="keeper-hitl-approval" data-testid="keeper-hitl-approval">
     <${Card} title="Keeper HITL 승인 대기" class="section mb-5" variant="compact">
       <div class="mb-3 flex items-center justify-between gap-3">
-        <div class="text-xs text-text-muted">
+        <div class="text-xs text-fg-muted">
           위험도가 threshold를 넘은 keeper tool call이 여기서 대기합니다.
         </div>
         <span class="rounded border ${countBadgeClass}">
@@ -518,7 +518,7 @@ function KeeperApprovalQueueSection() {
                 return html`
                   <div class="rounded border border-card-border bg-card/34 p-4 shadow-sm" role="listitem" data-testid="governance-approval-item">
                     <div class="flex flex-wrap items-start gap-2.5">
-                      <span class="inline-flex items-center rounded border border-white/10 bg-[var(--white-3)] px-2 py-0.5 text-3xs font-bold text-text-muted">
+                      <span class="inline-flex items-center rounded border border-white/10 bg-[var(--white-3)] px-2 py-0.5 text-3xs font-bold text-fg-muted">
                         keeper ${item.keeper_name}
                       </span>
                       <span class="inline-flex items-center rounded border border-accent/20 bg-[var(--accent-10)] px-2 py-0.5 text-3xs font-bold text-accent">
@@ -527,24 +527,24 @@ function KeeperApprovalQueueSection() {
                       <span class="inline-flex items-center rounded border px-2 py-0.5 text-3xs font-bold ${approvalRiskToneClass(item.risk_level)}">
                         ${item.risk_level}
                       </span>
-                      <span class="ml-auto text-2xs text-text-dim">
+                      <span class="ml-auto text-2xs text-fg-disabled">
                         ${item.requested_at ? html`요청 <${TimeAgo} timestamp=${item.requested_at} />` : null}
                         ${item.waiting_s != null ? ` · 대기 ${Math.max(0, Math.round(item.waiting_s))}s` : ''}
                       </span>
                     </div>
                     ${item.input_preview
-                      ? html`<div class="mt-2 text-xs leading-relaxed text-text-muted break-words">${item.input_preview}</div>`
+                      ? html`<div class="mt-2 text-xs leading-relaxed text-fg-muted break-words">${item.input_preview}</div>`
                       : null}
                     <div class="mt-2 flex flex-wrap gap-1.5 text-2xs">
-                      ${item.task_id ? html`<span class="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-text-muted">task ${item.task_id}</span>` : null}
-                      ${item.goal_id ? html`<span class="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-text-muted">goal ${item.goal_id}</span>` : null}
+                      ${item.task_id ? html`<span class="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-fg-muted">task ${item.task_id}</span>` : null}
+                      ${item.goal_id ? html`<span class="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-fg-muted">goal ${item.goal_id}</span>` : null}
                       ${item.runtime_contract?.sandbox_profile
-                        ? html`<span class="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-text-muted">
+                        ? html`<span class="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-fg-muted">
                           sandbox ${item.runtime_contract.sandbox_profile}${item.runtime_contract.backend ? ` / ${item.runtime_contract.backend}` : ''}
                         </span>`
                         : null}
                       ${item.selected_model
-                        ? html`<span class="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-text-muted font-mono">${item.selected_model}</span>`
+                        ? html`<span class="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-fg-muted font-mono">${item.selected_model}</span>`
                         : null}
                       ${item.disposition
                         ? html`<span class="rounded border px-1.5 py-0.5 font-bold ${approvalDispositionToneClass(item.disposition)}">
@@ -599,7 +599,7 @@ function ApprovalRulesSection() {
   const actingId = governanceApprovalActing.value
   return html`
     <${Card} title="Always 규칙" class="section mb-5" variant="compact">
-      <div class="mb-3 text-xs text-text-muted">
+      <div class="mb-3 text-xs text-fg-muted">
         승인된 요청에서 파생된 자동 승인 규칙입니다. Critical, destructive shell/git, 수동 결정 대기 상태는 규칙이 있어도 자동 승인되지 않습니다.
       </div>
       ${rules.length === 0
@@ -611,23 +611,23 @@ function ApprovalRulesSection() {
                 return html`
                   <div class="rounded border border-card-border bg-card/34 p-4 shadow-sm" role="listitem" data-testid="governance-approval-rule">
                     <div class="flex flex-wrap items-start gap-2.5">
-                      <span class="inline-flex items-center rounded border border-white/10 bg-[var(--white-3)] px-2 py-0.5 text-3xs font-bold text-text-muted">
+                      <span class="inline-flex items-center rounded border border-white/10 bg-[var(--white-3)] px-2 py-0.5 text-3xs font-bold text-fg-muted">
                         keeper ${rule.keeper_name}
                       </span>
                       <span class="inline-flex items-center rounded border border-accent/20 bg-[var(--accent-10)] px-2 py-0.5 text-3xs font-bold text-accent">
                         ${rule.tool_name}
                       </span>
                       ${rule.max_risk ? html`<span class="inline-flex items-center rounded border px-2 py-0.5 text-3xs font-bold ${approvalRiskToneClass(rule.max_risk)}">${rule.max_risk}</span>` : null}
-                      <span class="ml-auto text-2xs text-text-dim">
+                      <span class="ml-auto text-2xs text-fg-disabled">
                         ${rule.created_at ? html`생성 <${TimeAgo} timestamp=${rule.created_at} />` : null}
                         ${rule.last_matched_at ? html` · 최근 매치 <${TimeAgo} timestamp=${rule.last_matched_at} />` : null}
                       </span>
                     </div>
                     <div class="mt-2 flex flex-wrap gap-1.5 text-2xs">
-                      ${rule.sandbox_profile ? html`<span class="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-text-muted">sandbox ${rule.sandbox_profile}${rule.backend ? ` / ${rule.backend}` : ''}</span>` : null}
-                      ${rule.request_fingerprint_preview ? html`<span class="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-text-muted font-mono">fp ${rule.request_fingerprint_preview}</span>` : null}
-                      ${typeof rule.match_count === 'number' ? html`<span class="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-text-muted">match ${rule.match_count}</span>` : null}
-                      ${rule.source_approval_id ? html`<span class="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-text-muted">from ${rule.source_approval_id}</span>` : null}
+                      ${rule.sandbox_profile ? html`<span class="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-fg-muted">sandbox ${rule.sandbox_profile}${rule.backend ? ` / ${rule.backend}` : ''}</span>` : null}
+                      ${rule.request_fingerprint_preview ? html`<span class="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-fg-muted font-mono">fp ${rule.request_fingerprint_preview}</span>` : null}
+                      ${typeof rule.match_count === 'number' ? html`<span class="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-fg-muted">match ${rule.match_count}</span>` : null}
+                      ${rule.source_approval_id ? html`<span class="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-fg-muted">from ${rule.source_approval_id}</span>` : null}
                     </div>
                     <div class="mt-3 flex justify-end">
                       <${ActionButton}

@@ -97,8 +97,8 @@ export function ConfirmDialogOverlay() {
             <${IconComponent} size=${20} aria-hidden="true" />
           </div>
           <div class="flex-1 min-w-0 pt-0.5">
-            <h2 id="confirm-dialog-title" class="text-lg font-semibold text-text-strong mb-1 leading-snug">${state.title}</h2>
-            <p class="text-sm text-text-body leading-relaxed opacity-90 whitespace-pre-wrap">${state.message}</p>
+            <h2 id="confirm-dialog-title" class="text-lg font-semibold text-fg-secondary mb-1 leading-snug">${state.title}</h2>
+            <p class="text-sm text-fg-primary leading-relaxed opacity-90 whitespace-pre-wrap">${state.message}</p>
           </div>
         </div>
         <div class="mt-6 flex items-center justify-end gap-2">

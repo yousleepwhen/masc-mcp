@@ -85,15 +85,15 @@ function CoordinationEvidenceRow({ evidence }: { evidence: DashboardCoordination
   return html`
     <li class="min-w-0 rounded border border-card-border/40 bg-white/[0.03] px-2 py-1">
       <div class="flex min-w-0 flex-wrap items-center gap-2">
-        <span class="rounded border border-card-border/50 bg-black/15 px-1.5 py-0.5 text-3xs font-semibold uppercase text-text-muted">
+        <span class="rounded border border-card-border/50 bg-black/15 px-1.5 py-0.5 text-3xs font-semibold uppercase text-fg-muted">
           ${evidenceLabel(evidence)}
         </span>
-        <span class="min-w-0 truncate text-2xs font-medium text-text-strong" title=${evidence.label ?? evidence.id ?? 'evidence'}>
+        <span class="min-w-0 truncate text-2xs font-medium text-fg-secondary" title=${evidence.label ?? evidence.id ?? 'evidence'}>
           ${evidence.label ?? evidence.id ?? 'evidence'}
         </span>
       </div>
       ${evidence.detail ? html`
-        <div class="mt-0.5 truncate text-3xs text-text-dim" title=${evidence.detail}>${evidence.detail}</div>
+        <div class="mt-0.5 truncate text-3xs text-fg-disabled" title=${evidence.detail}>${evidence.detail}</div>
       ` : null}
     </li>
   `
@@ -107,11 +107,11 @@ function CoordinationViolationRow({ violation }: { violation: DashboardCoordinat
         <span class="rounded border px-2 py-0.5 text-3xs font-semibold uppercase ${severityToneClass(violation.severity)}">
           ${violation.severity ?? 'info'}
         </span>
-        <span class="font-mono text-2xs text-text-strong">${violation.code ?? violation.axis ?? 'coordination'}</span>
-        ${violation.axis ? html`<span class="text-3xs text-text-dim">${violation.axis}</span>` : null}
+        <span class="font-mono text-2xs text-fg-secondary">${violation.code ?? violation.axis ?? 'coordination'}</span>
+        ${violation.axis ? html`<span class="text-3xs text-fg-disabled">${violation.axis}</span>` : null}
       </div>
-      <div class="mt-1 text-xs leading-relaxed text-text-body">${violation.message ?? 'Coordination invariant needs attention.'}</div>
-      <div class="mt-1 truncate text-3xs text-text-dim" title=${refsLabel(violation.refs)}>${refsLabel(violation.refs)}</div>
+      <div class="mt-1 text-xs leading-relaxed text-fg-primary">${violation.message ?? 'Coordination invariant needs attention.'}</div>
+      <div class="mt-1 truncate text-3xs text-fg-disabled" title=${refsLabel(violation.refs)}>${refsLabel(violation.refs)}</div>
       ${evidence.length > 0 ? html`
         <ul class="mt-2 grid gap-1" aria-label="근거 목록">
           ${evidence.map((item, index) => html`
@@ -136,17 +136,17 @@ function CoordinationHealthPanel() {
     <section class="rounded border border-card-border/70 bg-[rgba(8,13,22,0.74)] p-3" aria-label="협력 상태">
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <div class="text-sm font-semibold text-text-strong">협력 상태</div>
-          <div class="text-2xs text-text-dim">Goal x Task x Board x Reward · ${snapshot.mode ?? 'advisory'}</div>
+          <div class="text-sm font-semibold text-fg-secondary">협력 상태</div>
+          <div class="text-2xs text-fg-disabled">Goal x Task x Board x Reward · ${snapshot.mode ?? 'advisory'}</div>
         </div>
         <div class="flex flex-wrap items-center gap-2 text-3xs font-medium">
-          <span class="rounded border border-card-border/60 bg-white/4 px-2 py-1 text-text-body">
+          <span class="rounded border border-card-border/60 bg-white/4 px-2 py-1 text-fg-primary">
             products ${coordinationCount(snapshot, 'products')}
           </span>
-          <span class="rounded border border-card-border/60 bg-white/4 px-2 py-1 text-text-body">
+          <span class="rounded border border-card-border/60 bg-white/4 px-2 py-1 text-fg-primary">
             violations ${coordinationCount(snapshot, 'violations')}
           </span>
-          <span class="rounded border border-card-border/60 bg-white/4 px-2 py-1 text-text-body">
+          <span class="rounded border border-card-border/60 bg-white/4 px-2 py-1 text-fg-primary">
             evidence ${evidenceCount}
           </span>
           ${errorCount > 0 ? html`
@@ -163,7 +163,7 @@ function CoordinationHealthPanel() {
         </div>
       ` : null}
       ${violations.length === 0 ? html`
-        <div class="mt-2 text-xs text-text-muted">정합</div>
+        <div class="mt-2 text-xs text-fg-muted">정합</div>
       ` : html`
         <ul class="mt-2 grid gap-2" aria-label="정합 위반 목록">
           ${topViolations.map((violation, index) => html`
@@ -173,7 +173,7 @@ function CoordinationHealthPanel() {
       `}
       ${topEvidence.length > 0 ? html`
         <div class="mt-3">
-          <div class="mb-1 text-3xs font-semibold uppercase text-text-muted">근거</div>
+          <div class="mb-1 text-3xs font-semibold uppercase text-fg-muted">근거</div>
           <ul class="grid gap-1 md:grid-cols-2" aria-label="근거 항목">
             ${topEvidence.map((item, index) => html`
               <${CoordinationEvidenceRow} key=${`${item.source ?? 'evidence'}-${item.kind ?? 'kind'}-${item.id ?? index}`} evidence=${item} />

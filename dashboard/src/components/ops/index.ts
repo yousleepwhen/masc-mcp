@@ -154,7 +154,7 @@ function renderActivityTimeline() {
     return html`
       <div data-testid="ops-activity-timeline-empty">
         <${EmptyState} message=${message} compact />
-        ${hint ? html`<div class="mt-0.5 text-center text-2xs text-text-dim">${hint}</div>` : null}
+        ${hint ? html`<div class="mt-0.5 text-center text-2xs text-fg-disabled">${hint}</div>` : null}
       </div>
     `
   }

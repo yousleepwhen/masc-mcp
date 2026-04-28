@@ -304,7 +304,7 @@ export function TurnBudgetSection({ keeper }: { keeper: Keeper }) {
   const diverges = hasTurnBudgetDivergence(keeper)
   return html`
     <details class="p-5 rounded border border-card-border bg-card/40 backdrop-blur-sm shadow-sm" open=${diverges}>
-      <summary class="cursor-pointer text-2xs font-semibold uppercase tracking-widest text-text-muted list-none select-none flex items-center gap-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-accent-fg)] rounded">
+      <summary class="cursor-pointer text-2xs font-semibold uppercase tracking-widest text-fg-muted list-none select-none flex items-center gap-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-accent-fg)] rounded">
         <span class="w-1.5 h-1.5 rounded-full ${diverges ? 'bg-[var(--warn-10)]' : 'bg-accent/50'}" aria-hidden="true"></span>
         턴 예산
         ${diverges ? html`<span class="text-3xs text-[var(--color-status-warn)] font-normal normal-case tracking-normal">(재정의됨)</span>` : null}

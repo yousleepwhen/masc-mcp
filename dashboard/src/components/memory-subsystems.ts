@@ -196,7 +196,7 @@ function HebbianMatrix({ synapses }: { synapses: MemorySubsystemsSynapse[] }) {
               <text
                 text-anchor="start"
                 font-size="10"
-                fill="#cbd5e1"
+                fill="var(--text-slate-light)"
                 font-family="monospace"
                 class="cursor-pointer hover:fill-sky-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400"
                 tabindex="0"
@@ -216,7 +216,7 @@ function HebbianMatrix({ synapses }: { synapses: MemorySubsystemsSynapse[] }) {
               y=${topPad + i * cell + cell / 2 + 4}
               text-anchor="end"
               font-size="10"
-              fill="#cbd5e1"
+              fill="var(--text-slate-light)"
               font-family="monospace"
               class="cursor-pointer hover:fill-sky-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400"
               tabindex="0"

@@ -51,9 +51,9 @@ function kindColor(kind: TraceEventKind): string {
     case 'tool_call': return 'text-accent'
     case 'broadcast': return 'text-[var(--cyan)]'
     case 'task': return 'text-ok'
-    case 'heartbeat': return 'text-text-dim'
-    case 'lifecycle': return 'text-text-muted'
-    default: return 'text-text-muted'
+    case 'heartbeat': return 'text-fg-disabled'
+    case 'lifecycle': return 'text-fg-muted'
+    default: return 'text-fg-muted'
   }
 }
 
@@ -73,9 +73,9 @@ function ActivityEntry({ event }: { event: UnifiedTraceEvent }) {
     return html`
       <div class="flex items-center gap-3 py-1.5 px-3 rounded hover:bg-[var(--white-3)] transition-colors">
         <span class="text-sm ${kindColor(event.kind)}">${kindIcon(event.kind)}</span>
-        <span class="flex-1 text-xs text-text-body truncate" title=${event.summary}>${event.summary}</span>
+        <span class="flex-1 text-xs text-fg-primary truncate" title=${event.summary}>${event.summary}</span>
         ${event.duration_ms != null ? html`<span class="text-3xs tabular-nums ${durationColor(event.duration_ms)}">${event.duration_ms}ms</span>` : null}
-        ${event.ts_iso ? html`<${TimeAgo} timestamp=${event.ts_iso} class="text-3xs text-text-dim shrink-0" />` : null}
+        ${event.ts_iso ? html`<${TimeAgo} timestamp=${event.ts_iso} class="text-3xs text-fg-disabled shrink-0" />` : null}
       </div>
     `
   }
@@ -89,10 +89,10 @@ function ActivityEntry({ event }: { event: UnifiedTraceEvent }) {
     >
       <summary class="flex items-center gap-3 py-1.5 px-3 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
         <span class="text-sm ${kindColor(event.kind)}">${kindIcon(event.kind)}</span>
-        <span class="flex-1 text-xs text-text-body truncate" title=${event.summary}>${event.summary}</span>
+        <span class="flex-1 text-xs text-fg-primary truncate" title=${event.summary}>${event.summary}</span>
         ${event.duration_ms != null ? html`<span class="text-3xs tabular-nums ${durationColor(event.duration_ms)}">${event.duration_ms}ms</span>` : null}
-        ${event.ts_iso ? html`<${TimeAgo} timestamp=${event.ts_iso} class="text-3xs text-text-dim shrink-0" />` : null}
-        <span class="text-3xs text-text-dim flex items-center justify-center"><${ChevronRight} size=${14} aria-hidden="true" focusable="false" /></span>
+        ${event.ts_iso ? html`<${TimeAgo} timestamp=${event.ts_iso} class="text-3xs text-fg-disabled shrink-0" />` : null}
+        <span class="text-3xs text-fg-disabled flex items-center justify-center"><${ChevronRight} size=${14} aria-hidden="true" focusable="false" /></span>
       </summary>
       ${isOpen ? html`
         <div class="px-3 pb-2 pt-1 ml-7">
@@ -112,7 +112,7 @@ function ActivityEntry({ event }: { event: UnifiedTraceEvent }) {
             </div>
           ` : null}
           ${event.error ? html`<div class="text-2xs text-[var(--bad-light)] mt-1">${event.error}</div>` : null}
-          ${event.cost_usd != null ? html`<div class="text-3xs text-text-dim mt-1">cost: $${event.cost_usd.toFixed(4)}</div>` : null}
+          ${event.cost_usd != null ? html`<div class="text-3xs text-fg-disabled mt-1">cost: $${event.cost_usd.toFixed(4)}</div>` : null}
         </div>
       ` : null}
     </details>
@@ -164,12 +164,12 @@ export function TaskActivityList({
             class="px-2 py-1 rounded text-2xs font-medium border cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] ${
               filter === chip.key
                 ? 'border-accent/40 bg-accent/12 text-[var(--color-accent-fg)]'
-                : 'border-[var(--white-10)] bg-[var(--white-4)] text-text-muted hover:bg-[var(--white-8)]'
+                : 'border-[var(--white-10)] bg-[var(--white-4)] text-fg-muted hover:bg-[var(--white-8)]'
             }"
             onClick=${() => { activeFilter.value = chip.key }}
           >${chip.label}</button>
         `)}
-        <span class="ml-auto text-3xs text-text-dim tabular-nums">${filtered.length}건</span>
+        <span class="ml-auto text-3xs text-fg-disabled tabular-nums">${filtered.length}건</span>
       </div>
       <div class="flex flex-col gap-0.5 max-h-100 overflow-y-auto" role="log" aria-label="작업 활동 목록">
         ${filtered.map((evt, i) => {

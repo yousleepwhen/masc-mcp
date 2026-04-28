@@ -37,11 +37,11 @@ function PlanningStat({
         ? 'text-warn'
         : tone === 'ok'
           ? 'text-ok'
-          : 'text-text-strong'
+          : 'text-fg-secondary'
 
   return html`
     <div class="rounded border border-card-border/60 bg-[var(--backdrop-deep)] p-4">
-      <div class="text-2xs font-semibold uppercase tracking-5 text-text-muted">${label}</div>
+      <div class="text-2xs font-semibold uppercase tracking-5 text-fg-muted">${label}</div>
       <div class="mt-2 text-3xl font-bold leading-none tabular-nums ${toneClass}">${value}</div>
     </div>
   `
@@ -53,7 +53,7 @@ function ExternalDocLink({ href, label }: { href: string; label: string }) {
       href=${href}
       target="_blank"
       rel="noreferrer"
-      class="inline-flex items-center gap-1 rounded border border-card-border/70 bg-white/3 px-2.5 py-1.5 text-2xs font-medium text-text-body transition-colors hover:border-accent/35 hover:text-text-strong"
+      class="inline-flex items-center gap-1 rounded border border-card-border/70 bg-white/3 px-2.5 py-1.5 text-2xs font-medium text-fg-primary transition-colors hover:border-accent/35 hover:text-fg-secondary"
     >
       ${label}
       <span aria-hidden="true">\u2197</span>
@@ -84,17 +84,17 @@ function GuideCard({
     <section class="flex flex-col gap-3 rounded border border-card-border/60 bg-[var(--backdrop-deep)] p-4" aria-label=${title}>
       <div class="flex items-start justify-between gap-3">
         <div>
-          <div class="text-2xs font-semibold uppercase tracking-5 text-text-muted">${eyebrow}</div>
-          <h3 class="mt-1 text-md font-semibold text-text-strong">${title}</h3>
+          <div class="text-2xs font-semibold uppercase tracking-5 text-fg-muted">${eyebrow}</div>
+          <h3 class="mt-1 text-md font-semibold text-fg-secondary">${title}</h3>
         </div>
-        <span class="rounded border border-card-border/70 bg-white/4 px-2.5 py-1 text-2xs font-semibold text-text-body">
+        <span class="rounded border border-card-border/70 bg-white/4 px-2.5 py-1 text-2xs font-semibold text-fg-primary">
           ${count}
         </span>
       </div>
-      <p class="text-sm leading-relaxed text-text-muted whitespace-pre-wrap">${summary}</p>
+      <p class="text-sm leading-relaxed text-fg-muted whitespace-pre-wrap">${summary}</p>
       ${command ? html`
-        <div class="rounded border border-card-border/60 bg-white/3 px-3 py-2 text-xs leading-relaxed text-text-body">
-          <code class="text-2xs text-text-strong">${command}</code>
+        <div class="rounded border border-card-border/60 bg-white/3 px-3 py-2 text-xs leading-relaxed text-fg-primary">
+          <code class="text-2xs text-fg-secondary">${command}</code>
         </div>
       ` : null}
       ${children}
@@ -139,31 +139,31 @@ function KeeperToolActivity() {
 
   return html`
     <details class="overview-section-collapsible group overflow-hidden rounded border border-card-border/60 bg-[var(--backdrop-deep)]" open=${true}>
-      <summary class="flex items-center gap-3 border-b border-card-border/60 px-4 py-3.5 cursor-pointer text-base font-bold text-text-strong transition-colors hover:bg-white/3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent">
+      <summary class="flex items-center gap-3 border-b border-card-border/60 px-4 py-3.5 cursor-pointer text-base font-bold text-fg-secondary transition-colors hover:bg-white/3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent">
         <div class="min-w-0">
           <div>도구 활동 요약</div>
-          <div class="mt-1 text-xs font-normal text-text-muted">
+          <div class="mt-1 text-xs font-normal text-fg-muted">
             keeper가 최근 사용한 도구와 활동 현황. 상세는 keeper 클릭.
           </div>
         </div>
-        <span class="ml-auto inline-flex items-center rounded border border-card-border/70 bg-white/4 px-2.5 py-1 text-3xs uppercase tracking-wider text-text-body font-semibold">
+        <span class="ml-auto inline-flex items-center rounded border border-card-border/70 bg-white/4 px-2.5 py-1 text-3xs uppercase tracking-wider text-fg-primary font-semibold">
           ${totalToolTurns} calls
         </span>
       </summary>
       <div class="p-5">
         ${activeKeepers.length > 0 ? html`
           <div class="mb-4">
-            <div class="text-2xs font-semibold uppercase tracking-5 text-text-muted mb-2">활성 keeper</div>
+            <div class="text-2xs font-semibold uppercase tracking-5 text-fg-muted mb-2">활성 keeper</div>
             <div class="flex flex-wrap gap-2">
               ${activeKeepers.map(k => html`
                 <button
                   key=${k.name}
                   type="button"
-                  class="inline-flex items-center gap-1.5 rounded border border-card-border/60 bg-white/4 px-3 py-1.5 text-xs text-text-body transition-colors hover:border-accent/35 hover:text-text-strong"
+                  class="inline-flex items-center gap-1.5 rounded border border-card-border/60 bg-white/4 px-3 py-1.5 text-xs text-fg-primary transition-colors hover:border-accent/35 hover:text-fg-secondary"
                   onClick=${() => navigate('monitoring', { section: 'agents', keeper: k.name })}
                 >
                   ${k.emoji ?? ''} ${k.koreanName ?? k.name}
-                  <span class="text-3xs font-mono text-text-dim">${k.turn_count ?? 0}t</span>
+                  <span class="text-3xs font-mono text-fg-disabled">${k.turn_count ?? 0}t</span>
                 </button>
               `)}
             </div>
@@ -172,12 +172,12 @@ function KeeperToolActivity() {
 
         ${topTools.length > 0 ? html`
           <div>
-            <div class="text-2xs font-semibold uppercase tracking-5 text-text-muted mb-2">최근 자주 사용된 도구</div>
+            <div class="text-2xs font-semibold uppercase tracking-5 text-fg-muted mb-2">최근 자주 사용된 도구</div>
             <div class="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-1.5">
               ${topTools.map(([name, count]) => html`
                 <div key=${name} class="flex items-center justify-between rounded bg-white/3 px-3 py-1.5 text-xs">
-                  <span class="font-mono text-text-body truncate" title=${name}>${name.replace(/^(keeper_|masc_)/, '')}</span>
-                  <span class="ml-2 flex-shrink-0 font-mono text-text-dim">${count}</span>
+                  <span class="font-mono text-fg-primary truncate" title=${name}>${name.replace(/^(keeper_|masc_)/, '')}</span>
+                  <span class="ml-2 flex-shrink-0 font-mono text-fg-disabled">${count}</span>
                 </div>
               `)}
             </div>
@@ -214,9 +214,9 @@ export function Planning() {
       <section class="rounded border border-card-border/70 bg-[rgba(9,14,24,0.88)] p-5" aria-label="계획 상태 요약">
         <div class="flex flex-wrap items-start justify-between gap-4">
           <div class="max-w-190">
-            <div class="text-2xs font-semibold uppercase tracking-[0.18em] text-text-muted">계획 상태</div>
-            <h3 class="mt-2 text-[22px] font-semibold tracking-[-0.02em] text-text-strong">${planStatusHeadline}</h3>
-            <p class="mt-2 text-sm leading-relaxed text-text-muted whitespace-pre-wrap">${planStatusBody}</p>
+            <div class="text-2xs font-semibold uppercase tracking-[0.18em] text-fg-muted">계획 상태</div>
+            <h3 class="mt-2 text-[22px] font-semibold tracking-[-0.02em] text-fg-secondary">${planStatusHeadline}</h3>
+            <p class="mt-2 text-sm leading-relaxed text-fg-muted whitespace-pre-wrap">${planStatusBody}</p>
           </div>
           <${ActionButton}
             variant="ghost"
@@ -239,8 +239,8 @@ export function Planning() {
         <div class="mt-5 grid gap-4 xl:grid-cols-2">
           <section class="rounded border border-card-border/60 bg-[var(--backdrop-deep)] p-4" aria-label="태스크 추가">
             <div class="mb-3">
-              <div class="text-2xs font-semibold uppercase tracking-5 text-text-muted">백로그 항목</div>
-              <h3 class="mt-1 text-md font-semibold text-text-strong">태스크 추가</h3>
+              <div class="text-2xs font-semibold uppercase tracking-5 text-fg-muted">백로그 항목</div>
+              <h3 class="mt-1 text-md font-semibold text-fg-secondary">태스크 추가</h3>
             </div>
             <${TaskCreateForm} />
             <div class="mt-3 flex items-center gap-2">
@@ -268,8 +268,8 @@ export function Planning() {
       <section class="rounded border border-card-border/60 bg-[var(--backdrop-deep)] p-4" aria-label="목표 파이프라인">
         <div class="flex items-center justify-between gap-3">
           <div>
-            <div class="text-2xs font-semibold uppercase tracking-5 text-text-muted">목표 파이프라인</div>
-            <h3 class="mt-1 text-md font-semibold text-text-strong">
+            <div class="text-2xs font-semibold uppercase tracking-5 text-fg-muted">목표 파이프라인</div>
+            <h3 class="mt-1 text-md font-semibold text-fg-secondary">
               장기 목표 ${hasGoals ? `(${goals.value.length})` : ''}
             </h3>
           </div>
@@ -301,7 +301,7 @@ export function Planning() {
             ` : null}
           </div>
         ` : html`
-          <p class="mt-2 text-sm text-text-muted">등록된 목표가 없습니다. 목표 트리에서 추가할 수 있습니다.</p>
+          <p class="mt-2 text-sm text-fg-muted">등록된 목표가 없습니다. 목표 트리에서 추가할 수 있습니다.</p>
         `}
       </section>
     </div>

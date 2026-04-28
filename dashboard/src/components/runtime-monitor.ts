@@ -403,29 +403,29 @@ export function RuntimeMonitor() {
                 <article class="p-4 rounded border border-card-border bg-card/40 backdrop-blur-sm shadow-sm flex flex-col gap-2" role="listitem">
                   <div class="flex justify-between gap-3 items-start flex-wrap">
                     <div class="grid gap-1">
-                      <strong class="text-sm text-text-strong">${provider.provider}</strong>
-                      <span class="text-xs text-text-muted">${provider.runtime_kind ?? 'runtime'} · ${provider.auth_kind ?? 'auth'} · ${provider.source ?? 'source unknown'}</span>
+                      <strong class="text-sm text-fg-secondary">${provider.provider}</strong>
+                      <span class="text-xs text-fg-muted">${provider.runtime_kind ?? 'runtime'} · ${provider.auth_kind ?? 'auth'} · ${provider.source ?? 'source unknown'}</span>
                     </div>
                     <${StatusChip}
                       label=${provider.status ?? (provider.available ? 'available' : 'unknown')}
                       tone=${runtimeProviderTone(provider)}
                     />
                   </div>
-                  <div class="grid grid-cols-2 gap-3 text-xs text-text-body">
+                  <div class="grid grid-cols-2 gap-3 text-xs text-fg-primary">
                     <div>default model · ${provider.default_model ?? '없음'}</div>
                     <div>catalog · ${provider.models.join(', ') || '없음'}</div>
                     <div>single-run · ${provider.supports_single_agent_run ? 'yes' : 'no'}</div>
                     <div>endpoint · ${provider.endpoint_url ?? '없음'}</div>
                   </div>
                   ${provider.discovery
-                    ? html`<div class="grid grid-cols-2 gap-3 text-xs text-text-body pt-2 border-t border-card-border/50">
+                    ? html`<div class="grid grid-cols-2 gap-3 text-xs text-fg-primary pt-2 border-t border-card-border/50">
                         <div>discovery · ${provider.discovery.healthy ? 'healthy' : 'degraded'}</div>
                         <div>ctx · ${fmtNumber(provider.discovery.ctx_size)}</div>
                         <div>slots · ${fmtNumber(provider.discovery.busy_slots)}/${fmtNumber(provider.discovery.total_slots)}</div>
                         <div>model · ${provider.discovery.discovered_model ?? '없음'}</div>
                       </div>`
                     : null}
-                  ${provider.note ? html`<div class="text-xs text-text-muted">${provider.note}</div>` : null}
+                  ${provider.note ? html`<div class="text-xs text-fg-muted">${provider.note}</div>` : null}
                 </article>
               `)
             : html`<${EmptyState} message="provider runtime snapshot이 없습니다." compact />`}
@@ -489,8 +489,8 @@ export function RuntimeMonitor() {
                 >
                   <div class="flex justify-between gap-3 items-start flex-wrap">
                     <div class="grid gap-1">
-                      <strong class="text-sm text-text-strong">${metric.model_id}</strong>
-                      <span class="text-xs text-text-muted">entries ${fmtNumber(metric.entry_count)} · fallback ${fmtNumber(metric.fallback_count)}</span>
+                      <strong class="text-sm text-fg-secondary">${metric.model_id}</strong>
+                      <span class="text-xs text-fg-muted">entries ${fmtNumber(metric.entry_count)} · fallback ${fmtNumber(metric.fallback_count)}</span>
                       ${metricCoverageText(metric)
                         ? html`<span class="text-2xs ${hasCoverageGap ? 'text-[var(--status-warn)]' : 'text-[var(--color-fg-muted)]'}">${metricCoverageText(metric)}</span>`
                         : null}
@@ -532,7 +532,7 @@ export function RuntimeMonitor() {
                         : null}
                     </div>
                   </div>
-                  <div class="grid grid-cols-3 gap-3 text-xs text-text-body">
+                  <div class="grid grid-cols-3 gap-3 text-xs text-fg-primary">
                     <div>latency avg/p95 · ${fmtCoverageAwareNumber(metric, metric.avg_latency_ms, 1)} / ${fmtCoverageAwareNumber(metric, metric.p95_latency_ms, 1)} ms</div>
                     <div>wall tok/s p50/p95 · ${fmtCoverageAwareNumber(metric, metric.p50_tok_per_sec, 1)} / ${fmtCoverageAwareNumber(metric, metric.p95_tok_per_sec, 1)}</div>
                     <div>cost · ${fmtCoverageAwareCost(metric, metric.total_cost_usd)}</div>
@@ -540,10 +540,10 @@ export function RuntimeMonitor() {
                     <div>reasoning/cache · ${fmtCoverageAwareNumber(metric, metric.total_reasoning_tokens)} / ${fmtCoverageAwareNumber(metric, metric.total_cache_read_tokens)}</div>
                     <div>tools · ${fmtNumber(metric.avg_tool_calls_per_turn, 1)}/turn (${fmtNumber(metric.total_tool_calls)})</div>
                     ${metric.prompt_p50_tok_per_sec != null || metric.prompt_p95_tok_per_sec != null
-                      ? html`<div class="col-span-3 text-text-muted">prefill tok/s p50/p95 · ${fmtNumber(metric.prompt_p50_tok_per_sec, 1)} / ${fmtNumber(metric.prompt_p95_tok_per_sec, 1)} (prompt_eval only; complements wall + hw rows)</div>`
+                      ? html`<div class="col-span-3 text-fg-muted">prefill tok/s p50/p95 · ${fmtNumber(metric.prompt_p50_tok_per_sec, 1)} / ${fmtNumber(metric.prompt_p95_tok_per_sec, 1)} (prompt_eval only; complements wall + hw rows)</div>`
                       : null}
                     ${metric.hw_decode_p50_tok_per_sec != null
-                      ? html`<div class="col-span-3 text-text-muted">hw tok/s p50/p95 · ${fmtNumber(metric.hw_decode_p50_tok_per_sec, 1)} / ${fmtNumber(metric.hw_decode_p95_tok_per_sec, 1)} (decode-only; excludes queue/prefill/thinking)</div>`
+                      ? html`<div class="col-span-3 text-fg-muted">hw tok/s p50/p95 · ${fmtNumber(metric.hw_decode_p50_tok_per_sec, 1)} / ${fmtNumber(metric.hw_decode_p95_tok_per_sec, 1)} (decode-only; excludes queue/prefill/thinking)</div>`
                       : null}
                   </div>
                   ${(() => {

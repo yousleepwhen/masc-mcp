@@ -57,10 +57,10 @@ function Row({
     tone === 'ok' ? 'text-[var(--color-status-ok)]'
       : tone === 'warn' ? 'text-[var(--color-status-warn)]'
       : tone === 'bad' ? 'text-[var(--bad-light)]'
-      : 'text-text-strong'
+      : 'text-fg-secondary'
   return html`
     <div class="flex items-center justify-between gap-4 text-2xs">
-      <span class="text-text-dim">${label}</span>
+      <span class="text-fg-disabled">${label}</span>
       <span class="font-mono font-semibold ${toneClass}">${value}</span>
     </div>
   `
@@ -94,7 +94,7 @@ export function CrossSignalReadout({ events, hourlyTrend, eventWindowMs }: Props
     <div class="rounded border border-accent/20 bg-accent/5 px-3 py-2 shadow-sm" role="status" aria-live="polite" aria-label="커서 위치 메트릭 요약">
       <div class="mb-1.5 flex items-center justify-between">
         <span class="text-3xs uppercase tracking-widest text-accent font-semibold">cursor</span>
-        <span class="text-2xs font-mono text-text-strong">
+        <span class="text-2xs font-mono text-fg-secondary">
           ${new Date(cursor.ts).toLocaleTimeString()}
         </span>
       </div>

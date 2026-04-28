@@ -318,8 +318,8 @@ async function loadGoalOptions(options?: { force?: boolean }): Promise<void> {
 function ConfigRow({ label, value }: { label: string; value: string }) {
   return html`
     <div class="flex items-center justify-between py-2 px-3 rounded border border-card-border/50 bg-card/20 backdrop-blur-sm hover:bg-card/40 transition-colors shadow-sm mb-1.5">
-      <span class="text-xs font-medium text-text-muted">${label}</span>
-      <span class="text-xs font-semibold text-text-strong">${value}</span>
+      <span class="text-xs font-medium text-fg-muted">${label}</span>
+      <span class="text-xs font-semibold text-fg-secondary">${value}</span>
     </div>
   `
 }
@@ -360,10 +360,10 @@ function Callout({
   const toneClass =
     tone === 'warn'
       ? 'border-[var(--warn-20)] bg-[var(--warn-10)] text-[var(--warn)]'
-      : 'border-card-border/60 bg-card/35 text-text-body'
+      : 'border-card-border/60 bg-card/35 text-fg-primary'
   return html`
     <div class="rounded border px-3 py-3 shadow-sm ${toneClass}">
-      <div class="text-2xs font-bold uppercase tracking-widest text-text-muted mb-1">${title}</div>
+      <div class="text-2xs font-bold uppercase tracking-widest text-fg-muted mb-1">${title}</div>
       <div class="text-xs leading-relaxed">${body}</div>
     </div>
   `
@@ -372,7 +372,7 @@ function Callout({
 function BoolBadge({ value }: { value: boolean }) {
   return value
     ? html`<span class="text-2xs font-bold px-2 py-0.5 rounded bg-ok/10 text-ok border border-ok/20 shadow-sm shadow-ok/5">ON</span>`
-    : html`<span class="text-2xs font-bold px-2 py-0.5 rounded bg-white/5 text-text-dim border border-white/10 shadow-sm">OFF</span>`
+    : html`<span class="text-2xs font-bold px-2 py-0.5 rounded bg-white/5 text-fg-disabled border border-white/10 shadow-sm">OFF</span>`
 }
 
 function formatHookDestructiveTools(value: string[] | string): string {
@@ -384,7 +384,7 @@ function formatHookDestructiveTools(value: string[] | string): string {
 }
 
 function ModelList({ models }: { models: string[] }) {
-  if (models.length === 0) return html`<span class="text-2xs text-text-muted italic">none</span>`
+  if (models.length === 0) return html`<span class="text-2xs text-fg-muted italic">none</span>`
   return html`
     <div class="flex flex-wrap gap-1.5">
       ${models.map(m => html`<span class="inline-flex items-center py-1 px-2.5 rounded text-2xs font-semibold bg-[var(--accent-10)] text-accent border border-accent/20 shadow-sm hover:bg-accent/20 transition-colors cursor-default">${m}</span>`)}
@@ -393,12 +393,12 @@ function ModelList({ models }: { models: string[] }) {
 }
 
 function LongText({ text, truncateAt = 200 }: { text: string; truncateAt?: number | null }) {
-  if (!text || text.trim() === '') return html`<span class="text-2xs text-text-muted italic">--</span>`
+  if (!text || text.trim() === '') return html`<span class="text-2xs text-fg-muted italic">--</span>`
   const truncated =
     truncateAt !== null && truncateAt >= 0 && text.length > truncateAt
       ? text.slice(0, truncateAt) + '...'
       : text
-  return html`<div class="text-xs text-text-body whitespace-pre-wrap max-h-35 overflow-y-auto custom-scrollbar border border-card-border bg-card/40 backdrop-blur-sm p-3 rounded mt-1.5 leading-relaxed shadow-inner hover:bg-card/60 transition-colors">${truncated}</div>`
+  return html`<div class="text-xs text-fg-primary whitespace-pre-wrap max-h-35 overflow-y-auto custom-scrollbar border border-card-border bg-card/40 backdrop-blur-sm p-3 rounded mt-1.5 leading-relaxed shadow-inner hover:bg-card/60 transition-colors">${truncated}</div>`
 }
 
 
@@ -408,7 +408,7 @@ function PromptSourceBadge({ source }: { source: string }) {
       ? 'bg-[var(--warn-10)] text-[var(--warn)] border-[var(--warn-20)]'
       : source === 'file'
         ? 'bg-[var(--ok-10)] text-[var(--ok)] border-[var(--ok-20)]'
-        : 'bg-white/5 text-text-dim border-white/10'
+        : 'bg-white/5 text-fg-disabled border-white/10'
   return html`<span class="text-3xs font-bold px-2 py-0.5 rounded border ${tone} shadow-sm">${source.toUpperCase()}</span>`
 }
 
@@ -424,7 +424,7 @@ function PromptBlock({
       <div class="flex items-center justify-between gap-2 mb-1">
         <div class="text-3xs font-semibold uppercase tracking-wider text-[var(--color-fg-muted)]">${title}</div>
         <div class="flex items-center gap-2">
-          <span class="text-3xs text-text-dim">${block.key}</span>
+          <span class="text-3xs text-fg-disabled">${block.key}</span>
           <${PromptSourceBadge} source=${block.source} />
         </div>
       </div>
@@ -433,14 +433,14 @@ function PromptBlock({
   `
 }
 
-const fieldStyle = 'w-full bg-card/60 backdrop-blur-sm text-text-strong text-sm border border-card-border rounded py-2 px-3 font-sans focus:border-accent/50 focus:ring-1 focus:ring-accent/50 transition-all duration-200 shadow-inner'
+const fieldStyle = 'w-full bg-card/60 backdrop-blur-sm text-fg-secondary text-sm border border-card-border rounded py-2 px-3 font-sans focus:border-accent/50 focus:ring-1 focus:ring-accent/50 transition-all duration-200 shadow-inner'
 
 // ── Inline editing components for runtime config ────────
 
 function InlineToggleRow({ label, value, onChange }: { label: string; value: boolean; onChange: (v: boolean) => void }) {
   return html`
     <div class="flex items-center justify-between py-2 px-3 rounded border border-card-border/50 bg-card/20 backdrop-blur-sm hover:bg-card/40 transition-colors shadow-sm mb-1.5">
-      <span class="text-xs font-medium text-text-muted">${label}</span>
+      <span class="text-xs font-medium text-fg-muted">${label}</span>
       <button type="button"
         class="relative inline-flex h-5 w-9 items-center rounded-sm transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] ${value ? 'bg-ok/60' : 'bg-white/10'}"
         aria-label=${`${label} ${value ? '비활성화' : '활성화'}`}
@@ -459,11 +459,11 @@ function InlineNumberRow({ label, value, onChange, min, max, step, suffix }: {
 }) {
   return html`
     <div class="flex items-center justify-between py-2 px-3 rounded border border-card-border/50 bg-card/20 backdrop-blur-sm hover:bg-card/40 transition-colors shadow-sm mb-1.5">
-      <span class="text-xs font-medium text-text-muted">${label}</span>
+      <span class="text-xs font-medium text-fg-muted">${label}</span>
       <div class="flex items-center gap-1.5">
         <input type="number"
           aria-label=${label}
-          class="w-20 text-right bg-card/60 text-text-strong text-xs font-semibold border border-card-border rounded py-1 px-2 focus:border-accent/50 transition-colors"
+          class="w-20 text-right bg-card/60 text-fg-secondary text-xs font-semibold border border-card-border rounded py-1 px-2 focus:border-accent/50 transition-colors"
           value=${value}
           min=${min}
           max=${max}
@@ -473,7 +473,7 @@ function InlineNumberRow({ label, value, onChange, min, max, step, suffix }: {
             if (!isNaN(v)) onChange(v)
           }}
         />
-        ${suffix ? html`<span class="text-3xs text-text-dim w-4">${suffix}</span>` : null}
+        ${suffix ? html`<span class="text-3xs text-fg-disabled w-4">${suffix}</span>` : null}
       </div>
     </div>
   `
@@ -492,10 +492,10 @@ function InlineSelectRow({
 }) {
   return html`
     <div class="flex items-center justify-between py-2 px-3 rounded-xl border border-card-border/50 bg-card/20 backdrop-blur-sm hover:bg-card/40 transition-colors shadow-sm mb-1.5 gap-3">
-      <span class="text-xs font-medium text-text-muted">${label}</span>
+      <span class="text-xs font-medium text-fg-muted">${label}</span>
       <select
         aria-label=${label}
-        class="text-xs bg-card/60 border border-card-border rounded px-2 py-1 text-text-strong"
+        class="text-xs bg-card/60 border border-card-border rounded px-2 py-1 text-fg-secondary"
         value=${value}
         onChange=${(e: Event) => onChange((e.target as HTMLSelectElement).value)}
       >
@@ -519,7 +519,7 @@ function EditTextarea({ field, label, rows = 3 }: { field: keyof EditDraft; labe
   const val = d[field] as string
   return html`
     <div class="mt-3">
-      <div class="text-2xs font-semibold uppercase tracking-wider text-text-muted mb-1.5">${label}</div>
+      <div class="text-2xs font-semibold uppercase tracking-wider text-fg-muted mb-1.5">${label}</div>
       <textarea
         aria-label=${label}
         class="${fieldStyle} resize-y custom-scrollbar"
@@ -694,7 +694,7 @@ export function KeeperConfigPanel({ keeperName }: { keeperName: string }) {
     <div class="flex gap-2 items-center mb-3">
       ${isEditing ? html`
         <button type="button"
-          class="${btnBase} bg-[var(--ok)] text-[#000]"
+          class="${btnBase} bg-[var(--ok)] text-white"
           onClick=${saveConfig}
           disabled=${isSaving}
         >${isSaving ? '저장 중...' : '저장'}</button>
@@ -806,10 +806,10 @@ export function KeeperConfigPanel({ keeperName }: { keeperName: string }) {
       ${hasCascadeSelector
         ? html`
             <label class="flex flex-col gap-1.5 py-2 px-3 rounded border border-card-border/50 bg-card/20 backdrop-blur-sm mb-1.5">
-              <span class="text-xs font-medium text-text-muted">활성 cascade profile</span>
+              <span class="text-xs font-medium text-fg-muted">활성 cascade profile</span>
               <select
                 aria-label="활성 cascade profile 선택"
-                class="rounded border border-card-border/60 bg-[var(--white-4)] px-3 py-2 text-xs font-semibold text-text-strong disabled:opacity-60"
+                class="rounded border border-card-border/60 bg-[var(--white-4)] px-3 py-2 text-xs font-semibold text-fg-secondary disabled:opacity-60"
                 value=${currentCascade}
                 disabled=${cascadeSaving.value || cascadeState.status === 'loading' || cascadeOptions.length === 0}
                 onChange=${(event: Event) => {
@@ -1049,7 +1049,7 @@ export function KeeperConfigPanel({ keeperName }: { keeperName: string }) {
       <${SectionHeader} title="네임스페이스 조율" />
       <div class="py-2 px-3 rounded border border-card-border/50 bg-card/20 backdrop-blur-sm mb-1.5">
         <div class="flex items-center justify-between gap-3 mb-2">
-          <span class="text-xs font-medium text-text-muted">active_goal_ids</span>
+          <span class="text-xs font-medium text-fg-muted">active_goal_ids</span>
           <span class="text-3xs text-[var(--color-fg-muted)]">${selectedActiveGoalIds.length}개 선택</span>
         </div>
         ${goalState.status === 'loading' ? html`
@@ -1090,7 +1090,7 @@ export function KeeperConfigPanel({ keeperName }: { keeperName: string }) {
       ${isVerifierRoleKeeper(c.coordination.mention_targets) ? html`
       <div class="mb-2 flex items-center gap-2 rounded border border-accent/30 bg-[var(--accent-10)] px-3 py-2">
         <span class="rounded border border-accent/40 bg-[var(--accent-5)] px-2 py-0.5 text-3xs font-semibold uppercase tracking-1 text-accent">검증자</span>
-        <span class="text-2xs text-text-body">이 keeper는 task completion_contract를 독립 실측하는 검증자 역할입니다.</span>
+        <span class="text-2xs text-fg-primary">이 keeper는 task completion_contract를 독립 실측하는 검증자 역할입니다.</span>
       </div>
       ` : null}
       ${c.coordination.mention_targets.length > 0 ? html`
@@ -1126,7 +1126,7 @@ export function KeeperConfigPanel({ keeperName }: { keeperName: string }) {
       ${runtimeHasChanges ? html`
         <div class="flex gap-2 items-center mt-4 mb-2 p-3 rounded border border-accent/30 bg-accent/5">
           <button type="button"
-            class="${btnBase} bg-[var(--ok)] text-[#000]"
+            class="${btnBase} bg-[var(--ok)] text-white"
             onClick=${saveRuntimeConfig}
             disabled=${runtimeSaving.value}
           >${runtimeSaving.value ? '저장 중...' : '런타임 설정 저장'}</button>
@@ -1145,7 +1145,7 @@ export function KeeperConfigPanel({ keeperName }: { keeperName: string }) {
         return html`
           <${SectionHeader} title="훅 슬롯" />
           <div class="flex items-center justify-between gap-2 mb-2">
-            <span class="text-3xs text-text-muted">${allEntries.length} slots</span>
+            <span class="text-3xs text-fg-muted">${allEntries.length} slots</span>
             <input
               type="search"
               autocomplete="off"
@@ -1163,8 +1163,8 @@ export function KeeperConfigPanel({ keeperName }: { keeperName: string }) {
                   <span class="mt-1 w-2 h-2 rounded-full shrink-0 ${slot.active ? 'bg-[var(--ok)] shadow-[0_0_6px_var(--ok-48)]' : 'bg-[var(--color-fg-disabled)]'}" aria-hidden="true"></span>
                   <div class="flex-1 min-w-0">
                     <div class="flex justify-between">
-                      <span class="text-xs font-semibold text-text-strong">${name}</span>
-                      <span class="text-3xs text-text-muted">${slot.source}</span>
+                      <span class="text-xs font-semibold text-fg-secondary">${name}</span>
+                      <span class="text-3xs text-fg-muted">${slot.source}</span>
                     </div>
                     ${(slot.gates ?? slot.effects ?? slot.features ?? []).length > 0 ? html`
                       <div class="flex flex-wrap gap-1 mt-1">

@@ -687,7 +687,7 @@ export function ToolAllowlistEditor({
           class=${`py-1.5 px-4 rounded text-3xs font-medium transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] disabled:opacity-50 ${
             isCustomEmpty
               ? 'bg-[var(--bad-light)] text-white hover:bg-[var(--color-status-err)]'
-              : 'bg-[var(--color-status-ok)] text-[#000] hover:bg-[var(--emerald)]'
+              : 'bg-[var(--color-status-ok)] text-white hover:bg-[var(--emerald)]'
           }`}
           onClick=${applyChanges}
           disabled=${saving.value}

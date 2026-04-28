@@ -295,10 +295,10 @@ function transportTruthLine(data: TransportHealthData): string | null {
 function MetricRow({ label, value, sub }: { label: string; value: string | number; sub?: string }) {
   return html`
     <div class="flex items-center justify-between gap-3 py-1.5">
-      <span class="text-xs text-text-muted">${label}</span>
+      <span class="text-xs text-fg-muted">${label}</span>
       <div class="flex items-center gap-2 min-w-0">
-        <span class="text-sm font-mono font-medium text-text-strong truncate" title=${value}>${value}</span>
-        ${sub ? html`<span class="text-3xs text-text-muted truncate" title=${sub}>${sub}</span>` : null}
+        <span class="text-sm font-mono font-medium text-fg-secondary truncate" title=${value}>${value}</span>
+        ${sub ? html`<span class="text-3xs text-fg-muted truncate" title=${sub}>${sub}</span>` : null}
       </div>
     </div>
   `
@@ -332,7 +332,7 @@ function SectionCard({
       <div class="flex items-center justify-between gap-3 mb-3">
         <div class="flex items-center gap-2 min-w-0">
           <${StatusDot} size="sm" class=${statusDot(status)} />
-          <span class="text-xs font-semibold text-text-strong uppercase tracking-wider truncate" title=${title}>${title}</span>
+          <span class="text-xs font-semibold text-fg-secondary uppercase tracking-wider truncate" title=${title}>${title}</span>
         </div>
         ${eyebrow ? html`<span class=${`text-3xs uppercase tracking-wider ${toneClass(status)}`}>${eyebrow}</span>` : null}
       </div>
@@ -347,11 +347,11 @@ function CaseCard({ item, data }: { item: PracticalCase; data: TransportHealthDa
   return html`
     <div class="rounded border border-card-border/70 bg-card/40 p-4">
       <div class="flex items-center justify-between gap-3 mb-2">
-        <div class="text-sm font-semibold text-text-strong">${item.title}</div>
-        <div class="text-3xs uppercase tracking-wider text-text-muted">${item.transport}</div>
+        <div class="text-sm font-semibold text-fg-secondary">${item.title}</div>
+        <div class="text-3xs uppercase tracking-wider text-fg-muted">${item.transport}</div>
       </div>
-      <div class="text-2xs text-text-muted mb-2 font-mono break-all">${item.endpoint(data)}</div>
-      <div class="text-xs text-text-body leading-relaxed">${item.description}</div>
+      <div class="text-2xs text-fg-muted mb-2 font-mono break-all">${item.endpoint(data)}</div>
+      <div class="text-xs text-fg-primary leading-relaxed">${item.description}</div>
       <div class="mt-3 text-2xs text-[var(--color-accent-fg)]">${item.live(data)}</div>
     </div>
   `
@@ -384,7 +384,7 @@ export function TransportHealthPanel() {
   const { data, loading, error } = transportHealthResource.state.value
 
   if (loading && !data) {
-    return html`<div class="p-6 text-center text-text-muted text-sm" role="status">트랜스포트 상태 로딩 중...</div>`
+    return html`<div class="p-6 text-center text-fg-muted text-sm" role="status">트랜스포트 상태 로딩 중...</div>`
   }
 
   if (error && !data) {
@@ -393,7 +393,7 @@ export function TransportHealthPanel() {
 
   if (!data) return null
   if (!data.summary || !data.agent_health) {
-    return html`<div class="p-6 text-center text-text-muted text-sm">트랜스포트 데이터 불완전. <${ActionButton} variant="subtle" size="sm" class="underline" onClick=${() => void refreshTransportHealth()}>재시도<//></div>`
+    return html`<div class="p-6 text-center text-fg-muted text-sm">트랜스포트 데이터 불완전. <${ActionButton} variant="subtle" size="sm" class="underline" onClick=${() => void refreshTransportHealth()}>재시도<//></div>`
   }
 
   const sseStatus = sseTone(data)
@@ -420,15 +420,15 @@ export function TransportHealthPanel() {
       <div class="flex items-start justify-between gap-4">
         <div>
           <div class="flex items-center gap-2">
-            <span class="text-base text-text-strong">트랜스포트</span>
-            <span class="text-3xs uppercase tracking-wider text-text-muted">${namespaceChip}</span>
+            <span class="text-base text-fg-secondary">트랜스포트</span>
+            <span class="text-3xs uppercase tracking-wider text-fg-muted">${namespaceChip}</span>
           </div>
-          <div class="mt-1 text-sm text-text-body">
-            primary path: <span class="font-mono text-text-strong">${data.summary.primary_path}</span>
+          <div class="mt-1 text-sm text-fg-primary">
+            primary path: <span class="font-mono text-fg-secondary">${data.summary.primary_path}</span>
             <span class=${`ml-2 text-2xs uppercase tracking-wider ${toneClass(sseStatus)}`}>${data.summary.queue_pressure}</span>
           </div>
           ${truthLine
-            ? html`<div class="mt-1 text-2xs text-text-muted">${truthLine}</div>`
+            ? html`<div class="mt-1 text-2xs text-fg-muted">${truthLine}</div>`
             : null}
         </div>
         <${ActionButton}
@@ -440,9 +440,9 @@ export function TransportHealthPanel() {
       </div>
 
       <details class="group rounded border border-card-border/50 bg-card/18 overflow-hidden" open=${hasAnyBadTransport}>
-        <summary class="flex items-center gap-3 px-4 py-3 cursor-pointer text-sm font-semibold text-text-strong bg-card/28 hover:bg-card/44 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-accent-fg)]">
+        <summary class="flex items-center gap-3 px-4 py-3 cursor-pointer text-sm font-semibold text-fg-secondary bg-card/28 hover:bg-card/44 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-accent-fg)]">
           <span>트랜스포트 상세</span>
-          <span class="ml-auto flex items-center gap-2 text-2xs font-normal text-text-muted">
+          <span class="ml-auto flex items-center gap-2 text-2xs font-normal text-fg-muted">
             <span class="inline-flex items-center gap-1"><${StatusDot} size="xs" class=${statusDot(sseStatus)} />SSE</span>
             <span class="inline-flex items-center gap-1"><${StatusDot} size="xs" class=${statusDot(grpcStatus)} />gRPC</span>
             <span class="inline-flex items-center gap-1"><${StatusDot} size="xs" class=${statusDot(wsStatus)} />WS</span>
@@ -519,7 +519,7 @@ export function TransportHealthPanel() {
             <//>
 
             <${SectionCard} title="에이전트 풀" status=${clusterStatus} eyebrow=${clusterEyebrow}>
-              <div class="text-3xs text-text-muted mb-2">클러스터 내 관리 유닛 풀. 부실(stale) = 하트비트가 끊긴 에이전트.</div>
+              <div class="text-3xs text-fg-muted mb-2">클러스터 내 관리 유닛 풀. 부실(stale) = 하트비트가 끊긴 에이전트.</div>
               <${MetricRow} label="관리 유닛" value=${formatMetricValue(data.cluster.managed_units)} sub=${managedUnitsSub} />
               <${MetricRow} label="활성 작업" value=${formatMetricValue(data.cluster.active_operations)} />
               <${MetricRow} label="부실 유닛" value=${formatMetricValue(data.cluster.stale_units)} />
@@ -537,13 +537,13 @@ export function TransportHealthPanel() {
             const isFiltered = query.trim() !== ''
             return html`
             <details class="group rounded border border-card-border/50 bg-card/18 overflow-hidden" open=${data.sse.hot_sessions.length >= 3}>
-              <summary class="flex items-center gap-3 px-4 py-3 cursor-pointer text-sm font-semibold text-text-strong bg-card/28 hover:bg-card/44 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-accent-fg)]">
+              <summary class="flex items-center gap-3 px-4 py-3 cursor-pointer text-sm font-semibold text-fg-secondary bg-card/28 hover:bg-card/44 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-accent-fg)]">
                 <span>핫 큐</span>
-                <span class="ml-auto text-2xs font-normal text-text-muted">${data.sse.hot_sessions.length}개 세션 -- SSE 백프레셔 위험</span>
+                <span class="ml-auto text-2xs font-normal text-fg-muted">${data.sse.hot_sessions.length}개 세션 -- SSE 백프레셔 위험</span>
               </summary>
               <div class="p-4">
                 <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
-                  <div class="text-2xs text-text-muted">SSE 세션 중 메시지 큐가 쌓여 있는 세션입니다. 큐 depth가 높으면 해당 클라이언트가 이벤트 처리를 따라가지 못하고 있습니다.</div>
+                  <div class="text-2xs text-fg-muted">SSE 세션 중 메시지 큐가 쌓여 있는 세션입니다. 큐 depth가 높으면 해당 클라이언트가 이벤트 처리를 따라가지 못하고 있습니다.</div>
                   <${TextInput}
                     type="search"
                     class="min-w-45 flex-1 !py-1 !text-2xs"
@@ -558,23 +558,23 @@ export function TransportHealthPanel() {
                   />
                 </div>
                 ${isFiltered ? html`
-                  <div class="mb-2 text-2xs text-text-muted">${filtered.length} / ${data.sse.hot_sessions.length}개 세션</div>
+                  <div class="mb-2 text-2xs text-fg-muted">${filtered.length} / ${data.sse.hot_sessions.length}개 세션</div>
                 ` : null}
                 ${filtered.length === 0 ? html`
-                  <div class="text-2xs text-text-muted py-3">검색 결과 없음</div>
+                  <div class="text-2xs text-fg-muted py-3">검색 결과 없음</div>
                 ` : html`
                   <div class="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3">
                     ${filtered.map((session) => html`
                       <div key=${session.session_id} class="rounded border border-card-border/60 bg-bg-1/60 p-3">
                         <div class="flex items-center justify-between gap-2 mb-1">
                           <div class="flex min-w-0 items-center gap-1">
-                            <span class="truncate text-2xs font-mono text-text-strong" title=${session.session_id}>${compactId(session.session_id)}</span>
+                            <span class="truncate text-2xs font-mono text-fg-secondary" title=${session.session_id}>${compactId(session.session_id)}</span>
                             <${CopyIdButton} value=${session.session_id} label="session_id" />
                           </div>
-                          <span class="text-3xs uppercase tracking-wider text-text-muted">${session.kind}</span>
+                          <span class="text-3xs uppercase tracking-wider text-fg-muted">${session.kind}</span>
                         </div>
-                        <div class="text-2xs text-text-body">queue ${session.queue_depth}</div>
-                        <div class="text-3xs text-text-muted mt-1">idle ${formatIdle(session.idle_seconds)} · last ${session.last_event_id}</div>
+                        <div class="text-2xs text-fg-primary">queue ${session.queue_depth}</div>
+                        <div class="text-3xs text-fg-muted mt-1">idle ${formatIdle(session.idle_seconds)} · last ${session.last_event_id}</div>
                       </div>
                     `)}
                   </div>
@@ -586,12 +586,12 @@ export function TransportHealthPanel() {
         : null}
 
       <details class="group rounded border border-card-border/50 bg-card/18 overflow-hidden">
-        <summary class="flex items-center gap-3 px-4 py-3 cursor-pointer text-sm font-semibold text-text-strong bg-card/28 hover:bg-card/44 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-accent-fg)]">
+        <summary class="flex items-center gap-3 px-4 py-3 cursor-pointer text-sm font-semibold text-fg-secondary bg-card/28 hover:bg-card/44 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-accent-fg)]">
           <span>실용 경로</span>
-          <span class="ml-auto text-2xs font-normal text-text-muted">각 트랜스포트의 실제 연결 방법 레퍼런스</span>
+          <span class="ml-auto text-2xs font-normal text-fg-muted">각 트랜스포트의 실제 연결 방법 레퍼런스</span>
         </summary>
         <div class="p-4">
-          <div class="text-2xs text-text-muted mb-3">5가지 트랜스포트(SSE, gRPC, WebSocket, WebRTC, HTTP)를 실제로 어떻게 연결하는지 보여주는 가이드입니다. 운영 데이터가 아닌 참조용 정보입니다.</div>
+          <div class="text-2xs text-fg-muted mb-3">5가지 트랜스포트(SSE, gRPC, WebSocket, WebRTC, HTTP)를 실제로 어떻게 연결하는지 보여주는 가이드입니다. 운영 데이터가 아닌 참조용 정보입니다.</div>
           <div class="grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-3">
             ${PRACTICAL_CASES.map((item) => html`<${CaseCard} item=${item} data=${data} />`)}
           </div>

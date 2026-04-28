@@ -45,20 +45,20 @@ export function MetricTrack({ points, windowStart, windowEnd }: Props) {
   const anomalyCount = anomalyResults.filter(r => r.isAnomaly).length
   const lastRate = windowed[windowed.length - 1]?.point.success_rate ?? null
   const lastRateColor =
-    lastRate == null ? 'text-text-dim'
+    lastRate == null ? 'text-fg-disabled'
       : lastRate >= 97 ? 'text-[var(--color-status-ok)]'
-      : lastRate >= 90 ? 'text-text-strong'
+      : lastRate >= 90 ? 'text-fg-secondary'
       : 'text-[var(--bad-light)]'
 
   return html`
     <div class="flex items-center gap-3">
       <div class="w-24 shrink-0">
-        <div class="text-2xs font-semibold text-text-muted">도구 성공률</div>
+        <div class="text-2xs font-semibold text-fg-muted">도구 성공률</div>
         ${lastRate != null ? html`
           <div class="text-sm font-mono font-semibold ${lastRateColor}">
             ${lastRate.toFixed(1)}%
           </div>
-        ` : html`<div class="text-3xs text-text-dim">데이터 없음</div>`}
+        ` : html`<div class="text-3xs text-fg-disabled">데이터 없음</div>`}
         ${anomalyCount > 0 ? html`
           <div class="text-3xs font-mono text-[var(--bad-light)]">${anomalyCount} anomaly</div>
         ` : null}
@@ -74,7 +74,7 @@ export function MetricTrack({ points, windowStart, windowEnd }: Props) {
         onMouseLeave=${clearCursor}
       >
         ${windowed.length === 0 ? html`
-          <div class="absolute inset-0 flex items-center justify-center text-3xs text-text-dim">
+          <div class="absolute inset-0 flex items-center justify-center text-3xs text-fg-disabled">
             hourly_trend 데이터 부족
           </div>
         ` : html`

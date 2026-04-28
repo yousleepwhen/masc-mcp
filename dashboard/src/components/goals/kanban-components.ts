@@ -44,7 +44,7 @@ function priorityToneClass(priority: number): string {
     case 1: return 'border-l-[var(--rose-light)] bg-[var(--color-status-err)]/10 text-[#fecdd3]'
     case 2: return 'border-l-[var(--color-status-warn)] bg-[var(--color-status-warn)]/10 text-[var(--yellow-100)]'
     case 3: return 'border-l-[var(--blue-400)] bg-[var(--blue-400)]/10 text-[#bfdbfe]'
-    default: return 'border-l-[rgba(148,163,184,0.45)] bg-white/5 text-text-muted'
+    default: return 'border-l-[rgba(148,163,184,0.45)] bg-white/5 text-fg-muted'
   }
 }
 
@@ -106,7 +106,7 @@ function KanbanCard({ task }: { task: Task }) {
       <div class="flex items-start justify-between gap-3">
         <div class="flex flex-wrap items-center gap-2">
           <span class="rounded border border-current/20 px-2 py-0.5 text-2xs font-semibold">${priorityLabel(p)}</span>
-          ${scope ? html`<span class="rounded border border-card-border/70 bg-white/5 px-2 py-0.5 text-2xs font-medium text-text-body">${scope}</span>` : null}
+          ${scope ? html`<span class="rounded border border-card-border/70 bg-white/5 px-2 py-0.5 text-2xs font-medium text-fg-primary">${scope}</span>` : null}
         </div>
         <${ActionButton}
           variant="danger"
@@ -122,19 +122,19 @@ function KanbanCard({ task }: { task: Task }) {
 
       <button
         type="button"
-        class="text-left text-base font-semibold leading-snug text-text-strong whitespace-pre-wrap break-words cursor-pointer bg-transparent border-none p-0 font-[inherit] transition-colors hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+        class="text-left text-base font-semibold leading-snug text-fg-secondary whitespace-pre-wrap break-words cursor-pointer bg-transparent border-none p-0 font-[inherit] transition-colors hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
         onClick=${() => openTaskDetail(task)}
       >${task.title}</button>
 
       ${hasDescription ? html`
         <div class="flex flex-col gap-2">
-          <div id=${`task-desc-${task.id}`} class=${`overflow-hidden text-sm leading-relaxed text-text-body ${isExpanded || !canExpand ? '' : 'max-h-[9rem]'}`}>
+          <div id=${`task-desc-${task.id}`} class=${`overflow-hidden text-sm leading-relaxed text-fg-primary ${isExpanded || !canExpand ? '' : 'max-h-[9rem]'}`}>
             <${RichContent} text=${description} previewLimit=${1} />
           </div>
           ${canExpand ? html`
             <button
               type="button"
-              class="w-fit rounded border border-card-border/70 bg-white/4 px-2 py-1 text-2xs text-text-muted transition-colors hover:text-text-strong"
+              class="w-fit rounded border border-card-border/70 bg-white/4 px-2 py-1 text-2xs text-fg-muted transition-colors hover:text-fg-secondary"
               onClick=${() => toggleTaskExpand(task.id)}
               aria-expanded=${isExpanded}
               aria-controls=${`task-desc-${task.id}`}
@@ -144,10 +144,10 @@ function KanbanCard({ task }: { task: Task }) {
           ` : null}
         </div>
       ` : html`
-        <div class="text-xs text-text-dim">설명 없음</div>
+        <div class="text-xs text-fg-disabled">설명 없음</div>
       `}
 
-      <div class="flex flex-wrap items-center gap-2 text-2xs text-text-muted">
+      <div class="flex flex-wrap items-center gap-2 text-2xs text-fg-muted">
         ${task.status === 'awaiting_verification'
           ? html`<span class="rounded border border-accent/30 bg-[var(--accent-10)] px-2 py-1 text-accent" title="verifier keeper의 독립 실측을 기다리는 중">검증 대기${task.updated_at ? html` <${TimeAgo} timestamp=${task.updated_at} />` : null}</span>`
           : task.completed_at && task.status === 'done'
@@ -162,7 +162,7 @@ function KanbanCard({ task }: { task: Task }) {
           href=${link.href}
           target="_blank"
           rel="noreferrer"
-          class="inline-flex items-center gap-1 rounded border border-card-border/70 bg-white/4 px-2 py-1 text-text-body transition-colors hover:border-accent/35 hover:text-text-strong"
+          class="inline-flex items-center gap-1 rounded border border-card-border/70 bg-white/4 px-2 py-1 text-fg-primary transition-colors hover:border-accent/35 hover:text-fg-secondary"
         >
           ${link.label}
           <span aria-hidden="true">\u2197</span>
@@ -197,8 +197,8 @@ function TaskColumn({
     <section class="flex min-h-60 flex-col gap-4 rounded border border-card-border/60 bg-[var(--backdrop-deep)] p-4" aria-label=${title}>
       <div class="flex items-start justify-between gap-3 border-b border-card-border/50 pb-3">
         <div>
-          <h3 class="text-md font-semibold text-text-strong">${title}</h3>
-          <p class="mt-1 text-xs leading-relaxed text-text-muted">${description}</p>
+          <h3 class="text-md font-semibold text-fg-secondary">${title}</h3>
+          <p class="mt-1 text-xs leading-relaxed text-fg-muted">${description}</p>
         </div>
         <span class="rounded px-2.5 py-1 text-xs font-semibold ${badgeClass}" aria-label="${count}개 항목">${count}</span>
       </div>
@@ -292,13 +292,13 @@ export function TaskBacklog() {
         ${hasSearch ? html`
           <button
             type="button"
-            class="rounded border border-card-border/70 bg-white/4 px-3 py-2 text-xs text-text-muted transition-colors hover:border-accent/35 hover:text-text-strong"
+            class="rounded border border-card-border/70 bg-white/4 px-3 py-2 text-xs text-fg-muted transition-colors hover:border-accent/35 hover:text-fg-secondary"
             onClick=${() => {
               resetTaskSearch()
               searchDoneVisibleCount.value = DONE_PAGE_SIZE
             }}
           >검색 초기화</button>
-          <span class="text-xs text-text-muted">${filteredTotal}/${totalTasks}</span>
+          <span class="text-xs text-fg-muted">${filteredTotal}/${totalTasks}</span>
         ` : null}
       </div>
       <div class="grid grid-cols-[repeat(auto-fit,minmax(320px,1fr))] gap-4 items-start">
@@ -344,7 +344,7 @@ export function TaskBacklog() {
           ${hasMoreDone ? html`
             <button
               type="button"
-              class="w-full rounded border border-card-border/60 bg-white/3 px-3 py-2 text-xs font-medium text-text-muted transition-colors hover:border-accent/35 hover:text-text-strong"
+              class="w-full rounded border border-card-border/60 bg-white/3 px-3 py-2 text-xs font-medium text-fg-muted transition-colors hover:border-accent/35 hover:text-fg-secondary"
               onClick=${() => {
                 if (hasSearch) searchDoneVisibleCount.value += DONE_PAGE_SIZE
                 else doneVisibleCount.value += DONE_PAGE_SIZE

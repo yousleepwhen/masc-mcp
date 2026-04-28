@@ -1016,7 +1016,7 @@ export function KeeperDetailPage() {
           open=${diagOpen}
           onToggle=${(e: Event) => setDiagOpen((e.currentTarget as HTMLDetailsElement).open)}
         >
-          <summary class="cursor-pointer py-3 px-5 text-2xs font-semibold uppercase tracking-widest text-text-muted list-none select-none flex items-center gap-2">
+          <summary class="cursor-pointer py-3 px-5 text-2xs font-semibold uppercase tracking-widest text-fg-muted list-none select-none flex items-center gap-2">
             <span class="w-1.5 h-1.5 rounded-full bg-accent/50" aria-hidden="true"></span>
             런타임 진단
           </summary>
@@ -1035,7 +1035,7 @@ export function KeeperDetailPage() {
           </div>
         </details>
             <details class="p-5 rounded border border-card-border bg-card/40 backdrop-blur-sm shadow-sm">
-              <summary class="cursor-pointer text-2xs font-semibold uppercase tracking-widest text-text-muted list-none select-none flex items-center gap-2">
+              <summary class="cursor-pointer text-2xs font-semibold uppercase tracking-widest text-fg-muted list-none select-none flex items-center gap-2">
                 <span class="w-1.5 h-1.5 rounded-full bg-accent/50" aria-hidden="true"></span>
                 품질 시그널 (고급 지표)
               </summary>
@@ -1102,7 +1102,7 @@ export function KeeperDetailPage() {
             </div>
 
           <details class="p-5 rounded border border-card-border bg-card/40 backdrop-blur-sm shadow-sm">
-            <summary class="cursor-pointer text-2xs font-semibold uppercase tracking-widest text-text-muted list-none select-none flex items-center gap-2">
+            <summary class="cursor-pointer text-2xs font-semibold uppercase tracking-widest text-fg-muted list-none select-none flex items-center gap-2">
               <span class="w-1.5 h-1.5 rounded-full bg-accent/50" aria-hidden="true"></span>
               Checkpoint & Snapshots
             </summary>
@@ -1123,7 +1123,7 @@ export function KeeperDetailPage() {
           >
             <${TurnBudgetSection} keeper=${keeper} />
             <details class="p-5 rounded border border-card-border bg-card/40 backdrop-blur-sm shadow-sm">
-              <summary class="cursor-pointer text-2xs font-semibold uppercase tracking-widest text-text-muted list-none select-none flex items-center gap-2">
+              <summary class="cursor-pointer text-2xs font-semibold uppercase tracking-widest text-fg-muted list-none select-none flex items-center gap-2">
                 <span class="w-1.5 h-1.5 rounded-full bg-accent/50" aria-hidden="true"></span>
                 도구 정책
               </summary>
@@ -1133,7 +1133,7 @@ export function KeeperDetailPage() {
             </details>
             <${PlaygroundReposPanel} keeperName=${keeper.name} />
             <details class="p-5 rounded border border-card-border bg-card/40 backdrop-blur-sm shadow-sm">
-              <summary class="cursor-pointer text-2xs font-semibold uppercase tracking-widest text-text-muted list-none select-none flex items-center gap-2">
+              <summary class="cursor-pointer text-2xs font-semibold uppercase tracking-widest text-fg-muted list-none select-none flex items-center gap-2">
                 <span class="w-1.5 h-1.5 rounded-full bg-accent/50" aria-hidden="true"></span>
                 Keeper 설정
               </summary>

@@ -18,11 +18,11 @@
 //                         column headers, tool-allowlist sections)
 //
 // Tone tokens resolve through the Tailwind v4 `@theme` (tokens.css):
-//   text-text-muted → var(--color-text-muted)
-//   text-text-dim   → var(--color-text-dim)
+//   text-fg-muted → var(--color-text-muted)
+//   text-fg-disabled   → var(--color-text-dim)
 // Using the generated utility instead of `text-[var(--color-fg-muted)]`
 // keeps purge predictable, autocomplete honest, and fixes the
-// `text-text-muted` / `text-[var(--color-fg-muted)]` / `text-[var(--color-fg-muted)]`
+// `text-fg-muted` / `text-[var(--color-fg-muted)]` / `text-[var(--color-fg-muted)]`
 // trident drift the audit surfaced.
 //
 // NOT a replacement for:
@@ -42,8 +42,8 @@ type SectionCapWeight = 'normal' | 'semibold'
 const BASE = 'text-3xs uppercase tracking-wider'
 
 const TONE: Record<SectionCapTone, string> = {
-  muted: 'text-text-muted',
-  dim: 'text-text-dim',
+  muted: 'text-fg-muted',
+  dim: 'text-fg-disabled',
 }
 
 const WEIGHT: Record<SectionCapWeight, string> = {

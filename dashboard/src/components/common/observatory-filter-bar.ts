@@ -29,11 +29,11 @@ function Chip({
 }) {
   return html`
     <span class="inline-flex items-center gap-1.5 rounded-sm border border-card-border bg-card/50 px-2.5 py-1 text-2xs">
-      <span class="text-text-dim font-medium">${label}:</span>
-      <span class="font-mono text-text-strong">${value}</span>
+      <span class="text-fg-disabled font-medium">${label}:</span>
+      <span class="font-mono text-fg-secondary">${value}</span>
       <button
         type="button"
-        class="ml-0.5 rounded-sm min-w-6 min-h-6 p-1 text-text-muted hover:bg-white/10 hover:text-text-strong transition-colors inline-flex items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--color-bg-page)]"
+        class="ml-0.5 rounded-sm min-w-6 min-h-6 p-1 text-fg-muted hover:bg-white/10 hover:text-fg-secondary transition-colors inline-flex items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--color-bg-page)]"
         onClick=${onClear}
         aria-label=${`${label} 필터 제거`}
       >
@@ -57,7 +57,7 @@ export function ObservatoryFilterBar() {
       role="region"
       aria-label="활성 관찰 필터"
     >
-      <span class="text-3xs uppercase tracking-wider text-text-dim font-semibold">필터</span>
+      <span class="text-3xs uppercase tracking-wider text-fg-disabled font-semibold">필터</span>
       ${keeper ? html`
         <${Chip}
           label="키퍼"
@@ -88,7 +88,7 @@ export function ObservatoryFilterBar() {
       ` : null}
       <button
         type="button"
-        class="ml-auto rounded text-2xs font-medium text-text-muted underline decoration-dotted underline-offset-2 hover:text-text-strong transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--color-bg-page)]"
+        class="ml-auto rounded text-2xs font-medium text-fg-muted underline decoration-dotted underline-offset-2 hover:text-fg-secondary transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--color-bg-page)]"
         onClick=${() => clearObservatoryFilters()}
       >
         모두 해제

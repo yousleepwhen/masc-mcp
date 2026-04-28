@@ -24,7 +24,7 @@ export function TaskCreateForm(props: { goalId?: string | null; goalTitle?: stri
   if (!showTaskCreate.value) {
     return html`
       <div class="flex flex-col gap-3">
-        <div class="text-xs leading-relaxed text-text-muted">
+        <div class="text-xs leading-relaxed text-fg-muted">
           ${linkedGoalId
             ? html`
               <span class="inline-flex items-center gap-1 rounded border border-accent/30 bg-[var(--accent-10)] px-1.5 py-0.5 text-2xs text-accent">
@@ -33,7 +33,7 @@ export function TaskCreateForm(props: { goalId?: string | null; goalTitle?: stri
               에 직접 연결된 backlog 태스크를 생성합니다.
             `
             : html`
-              이 프로젝트의 백로그에 바로 추가됩니다. 우선순위는 <code class="rounded bg-white/5 px-1 py-0.5 text-2xs text-text-strong">P1</code>이 가장 높습니다.
+              이 프로젝트의 백로그에 바로 추가됩니다. 우선순위는 <code class="rounded bg-white/5 px-1 py-0.5 text-2xs text-fg-secondary">P1</code>이 가장 높습니다.
             `}
         </div>
         <${ActionButton}
@@ -50,8 +50,8 @@ export function TaskCreateForm(props: { goalId?: string | null; goalTitle?: stri
     <div class="rounded border border-card-border/70 bg-[rgba(8,13,22,0.88)] p-4">
       <div class="mb-3 flex items-start justify-between gap-3">
         <div>
-          <h3 class="text-base font-semibold text-text-strong">새 태스크</h3>
-          <p class="mt-1 text-xs leading-relaxed text-text-muted">
+          <h3 class="text-base font-semibold text-fg-secondary">새 태스크</h3>
+          <p class="mt-1 text-xs leading-relaxed text-fg-muted">
             ${linkedGoalId
               ? 'goal_id가 함께 저장됩니다. 제목에 [goal:<id>] 태그를 붙이지 않아도 Goal Manager에 연결됩니다.'
               : '간단한 제목만 있어도 backlog에 등록됩니다. 설명은 나중에 보강해도 됩니다.'}
@@ -63,13 +63,13 @@ export function TaskCreateForm(props: { goalId?: string | null; goalTitle?: stri
         ${linkedGoalId ? html`
           <div class="rounded border border-accent/25 bg-[var(--accent-10)] px-3 py-2 text-2xs leading-relaxed text-accent">
             연결 목표:
-            <strong class="ml-1 text-text-strong">${linkedGoalTitle ?? linkedGoalId}</strong>
-            <span class="ml-1 text-text-muted">(${linkedGoalId})</span>
+            <strong class="ml-1 text-fg-secondary">${linkedGoalTitle ?? linkedGoalId}</strong>
+            <span class="ml-1 text-fg-muted">(${linkedGoalId})</span>
           </div>
         ` : null}
 
         <div class="flex flex-col gap-1.5">
-          <label for="task-create-title" class="text-2xs font-medium text-text-muted">
+          <label for="task-create-title" class="text-2xs font-medium text-fg-muted">
             제목<span class="ml-0.5 text-[var(--color-status-err)]" aria-hidden="true">*</span>
           </label>
           <${TextInput}
@@ -83,7 +83,7 @@ export function TaskCreateForm(props: { goalId?: string | null; goalTitle?: stri
 
         <div class="grid gap-3 md:grid-cols-[minmax(0,1fr)_180px]">
           <div class="flex flex-col gap-1.5">
-            <label for="task-create-description" class="text-2xs font-medium text-text-muted">설명</label>
+            <label for="task-create-description" class="text-2xs font-medium text-fg-muted">설명</label>
             <${RichComposer}
               value=${description.value}
               placeholder="배경, 재현 조건, 원하는 결과를 적으면 backlog 카드와 Task 상세에서 그대로 렌더링됩니다."
@@ -95,15 +95,15 @@ export function TaskCreateForm(props: { goalId?: string | null; goalTitle?: stri
           </div>
 
           <div class="flex flex-col gap-1.5">
-            <label for="task-create-priority" class="text-2xs font-medium text-text-muted">우선순위</label>
+            <label for="task-create-priority" class="text-2xs font-medium text-fg-muted">우선순위</label>
             <${Select}
               id="task-create-priority"
               value=${String(priority.value)}
               options=${PRIORITY_OPTIONS}
               onInput=${(v: string) => { priority.value = Number(v) }}
             />
-            <div class="rounded border border-card-border/60 bg-white/3 px-3 py-2 text-2xs leading-relaxed text-text-muted">
-              backlog 카드와 동일하게 <strong class="text-text-strong">P1 → P4</strong> 순으로 표시됩니다.
+            <div class="rounded border border-card-border/60 bg-white/3 px-3 py-2 text-2xs leading-relaxed text-fg-muted">
+              backlog 카드와 동일하게 <strong class="text-fg-secondary">P1 → P4</strong> 순으로 표시됩니다.
             </div>
           </div>
         </div>

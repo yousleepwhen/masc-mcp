@@ -160,7 +160,7 @@ function badgeClass(badge: string): string {
     case 'linkage_warning':
       return 'border-bad/30 bg-bad/10 text-bad'
     default:
-      return 'border-card-border/60 bg-white/4 text-text-body'
+      return 'border-card-border/60 bg-white/4 text-fg-primary'
   }
 }
 
@@ -189,7 +189,7 @@ function healthClass(health: GoalTreeNode['health']): string {
     case 'blocked': return 'border-bad/35 bg-bad/10 text-bad'
     case 'at_risk': return 'border-warn/30 bg-warn/10 text-warn'
     case 'on_track': return 'border-ok/30 bg-ok/10 text-ok'
-    default: return 'border-card-border/60 bg-white/4 text-text-body'
+    default: return 'border-card-border/60 bg-white/4 text-fg-primary'
   }
 }
 
@@ -218,7 +218,7 @@ function blockerSourceClass(source: GoalTreeNode['blocking_source']): string {
     case 'stalled':
       return 'border-warn/25 bg-warn/10 text-warn'
     default:
-      return 'border-card-border/60 bg-white/4 text-text-body'
+      return 'border-card-border/60 bg-white/4 text-fg-primary'
   }
 }
 
@@ -231,14 +231,14 @@ function keeperTrustDispositionClass(
     return 'border-warn/25 bg-warn/10 text-warn'
   }
   if (disposition === 'Pass') return 'border-ok/25 bg-ok/10 text-ok'
-  return 'border-card-border/60 bg-white/4 text-text-body'
+  return 'border-card-border/60 bg-white/4 text-fg-primary'
 }
 
 function timelineSeverityClass(severity: GoalDetailTimelineEvent['severity']): string {
   switch (severity) {
     case 'bad': return 'border-bad/25 bg-bad/10 text-bad'
     case 'warn': return 'border-warn/25 bg-warn/10 text-warn'
-    default: return 'border-card-border/50 bg-white/3 text-text-body'
+    default: return 'border-card-border/50 bg-white/3 text-fg-primary'
   }
 }
 
@@ -332,7 +332,7 @@ function ConvergenceBar({ pct, size = 'md' }: { pct: number; size?: 'sm' | 'md' 
       <div class="flex-1 ${h} rounded-sm bg-white/10 overflow-hidden">
         <div class="${h} rounded-sm transition-all duration-500" style="width:${clamped}%;background:${barColor}"></div>
       </div>
-      <span class="text-2xs font-semibold tabular-nums text-text-muted w-9 text-right">${clamped}%</span>
+      <span class="text-2xs font-semibold tabular-nums text-fg-muted w-9 text-right">${clamped}%</span>
     </div>
   `
 }
@@ -349,8 +349,8 @@ function TreeSummary({
   return html`
     <div class="grid grid-cols-[repeat(auto-fit,minmax(128px,1fr))] gap-3">
       <div class="rounded border border-card-border/60 bg-[var(--backdrop-deep)] p-3 text-center">
-        <div class="text-2xl font-bold text-text-strong tabular-nums">${summary.total_goals}</div>
-        <div class="mt-1 text-3xs font-semibold uppercase tracking-widest text-text-muted">전체 목표</div>
+        <div class="text-2xl font-bold text-fg-secondary tabular-nums">${summary.total_goals}</div>
+        <div class="mt-1 text-3xs font-semibold uppercase tracking-widest text-fg-muted">전체 목표</div>
       </div>
       <div class="rounded border border-ok/25 bg-ok/10 p-3 text-center">
         <div class="text-2xl font-bold text-ok tabular-nums">${summary.active_goals}</div>
@@ -365,8 +365,8 @@ function TreeSummary({
         <div class="mt-1 text-3xs font-semibold uppercase tracking-widest text-bad/80">차단</div>
       </div>
       <div class="rounded border border-card-border/60 bg-[var(--backdrop-deep)] p-3 text-center">
-        <div class="text-2xl font-bold text-text-strong tabular-nums">${summary.pending_approvals}</div>
-        <div class="mt-1 text-3xs font-semibold uppercase tracking-widest text-text-muted">승인 대기</div>
+        <div class="text-2xl font-bold text-fg-secondary tabular-nums">${summary.pending_approvals}</div>
+        <div class="mt-1 text-3xs font-semibold uppercase tracking-widest text-fg-muted">승인 대기</div>
       </div>
       ${goalVerificationCount > 0 ? html`
         <div class="rounded border border-amber-400/30 bg-amber-400/10 p-3 text-center">
@@ -381,7 +381,7 @@ function TreeSummary({
         </div>
       ` : null}
       <div class="rounded border border-card-border/60 bg-[var(--backdrop-deep)] p-3">
-        <div class="mb-2 text-3xs font-semibold uppercase tracking-widest text-text-muted">전체 수렴도</div>
+        <div class="mb-2 text-3xs font-semibold uppercase tracking-widest text-fg-muted">전체 수렴도</div>
         <${ConvergenceBar} pct=${summary.overall_convergence_pct} />
       </div>
     </div>
@@ -421,8 +421,8 @@ function TreeTask({ task }: { task: GoalTreeTask }) {
   return html`
     <div class="flex flex-wrap items-center gap-2 rounded bg-white/3 px-2 py-1.5 text-xs">
       <span class="size-2 rounded-sm shrink-0" style="background:${task.status_color}"></span>
-      <span class="min-w-0 flex-1 truncate text-text-body" title=${task.title}>${task.title}</span>
-      <span class="rounded border border-card-border/60 bg-white/4 px-1.5 py-0.5 text-3xs font-medium text-text-muted">
+      <span class="min-w-0 flex-1 truncate text-fg-primary" title=${task.title}>${task.title}</span>
+      <span class="rounded border border-card-border/60 bg-white/4 px-1.5 py-0.5 text-3xs font-medium text-fg-muted">
         ${task.linkage_source === 'explicit' ? 'goal_id' : 'title tag'}
       </span>
       ${task.assignee ? html`
@@ -458,9 +458,9 @@ function TreeNode({ node, depth }: { node: GoalTreeNode; depth: number }) {
         aria-controls=${hasContent ? `goal-content-${node.id}` : undefined}
       >
         ${hasContent ? html`
-          <span class="mt-0.5 shrink-0 text-xs text-text-dim transition-transform ${isExpanded ? 'rotate-90' : ''}">\u25B6</span>
+          <span class="mt-0.5 shrink-0 text-xs text-fg-disabled transition-transform ${isExpanded ? 'rotate-90' : ''}">\u25B6</span>
         ` : html`
-          <span class="mt-0.5 shrink-0 text-xs text-text-dim/30">\u25CB</span>
+          <span class="mt-0.5 shrink-0 text-xs text-fg-disabled/30">\u25CB</span>
         `}
 
         <div class="min-w-0 flex-1">
@@ -472,11 +472,11 @@ function TreeNode({ node, depth }: { node: GoalTreeNode; depth: number }) {
               ${horizonLabel(node.horizon)}
             </span>
             <${StatusBadge} status=${goalPhaseStatus(node.phase)} label=${goalPhaseLabel(node.phase)} />
-            <span class="break-words text-base font-semibold text-text-strong line-clamp-2" title=${node.title}>${node.title}</span>
-            <span class="text-2xs text-text-dim">${priorityStars(node.priority)}</span>
+            <span class="break-words text-base font-semibold text-fg-secondary line-clamp-2" title=${node.title}>${node.title}</span>
+            <span class="text-2xs text-fg-disabled">${priorityStars(node.priority)}</span>
           </div>
 
-          <div class="flex flex-wrap items-center gap-2.5 text-2xs text-text-muted">
+          <div class="flex flex-wrap items-center gap-2.5 text-2xs text-fg-muted">
             <${HealthBadge} health=${node.health} />
             <${StatusBadge} status=${node.status} />
             ${node.task_count > 0 ? html`<span>${node.task_done_count}/${node.task_count} 태스크</span>` : null}
@@ -529,7 +529,7 @@ function TreeNode({ node, depth }: { node: GoalTreeNode; depth: number }) {
               </span>
             ` : null}
             ${node.latest_keeper_ref ? html`
-              <span class="rounded border border-card-border/60 bg-white/4 px-2 py-0.5 text-3xs font-medium text-text-body">
+              <span class="rounded border border-card-border/60 bg-white/4 px-2 py-0.5 text-3xs font-medium text-fg-primary">
                 ${node.latest_keeper_ref}${node.latest_turn_ref != null ? ` · turn ${node.latest_turn_ref}` : ''}
               </span>
             ` : null}
@@ -540,7 +540,7 @@ function TreeNode({ node, depth }: { node: GoalTreeNode; depth: number }) {
           </div>
 
           ${node.blocking_source !== 'none' && node.blocking_reason ? html`
-            <div class="mt-2 text-xs leading-relaxed text-text-muted">
+            <div class="mt-2 text-xs leading-relaxed text-fg-muted">
               ${node.blocking_reason}
             </div>
           ` : null}
@@ -553,7 +553,7 @@ function TreeNode({ node, depth }: { node: GoalTreeNode; depth: number }) {
         </div>
 
         <div class="flex shrink-0 flex-col items-end gap-1">
-          <span class="text-3xs text-text-dim">
+          <span class="text-3xs text-fg-disabled">
             <${TimeAgo} timestamp=${node.last_activity_at} />
           </span>
           ${isSelected ? html`
@@ -577,7 +577,7 @@ function TreeNode({ node, depth }: { node: GoalTreeNode; depth: number }) {
           ` : null}
           ${node.tasks.length > 0 ? html`
             <div class="ml-6 flex flex-col gap-1 rounded border border-card-border/40 bg-[rgba(5,9,16,0.6)] p-2">
-              <div class="mb-1 text-3xs font-semibold uppercase tracking-widest text-text-dim">연결된 태스크</div>
+              <div class="mb-1 text-3xs font-semibold uppercase tracking-widest text-fg-disabled">연결된 태스크</div>
               ${node.tasks.map(task => html`<${TreeTask} key=${task.id} task=${task} />`)}
             </div>
           ` : null}
@@ -606,10 +606,10 @@ function DetailMetric({
         ? 'text-warn'
         : tone === 'bad'
           ? 'text-bad'
-          : 'text-text-strong'
+          : 'text-fg-secondary'
   return html`
     <div class="rounded border border-card-border/60 bg-[var(--backdrop-deep)] p-3">
-      <div class="text-3xs font-semibold uppercase tracking-widest text-text-muted">${label}</div>
+      <div class="text-3xs font-semibold uppercase tracking-widest text-fg-muted">${label}</div>
       <div class="mt-2 text-lg font-semibold tabular-nums ${toneClass}">${value}</div>
     </div>
   `
@@ -625,7 +625,7 @@ function DetailTabs({ active }: { active: GoalDetailTab }) {
           type="button"
           class="rounded border px-3 py-1.5 text-xs font-semibold uppercase tracking-wider transition-colors ${active === tab
             ? 'border-accent/35 bg-[var(--accent-10)] text-accent'
-            : 'border-card-border/60 bg-white/3 text-text-body hover:border-card-border/90'}"
+            : 'border-card-border/60 bg-white/3 text-fg-primary hover:border-card-border/90'}"
           onClick=${() => { detailTab.value = tab }}
         >
           ${tab}
@@ -649,8 +649,8 @@ function KeeperCard({ keeper }: { keeper: GoalDetailKeeper }) {
     <div class="rounded border border-card-border/60 bg-[var(--backdrop-deep)] p-3">
       <div class="flex items-start justify-between gap-3">
         <div>
-          <div class="text-sm font-semibold text-text-strong">${keeper.name}</div>
-          <div class="mt-1 text-2xs text-text-muted">${keeper.agent_name}</div>
+          <div class="text-sm font-semibold text-fg-secondary">${keeper.name}</div>
+          <div class="mt-1 text-2xs text-fg-muted">${keeper.agent_name}</div>
         </div>
         <div class="flex flex-wrap justify-end gap-1.5">
           ${trust?.disposition ? html`
@@ -659,29 +659,29 @@ function KeeperCard({ keeper }: { keeper: GoalDetailKeeper }) {
             </span>
           ` : null}
           ${keeper.latest_execution_outcome ? html`
-            <span class="rounded border border-card-border/60 bg-white/4 px-2 py-0.5 text-3xs font-semibold text-text-body">
+            <span class="rounded border border-card-border/60 bg-white/4 px-2 py-0.5 text-3xs font-semibold text-fg-primary">
               ${keeper.latest_execution_outcome}
             </span>
           ` : null}
         </div>
       </div>
-      <div class="mt-3 grid grid-cols-2 gap-2 text-2xs text-text-muted">
+      <div class="mt-3 grid grid-cols-2 gap-2 text-2xs text-fg-muted">
         <div>샌드박스</div>
-        <div class="text-right text-text-body">${keeper.sandbox_profile}</div>
+        <div class="text-right text-fg-primary">${keeper.sandbox_profile}</div>
         <div>승인</div>
-        <div class="text-right text-text-body">${trust?.approval_state?.summary ?? keeper.approval_profile ?? '-'}</div>
+        <div class="text-right text-fg-primary">${trust?.approval_state?.summary ?? keeper.approval_profile ?? '-'}</div>
         <div>캐스케이드</div>
-        <div class="text-right text-text-body">${keeper.cascade_name}</div>
+        <div class="text-right text-fg-primary">${keeper.cascade_name}</div>
         <div>결과</div>
-        <div class="text-right text-text-body">${keeper.cascade_outcome ?? '-'}</div>
+        <div class="text-right text-fg-primary">${keeper.cascade_outcome ?? '-'}</div>
       </div>
       ${trustSummary || trust?.approval_state?.state || trust?.next_human_action ? html`
         <div class="mt-3 rounded border border-card-border/50 bg-white/3 p-3">
-          <div class="text-3xs font-semibold uppercase tracking-widest text-text-muted">검증 요약</div>
+          <div class="text-3xs font-semibold uppercase tracking-widest text-fg-muted">검증 요약</div>
           ${trustSummary ? html`
-            <div class="mt-2 text-xs leading-relaxed text-text-body">${trustSummary}</div>
+            <div class="mt-2 text-xs leading-relaxed text-fg-primary">${trustSummary}</div>
           ` : null}
-          <div class="mt-2 flex flex-wrap gap-2 text-3xs text-text-muted">
+          <div class="mt-2 flex flex-wrap gap-2 text-3xs text-fg-muted">
             ${trust?.approval_state?.state ? html`
               <span>승인 상태 ${trust.approval_state.state}</span>
             ` : null}
@@ -697,14 +697,14 @@ function KeeperCard({ keeper }: { keeper: GoalDetailKeeper }) {
       ${latestEvent ? html`
         <div class="mt-3 rounded border border-card-border/50 bg-white/3 p-3">
           <div class="flex flex-wrap items-center justify-between gap-2">
-            <div class="text-3xs font-semibold uppercase tracking-widest text-text-muted">최근 키퍼 이벤트</div>
-            <div class="text-3xs text-text-dim">
+            <div class="text-3xs font-semibold uppercase tracking-widest text-fg-muted">최근 키퍼 이벤트</div>
+            <div class="text-3xs text-fg-disabled">
               <${TimeAgo} timestamp=${latestEvent.ts} />
             </div>
           </div>
-          <div class="mt-2 text-xs font-semibold text-text-strong">${latestEvent.title}</div>
-          <div class="mt-1 text-2xs leading-relaxed text-text-body">${latestEvent.summary}</div>
-          <div class="mt-2 flex flex-wrap gap-2 text-3xs text-text-muted">
+          <div class="mt-2 text-xs font-semibold text-fg-secondary">${latestEvent.title}</div>
+          <div class="mt-1 text-2xs leading-relaxed text-fg-primary">${latestEvent.summary}</div>
+          <div class="mt-2 flex flex-wrap gap-2 text-3xs text-fg-muted">
             <span>${latestEvent.kind}</span>
             ${latestEvent.keeper_turn_id != null ? html`
               <span>turn ${latestEvent.keeper_turn_id}</span>
@@ -716,7 +716,7 @@ function KeeperCard({ keeper }: { keeper: GoalDetailKeeper }) {
         </div>
       ` : null}
       ${keeper.latest_execution_at ? html`
-        <div class="mt-3 text-3xs text-text-dim">
+        <div class="mt-3 text-3xs text-fg-disabled">
           최근 실행 <${TimeAgo} timestamp=${keeper.latest_execution_at} />
         </div>
       ` : null}
@@ -734,12 +734,12 @@ function GoalTimeline({ events }: { events: GoalDetailTimelineEvent[] }) {
         <div key=${`${event.kind}:${event.lane}:${event.ts}`} class="rounded border p-3 ${timelineSeverityClass(event.severity)}">
           <div class="flex flex-wrap items-center justify-between gap-2">
             <div class="text-sm font-semibold">${event.title}</div>
-            <div class="text-3xs text-text-dim">
+            <div class="text-3xs text-fg-disabled">
               <${TimeAgo} timestamp=${event.ts} />
             </div>
           </div>
-          <div class="mt-1 text-2xs text-text-muted">${event.lane}</div>
-          <div class="mt-2 text-xs leading-relaxed text-text-body">${event.summary}</div>
+          <div class="mt-1 text-2xs text-fg-muted">${event.lane}</div>
+          <div class="mt-2 text-xs leading-relaxed text-fg-primary">${event.summary}</div>
         </div>
       `)}
     </div>
@@ -771,8 +771,8 @@ function GoalDetailPanel({
     <section class="flex flex-col gap-4 rounded border border-card-border/70 bg-[rgba(9,14,24,0.88)] p-5" aria-label="목표 상세">
       <div class="flex flex-wrap items-start justify-between gap-3">
         <div class="max-w-150">
-          <div class="text-2xs font-semibold uppercase tracking-[0.18em] text-text-muted">목표 상세</div>
-          <h3 class="mt-1 text-xl font-semibold tracking-[-0.02em] text-text-strong">${selectedNode.title}</h3>
+          <div class="text-2xs font-semibold uppercase tracking-[0.18em] text-fg-muted">목표 상세</div>
+          <h3 class="mt-1 text-xl font-semibold tracking-[-0.02em] text-fg-secondary">${selectedNode.title}</h3>
           <div class="mt-2 flex flex-wrap items-center gap-2">
             <${HealthBadge} health=${selectedNode.health} />
             <${StatusBadge} status=${selectedNode.status} />
@@ -794,7 +794,7 @@ function GoalDetailPanel({
         </div>
       </div>
 
-      <div class="rounded border border-card-border/60 bg-[var(--backdrop-deep)] px-3 py-2 text-sm text-text-body">
+      <div class="rounded border border-card-border/60 bg-[var(--backdrop-deep)] px-3 py-2 text-sm text-fg-primary">
         ${selectedNode.status_reason}
       </div>
 
@@ -807,13 +807,13 @@ function GoalDetailPanel({
         ${selectedNode.blocking_source !== 'none' ? html`
           <div class="rounded border border-card-border/60 bg-[var(--backdrop-deep)] p-4">
             <div class="mb-2 flex flex-wrap items-center gap-2">
-              <span class="text-2xs font-semibold uppercase tracking-widest text-text-muted">차단 맥락</span>
+              <span class="text-2xs font-semibold uppercase tracking-widest text-fg-muted">차단 맥락</span>
               <span class="rounded border px-2 py-0.5 text-3xs font-semibold ${blockerSourceClass(selectedNode.blocking_source)}">
                 ${blockerSourceLabel(selectedNode.blocking_source)}
               </span>
             </div>
-            <div class="text-sm leading-relaxed text-text-body">${selectedNode.blocking_reason || selectedNode.status_reason}</div>
-            <div class="mt-3 flex flex-wrap gap-2 text-3xs text-text-muted">
+            <div class="text-sm leading-relaxed text-fg-primary">${selectedNode.blocking_reason || selectedNode.status_reason}</div>
+            <div class="mt-3 flex flex-wrap gap-2 text-3xs text-fg-muted">
               ${selectedNode.latest_keeper_ref ? html`
                 <span>keeper ${selectedNode.latest_keeper_ref}</span>
               ` : null}
@@ -839,8 +839,8 @@ function GoalDetailPanel({
 
         ${verificationSummary.effective_policy ? html`
           <div class="rounded border border-card-border/60 bg-[var(--backdrop-deep)] p-4">
-            <div class="mb-2 text-2xs font-semibold uppercase tracking-widest text-text-muted">목표 검증</div>
-            <div class="flex flex-wrap items-center gap-2 text-xs text-text-body">
+            <div class="mb-2 text-2xs font-semibold uppercase tracking-widest text-fg-muted">목표 검증</div>
+            <div class="flex flex-wrap items-center gap-2 text-xs text-fg-primary">
               <span class="rounded border border-amber-400/20 bg-amber-400/8 px-2 py-1 text-amber-100">
                 quorum ${verificationSummary.approve_count}/${verificationSummary.effective_policy.required_verdicts}
               </span>
@@ -849,7 +849,7 @@ function GoalDetailPanel({
             </div>
             <div class="mt-3 flex flex-wrap gap-1.5">
               ${verificationSummary.effective_policy.eligible_principals.map(principal => html`
-                <span key=${`${principal.kind}:${principal.id}`} class="rounded border border-card-border/60 bg-white/4 px-2 py-0.5 text-3xs font-medium text-text-body">
+                <span key=${`${principal.kind}:${principal.id}`} class="rounded border border-card-border/60 bg-white/4 px-2 py-0.5 text-3xs font-medium text-fg-primary">
                   ${principal.kind}:${principal.display_name ?? principal.id}
                 </span>
               `)}
@@ -865,7 +865,7 @@ function GoalDetailPanel({
 
         ${selectedNode.badges.length > 0 ? html`
           <div class="rounded border border-card-border/60 bg-[var(--backdrop-deep)] p-4">
-            <div class="mb-2 text-2xs font-semibold uppercase tracking-widest text-text-muted">배지</div>
+            <div class="mb-2 text-2xs font-semibold uppercase tracking-widest text-fg-muted">배지</div>
             <${GoalBadges} badges=${selectedNode.badges} />
           </div>
         ` : null}
@@ -873,8 +873,8 @@ function GoalDetailPanel({
         <div class="rounded border border-card-border/60 bg-[var(--backdrop-deep)] p-4">
           <div class="mb-3 flex items-center justify-between gap-3">
             <div>
-              <div class="text-2xs font-semibold uppercase tracking-widest text-text-muted">Goal 범위 태스크</div>
-              <div class="mt-1 text-sm text-text-body">이 goal에 직접 연결되는 새 태스크를 backlog에 넣습니다.</div>
+              <div class="text-2xs font-semibold uppercase tracking-widest text-fg-muted">Goal 범위 태스크</div>
+              <div class="mt-1 text-sm text-fg-primary">이 goal에 직접 연결되는 새 태스크를 backlog에 넣습니다.</div>
             </div>
           </div>
           <${TaskCreateForm} goalId=${selectedNode.id} goalTitle=${selectedNode.title} />
@@ -897,7 +897,7 @@ function GoalDetailPanel({
         <div class="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
           <div class="flex flex-col gap-4">
             <div class="rounded border border-card-border/60 bg-[var(--backdrop-deep)] p-4">
-              <div class="mb-3 text-2xs font-semibold uppercase tracking-widest text-text-muted">키퍼 준비 상태</div>
+              <div class="mb-3 text-2xs font-semibold uppercase tracking-widest text-fg-muted">키퍼 준비 상태</div>
               ${detail ? (
                 detail.linked_keepers.length > 0
                   ? html`
@@ -910,7 +910,7 @@ function GoalDetailPanel({
             </div>
 
             <div class="rounded border border-card-border/60 bg-[var(--backdrop-deep)] p-4">
-              <div class="mb-3 text-2xs font-semibold uppercase tracking-widest text-text-muted">승인 대기</div>
+              <div class="mb-3 text-2xs font-semibold uppercase tracking-widest text-fg-muted">승인 대기</div>
               ${detail ? (
                 detail.approvals.length > 0
                   ? html`
@@ -918,10 +918,10 @@ function GoalDetailPanel({
                       ${detail.approvals.map((approval, index) => html`
                         <div key=${String(approval.id ?? index)} class="rounded border border-warn/20 bg-warn/6 p-3 text-xs">
                           <div class="flex flex-wrap items-center justify-between gap-2">
-                            <strong class="text-text-strong">${String(approval.tool_name ?? 'tool')}</strong>
-                            <span class="text-text-dim">${String(approval.risk_level ?? 'risk')}</span>
+                            <strong class="text-fg-secondary">${String(approval.tool_name ?? 'tool')}</strong>
+                            <span class="text-fg-disabled">${String(approval.risk_level ?? 'risk')}</span>
                           </div>
-                          <div class="mt-2 text-text-muted">${String(approval.input_preview ?? 'pending operator decision')}</div>
+                          <div class="mt-2 text-fg-muted">${String(approval.input_preview ?? 'pending operator decision')}</div>
                         </div>
                       `)}
                     </div>
@@ -932,7 +932,7 @@ function GoalDetailPanel({
           </div>
 
           <div class="rounded border border-card-border/60 bg-[var(--backdrop-deep)] p-4">
-            <div class="mb-3 text-2xs font-semibold uppercase tracking-widest text-text-muted">통합 타임라인</div>
+            <div class="mb-3 text-2xs font-semibold uppercase tracking-widest text-fg-muted">통합 타임라인</div>
             ${detail ? html`<${GoalTimeline} events=${detail.timeline} />` : null}
           </div>
         </div>
@@ -1026,11 +1026,11 @@ export function GoalTree() {
       <section class="rounded border border-card-border/70 bg-[rgba(9,14,24,0.88)] p-5" aria-label="목표 관리자">
         <div class="mb-4 flex flex-wrap items-start justify-between gap-4">
           <div class="max-w-190">
-            <div class="text-2xs font-semibold uppercase tracking-[0.18em] text-text-muted">목표 관리자</div>
-            <h3 class="mt-1 text-2xl font-semibold tracking-[-0.02em] text-text-strong">목표 중심 계획 뷰</h3>
-            <p class="mt-1.5 text-sm leading-relaxed text-text-muted">
+            <div class="text-2xs font-semibold uppercase tracking-[0.18em] text-fg-muted">목표 관리자</div>
+            <h3 class="mt-1 text-2xl font-semibold tracking-[-0.02em] text-fg-secondary">목표 중심 계획 뷰</h3>
+            <p class="mt-1.5 text-sm leading-relaxed text-fg-muted">
               goal-task 연결, keeper evidence, approval 대기, sandbox/cascade 신호를 한 표면에서 봅니다.
-              신규 태스크는 <code class="rounded bg-white/5 px-1 py-0.5 text-2xs text-text-strong">goal_id</code>로 직접 연결됩니다.
+              신규 태스크는 <code class="rounded bg-white/5 px-1 py-0.5 text-2xs text-fg-secondary">goal_id</code>로 직접 연결됩니다.
             </p>
           </div>
           <div class="flex flex-wrap items-center gap-2">
@@ -1042,7 +1042,7 @@ export function GoalTree() {
                 placeholder="목표 / 태스크 제목 필터"
                 aria-label="목표 트리 필터"
                 onInput=${(e: Event) => { filterQuery.value = (e.target as HTMLInputElement).value }}
-                class="min-w-45 max-w-65 rounded border border-white/10 bg-white/5 px-2 py-1 text-xs text-text-body placeholder:text-text-dim focus:border-accent"
+                class="min-w-45 max-w-65 rounded border border-white/10 bg-white/5 px-2 py-1 text-xs text-fg-primary placeholder:text-fg-disabled focus:border-accent"
               />
               <${ActionButton} variant="ghost" size="sm" onClick=${() => expandAll(data.tree)}>
                 모두 펼치기
@@ -1064,7 +1064,7 @@ export function GoalTree() {
 
         ${data && data.tree.length > 0 ? html`
           <div class="mb-4 flex flex-wrap items-center gap-2">
-            <span class="text-3xs font-semibold uppercase tracking-[0.18em] text-text-muted">목표 단계</span>
+            <span class="text-3xs font-semibold uppercase tracking-[0.18em] text-fg-muted">목표 단계</span>
             <${FilterChips}
               chips=${([
                 'all',
@@ -1104,7 +1104,7 @@ export function GoalTree() {
       ` : data && data.tree.length === 0 ? html`
         <${EmptyState} message="등록된 목표가 없습니다. masc_goal_upsert로 목표를 등록하세요. 연결 태스크는 task.goal_id가 우선이고, 제목의 [goal:<id>]는 레거시 fallback으로만 읽습니다." />
       ` : data && isFiltering && visibleTree.length === 0 ? html`
-        <section class="py-4 text-center text-xs text-text-dim" role="status" aria-live="polite" aria-label="필터 결과 없음">
+        <section class="py-4 text-center text-xs text-fg-disabled" role="status" aria-live="polite" aria-label="필터 결과 없음">
           필터 결과 없음 (${data.tree.length} 목표)
         </section>
       ` : data ? html`

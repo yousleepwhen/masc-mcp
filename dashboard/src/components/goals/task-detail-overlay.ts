@@ -53,7 +53,7 @@ function eventBadge(label: string): { icon: any; color: string } {
     case 'reject':
     case 'rejected': return { icon: html`<${X} size=${14} aria-hidden="true" />`, color: 'text-warn' }
     case 'transition': return { icon: html`<${ArrowRight} size=${14} aria-hidden="true" />`, color: 'text-warn' }
-    default: return { icon: html`<${Dot} size=${14} aria-hidden="true" />`, color: 'text-text-muted' }
+    default: return { icon: html`<${Dot} size=${14} aria-hidden="true" />`, color: 'text-fg-muted' }
   }
 }
 
@@ -101,12 +101,12 @@ function TaskEventsSection() {
             </div>
             <div class="flex-1 min-w-0">
               <div class="flex items-center gap-2">
-                <span class="text-xs font-medium text-text-strong">${evt.label}</span>
+                <span class="text-xs font-medium text-fg-secondary">${evt.label}</span>
                 ${evt.agent ? html`<span class="text-3xs text-accent">@${evt.agent}${evt.actorKind ? ` · ${evt.actorKind}` : ''}</span>` : null}
               </div>
-              ${evt.notes ? html`<div class="mt-1 text-2xs text-text-muted"><${RichContent} text=${evt.notes} previewLimit=${1} /></div>` : null}
+              ${evt.notes ? html`<div class="mt-1 text-2xs text-fg-muted"><${RichContent} text=${evt.notes} previewLimit=${1} /></div>` : null}
             </div>
-            ${evt.ts ? html`<${TimeAgo} timestamp=${evt.ts} class="text-3xs text-text-dim shrink-0" />` : null}
+            ${evt.ts ? html`<${TimeAgo} timestamp=${evt.ts} class="text-3xs text-fg-disabled shrink-0" />` : null}
           </div>
         `
       })}
@@ -163,7 +163,7 @@ function VerdictLineageSection() {
 
   return html`
     <div>
-      <div class="text-2xs font-semibold uppercase tracking-3 text-text-muted mb-2">검증 진행 이력</div>
+      <div class="text-2xs font-semibold uppercase tracking-3 text-fg-muted mb-2">검증 진행 이력</div>
       <div class="rounded border border-[var(--white-10)] bg-[var(--white-3)] px-4 py-3">
         <div class="flex flex-col gap-2">
           ${verdictEvents.map((evt: NormalizedTaskEvent, i: number) => {
@@ -174,12 +174,12 @@ function VerdictLineageSection() {
               <div key=${key} class="flex items-start gap-3">
                 <span class=${`shrink-0 rounded border px-2 py-0.5 text-3xs font-semibold uppercase tracking-1 ${tone}`}>${stage}</span>
                 <div class="flex-1 min-w-0 text-2xs">
-                  <div class="flex flex-wrap items-center gap-2 text-text-body">
-                    ${evt.agent ? html`<span class="font-mono text-accent">@${evt.agent}</span>` : html`<span class="text-text-muted">(unknown)</span>`}
-                    ${evt.actorKind ? html`<span class="text-text-muted">· ${evt.actorKind}</span>` : null}
-                    ${evt.ts ? html`<${TimeAgo} timestamp=${evt.ts} class="text-3xs text-text-dim" />` : null}
+                  <div class="flex flex-wrap items-center gap-2 text-fg-primary">
+                    ${evt.agent ? html`<span class="font-mono text-accent">@${evt.agent}</span>` : html`<span class="text-fg-muted">(unknown)</span>`}
+                    ${evt.actorKind ? html`<span class="text-fg-muted">· ${evt.actorKind}</span>` : null}
+                    ${evt.ts ? html`<${TimeAgo} timestamp=${evt.ts} class="text-3xs text-fg-disabled" />` : null}
                   </div>
-                  ${evt.notes ? html`<div class="mt-1 text-3xs text-text-muted break-words"><${RichContent} text=${evt.notes} previewLimit=${1} /></div>` : null}
+                  ${evt.notes ? html`<div class="mt-1 text-3xs text-fg-muted break-words"><${RichContent} text=${evt.notes} previewLimit=${1} /></div>` : null}
                 </div>
               </div>
             `
@@ -195,7 +195,7 @@ function gateTone(status?: string | null): string {
     case 'ready': return 'text-ok border-ok/25 bg-ok/10'
     case 'blocked': return 'text-bad border-bad/25 bg-bad/10'
     case 'inconclusive': return 'text-warn border-warn/25 bg-warn/10'
-    default: return 'text-text-muted border-[var(--white-10)] bg-[var(--white-5)]'
+    default: return 'text-fg-muted border-[var(--white-10)] bg-[var(--white-5)]'
   }
 }
 
@@ -211,13 +211,13 @@ function GateSection({
   return html`
     <div class="rounded border border-[var(--white-10)] bg-[var(--white-3)] px-4 py-3">
       <div class="flex items-center justify-between gap-3">
-        <div class="text-xs font-medium text-text-strong">${title}</div>
+        <div class="text-xs font-medium text-fg-secondary">${title}</div>
         <span class=${`rounded border px-2 py-0.5 text-3xs font-semibold uppercase tracking-1 ${gateTone(gate.status)}`}>${gate.status}</span>
       </div>
       ${gate.reasons && gate.reasons.length > 0 ? html`
         <div class="mt-2 flex flex-col gap-1">
           ${gate.reasons.slice(0, 4).map(reason => html`
-            <div key=${reason} class="text-2xs leading-relaxed text-text-muted">${reason}</div>
+            <div key=${reason} class="text-2xs leading-relaxed text-fg-muted">${reason}</div>
           `)}
         </div>
       ` : null}
@@ -239,8 +239,8 @@ function ContractSection({ task }: { task: Task }) {
   return html`
     <div class="flex flex-col gap-3">
       <div class="flex items-center gap-2">
-        <div class="text-2xs font-semibold uppercase tracking-3 text-text-muted">계약 게이트</div>
-        <span class=${`rounded border px-2 py-0.5 text-3xs font-semibold uppercase tracking-1 ${contract?.strict ? 'text-accent border-accent/25 bg-[var(--accent-10)]' : 'text-text-muted border-[var(--white-10)] bg-[var(--white-5)]'}`}>${contract?.strict ? 'strict' : 'advisory'}</span>
+        <div class="text-2xs font-semibold uppercase tracking-3 text-fg-muted">계약 게이트</div>
+        <span class=${`rounded border px-2 py-0.5 text-3xs font-semibold uppercase tracking-1 ${contract?.strict ? 'text-accent border-accent/25 bg-[var(--accent-10)]' : 'text-fg-muted border-[var(--white-10)] bg-[var(--white-5)]'}`}>${contract?.strict ? 'strict' : 'advisory'}</span>
         ${isAwaitingVerification ? html`
           <span class="rounded border border-accent/40 bg-[var(--accent-10)] px-2 py-0.5 text-3xs font-semibold uppercase tracking-1 text-accent">
             검증 대기
@@ -258,10 +258,10 @@ function ContractSection({ task }: { task: Task }) {
               title="검증 패널에서 이 태스크를 직접 승인/반려"
             >검증에 개입 →</a>
           </div>
-          <div class="mt-1 text-2xs text-text-body">
+          <div class="mt-1 text-2xs text-fg-primary">
             Submitter: <span class="font-mono">${verifierAssignee ?? '(unknown)'}</span>
           </div>
-          <div class="mt-0.5 text-2xs text-text-muted">
+          <div class="mt-0.5 text-2xs text-fg-muted">
             다른 keeper가 completion_contract의 정량 기준을 독립 실측 중입니다.
             통과 시 approve_verification → done, 미충족 시 reject_verification → in_progress로 복귀.
             인간 판단이 필요하면 우측 상단 버튼으로 검증 패널에서 직접 승인/반려할 수 있습니다
@@ -276,10 +276,10 @@ function ContractSection({ task }: { task: Task }) {
 
       ${completionItems.length > 0 ? html`
         <div class="rounded border border-[var(--white-10)] bg-[var(--white-3)] px-4 py-3">
-          <div class="text-xs font-medium text-text-strong">완료 계약</div>
+          <div class="text-xs font-medium text-fg-secondary">완료 계약</div>
           <div class="mt-2 flex flex-col gap-1">
             ${completionItems.map((item: string) => html`
-              <div key=${item} class=${`text-2xs ${unmetItems.includes(item) ? 'text-bad' : 'text-text-body'}`}>${item}</div>
+              <div key=${item} class=${`text-2xs ${unmetItems.includes(item) ? 'text-bad' : 'text-fg-primary'}`}>${item}</div>
             `)}
           </div>
         </div>
@@ -287,10 +287,10 @@ function ContractSection({ task }: { task: Task }) {
 
       ${requiredEvidence.length > 0 ? html`
         <div class="rounded border border-[var(--white-10)] bg-[var(--white-3)] px-4 py-3">
-          <div class="text-xs font-medium text-text-strong">필수 증거</div>
+          <div class="text-xs font-medium text-fg-secondary">필수 증거</div>
           <div class="mt-2 flex flex-wrap gap-1.5">
             ${requiredEvidence.map((item: string) => html`
-              <span key=${item} class="rounded border border-[var(--white-10)] bg-[var(--white-5)] px-2 py-0.5 text-3xs font-mono text-text-body">${item}</span>
+              <span key=${item} class="rounded border border-[var(--white-10)] bg-[var(--white-5)] px-2 py-0.5 text-3xs font-mono text-fg-primary">${item}</span>
             `)}
           </div>
         </div>
@@ -311,12 +311,12 @@ function ExecutionLinksSection({ task }: { task: Task }) {
 
   return html`
     <div>
-      <div class="text-2xs font-semibold uppercase tracking-3 text-text-muted mb-2">연결된 실행</div>
+      <div class="text-2xs font-semibold uppercase tracking-3 text-fg-muted mb-2">연결된 실행</div>
       <div class="flex flex-col gap-2">
         ${items.map(([label, value]) => html`
           <div key=${label} class="rounded border border-[var(--white-10)] bg-[var(--white-3)] px-4 py-3">
-            <div class="text-3xs uppercase tracking-3 text-text-dim">${label}</div>
-            <div class="mt-1 text-xs font-mono text-text-body break-all">${value}</div>
+            <div class="text-3xs uppercase tracking-3 text-fg-disabled">${label}</div>
+            <div class="mt-1 text-xs font-mono text-fg-primary break-all">${value}</div>
           </div>
         `)}
       </div>
@@ -330,16 +330,16 @@ function HandoffSection({ task }: { task: Task }) {
 
   return html`
     <div>
-      <div class="text-2xs font-semibold uppercase tracking-3 text-text-muted mb-2">최근 Handoff</div>
+      <div class="text-2xs font-semibold uppercase tracking-3 text-fg-muted mb-2">최근 Handoff</div>
       <div class="rounded border border-warn/20 bg-warn/8 px-4 py-3">
-        <div class="text-sm leading-relaxed text-text-body"><${RichContent} text=${handoff.summary} previewLimit=${2} /></div>
-        ${handoff.reason ? html`<div class="mt-2 text-2xs text-text-muted">reason: ${handoff.reason}</div>` : null}
-        ${handoff.next_step ? html`<div class="mt-1 text-2xs text-text-muted">next: ${handoff.next_step}</div>` : null}
-        ${handoff.failure_mode ? html`<div class="mt-1 text-2xs text-text-muted">failure: ${handoff.failure_mode}</div>` : null}
+        <div class="text-sm leading-relaxed text-fg-primary"><${RichContent} text=${handoff.summary} previewLimit=${2} /></div>
+        ${handoff.reason ? html`<div class="mt-2 text-2xs text-fg-muted">reason: ${handoff.reason}</div>` : null}
+        ${handoff.next_step ? html`<div class="mt-1 text-2xs text-fg-muted">next: ${handoff.next_step}</div>` : null}
+        ${handoff.failure_mode ? html`<div class="mt-1 text-2xs text-fg-muted">failure: ${handoff.failure_mode}</div>` : null}
         ${handoff.evidence_refs && handoff.evidence_refs.length > 0 ? html`
           <div class="mt-2 flex flex-wrap gap-1.5">
             ${handoff.evidence_refs.map((item: string) => html`
-              <span key=${item} class="rounded border border-warn/20 bg-[var(--white-5)] px-2 py-0.5 text-3xs font-mono text-text-body">${item}</span>
+              <span key=${item} class="rounded border border-warn/20 bg-[var(--white-5)] px-2 py-0.5 text-3xs font-mono text-fg-primary">${item}</span>
             `)}
           </div>
         ` : null}
@@ -361,7 +361,7 @@ function GoalRelationSection({ goalIds }: { goalIds: string[] }) {
   return html`
     <div class="flex flex-col gap-2">
       <div class="flex flex-wrap items-center gap-2">
-        <div class="text-2xs font-semibold uppercase tracking-3 text-text-muted">담당 키퍼의 활성 목표</div>
+        <div class="text-2xs font-semibold uppercase tracking-3 text-fg-muted">담당 키퍼의 활성 목표</div>
         ${goalIds.length > 1 ? html`
           <${TextInput}
             type="search"
@@ -386,7 +386,7 @@ function GoalRelationSection({ goalIds }: { goalIds: string[] }) {
           const goal = goalById(id)
           return html`
             <div key=${id} class="flex items-center gap-2 rounded border border-card-border/50 bg-[var(--white-3)] px-3 py-2">
-              <span class="text-xs text-text-body">${goal?.title ?? id}</span>
+              <span class="text-xs text-fg-primary">${goal?.title ?? id}</span>
               ${goal?.status ? html`<${StatusBadge} status=${goal.status} />` : null}
             </div>
           `
@@ -421,17 +421,17 @@ export function TaskDetailOverlay() {
       ${'' /* Sticky Header */}
       <div class="sticky top-0 z-10 flex items-center justify-between gap-4 px-6 py-4 border-b border-[var(--color-border-default)] bg-[rgba(13,21,38,0.97)] backdrop-blur-sm rounded-t-2xl">
         <div class="flex-1 min-w-0">
-          <h2 id=${titleId} class="text-lg font-semibold text-text-strong break-words">${task.title}</h2>
+          <h2 id=${titleId} class="text-lg font-semibold text-fg-secondary break-words">${task.title}</h2>
           <div class="mt-1.5 flex flex-wrap items-center gap-2">
             <${StatusBadge} status=${task.status ?? 'todo'} />
-            <span class="rounded border border-current/20 bg-[var(--white-5)] px-2 py-0.5 text-2xs font-semibold text-text-body">${priorityLabel(p)}</span>
+            <span class="rounded border border-current/20 bg-[var(--white-5)] px-2 py-0.5 text-2xs font-semibold text-fg-primary">${priorityLabel(p)}</span>
             ${task.assignee ? html`<span class="text-2xs text-accent">@${task.assignee}${assigneeKind ? ` (${assigneeKind})` : ''}</span>` : null}
           </div>
         </div>
         <button
           ref=${closeButtonRef}
           type="button"
-          class="shrink-0 size-8 flex items-center justify-center rounded border border-[var(--white-10)] bg-[var(--white-5)] text-text-muted cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] hover:bg-[var(--white-10)] hover:text-text-strong"
+          class="shrink-0 size-8 flex items-center justify-center rounded border border-[var(--white-10)] bg-[var(--white-5)] text-fg-muted cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] hover:bg-[var(--white-10)] hover:text-fg-secondary"
           onClick=${closeTaskDetail}
           aria-label="닫기"
         ><${X} size=${16} aria-hidden="true" /></button>
@@ -447,7 +447,7 @@ export function TaskDetailOverlay() {
               class="px-3 py-1.5 rounded text-xs font-medium border cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] ${
                 activeTab.value === tab
                   ? 'border-accent/40 bg-accent/12 text-[var(--color-accent-fg)]'
-                  : 'border-transparent text-text-muted hover:bg-[var(--white-8)]'
+                  : 'border-transparent text-fg-muted hover:bg-[var(--white-8)]'
               }"
               onClick=${() => tab === 'activity' ? switchToActivityTab(task) : (activeTab.value = 'overview')}
             >${tab === 'overview' ? '개요' : '담당자 최근 활동'}</button>
@@ -461,8 +461,8 @@ export function TaskDetailOverlay() {
           ${'' /* Description */}
           ${task.description ? html`
             <div>
-              <div class="text-2xs font-semibold uppercase tracking-3 text-text-muted mb-2">설명</div>
-              <div class="rounded border border-[var(--white-10)] bg-[var(--white-3)] px-4 py-3 text-sm leading-relaxed text-text-body">
+              <div class="text-2xs font-semibold uppercase tracking-3 text-fg-muted mb-2">설명</div>
+              <div class="rounded border border-[var(--white-10)] bg-[var(--white-3)] px-4 py-3 text-sm leading-relaxed text-fg-primary">
                 <${RichContent} text=${task.description} previewLimit=${2} />
               </div>
             </div>
@@ -478,12 +478,12 @@ export function TaskDetailOverlay() {
 
           ${'' /* Recent task events */}
           <div>
-            <div class="text-2xs font-semibold uppercase tracking-3 text-text-muted mb-2">최근 태스크 이벤트</div>
+            <div class="text-2xs font-semibold uppercase tracking-3 text-fg-muted mb-2">최근 태스크 이벤트</div>
             <${TaskEventsSection} />
           </div>
 
           ${'' /* Metadata */}
-          <div class="flex flex-wrap items-center gap-3 text-2xs text-text-dim border-t border-[var(--color-border-default)] pt-4">
+          <div class="flex flex-wrap items-center gap-3 text-2xs text-fg-disabled border-t border-[var(--color-border-default)] pt-4">
             ${task.created_at ? html`<span>생성: <${TimeAgo} timestamp=${task.created_at} /></span>` : null}
             <span class="font-mono">${task.id}</span>
           </div>

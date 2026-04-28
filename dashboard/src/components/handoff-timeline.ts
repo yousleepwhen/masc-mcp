@@ -285,11 +285,11 @@ export function HandoffTimeline({
       <header class="flex items-baseline justify-between">
         <div>
           <h3 class="text-sm font-semibold text-text">A2A Event Timeline</h3>
-          <p class="text-2xs text-text-muted">
+          <p class="text-2xs text-fg-muted">
             OAS event_bus → SSE relay. 최근 ${Math.round(windowMs / 1000 / 60)}분, keeper당 row.
           </p>
         </div>
-        <div class="flex gap-2 text-3xs text-text-muted">
+        <div class="flex gap-2 text-3xs text-fg-muted">
           <span class="flex items-center gap-1">
             <span class="w-2 h-2 rounded-full bg-[var(--ok-10)]" aria-hidden="true"></span>lifecycle
           </span>
@@ -315,15 +315,15 @@ export function HandoffTimeline({
           placeholder="keeper / event / task / peer 필터"
           aria-label="Handoff timeline 필터"
           onInput=${(e: Event) => { query.value = (e.target as HTMLInputElement).value }}
-          class="min-w-40 max-w-65 flex-1 rounded border border-card-border bg-bg-1/40 px-2 py-1 text-2xs text-text placeholder:text-text-dim focus:border-accent"
+          class="min-w-40 max-w-65 flex-1 rounded border border-card-border bg-bg-1/40 px-2 py-1 text-2xs text-text placeholder:text-fg-disabled focus:border-accent"
         />
       </div>
       ${error !== null
         ? html`<p class="text-2xs text-[var(--bad-light)]" role="alert">오류: ${error}</p>`
         : rows.length === 0
-          ? html`<p class="text-2xs text-text-dim">이 시간 범위에 A2A 이벤트 없음.</p>`
+          ? html`<p class="text-2xs text-fg-disabled">이 시간 범위에 A2A 이벤트 없음.</p>`
           : isFiltering && visibleRows.length === 0
-            ? html`<p class="text-2xs text-text-dim" role="status" aria-live="polite">필터 결과 없음 (${rows.length} handoffs)</p>`
+            ? html`<p class="text-2xs text-fg-disabled" role="status" aria-live="polite">필터 결과 없음 (${rows.length} handoffs)</p>`
             : html`
               <div class="flex flex-col gap-1 relative">
                 ${(() => {
@@ -352,7 +352,7 @@ export function HandoffTimeline({
                   const isSelected = selectedKeeper === row.keeper
                   const labelCls = isSelected
                     ? 'text-text ring-1 ring-accent bg-accent/10'
-                    : 'text-text-muted hover:text-text hover:bg-bg-1/60'
+                    : 'text-fg-muted hover:text-text hover:bg-bg-1/60'
                   const clickable = typeof onSelectKeeper === 'function'
                   const rowLabelCls =
                     `w-32 shrink-0 truncate text-2xs font-mono rounded px-1 text-left ${labelCls}` +

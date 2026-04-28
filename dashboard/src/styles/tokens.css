@@ -90,6 +90,14 @@
   --color-cyan: #22d3ee;
   --color-purple: #a78bfa;
 
+  /* Semantic aliases — enables Tailwind utilities text-fg-primary, text-fg-muted, etc.
+     Resolves to the same values as --color-fg-* in variables.css but lives inside
+     @theme so Tailwind v4 auto-generates utilities. Prefer text-fg-* over text-text-*. */
+  --color-fg-primary: #c0d2f2;
+  --color-fg-secondary: #eaf1ff;
+  --color-fg-muted: #a8bfdf;
+  --color-fg-disabled: #a0a8b4;
+
   /* Spacing scale (8px grid) */
   --spacing-page: 20px;        /* gap-5  — page-level section gaps */
   --spacing-section: 16px;     /* gap-4  — within sections */

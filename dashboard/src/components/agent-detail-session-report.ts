@@ -169,9 +169,9 @@ function SessionMeta({ agentName }: { agentName: string }) {
   return html`
     <div class="flex flex-wrap gap-2 mb-4">
       ${meta.map(m => html`
-        <span key=${m.label} class="inline-flex items-center gap-1.5 text-2xs font-medium py-1 px-2.5 bg-white/5 border border-white/10 rounded text-text-muted">
-          <span class="text-text-dim">${m.label}</span>
-          <span class="text-text-strong font-mono text-3xs">${m.value}</span>
+        <span key=${m.label} class="inline-flex items-center gap-1.5 text-2xs font-medium py-1 px-2.5 bg-white/5 border border-white/10 rounded text-fg-muted">
+          <span class="text-fg-disabled">${m.label}</span>
+          <span class="text-fg-secondary font-mono text-3xs">${m.value}</span>
         </span>
       `)}
     </div>
@@ -183,7 +183,7 @@ function TaskEventTimeline({ events }: { events: AgentTimelineEvent[] }) {
 
   return html`
     <div class="mt-4">
-      <div class="text-2xs font-semibold uppercase tracking-wider text-text-muted mb-2">태스크 이력</div>
+      <div class="text-2xs font-semibold uppercase tracking-wider text-fg-muted mb-2">태스크 이력</div>
       <div class="flex flex-col gap-1">
         ${events.map((evt, idx) => {
           const title = detailStr(evt.detail, 'title') || detailStr(evt.detail, 'task_id')
@@ -192,7 +192,7 @@ function TaskEventTimeline({ events }: { events: AgentTimelineEvent[] }) {
           return html`
             <div key=${idx} class="flex items-center gap-2 py-1.5 px-3 rounded hover:bg-white/3 transition-colors">
               <span class="text-3xs font-bold uppercase tracking-wider ${color} bg-white/5 px-2 py-0.5 rounded">${icon}</span>
-              <span class="text-xs text-text-body flex-1 truncate" title=${title}>${title}</span>
+              <span class="text-xs text-fg-primary flex-1 truncate" title=${title}>${title}</span>
               ${evt.ts ? html`<${TimeAgo} timestamp=${evt.ts} />` : null}
             </div>
           `
@@ -226,7 +226,7 @@ function BroadcastReport({ report, index }: { report: { ts: string; content: str
           <${TimeAgo} timestamp=${report.ts} />
         </div>
         ${isLong ? html`
-          <span class="text-3xs text-text-dim font-medium">
+          <span class="text-3xs text-fg-disabled font-medium">
             ${expanded ? '접기' : '펼치기'}
           </span>
         ` : null}
@@ -279,7 +279,7 @@ export function AgentSessionReport({ agentName }: { agentName: string }) {
             </div>
           ` : null}
           ${summary.messages_sent > 0 ? html`
-            <div class="flex items-center gap-1.5 text-xs font-medium text-text-muted bg-white/5 border border-white/10 px-3 py-1.5 rounded">
+            <div class="flex items-center gap-1.5 text-xs font-medium text-fg-muted bg-white/5 border border-white/10 px-3 py-1.5 rounded">
               <span class="font-bold">${summary.messages_sent}</span> 메시지
             </div>
           ` : null}
@@ -296,7 +296,7 @@ export function AgentSessionReport({ agentName }: { agentName: string }) {
             onInput=${(e: Event) => setQuery((e.target as HTMLInputElement).value)}
           />
           ${hasQuery ? html`
-            <span class="text-2xs text-text-muted whitespace-nowrap">
+            <span class="text-2xs text-fg-muted whitespace-nowrap">
               ${filteredItems} / ${totalItems}
             </span>
           ` : null}
@@ -310,13 +310,13 @@ export function AgentSessionReport({ agentName }: { agentName: string }) {
           `)}
         </div>
       ` : hasQuery && reports.length > 0 ? html`
-        <div class="text-xs text-text-muted py-3">검색 결과 없음 (리포트)</div>
+        <div class="text-xs text-fg-muted py-3">검색 결과 없음 (리포트)</div>
       ` : null}
 
       <${TaskEventTimeline} events=${filteredTaskEvents} />
 
       ${hasQuery && filteredTaskEvents.length === 0 && taskEvents.length > 0 ? html`
-        <div class="text-xs text-text-muted py-2">검색 결과 없음 (태스크)</div>
+        <div class="text-xs text-fg-muted py-2">검색 결과 없음 (태스크)</div>
       ` : null}
     <//>
   `

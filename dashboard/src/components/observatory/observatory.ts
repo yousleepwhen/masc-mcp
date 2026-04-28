@@ -105,7 +105,7 @@ function TimeAxis({ windowStart, windowEnd }: { windowStart: number; windowEnd: 
   }
 
   return html`
-    <div class="relative h-6 border-b border-card-border text-3xs text-text-dim font-mono">
+    <div class="relative h-6 border-b border-card-border text-3xs text-fg-disabled font-mono">
       ${ticks.map(tick => html`
         <span
           class="absolute top-0 -translate-x-1/2 whitespace-nowrap"
@@ -130,7 +130,7 @@ function RangeSelector() {
           class="rounded px-2 py-0.5 font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--color-bg-page)] ${
             current === preset
               ? 'bg-accent/20 text-accent'
-              : 'text-text-muted hover:text-text-strong hover:bg-white/5'
+              : 'text-fg-muted hover:text-fg-secondary hover:bg-white/5'
           }"
           onClick=${() => setTimeRangeFilter(preset)}
           aria-pressed=${current === preset}
@@ -160,7 +160,7 @@ function ViewSelector({
           class="rounded px-2 py-0.5 font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--color-bg-page)] ${
             current === view.key
               ? 'bg-accent/20 text-accent'
-              : 'text-text-muted hover:text-text-strong hover:bg-white/5'
+              : 'text-fg-muted hover:text-fg-secondary hover:bg-white/5'
           }"
           onClick=${() => onSelect(view.key)}
           aria-pressed=${current === view.key}
@@ -269,8 +269,8 @@ export function Observatory() {
     <div class="flex flex-col gap-5">
       <div class="flex items-center justify-between">
         <div class="flex flex-col gap-0.5">
-          <h3 class="text-sm font-semibold text-text-strong">관찰소 (Observatory)</h3>
-          <p class="text-2xs text-text-dim">
+          <h3 class="text-sm font-semibold text-fg-secondary">관찰소 (Observatory)</h3>
+          <p class="text-2xs text-fg-disabled">
             ${activeView.value === 'timeline'
               ? html`
                   ${currentKeeperFilter() ? `keeper=${currentKeeperFilter()}` : '전체 keeper'}
@@ -294,7 +294,7 @@ export function Observatory() {
               class="inline-flex items-center gap-1.5 rounded border px-2.5 py-1 text-2xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--color-bg-page)] ${
                 liveMode.value
                   ? 'border-[var(--ok-20)] bg-[var(--ok-10)] text-[var(--color-status-ok)]'
-                  : 'border-card-border text-text-muted hover:text-text-strong hover:bg-white/5'
+                  : 'border-card-border text-fg-muted hover:text-fg-secondary hover:bg-white/5'
               }"
               onClick=${() => {
                 liveMode.value = !liveMode.value
@@ -347,7 +347,7 @@ export function Observatory() {
                 windowEnd=${data.windowEnd}
               />
               ${cursorPosition.value === null ? html`
-                <div class="mt-1 text-3xs text-text-dim italic">
+                <div class="mt-1 text-3xs text-fg-disabled italic">
                   hover any track for cross-signal readout
                 </div>
               ` : null}
@@ -371,7 +371,7 @@ export function Observatory() {
         : null}
 
       ${activeView.value === 'timeline' ? html`
-        <p class="text-3xs text-text-dim italic">
+        <p class="text-3xs text-fg-disabled italic">
         Phase 3a — anomaly highlight. 추가 track(메모리, autoresearch)과 compare mode는 이후 단계에서.
         </p>
       ` : null}
