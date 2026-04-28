@@ -217,7 +217,7 @@ function EvidenceDetail({ event }: { event: AttributionEvent | null }) {
         ${reasonOf(a)
           ? html`<div class="text-xs text-[var(--color-fg-muted)]">${reasonOf(a)}</div>`
           : null}
-        <pre class="text-2xs font-mono bg-[var(--white-5)]/30 rounded p-3 overflow-x-auto max-h-64 whitespace-pre-wrap">${evidenceJson}</pre>
+        <pre class="text-2xs font-mono bg-[var(--white-5)]/30 rounded p-3 overflow-x-auto max-h-64 whitespace-pre-wrap" aria-label="증거 JSON">${evidenceJson}</pre>
       </div>
     </${SurfaceCard}>
   `

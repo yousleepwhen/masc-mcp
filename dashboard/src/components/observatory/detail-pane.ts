@@ -104,7 +104,7 @@ export function DetailPane() {
         <summary class="cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-accent-fg)] px-3 py-1.5 text-2xs text-fg-disabled hover:text-fg-secondary">
           raw entry (JSON)
         </summary>
-        <pre class="max-h-64 overflow-auto px-3 py-2 text-3xs font-mono text-fg-secondary bg-[var(--white-5)]/30">${formatJson(selection.entry)}</pre>
+        <pre class="max-h-64 overflow-auto px-3 py-2 text-3xs font-mono text-fg-secondary bg-[var(--white-5)]/30" aria-label="raw entry JSON">${formatJson(selection.entry)}</pre>
       </details>
     </div>
   `
