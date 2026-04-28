@@ -622,6 +622,8 @@ export function KeeperNeighborhood({ keeper }: { keeper: Keeper }) {
         <span class="text-3xs font-semibold uppercase tracking-wider text-[var(--color-fg-muted)]">허용된 도구</span>
         <button type="button"
           class="text-3xs text-[var(--color-fg-muted)] hover:text-[var(--color-fg-primary)] cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] disabled:opacity-50 disabled:cursor-default"
+          aria-expanded=${showAllowlistEditor.value ? 'true' : 'false'}
+          aria-controls="keeper-allowlist-editor"
           disabled=${!policyEditable}
           onClick=${() => {
             showAllowlistEditor.value = !showAllowlistEditor.value
@@ -631,7 +633,7 @@ export function KeeperNeighborhood({ keeper }: { keeper: Keeper }) {
       </div>
 
       ${showAllowlistEditor.value && policyEditable
-        ? html`<${ToolAllowlistEditor}
+        ? html`<div id="keeper-allowlist-editor"><${ToolAllowlistEditor}
             keeperName=${keeper.name}
             currentMode=${toolPolicy.mode}
             currentPreset=${toolPolicy.preset ?? 'full'}
@@ -644,7 +646,7 @@ export function KeeperNeighborhood({ keeper }: { keeper: Keeper }) {
               void loadKeeperConfig(keeper.name, { force: true })
               loadTools()
             }}
-          />`
+          /></div>`
         : html`
           <span class="text-2xs text-[var(--color-fg-muted)] leading-snug">
             ${policyLoading

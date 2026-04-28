@@ -595,12 +595,14 @@ export function RuntimeMonitor() {
                     ? html`
                       <button type="button"
                         class="text-2xs text-[var(--color-fg-muted)] hover:text-[var(--color-fg-secondary)] mt-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--color-bg-page)]"
+                        aria-expanded=${expandedModel.value === metric.model_id ? 'true' : 'false'}
+                        aria-controls=${`rtm-recent-${metric.model_id}`}
                         onClick=${() => { expandedModel.value = expandedModel.value === metric.model_id ? null : metric.model_id }}
                       >
-                        ${expandedModel.value === metric.model_id ? '▾' : '▸'} recent ${metric.recent_entries?.length ?? 0} turns
+                        recent ${metric.recent_entries?.length ?? 0} turns
                       </button>
                       ${expandedModel.value === metric.model_id
-                        ? html`<div class="mt-1 border-t border-card-border/50 pt-2">
+                        ? html`<div id=${`rtm-recent-${metric.model_id}`} class="mt-1 border-t border-card-border/50 pt-2">
                             <div class="grid grid-cols-7 gap-1 text-3xs text-[var(--color-fg-muted)] font-medium mb-1">
                               <div>time</div><div>in tok</div><div>out tok</div><div>latency</div><div>prefill tok/s</div><div>cost</div><div>tools</div>
                             </div>
