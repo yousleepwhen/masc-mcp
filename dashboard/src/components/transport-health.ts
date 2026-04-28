@@ -328,7 +328,7 @@ function SectionCard({
   children: ComponentChildren
 }) {
   return html`
-    <div class="rounded border border-card-border bg-bg-1/60 p-4">
+    <section class="rounded border border-card-border bg-bg-1/60 p-4" aria-label=${title}>
       <div class="flex items-center justify-between gap-3 mb-3">
         <div class="flex items-center gap-2 min-w-0">
           <${StatusDot} size="sm" class=${statusDot(status)} />
@@ -339,7 +339,7 @@ function SectionCard({
       <div class="divide-y divide-card-border/50">
         ${children}
       </div>
-    </div>
+    </section>
   `
 }
 
