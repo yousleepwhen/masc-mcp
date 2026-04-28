@@ -58,12 +58,22 @@ export function Tools() {
 
   return html`
     <div>
-      <div class="flex gap-2 mb-4">
+      <div class="flex gap-2 mb-4" role="tablist" aria-label="도구 뷰" onKeyDown=${(e: KeyboardEvent) => {
+        const allTabs: ToolsView[] = ['inventory', 'executor']
+        const idx = allTabs.indexOf(activeView.value)
+        let next = -1
+        if (e.key === 'ArrowRight' || e.key === 'ArrowDown') next = (idx + 1) % allTabs.length
+        else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') next = (idx - 1 + allTabs.length) % allTabs.length
+        if (next >= 0) { e.preventDefault(); activeView.value = allTabs[next] }
+      }}>
         <${ActionButton} variant=${activeView.value === 'inventory' ? 'primary' : 'ghost'} size="md"
+          role="tab" ariaSelected=${activeView.value === 'inventory'} tabIndex=${activeView.value === 'inventory' ? 0 : -1}
           onClick=${() => { activeView.value = 'inventory' }}>인벤토리<//>
         <${ActionButton} variant=${activeView.value === 'executor' ? 'primary' : 'ghost'} size="md"
+          role="tab" ariaSelected=${activeView.value === 'executor'} tabIndex=${activeView.value === 'executor' ? 0 : -1}
           onClick=${() => { activeView.value = 'executor' }}>도구 실행기<//>
       </div>
+      <div role="tabpanel" aria-label=${activeView.value === 'executor' ? '도구 실행기' : '인벤토리'}>
       ${activeView.value === 'executor' ? html`<${ToolExecutor} />` : html`<div>
       <${ConfigResolutionPanel}
         resolution=${data?.config_resolution}
@@ -106,6 +116,7 @@ export function Tools() {
 
       <${PromptRegistryPanel} />
     </div>`}
+      </div>
     </div>
   `
 }
