@@ -236,7 +236,7 @@ export function App() {
           <${SideRail} collapsed=${sidebarCollapsed.value} onToggle=${() => { sidebarCollapsed.value = !sidebarCollapsed.value }} />
         </aside>
 
-        <main id="main-content" tabindex=${-1} class="min-w-0 flex-1 overflow-hidden rounded-xl border border-[var(--white-5)] bg-[rgba(10,15,26,0.68)] backdrop-blur-lg max-[1100px]:min-h-0">
+        <main id="main-content" tabindex=${-1} aria-label="대시보드 콘텐츠" class="min-w-0 flex-1 overflow-hidden rounded-xl border border-[var(--white-5)] bg-[rgba(10,15,26,0.68)] backdrop-blur-lg max-[1100px]:min-h-0">
           <div class="h-full overflow-y-auto p-4">
             <${DashboardMain} />
           </div>
