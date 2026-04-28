@@ -77,14 +77,14 @@ export function ErrorPanel({ onClose, id }: ErrorPanelProps) {
         </div>
       </div>
 
-      <div class="overflow-y-auto flex-1 divide-y divide-[var(--white-5)]">
+      <div class="overflow-y-auto flex-1 divide-y divide-[var(--white-5)]" role="list" aria-label="미확인 에러 목록" tabindex="0">
         ${items.map(e => {
           const sev = e.severity
           const iconColor = SEVERITY_ICON_COLOR[sev]
           const badgeBg = CODE_BADGE_BG[sev]
           const label = CODE_LABELS[e.errorCode]
           return html`
-          <div key=${e.id} class="flex items-start gap-2 px-3 py-2 hover:bg-[var(--white-4)] transition-colors group">
+          <div key=${e.id} class="flex items-start gap-2 px-3 py-2 hover:bg-[var(--white-4)] transition-colors group" role="listitem">
             <span class="mt-0.5 shrink-0 ${iconColor}" aria-hidden="true">
               ${sev === 'info' ? html`<${Info} size=${13} />` : html`<${AlertTriangle} size=${13} />`}
             </span>
