@@ -356,6 +356,7 @@ function HebbianTopLinks({ synapses }: { synapses: MemorySubsystemsSynapse[] }) 
                 type="button"
                 class="text-[var(--color-fg-muted)] hover:text-[var(--color-accent-fg)] truncate w-32 text-right focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
                 title=${s.from_agent}
+                aria-label=${s.from_agent}
                 onClick=${() => openAgentDetail(s.from_agent)}
               >${shortAgentLabel(s.from_agent)}</button>
               <button
@@ -370,6 +371,7 @@ function HebbianTopLinks({ synapses }: { synapses: MemorySubsystemsSynapse[] }) 
                 type="button"
                 class="text-[var(--color-fg-muted)] hover:text-[var(--color-accent-fg)] truncate w-32 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
                 title=${s.to_agent}
+                aria-label=${s.to_agent}
                 onClick=${() => openAgentDetail(s.to_agent)}
               >${shortAgentLabel(s.to_agent)}</button>
               <div class="flex-1 bg-[var(--white-5)] rounded h-1.5 min-w-15" role="progressbar" aria-valuenow=${pct.toFixed(0)} aria-valuemin=${0} aria-valuemax=${100} aria-label="가중치">
