@@ -405,7 +405,7 @@ function PostCard({ post }: { post: BoardPost }) {
   return html`
     <button
       type="button"
-      class="board-post group w-full flex gap-3 rounded p-4 border border-[var(--color-border-default)] bg-[var(--card)] hover:bg-[var(--white-6)] hover:border-[var(--accent-20)] transition-all duration-200 cursor-pointer text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+      class="board-post group w-full flex gap-3 rounded p-4 border border-[var(--color-border-default)] bg-[var(--card)] hover:bg-[var(--white-6)] hover:border-[var(--accent-20)] transition-all duration-200 cursor-pointer text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
       onClick=${() => navigateToPost(post.id)}
     >
       <!-- Select checkbox -->

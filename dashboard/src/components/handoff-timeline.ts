@@ -357,7 +357,7 @@ export function HandoffTimeline({
                   const rowLabelCls =
                     `w-32 shrink-0 truncate text-2xs font-mono rounded px-1 text-left ${labelCls}` +
                     (clickable
-                      ? ' cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent'
+                      ? ' cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent'
                       : '')
                   return html`
                   <div class="flex items-center gap-3">

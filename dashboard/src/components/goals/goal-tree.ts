@@ -449,7 +449,7 @@ function TreeNode({ node, depth }: { node: GoalTreeNode; depth: number }) {
     <div class="flex flex-col" style="margin-left:${indent}px">
       <button
         type="button"
-        class="${headerBase} ${hasContent ? 'cursor-pointer' : ''} focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+        class="${headerBase} ${hasContent ? 'cursor-pointer' : ''} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
         onClick=${() => {
           selectGoal(node.id)
           if (hasContent) toggleNode(node.id)
