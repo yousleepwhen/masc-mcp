@@ -174,7 +174,7 @@ function renderCategorySection(
         }} />
         <div class="text-center py-3">
           <button type="button"
-            class="px-4 py-2 rounded text-xs font-medium text-[var(--color-fg-muted)] bg-transparent border border-[var(--border-slate-16)] hover:bg-[var(--white-6)] hover:text-[var(--color-fg-primary)] transition-all cursor-pointer disabled:opacity-50"
+            class="px-4 py-2 rounded text-xs font-medium text-[var(--color-fg-muted)] bg-transparent border border-[var(--border-slate-16)] hover:bg-[var(--white-6)] hover:text-[var(--color-fg-primary)] transition-all cursor-pointer disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-45)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-bg-surface)]"
             disabled=${loadingMore}
             onClick=${() => {
               expandCategory(category, limits, limit, posts.length)
@@ -197,7 +197,7 @@ function NewPostForm() {
   if (!showNewPostForm.value) {
     return html`
       <button type="button"
-        class="w-full py-2.5 rounded border border-dashed border-[var(--color-border-default)] text-sm text-[var(--color-fg-muted)] cursor-pointer hover:bg-[var(--white-4)] hover:text-[var(--color-fg-primary)] transition-colors bg-transparent"
+        class="w-full py-2.5 rounded border border-dashed border-[var(--color-border-default)] text-sm text-[var(--color-fg-muted)] cursor-pointer hover:bg-[var(--white-4)] hover:text-[var(--color-fg-primary)] transition-colors bg-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-45)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-bg-surface)]"
         onClick=${() => { showNewPostForm.value = true }}
       >+ 새 글 작성</button>
     `
@@ -223,11 +223,11 @@ function NewPostForm() {
       />
       <div class="flex gap-2 justify-end">
         <button type="button"
-          class="px-3 py-1.5 rounded text-sm border border-[var(--color-border-default)] bg-transparent text-[var(--color-fg-muted)] cursor-pointer hover:bg-[var(--white-6)]"
+          class="px-3 py-1.5 rounded text-sm border border-[var(--color-border-default)] bg-transparent text-[var(--color-fg-muted)] cursor-pointer hover:bg-[var(--white-6)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-45)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-bg-surface)]"
           onClick=${() => { showNewPostForm.value = false; newPostTitle.value = ''; newPostContent.value = '' }}
         >취소</button>
         <button type="button"
-          class="px-4 py-1.5 rounded text-sm font-medium border border-[rgba(71,184,255,0.4)] bg-[var(--accent-soft)] text-[var(--color-accent-fg)] cursor-pointer hover:bg-[var(--accent-20)] disabled:opacity-50"
+          class="px-4 py-1.5 rounded text-sm font-medium border border-[rgba(71,184,255,0.4)] bg-[var(--accent-soft)] text-[var(--color-accent-fg)] cursor-pointer hover:bg-[var(--accent-20)] disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-45)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-bg-surface)]"
           disabled=${newPostSubmitting.value || !newPostTitle.value.trim() || !newPostContent.value.trim()}
           onClick=${() => { void submitNewPost() }}
         >${newPostSubmitting.value ? '등록 중...' : '등록'}</button>
@@ -247,7 +247,7 @@ function SortBar() {
           <button type="button"
             role="radio"
             aria-checked=${current === mode.id}
-            class="px-3 py-1.5 rounded text-xs font-medium transition-all duration-150 border cursor-pointer
+            class="px-3 py-1.5 rounded text-xs font-medium transition-all duration-150 border cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-45)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-bg-surface)]
               ${current === mode.id
                 ? 'bg-[var(--ok-soft)] text-[var(--color-status-ok)] border-[var(--ok-30)]'
                 : 'bg-transparent text-[var(--color-fg-muted)] border-transparent hover:bg-[var(--white-8)] hover:text-[var(--color-fg-primary)]'

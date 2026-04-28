@@ -424,7 +424,7 @@ function KeeperLifecycleButtons({ keeper, effectiveStatus }: { keeper: Keeper; e
 
   if (isOffline) return html`
     <button type="button"
-      class="py-1 px-3 rounded text-2xs font-semibold cursor-pointer border border-[rgba(34,197,94,0.4)] bg-[var(--emerald-8)] text-[var(--color-status-ok)] hover:bg-[rgba(34,197,94,0.15)] transition-colors"
+      class="py-1 px-3 rounded text-2xs font-semibold cursor-pointer border border-[rgba(34,197,94,0.4)] bg-[var(--emerald-8)] text-[var(--color-status-ok)] hover:bg-[rgba(34,197,94,0.15)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-45)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-bg-surface)]"
       onClick=${() => {
         void (async () => {
           try {
@@ -444,7 +444,7 @@ function KeeperLifecycleButtons({ keeper, effectiveStatus }: { keeper: Keeper; e
 
   if (isRunning) return html`
     <button type="button"
-      class="py-1 px-3 rounded text-2xs font-semibold cursor-pointer border border-[var(--bad-30)] bg-[var(--bad-10)] text-[var(--rose-light)] hover:bg-[var(--bad-soft)] transition-colors"
+      class="py-1 px-3 rounded text-2xs font-semibold cursor-pointer border border-[var(--bad-30)] bg-[var(--bad-10)] text-[var(--rose-light)] hover:bg-[var(--bad-soft)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-45)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-bg-surface)]"
       onClick=${() => {
         void (async () => {
           const confirmed = await requestConfirm({
@@ -555,7 +555,7 @@ function KeeperClearContextDialog({
           >취소<//>
           <button
             type="button"
-            class="px-4 py-2 rounded text-sm font-medium border border-transparent bg-[var(--color-status-err)] text-white hover:bg-[rgba(239,68,68,0.88)] transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+            class="px-4 py-2 rounded text-sm font-medium border border-transparent bg-[var(--color-status-err)] text-white hover:bg-[rgba(239,68,68,0.88)] transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-45)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-bg-surface)]"
             disabled=${pending || reason.trim() === ''}
             onClick=${onSubmit}
           >${pending ? '비우는 중...' : '비우기'}</button>
@@ -859,13 +859,13 @@ export function KeeperDetailPage() {
           <div class="flex items-center gap-2">
             <button
               type="button"
-              class="py-1 px-3 rounded text-2xs font-semibold cursor-pointer border border-[var(--bad-30)] bg-[var(--bad-10)] text-[var(--rose-light)] hover:bg-[var(--bad-soft)] transition-colors"
+              class="py-1 px-3 rounded text-2xs font-semibold cursor-pointer border border-[var(--bad-30)] bg-[var(--bad-10)] text-[var(--rose-light)] hover:bg-[var(--bad-soft)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-45)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-bg-surface)]"
               onClick=${() => setClearDialogOpen(true)}
             >비우기</button>
             <button
               type="button"
               disabled=${purgePending}
-              class="py-1 px-3 rounded text-2xs font-semibold cursor-pointer border border-[var(--bad-30)] bg-[var(--bad-10)] text-[var(--rose-light)] hover:bg-[var(--bad-soft)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              class="py-1 px-3 rounded text-2xs font-semibold cursor-pointer border border-[var(--bad-30)] bg-[var(--bad-10)] text-[var(--rose-light)] hover:bg-[var(--bad-soft)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-45)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-bg-surface)]"
               onClick=${submitPurgeKeeper}
             >${purgePending ? '삭제 중...' : '완전 삭제'}</button>
             <${KeeperLifecycleButtons} keeper=${keeper} effectiveStatus=${effectiveStatus} />

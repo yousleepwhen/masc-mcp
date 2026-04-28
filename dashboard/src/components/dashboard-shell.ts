@@ -149,7 +149,7 @@ export function ErrorCounterBadge() {
     <div class="relative" role="status" ref=${containerRef}>
       <button
         type="button"
-        class="flex items-center gap-1.5 cursor-pointer rounded px-1 py-0.5 transition-colors hover:bg-[var(--white-5)] ${count > 0 ? 'text-[var(--color-status-err)]' : 'text-[var(--color-fg-muted)]'}"
+        class="flex items-center gap-1.5 cursor-pointer rounded px-1 py-0.5 transition-colors hover:bg-[var(--white-5)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-45)] focus-visible:ring-offset-1 ${count > 0 ? 'text-[var(--color-status-err)]' : 'text-[var(--color-fg-muted)]'}"
         title=${count > 0 ? `미확인 에러 ${count}건` : '에러 없음'}
         aria-label=${count > 0 ? `미확인 에러 ${count}건` : '에러 없음'}
         onClick=${() => { errorPanelOpen.value = !errorPanelOpen.value }}
@@ -450,7 +450,7 @@ export function SideRail({ collapsed, onToggle }: { collapsed?: boolean; onToggl
                 <${RouteLink}
                   tab=${surface.defaultTab}
                   params=${surface.defaultParams}
-                  class="flex items-center justify-center w-full rounded border p-2 cursor-pointer transition-[background-color,border-color,color,box-shadow] duration-200 ${isSurfaceActive ? 'bg-[var(--accent-soft)] text-[var(--color-fg-secondary)] shadow-[inset_0_1px_1px_var(--white-10)] border-[var(--accent-20)]' : 'border-transparent text-[var(--color-fg-muted)] hover:bg-[var(--white-5)]'}"
+                  class="flex items-center justify-center w-full rounded border p-2 cursor-pointer transition-[background-color,border-color,color,box-shadow] duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-45)] focus-visible:ring-offset-1 ${isSurfaceActive ? 'bg-[var(--accent-soft)] text-[var(--color-fg-secondary)] shadow-[inset_0_1px_1px_var(--white-10)] border-[var(--accent-20)]' : 'border-transparent text-[var(--color-fg-muted)] hover:bg-[var(--white-5)]'}"
                   title=${surface.label}
                   aria-label=${surface.label}
                   ariaCurrent=${isSurfaceActive ? 'page' : undefined}
@@ -465,7 +465,7 @@ export function SideRail({ collapsed, onToggle }: { collapsed?: boolean; onToggl
                 <${RouteLink}
                   tab=${surface.defaultTab}
                   params=${surface.defaultParams}
-                  class="flex items-center gap-2 w-full rounded border px-2 py-1.5 text-left cursor-pointer transition-[background-color,border-color,color,box-shadow] duration-200 ${isSurfaceActive && sections.length === 0 ? 'bg-[linear-gradient(135deg,rgba(71,184,255,0.14),rgba(71,184,255,0.04))] text-[var(--color-fg-secondary)] shadow-[inset_0_1px_1px_var(--white-10)] border-[var(--accent-20)]' : 'bg-transparent border-transparent text-[var(--color-fg-secondary)] hover:bg-[var(--white-5)]'}"
+                  class="flex items-center gap-2 w-full rounded border px-2 py-1.5 text-left cursor-pointer transition-[background-color,border-color,color,box-shadow] duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-45)] focus-visible:ring-offset-1 ${isSurfaceActive && sections.length === 0 ? 'bg-[linear-gradient(135deg,rgba(71,184,255,0.14),rgba(71,184,255,0.04))] text-[var(--color-fg-secondary)] shadow-[inset_0_1px_1px_var(--white-10)] border-[var(--accent-20)]' : 'bg-transparent border-transparent text-[var(--color-fg-secondary)] hover:bg-[var(--white-5)]'}"
                   ariaCurrent=${isSurfaceActive && sections.length === 0 ? 'page' : undefined}
                 >
                   <span class="flex h-7 w-7 shrink-0 items-center justify-center rounded border border-[var(--white-10)] bg-[var(--white-3)] text-base" aria-hidden="true">
@@ -484,7 +484,7 @@ export function SideRail({ collapsed, onToggle }: { collapsed?: boolean; onToggl
                         <${RouteLink}
                           tab=${surface.id}
                           params=${item.params}
-                          class="w-full rounded border px-2 py-1 text-left cursor-pointer text-sm transition-[background-color,border-color,color,box-shadow] duration-200 ${isSectionActive ? 'bg-[var(--accent-soft)] text-[var(--color-accent-fg)] font-medium shadow-[inset_0_1px_1px_var(--white-10)] border-[var(--accent-soft)]' : 'border-transparent text-[var(--color-fg-muted)] hover:bg-[var(--white-5)] hover:text-[var(--color-fg-primary)]'}"
+                          class="w-full rounded border px-2 py-1 text-left cursor-pointer text-sm transition-[background-color,border-color,color,box-shadow] duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-45)] focus-visible:ring-offset-1 ${isSectionActive ? 'bg-[var(--accent-soft)] text-[var(--color-accent-fg)] font-medium shadow-[inset_0_1px_1px_var(--white-10)] border-[var(--accent-soft)]' : 'border-transparent text-[var(--color-fg-muted)] hover:bg-[var(--white-5)] hover:text-[var(--color-fg-primary)]'}"
                           ariaCurrent=${isSectionActive ? 'page' : undefined}
                         >
                           <div class="truncate" title=${item.label}>${item.label}</div>
@@ -670,7 +670,7 @@ function SurfaceLead() {
               const crumbEl = crumb.navigableTab !== null && !isLast
                 ? html`<${RouteLink}
                     tab=${crumb.navigableTab}
-                    class="cursor-pointer rounded px-1 py-0.5 hover:bg-[var(--white-5)] hover:text-[var(--color-fg-primary)]"
+                    class="cursor-pointer rounded px-1 py-0.5 hover:bg-[var(--white-5)] hover:text-[var(--color-fg-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-45)] focus-visible:ring-offset-1"
                   >${crumb.label}<//>`
                 : html`<span
                     class="px-1 py-0.5 ${isLast ? 'text-[var(--color-fg-primary)]' : ''}"
