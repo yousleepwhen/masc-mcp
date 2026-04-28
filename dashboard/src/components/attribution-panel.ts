@@ -194,7 +194,7 @@ function EventRow({
 function EvidenceDetail({ event }: { event: AttributionEvent | null }) {
   if (!event) {
     return html`
-      <${SurfaceCard} variant="light">
+      <${SurfaceCard} variant="light" ariaLabel="증거 상세">
         <${EmptyState} message="이벤트를 선택하면 evidence가 여기 표시됩니다." />
       </${SurfaceCard}>
     `
@@ -202,7 +202,7 @@ function EvidenceDetail({ event }: { event: AttributionEvent | null }) {
   const a = event.attribution
   const evidenceJson = JSON.stringify(a.evidence, null, 2)
   return html`
-    <${SurfaceCard} variant="compact">
+    <${SurfaceCard} variant="compact" ariaLabel="증거 상세">
       <div class="flex flex-col gap-3">
         <div class="flex items-baseline gap-3 flex-wrap">
           <span class="text-2xs text-[var(--color-fg-muted)]">${formatTs(event.recorded_at)}</span>
@@ -343,7 +343,7 @@ export function AttributionPanel() {
       </div>
 
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-4" role="group" aria-label="이벤트 및 증거">
-        <${SurfaceCard} variant="light">
+        <${SurfaceCard} variant="light" ariaLabel="이벤트 목록">
           <div class="flex flex-col">
             <div class="px-3 py-2 border-b border-[var(--color-border-default)] text-2xs font-semibold uppercase tracking-1 text-[var(--color-fg-muted)]">
               최근 이벤트 (${isFiltering

@@ -115,7 +115,7 @@ export function PersonaBrowser() {
           </div>
         `}
       ${spawnResult.value ? html`
-        <${SurfaceCard} class="mt-3" variant="compact">
+        <${SurfaceCard} class="mt-3" variant="compact" ariaLabel="spawn 결과">
           <pre class="text-2xs font-mono overflow-x-auto max-h-50 overflow-y-auto
             ${spawnResult.value.success ? 'text-[var(--color-fg-primary)]' : 'text-[var(--color-status-err)]'}">${spawnResult.value.message}</pre>
         <//>` : null}
