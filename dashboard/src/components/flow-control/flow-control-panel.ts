@@ -34,7 +34,7 @@ export function FlowControlPanel() {
   const isInitializing = state === 'initializing'
   const mutationAccess = dashboardAuthAccess(shellAuthSummary.value, 'worker')
   return html`
-    <${SurfaceCard} variant="compact" class="mb-4">
+    <${SurfaceCard} variant="compact" class="mb-4" ariaLabel="흐름 제어">
       <div class="flex items-center gap-3 mb-3">
         <h3 class="text-sm text-[var(--color-fg-secondary)] font-medium">흐름 제어</h3>
         <${CountBadge} tone=${stateTone(state)}>${stateLabel(state)}<//>
@@ -53,7 +53,7 @@ export function FlowControlPanel() {
     <//>
 
     ${'' /* ── Maintenance ── */}
-    <${SurfaceCard} variant="compact">
+    <${SurfaceCard} variant="compact" ariaLabel="유지보수">
       <details>
         <summary class="cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-accent-fg)] text-sm text-[var(--color-fg-secondary)] font-medium select-none py-1">유지보수</summary>
         <div class="mt-3 flex flex-wrap gap-2">
@@ -71,7 +71,7 @@ export function FlowControlPanel() {
             ${maintenanceLoading.value ? '...' : '좀비 정리'}<//>
         </div>
         ${maintenanceResult.value ? html`
-          <pre class="mt-3 p-3 rounded border border-card-border/50 bg-card/30 text-2xs text-fg-primary font-mono max-h-40 overflow-auto custom-scrollbar whitespace-pre-wrap">${maintenanceResult.value}</pre>
+          <pre role="log" aria-label="유지보수 결과" class="mt-3 p-3 rounded border border-card-border/50 bg-card/30 text-2xs text-fg-primary font-mono max-h-40 overflow-auto custom-scrollbar whitespace-pre-wrap">${maintenanceResult.value}</pre>
         ` : null}
       </details>
     <//>

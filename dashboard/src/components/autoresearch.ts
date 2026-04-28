@@ -355,7 +355,7 @@ function ResearchBrief({ loop }: { loop: AutoresearchLoopSummary }) {
   const linkedAt = loop.linked_at != null ? formatTimestampKo(loop.linked_at) : '미연결'
 
   return html`
-    <${SurfaceCard} variant="compact">
+    <${SurfaceCard} variant="compact" ariaLabel="연구 브리프">
       <div class="flex flex-col gap-3">
         <div>
           <div class="text-3xs uppercase tracking-wider text-[var(--color-fg-muted)] mb-1 font-medium">연구 브리프</div>
@@ -465,7 +465,7 @@ function LoopDetailView() {
     <div class="flex flex-col gap-5">
       <${ResearchBrief} loop=${loop} />
 
-      <${SurfaceCard} variant="compact">
+      <${SurfaceCard} variant="compact" ariaLabel="루프 개요">
         <div class="flex items-start justify-between gap-3 mb-3">
           <div class="text-3xs uppercase tracking-wider text-[var(--color-fg-muted)] font-medium">루프 개요</div>
           ${canRepairErrorLoop ? html`
@@ -499,13 +499,13 @@ function LoopDetailView() {
       <//>
 
       ${warnings.length > 0 ? html`
-        <${SurfaceCard} variant="compact">
+        <${SurfaceCard} variant="compact" ariaLabel="경고">
           <div class="text-3xs uppercase tracking-wider text-[var(--warn)]/80 mb-3 font-medium">경고</div>
           <${WarningsList} warnings=${warnings} />
         <//>
       ` : null}
 
-      <${SurfaceCard} variant="compact">
+      <${SurfaceCard} variant="compact" ariaLabel="사이클 이력">
         <div class="flex items-center justify-between mb-3">
           <div class="text-3xs uppercase tracking-wider text-[var(--color-fg-muted)] font-medium">
             사이클 이력 ${detail ? `(${detail.history_count}건)` : ''}
@@ -514,7 +514,7 @@ function LoopDetailView() {
         <${CycleHistoryTable} cycles=${cycles} />
       <//>
 
-      <${SurfaceCard} variant="compact">
+      <${SurfaceCard} variant="compact" ariaLabel="인사이트">
         <div class="text-3xs uppercase tracking-wider text-[var(--color-fg-muted)] mb-3 font-medium">인사이트</div>
         <${InsightsList} insights=${insights} />
       <//>

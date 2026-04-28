@@ -18,20 +18,21 @@ export function PulseStrip() {
 
   if (pulses.length === 0) {
     return html`
-      <div class="pulse-strip rounded">
+      <div class="pulse-strip rounded" role="status">
         <span class="text-[var(--color-fg-disabled)] text-sm">연결된 에이전트 없음. masc_join으로 에이전트가 접속하면 여기에 표시됩니다.</span>
       </div>
     `
   }
 
   return html`
-    <div class="pulse-strip rounded">
+    <div class="pulse-strip rounded" role="toolbar" aria-label="에이전트 선택">
       ${pulses.map(p => html`
         <button type="button"
           key=${p.name}
+          aria-label="${p.koreanName ? `${p.koreanName} (${p.name})` : p.name}${p.currentTask ? ` — ${p.currentTask}` : ''}"
+          aria-pressed=${selected === p.name ? 'true' : 'false'}
           class="pulse-bubble focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--color-bg-page)] ${pulseStateClass(p.state)} ${selected === p.name ? 'pulse-selected' : ''}"
           onClick=${() => openAgentDetail(p.name)}
-          title="${p.koreanName ? `${p.name} (${p.koreanName})` : p.name}${p.currentTask ? ` — ${p.currentTask}` : ''}"
         >
           <span class="text-[1.15rem] leading-none">${p.emoji || p.name.charAt(0).toUpperCase()}</span>
           <span class="text-[0.65rem] text-[var(--color-fg-muted)] whitespace-nowrap overflow-hidden text-ellipsis max-w-16">${p.koreanName ?? p.name}</span>

@@ -27,6 +27,8 @@ interface SurfaceCardProps {
   tone?: string
   /** ARIA role forwarded to the container element (e.g. "listitem"). */
   role?: string
+  /** Accessible label for the card container. */
+  ariaLabel?: string
   testId?: string
   children: ComponentChildren
 }
@@ -36,11 +38,12 @@ export function SurfaceCard({
   class: cx,
   tone,
   role,
+  ariaLabel,
   testId,
   children,
 }: SurfaceCardProps) {
   const cls = [VARIANT_CLASSES[variant], tone, cx].filter(Boolean).join(' ')
-  return html`<div class=${cls} role=${role} data-testid=${testId}>${children}</div>`
+  return html`<div class=${cls} role=${role} aria-label=${ariaLabel} data-testid=${testId}>${children}</div>`
 }
 
 // ── Section card with label header ──
