@@ -229,7 +229,7 @@ const KEEPER_DETAIL_SECTIONS: Array<{
   {
     id: 'keeper-identity',
     label: '정체성 / 세대',
-    summary: '프로필, 관계, generation lineage, 체크포인트를 함께 봅니다.',
+    summary: '프로필, 관계, 세대 lineage, 체크포인트를 함께 봅니다.',
   },
   {
     id: 'keeper-config',

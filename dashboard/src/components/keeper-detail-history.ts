@@ -403,7 +403,7 @@ export function lineageVerdictMeta(verdict: string | undefined): LineageVerdictM
     case 'unavailable':
       return {
         badgeLabel: '증거 필요',
-        detail: '핸드오프는 완료됐지만 generation 비교에 필요한 continuity 데이터가 충분하지 않습니다.',
+        detail: '핸드오프는 완료됐지만 세대 비교에 필요한 continuity 데이터가 충분하지 않습니다.',
       }
     default:
       return {
@@ -559,7 +559,7 @@ export function GenerationLineagePanel({ keeperName }: { keeperName: string }) {
           `
           : html`
             <div class="rounded border border-[var(--white-8)] bg-[var(--white-2)] p-3 mb-3 text-2xs text-[var(--color-fg-muted)]">
-              아직 handoff lineage manifest가 없습니다. generation 0에서는 현재 trace만 유지되고, 첫 successful handoff 이후부터 manifest/index가 생깁니다.
+              아직 핸드오프 lineage manifest가 없습니다. 세대 0에서는 현재 trace만 유지되고, 첫 성공적인 핸드오프 이후부터 manifest/index가 생깁니다.
             </div>
           `}
 

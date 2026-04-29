@@ -22,8 +22,8 @@ const MEASUREMENT_FLAG_DESCRIPTIONS: Record<string, { on: string; off: string }>
     off: '예약된 압축 없음 — 컨텍스트 윈도우에 여유가 있습니다.',
   },
   handoff: {
-    on: '키퍼가 동일 정체성을 유지하며 새 trace/generation 으로 이관됩니다.',
-    off: '예약된 handoff 없음 — 현재 generation 이 같은 trace 에서 계속 실행됩니다.',
+    on: '키퍼가 동일 정체성을 유지하며 새 trace/세대 으로 이관됩니다.',
+    off: '예약된 핸드오프 없음 — 현재 세대가 같은 trace 에서 계속 실행됩니다.',
   },
   guardrail: {
     on: 'guardrail 발동됨 — 키퍼가 운영자 개입 대기 상태로 멈춥니다.',

@@ -1048,7 +1048,7 @@ export function KeeperDetailPage() {
             id="keeper-identity"
             eyebrow="신원 & 계보"
             title="정체성 / 세대"
-            description="프로필, 관계, 장비, generation lineage, checkpoints를 하나의 맥락으로 보고 continuity를 해석합니다."
+            description="프로필, 관계, 장비, 세대 lineage, 체크포인트를 하나의 맥락으로 보고 continuity를 해석합니다."
           >
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
               <${SectionCard} title="프로필">

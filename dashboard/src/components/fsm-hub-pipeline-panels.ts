@@ -252,7 +252,7 @@ const STATE_DESCRIPTIONS: Record<string, string> = {
   running: '원시 키퍼 phase: runtime 이 활성 상태로 턴 실행 중',
   failing: '원시 키퍼 phase: 복구 / 재시도 처리 중',
   overflowed: '원시 키퍼 phase: 프로바이더 컨텍스트 overflow 압축 또는 clear 필요',
-  handing_off: '원시 키퍼 phase: 상태 handoff 진행 중',
+  handing_off: '원시 키퍼 phase: 상태 핸드오프 진행 중',
   draining: '원시 키퍼 phase: 종료 진행 중',
   offline: '원시 키퍼 phase: 키퍼가 아직 시작되지 않음',
   paused: '원시 키퍼 phase: 운영자 pause 또는 재시도 한계',
