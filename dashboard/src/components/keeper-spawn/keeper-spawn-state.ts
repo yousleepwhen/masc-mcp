@@ -172,7 +172,7 @@ export async function loadPersonas(): Promise<void> {
     const raw = await callMcpTool('masc_persona_list', {})
     return normalizePersonaSummaries(JSON.parse(raw))
   }).catch(() => {
-    showToast('페르소나 목록 로드 실패', 'error')
+    showToast('페르소나 목록 불러오기 실패', 'error')
   })
 }
 
@@ -188,7 +188,7 @@ export async function loadPersonaSchema(): Promise<void> {
     const raw = await callMcpTool('masc_persona_schema', {})
     return normalizePersonaSchema(parseToolJson(raw))
   }).catch(() => {
-    showToast('페르소나 스키마 로드 실패', 'error')
+    showToast('페르소나 스키마 불러오기 실패', 'error')
   })
 }
 

@@ -802,7 +802,7 @@ function GoalDetailPanel({
       <${DetailTabs} active=${activeTab} />
 
       ${error ? html`<${ErrorState} message=${error} />` : null}
-      ${loading && !detail ? html`<${LoadingState}>goal detail 로드 중...<//>` : null}
+      ${loading && !detail ? html`<${LoadingState}>목표 상세 불러오는 중...<//>` : null}
 
       ${activeTab === 'summary' ? html`
         ${selectedNode.blocking_source !== 'none' ? html`
@@ -1101,7 +1101,7 @@ export function GoalTree() {
       </section>
 
       ${loading && !data ? html`
-        <${LoadingState}>goal manager 로드 중...<//>
+        <${LoadingState}>목표 관리 불러오는 중...<//>
       ` : data && data.tree.length === 0 ? html`
         <${EmptyState} message="등록된 목표가 없습니다. masc_goal_upsert로 목표를 등록하세요. 연결 태스크는 task.goal_id가 우선이고, 제목의 [goal:<id>]는 레거시 fallback으로만 읽습니다." />
       ` : data && isFiltering && visibleTree.length === 0 ? html`

@@ -60,7 +60,7 @@ export async function loadToolSchemas(force = false): Promise<void> {
     schemasLoadedAt.value = Date.now()
   } catch (err) {
     schemasError.value = err instanceof Error ? err.message : String(err)
-    showToast('도구 스키마 로드 실패', 'error')
+    showToast('도구 스키마 불러오기 실패', 'error')
   } finally {
     schemasLoading.value = false
   }

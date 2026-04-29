@@ -190,13 +190,13 @@ export async function refreshAgentDetail(): Promise<void> {
           return { taskId: task.id, text: text.trim() }
         } catch (err) {
           const message = err instanceof Error ? err.message : 'history load failed'
-          return { taskId: task.id, text: `이력 로드 실패: ${message}` }
+          return { taskId: task.id, text: `이력 불러오기 실패: ${message}` }
         }
       }),
     )
     taskHistories.value = historyRows
   } catch (err) {
-    detailError.value = err instanceof Error ? err.message : '에이전트 상세 정보 로드 실패'
+    detailError.value = err instanceof Error ? err.message : '에이전트 상세 정보 불러오기 실패'
   } finally {
     loading.value = false
   }

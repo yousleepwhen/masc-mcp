@@ -741,7 +741,7 @@ async function doFetchExecution(): Promise<void> {
   } catch (err) {
     console.warn('[Dashboard] execution fetch error:', err)
     executionError.value = err instanceof Error ? err.message : 'Execution projection load failed'
-    showToast('실행 데이터 로드 실패', 'error', 5000)
+    showToast('실행 데이터 불러오기 실패', 'error', 5000)
   } finally {
     executionLoading.value = false
   }
