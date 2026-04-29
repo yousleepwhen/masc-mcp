@@ -160,7 +160,7 @@ export function GovernanceMonitor() {
       ${current.error ? html`<${ErrorState} message=${current.error} />` : null}
 
       ${current.loading && !data
-        ? html`<${LoadingState}>governance metrics 불러오는 중...<//>`
+        ? html`<${LoadingState}>거버넌스 지표 불러오는 중...<//>`
         : null}
 
       <${Card} title="승인 대기열">

@@ -217,7 +217,7 @@ export function KeeperCheckpointPanel({
       </div>
 
       <${CheckpointSummaryCard}
-        title="현재 active checkpoint"
+        title="현재 활성 체크포인트"
         summary=${inventory?.current ?? null}
       />
 

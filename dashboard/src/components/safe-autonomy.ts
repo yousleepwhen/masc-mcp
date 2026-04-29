@@ -336,7 +336,7 @@ export function SafeAutonomyPanel() {
       <${Card} title="안전 자율성" class="section">
         <${AsyncContainer}
           state=${safeAutonomy.state}
-          loadingMessage="세이프 오토노미 scorecard를 불러오는 중..."
+          loadingMessage="안전 자율성 스코어카드를 불러오는 중..."
           render=${(data: SafeAutonomyData) => html`
             <div class="space-y-4">
               <div class="rounded border border-[var(--white-8)] bg-[var(--white-4)] p-4">

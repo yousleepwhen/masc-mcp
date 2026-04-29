@@ -381,7 +381,7 @@ export function RuntimeMonitor() {
         : null}
 
       ${current.loading && !providers && !metrics
-        ? html`<${LoadingState}>runtime snapshot 불러오는 중...<//>`
+        ? html`<${LoadingState}>런타임 스냅샷 불러오는 중...<//>`
         : null}
 
       <${Card} title="프로바이더 런타임">

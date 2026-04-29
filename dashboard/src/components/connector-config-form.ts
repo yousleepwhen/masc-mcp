@@ -434,7 +434,7 @@ export function ConnectorConfigForm({ connectorId }: { connectorId: string }) {
   if (entry.loading) {
     return html`
       <div id=${`connector-config-${connectorId}`} class="mt-3 rounded border border-[var(--white-8)] bg-[var(--color-bg-surface)] p-3">
-        <${LoadingState}>config schema 불러오는 중...<//>
+        <${LoadingState}>설정 스키마 불러오는 중...<//>
       </div>
     `
   }
