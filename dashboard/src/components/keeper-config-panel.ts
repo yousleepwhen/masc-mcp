@@ -563,8 +563,8 @@ function cascadeSelectionSummary(c: KeeperConfig): string {
     ? `선택은 ${manifest} 에서 관리됩니다.`
     : '선택 source 경로를 확인할 수 없습니다.'
   const catalogPart = catalog
-    ? `profile 정의는 ${catalog} 에서 materialize됩니다.`
-    : 'profile catalog source 경로를 확인할 수 없습니다.'
+    ? `프로필 정의는 ${catalog} 에서 materialize됩니다.`
+    : '프로필 catalog source 경로를 확인할 수 없습니다.'
   const canonicalPart =
     canonical !== '' && canonical !== selected
       ? ` 현재 값 ${selected} 는 runtime에서 ${canonical} 으로 정규화됩니다.`
@@ -835,7 +835,7 @@ export function KeeperConfigPanel({ keeperName }: { keeperName: string }) {
                 ? html`<span class="text-2xs text-[var(--bad)]" role="alert">${cascadeSaveError.value}</span>`
                 : null}
               ${invalidCascadeProfiles.length > 0
-                ? html`<span class="text-2xs text-[var(--warn)]" role="status" aria-live="polite">invalid profile ${invalidCascadeProfiles.length}개: ${invalidCascadeSummary}</span>`
+                ? html`<span class="text-2xs text-[var(--warn)]" role="status" aria-live="polite">잘못된 프로필 ${invalidCascadeProfiles.length}개: ${invalidCascadeSummary}</span>`
                 : null}
             </label>
           `

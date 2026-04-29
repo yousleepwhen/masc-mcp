@@ -146,7 +146,7 @@ export function rawConfigModeSummary(
         `dashboard에서 직접 ${sourcePath} 를 수정합니다. 저장 경로는 ${jsonPath} 이고, ` +
         '저장 후 현재 캐스케이드 스냅샷을 다시 읽습니다.',
       secondary:
-        'semantics invalid profile 도 저장은 허용됩니다. 저장 후 위의 validation banner 에서 invalid/last-known-good 상태를 바로 확인하면 됩니다.',
+        'semantics 잘못된 프로필도 저장은 허용됩니다. 저장 후 위의 validation banner 에서 invalid/last-known-good 상태를 바로 확인하면 됩니다.',
       saveLabel: 'Save cascade.json',
       previewTitle: null,
     }
@@ -236,11 +236,11 @@ function validationDescription(status: CascadeValidationStatus): string {
     case 'validated':
       return '현재 캐스케이드 카탈로그가 정상 검증되었습니다.'
     case 'serving_valid_subset':
-      return '현재 cascade.json 일부 profile 이 검증에 실패해 invalid profile 은 제외하고 유효한 subset 만 계속 서빙 중입니다.'
+      return '현재 cascade.json 일부 프로필이 검증에 실패해 잘못된 프로필은 제외하고 유효한 subset만 계속 서빙 중입니다.'
     case 'serving_last_known_good':
       return '새 cascade.json 업데이트가 검증에 실패해 마지막 검증 성공 스냅샷을 계속 서빙 중입니다.'
     case 'invalid':
-      return '현재 cascade.json 검증에 실패했습니다. 서버와 dashboard 는 degraded 로 계속 동작하지만 유효하지 않은 profile 은 라우팅에서 제외될 수 있습니다.'
+      return '현재 cascade.json 검증에 실패했습니다. 서버와 dashboard는 degraded로 계속 동작하지만 유효하지 않은 프로필은 라우팅에서 제외될 수 있습니다.'
   }
 }
 
@@ -407,7 +407,7 @@ function ProfileCard({
             <div class="flex items-center gap-2 flex-wrap mb-2">
               <span class="text-xs font-medium text-[var(--color-fg-secondary)]">키퍼 할당</span>
               <span class="text-xs text-[var(--color-fg-muted)]">
-                current profile로 keeper를 이동합니다.
+                현재 프로필로 키퍼를 이동합니다.
               </span>
             </div>
             ${availableKeepers.length > 0
@@ -514,7 +514,7 @@ function OrphanKeeperList({ orphans }: { orphans: readonly CascadeKeeperProfile[
         등록된 프로필 없음 (${orphans.length})
       </div>
       <div class="text-[var(--color-fg-muted)] mb-2">
-        아래 keeper 는 canonical cascade 가 현재 profile 목록에 없어 해당 cascade 로 라우팅할 수 없습니다.
+        아래 키퍼는 canonical 캐스케이드가 현재 프로필 목록에 없어 해당 캐스케이드로 라우팅할 수 없습니다.
       </div>
       <ul class="flex flex-col gap-1" aria-label="orphan keeper 목록">
         ${orphans.map(o => html`
