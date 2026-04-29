@@ -19,13 +19,13 @@ const COLORS = [
 ]
 
 export function intensityColor(count: number, max: number): string {
-  if (count === 0) return COLORS[0]
-  if (max === 0) return COLORS[0]
+  if (count === 0) return COLORS[0]!
+  if (max === 0) return COLORS[0]!
   const ratio = count / max
-  if (ratio <= 0.25) return COLORS[1]
-  if (ratio <= 0.50) return COLORS[2]
-  if (ratio <= 0.75) return COLORS[3]
-  return COLORS[4]
+  if (ratio <= 0.25) return COLORS[1]!
+  if (ratio <= 0.50) return COLORS[2]!
+  if (ratio <= 0.75) return COLORS[3]!
+  return COLORS[4]!
 }
 
 export function canvasWidth(): number {
@@ -43,7 +43,7 @@ export interface HeatmapCell {
 }
 
 export function drawHeatmap(
-  ctx: CanvasRenderingContext2D,
+  ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
   matrix: number[][],
   max: number,
 ) {
