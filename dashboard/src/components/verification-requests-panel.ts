@@ -430,7 +430,7 @@ function VerificationRow({
                           <div class="text-3xs font-semibold uppercase tracking-4 text-[var(--color-fg-muted)] mb-1">
                             Completion Contract
                           </div>
-                          <ul class="list-disc list-inside flex flex-col gap-1 text-[var(--color-fg-primary)]" aria-label="completion contract 항목">
+                          <ul class="list-disc list-inside flex flex-col gap-1 text-[var(--color-fg-primary)]" aria-label="완료 조건 항목">
                             ${row.completion_contract.map((c) => html`<li>${c}</li>`)}
                           </ul>
                         </div>
@@ -442,7 +442,7 @@ function VerificationRow({
                           <div class="text-3xs font-semibold uppercase tracking-4 text-[var(--color-fg-muted)] mb-1">
                             Required Evidence
                           </div>
-                          <ul class="list-disc list-inside flex flex-col gap-1 text-[var(--color-fg-primary)]" aria-label="required evidence 항목">
+                          <ul class="list-disc list-inside flex flex-col gap-1 text-[var(--color-fg-primary)]" aria-label="필수 증거 항목">
                             ${row.required_evidence.map((e) => html`<li><code>${e}</code></li>`)}
                           </ul>
                         </div>

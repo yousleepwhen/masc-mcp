@@ -87,7 +87,7 @@ function CheckpointSummaryCard({
         ? html`<div class="mt-2 text-xs leading-relaxed text-[var(--color-fg-primary)]">${summary.latest_preview}</div>`
         : null}
       ${summary.continuity_summary
-        ? html`<pre class="mt-2 whitespace-pre-wrap rounded border border-[var(--white-8)] bg-[var(--white-3)] px-3 py-2 text-2xs leading-relaxed text-[var(--color-fg-muted)]" aria-label="continuity 요약">${summary.continuity_summary}</pre>`
+        ? html`<pre class="mt-2 whitespace-pre-wrap rounded border border-[var(--white-8)] bg-[var(--white-3)] px-3 py-2 text-2xs leading-relaxed text-[var(--color-fg-muted)]" aria-label="연속성 요약">${summary.continuity_summary}</pre>`
         : html`<div class="mt-2 text-2xs text-[var(--color-fg-disabled)]">continuity snapshot 없음</div>`}
     </div>
   `
@@ -277,7 +277,7 @@ export function KeeperCheckpointPanel({
                           ? html`<div class="mt-2 text-xs leading-relaxed text-[var(--color-fg-primary)]">${item.latest_preview}</div>`
                           : null}
                         ${item.continuity_summary
-                          ? html`<pre class="mt-2 whitespace-pre-wrap rounded border border-[var(--white-8)] bg-[var(--white-3)] px-3 py-2 text-2xs leading-relaxed text-[var(--color-fg-muted)]" aria-label="continuity 요약">${item.continuity_summary}</pre>`
+                          ? html`<pre class="mt-2 whitespace-pre-wrap rounded border border-[var(--white-8)] bg-[var(--white-3)] px-3 py-2 text-2xs leading-relaxed text-[var(--color-fg-muted)]" aria-label="연속성 요약">${item.continuity_summary}</pre>`
                           : html`<div class="mt-2 text-2xs text-[var(--color-fg-disabled)]">continuity snapshot 없음</div>`}
                       </div>
                     </label>

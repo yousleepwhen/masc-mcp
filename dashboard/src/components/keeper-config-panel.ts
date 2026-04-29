@@ -806,9 +806,9 @@ export function KeeperConfigPanel({ keeperName }: { keeperName: string }) {
       ${hasCascadeSelector
         ? html`
             <label class="flex flex-col gap-1.5 py-2 px-3 rounded border border-card-border/50 bg-card/20 backdrop-blur-sm mb-1.5">
-              <span class="text-xs font-medium text-fg-muted">활성 cascade profile</span>
+              <span class="text-xs font-medium text-fg-muted">활성 캐스케이드 프로필</span>
               <select
-                aria-label="활성 cascade profile 선택"
+                aria-label="활성 캐스케이드 프로필 선택"
                 class="rounded border border-card-border/60 bg-[var(--white-4)] px-3 py-2 text-xs font-semibold text-fg-secondary disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)]"
                 value=${currentCascade}
                 disabled=${cascadeSaving.value || cascadeState.status === 'loading' || cascadeOptions.length === 0}
@@ -828,7 +828,7 @@ export function KeeperConfigPanel({ keeperName }: { keeperName: string }) {
                 ${cascadeSaving.value
                   ? 'cascade_name 저장 중...'
                   : cascadeState.status === 'loading'
-                    ? '사용 가능한 cascade profile 불러오는 중...'
+                    ? '사용 가능한 캐스케이드 프로필 불러오는 중...'
                     : '변경 시 keeper manifest의 cascade_name 이 즉시 갱신됩니다.'}
               </span>
               ${cascadeSaveError.value

@@ -460,7 +460,7 @@ function ProfileCard({
       ${profile.candidates.length === 0
         ? html`<div class="text-xs text-[var(--color-fg-muted)]">no candidates resolved</div>`
         : html`
-          <ol class="flex flex-col gap-1 text-xs" aria-label="cascade candidate 목록">
+          <ol class="flex flex-col gap-1 text-xs" aria-label="캐스케이드 후보 목록">
             ${profile.candidates.map((c, idx) => {
               const expanded = c.expanded_models ?? []
               const displayModel = c.display_model ?? c.model
@@ -713,7 +713,7 @@ function HealthTable({
     ${isFiltering && filtered.length === 0
       ? html`<div class="py-4 text-center text-2xs text-[var(--color-fg-muted)]" role="status" aria-live="polite">필터 결과 없음 (${health.providers.length} providers)</div>`
       : html`
-        <table class="w-full text-xs" aria-label="cascade provider 상태">
+        <table class="w-full text-xs" aria-label="캐스케이드 프로바이더 상태">
           <thead>
             <tr class="text-[var(--color-fg-muted)] border-b border-[var(--card-border)]">
               <th scope="col" class="text-left py-1 w-4" aria-label="상태 표시"></th>
@@ -936,7 +936,7 @@ function StrategyTraceTable({
     : trace.events
   return html`
     ${query ? html`<div class="text-xs text-[var(--color-fg-muted)] mb-2" role="status" aria-live="polite">${filtered.length}/${trace.events.length}건</div>` : null}
-    <table class="w-full text-xs" aria-label="strategy trace 이벤트">
+    <table class="w-full text-xs" aria-label="전략 추적 이벤트">
       <thead>
         <tr class="text-[var(--color-fg-muted)] border-b border-[var(--card-border)]">
           <th scope="col" class="text-left py-1 w-20">시간</th>
@@ -974,7 +974,7 @@ function ClientCapacityHistoryTable({
     return html`<${EmptyState}>최근 capacity 이벤트가 없습니다. (acquire/release가 아직 발생하지 않음)<//>`
   }
   return html`
-    <table class="w-full text-xs" aria-label="capacity 이벤트 이력">
+    <table class="w-full text-xs" aria-label="용량 이벤트 이력">
       <thead>
         <tr class="text-[var(--color-fg-muted)] border-b border-[var(--card-border)]">
           <th scope="col" class="text-left py-1 w-20">시간</th>
