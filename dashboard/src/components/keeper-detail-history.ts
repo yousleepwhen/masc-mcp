@@ -239,7 +239,7 @@ export function KeeperCheckpointPanel({
           />
         </div>
         ${!inventory || inventory.history.length === 0
-          ? html`<div class="px-3 py-3 text-xs text-[var(--color-fg-muted)]">저장된 OAS history snapshot이 아직 없습니다.</div>`
+          ? html`<div class="px-3 py-3 text-xs text-[var(--color-fg-muted)]">저장된 OAS history 스냅샷이 아직 없습니다.</div>`
           : (() => {
               const visibleHistory = filterCheckpointHistory(inventory.history, historyQuery)
               const isFiltering = historyQuery.trim() !== ''

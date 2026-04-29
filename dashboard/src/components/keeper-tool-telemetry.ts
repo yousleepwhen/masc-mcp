@@ -294,7 +294,7 @@ export function KeeperToolTelemetry({ keeperName }: KeeperToolTelemetryProps) {
         </div>
         ${visibleTools.length === 0 ? html`
           <div class="text-2xs text-[var(--color-fg-muted)] py-2 px-2" role="status" aria-live="polite">
-            필터 결과 없음 (${s.tools.length} items)
+            필터 결과 없음 (${s.tools.length}건)
           </div>
         ` : visibleTools.slice(0, 15).map(stat => {
           const cat = toolCategory(stat.name)
