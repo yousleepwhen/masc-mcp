@@ -734,7 +734,7 @@ function HealthTable({
               <th
                 scope="col"
                 class="text-right py-1"
-                title="프롬프트 prefill 처리량 (이 provider 의 모델 entry-가중 평균)"
+                title="프롬프트 prefill 처리량 (이 프로바이더의 모델 entry-가중 평균)"
               >Prefill tok/s</th>
               <th
                 scope="col"
@@ -766,7 +766,7 @@ function HealthTable({
                 <td class="py-1">
                   <code class="text-[var(--color-fg-secondary)]">${p.provider_key}</code>
                   ${orphaned
-                    ? html`<span class="ml-1 text-2xs text-[var(--warn)]" title="Provider 가 추적되었지만 cascade.json 에 더 이상 선언되어 있지 않음">orphan</span>`
+                    ? html`<span class="ml-1 text-2xs text-[var(--warn)]" title="프로바이더가 추적되었지만 cascade.json에 더 이상 선언되어 있지 않음">orphan</span>`
                     : null}
                 </td>
                 <td class="py-1">

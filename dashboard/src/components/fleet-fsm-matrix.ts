@@ -1011,7 +1011,7 @@ export function FleetFsmMatrix(props: FleetFsmMatrixProps = {}) {
                               type="button"
                               data-runtime-assist
                               class="self-start rounded border border-[var(--white-10)] bg-[var(--white-5)] px-2 py-0.5 text-3xs font-semibold text-[var(--color-accent-fg)] hover:bg-[var(--white-10)] disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--color-bg-page)]"
-                              title="현재 원인/증거를 keeper LLM에 보내 감독형 진단을 요청합니다"
+                              title="현재 원인/증거를 키퍼 LLM에 보내 감독형 진단을 요청합니다"
                               aria-label="감독형 진단 요청"
                               disabled=${assisting}
                               onClick=${(event: MouseEvent) => {

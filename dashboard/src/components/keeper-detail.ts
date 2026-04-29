@@ -306,7 +306,7 @@ function KeeperRuntimeAlertStrip({ keeper }: { keeper: Keeper }) {
                   class="inline-flex items-center rounded px-2 py-0.5 text-2xs font-medium bg-[var(--warn-14)] hover:bg-[var(--warn-24)] text-[var(--color-status-warn)] transition-colors disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)]"
                   disabled=${directiveLoading.value}
                   onClick=${() => handleDirective('wakeup')}
-                  title="자고 있는 keeper의 sleep을 깨워 다음 turn을 시도합니다. fiber가 살아 있을 때만 효과가 있습니다."
+                  title="자고 있는 키퍼의 sleep을 깨워 다음 turn을 시도합니다. fiber가 살아 있을 때만 효과가 있습니다."
                 >깨우기</button>`
               : null}`}
         ${keeper.paused && keeper.keepalive_running && continueGate
