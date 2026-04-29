@@ -88,7 +88,7 @@ function CheckpointSummaryCard({
         : null}
       ${summary.continuity_summary
         ? html`<pre class="mt-2 whitespace-pre-wrap rounded border border-[var(--white-8)] bg-[var(--white-3)] px-3 py-2 text-2xs leading-relaxed text-[var(--color-fg-muted)]" aria-label="연속성 요약">${summary.continuity_summary}</pre>`
-        : html`<div class="mt-2 text-2xs text-[var(--color-fg-disabled)]">continuity snapshot 없음</div>`}
+        : html`<div class="mt-2 text-2xs text-[var(--color-fg-disabled)]">continuity 스냅샷 없음</div>`}
     </div>
   `
 }
@@ -142,12 +142,12 @@ export function KeeperCheckpointPanel({
   const deleteSelected = () => {
     void (async () => {
       if (selectedIds.length === 0) {
-        showToast('삭제할 snapshot을 먼저 고르세요', 'warning')
+        showToast('삭제할 스냅샷을 먼저 고르세요', 'warning')
         return
       }
       const confirmed = await requestConfirm({
-        title: 'OAS snapshot 삭제',
-        message: `${selectedIds.length}개 snapshot history를 삭제합니다.\n현재 active checkpoint는 건드리지 않습니다.`,
+        title: 'OAS 스냅샷 삭제',
+        message: `${selectedIds.length}개 스냅샷 history를 삭제합니다.\n현재 active checkpoint는 건드리지 않습니다.`,
         tone: 'danger',
         confirmText: '삭제',
       })
@@ -161,9 +161,9 @@ export function KeeperCheckpointPanel({
           result.missing_snapshot_ids.length > 0
             ? ` (누락 ${result.missing_snapshot_ids.length})`
             : ''
-        showToast(`${result.deleted_snapshot_ids.length}개 snapshot 삭제${missingSuffix}`, 'success')
+        showToast(`${result.deleted_snapshot_ids.length}개 스냅샷 삭제${missingSuffix}`, 'success')
       } catch (err) {
-        showToast(err instanceof Error ? err.message : 'snapshot 삭제 실패', 'error')
+        showToast(err instanceof Error ? err.message : '스냅샷 삭제 실패', 'error')
       } finally {
         setDeleting(false)
       }
@@ -196,7 +196,7 @@ export function KeeperCheckpointPanel({
     <div class="flex flex-col gap-3">
       <div class="flex items-center justify-between gap-3">
         <div class="text-2xs text-[var(--color-fg-muted)]">
-          current OAS checkpoint와 OAS snapshot history만 노출합니다.
+          current OAS checkpoint와 OAS 스냅샷 history만 노출합니다.
           ${inventory && inventory.legacy_shadow_count > 0
             ? html`<span class="block mt-1 text-[var(--color-status-warn)]">legacy shadow ${inventory.legacy_shadow_count}개는 picker에서 제외됩니다.</span>`
             : null}
@@ -233,8 +233,8 @@ export function KeeperCheckpointPanel({
             type="search"
             class="min-w-40 max-w-65 flex-1 !px-2 !py-1 !text-2xs"
             value=${historyQuery}
-            placeholder="snapshot id / preview / 요약 필터"
-            ariaLabel="OAS snapshot history 필터"
+            placeholder="스냅샷 id / preview / 요약 필터"
+            ariaLabel="OAS 스냅샷 history 필터"
             onInput=${(e: Event) => { setHistoryQuery((e.target as HTMLInputElement).value) }}
           />
         </div>
@@ -253,7 +253,7 @@ export function KeeperCheckpointPanel({
                       <${Checkbox}
                         class="mt-1"
                         checked=${selectedIds.includes(item.snapshot_id)}
-                        ariaLabel=${`snapshot ${item.snapshot_id} 선택`}
+                        ariaLabel=${`스냅샷 ${item.snapshot_id} 선택`}
                         onChange=${(checked: boolean) => toggleSnapshot(item.snapshot_id, checked)}
                       />
                       <div class="min-w-0 flex-1">
@@ -278,7 +278,7 @@ export function KeeperCheckpointPanel({
                           : null}
                         ${item.continuity_summary
                           ? html`<pre class="mt-2 whitespace-pre-wrap rounded border border-[var(--white-8)] bg-[var(--white-3)] px-3 py-2 text-2xs leading-relaxed text-[var(--color-fg-muted)]" aria-label="연속성 요약">${item.continuity_summary}</pre>`
-                          : html`<div class="mt-2 text-2xs text-[var(--color-fg-disabled)]">continuity snapshot 없음</div>`}
+                          : html`<div class="mt-2 text-2xs text-[var(--color-fg-disabled)]">continuity 스냅샷 없음</div>`}
                       </div>
                     </label>
                   `)}

@@ -370,7 +370,7 @@ export function RuntimeMonitor() {
         <${ActionButton}
           variant="ghost"
           size="sm"
-          ariaLabel="runtime snapshot 새로고침"
+          ariaLabel="런타임 스냅샷 새로고침"
           onClick=${() => void load()}
         >새로고침<//>
         ${current.loading ? html`<span class="text-xs text-[var(--color-fg-muted)]" role="status">불러오는 중...</span>` : null}

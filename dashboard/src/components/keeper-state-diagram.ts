@@ -200,7 +200,7 @@ export function KeeperStateDiagramPanel({ keeperName, currentPhase }: KeeperStat
 
       ${phaseMismatch ? html`
         <div class="rounded border border-[var(--warn-24)] bg-[var(--warn-8)] px-3 py-2 text-2xs leading-normal text-[var(--color-fg-primary)]">
-          키퍼 row phase와 composite snapshot phase가 다릅니다. composite snapshot을 authoritative runtime-truth로 사용합니다.
+          키퍼 row phase와 composite 스냅샷 phase가 다릅니다. composite 스냅샷을 authoritative runtime-truth로 사용합니다.
         </div>
       ` : null}
 

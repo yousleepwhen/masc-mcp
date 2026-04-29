@@ -144,7 +144,7 @@ export function rawConfigModeSummary(
       title: 'Active Cascade Source Editor',
       primary:
         `dashboard에서 직접 ${sourcePath} 를 수정합니다. 저장 경로는 ${jsonPath} 이고, ` +
-        '저장 후 current cascade snapshot 을 다시 읽습니다.',
+        '저장 후 current cascade 스냅샷을 다시 읽습니다.',
       secondary:
         'semantics invalid profile 도 저장은 허용됩니다. 저장 후 위의 validation banner 에서 invalid/last-known-good 상태를 바로 확인하면 됩니다.',
       saveLabel: 'Save cascade.json',
@@ -238,7 +238,7 @@ function validationDescription(status: CascadeValidationStatus): string {
     case 'serving_valid_subset':
       return '현재 cascade.json 일부 profile 이 검증에 실패해 invalid profile 은 제외하고 유효한 subset 만 계속 서빙 중입니다.'
     case 'serving_last_known_good':
-      return '새 cascade.json 업데이트가 검증에 실패해 마지막 검증 성공 snapshot 을 계속 서빙 중입니다.'
+      return '새 cascade.json 업데이트가 검증에 실패해 마지막 검증 성공 스냅샷을 계속 서빙 중입니다.'
     case 'invalid':
       return '현재 cascade.json 검증에 실패했습니다. 서버와 dashboard 는 degraded 로 계속 동작하지만 유효하지 않은 profile 은 라우팅에서 제외될 수 있습니다.'
   }
