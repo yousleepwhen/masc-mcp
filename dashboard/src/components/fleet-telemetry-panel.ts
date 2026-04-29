@@ -350,7 +350,7 @@ function TrendCell({ name, metric, value, valueClass }: {
 
 function FleetComparisonTable({ rows, onReset }: { rows: FleetRow[]; onReset: (name: string) => void }) {
   if (rows.length === 0) {
-    return html`<div class="text-2xs text-[var(--color-fg-disabled)]">Keeper 데이터 없음.</div>`
+    return html`<div class="text-2xs text-[var(--color-fg-disabled)]">키퍼 데이터 없음.</div>`
   }
 
   return html`
@@ -689,7 +689,7 @@ export function FleetTelemetryPanel() {
     <div class="flex flex-col gap-4 p-4">
       <div class="flex items-start justify-between gap-3">
         <div class="flex items-center gap-3">
-          <h2 class="text-sm font-medium">Keeper 텔레메트리</h2>
+          <h2 class="text-sm font-medium">키퍼 텔레메트리</h2>
           <div class="flex items-center gap-2 text-3xs">
             ${activeCount > 0 ? html`<span class="rounded-sm bg-[var(--ok-10)] px-1.5 py-0.5 text-[var(--color-status-ok)]">${activeCount} 가동</span>` : null}
             ${attentionCount > 0 ? html`<span class="rounded-sm bg-[var(--warn-10)] px-1.5 py-0.5 text-[var(--color-status-warn)]">${attentionCount} 주의</span>` : null}
@@ -755,7 +755,7 @@ export function FleetTelemetryPanel() {
 
       <div>
         <div class="mb-1 flex items-center justify-between gap-2">
-          <div class="text-3xs uppercase tracking-wider text-[var(--color-fg-disabled)]">Keeper 비교</div>
+          <div class="text-3xs uppercase tracking-wider text-[var(--color-fg-disabled)]">키퍼 비교</div>
           <${TextInput}
             type="search"
             value=${query.value}
