@@ -207,7 +207,7 @@ function ActionTimeline({ data }: { data: ActivityGraphResponse }) {
 
       ${filteredGroups.length === 0
         ? (isFiltering && categoryFilteredGroups.length > 0
-          ? html`<div class="py-4 text-center text-2xs text-[var(--color-fg-disabled)]" role="status" aria-live="polite">필터 결과 없음 (${categoryFilteredGroups.length} items)</div>`
+          ? html`<div class="py-4 text-center text-2xs text-[var(--color-fg-disabled)]" role="status" aria-live="polite">필터 결과 없음 (${categoryFilteredGroups.length}건)</div>`
           : html`<${EmptyState} message="선택한 필터에 맞는 액션 그룹이 없습니다." compact />`)
         : filteredGroups.map(group => {
             const expanded = expandedActionGroups.value.has(group.id)

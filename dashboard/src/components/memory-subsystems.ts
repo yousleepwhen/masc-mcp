@@ -656,7 +656,7 @@ export function MemorySubsystems() {
                 ${
                   isSynapseFiltering && visibleSynapses.length === 0
                     ? html`<div class="text-sm text-[var(--color-fg-muted)] bg-[var(--white-5)] rounded p-4 text-center" role="status" aria-live="polite">
-                        필터 결과 없음 (${synapses.length} items)
+                        필터 결과 없음 (${synapses.length}건)
                       </div>`
                     : html`<div class="overflow-x-auto" tabindex="0">
                         <table class="w-full text-left" aria-label="Hebbian 시냅스 상세 테이블">

@@ -150,7 +150,7 @@ export function GovernanceMonitor() {
         <${ActionButton}
           variant="ghost"
           size="sm"
-          ariaLabel="governance 메트릭 새로고침"
+          ariaLabel="거버넌스 메트릭 새로고침"
           onClick=${() => void load()}
         >새로고침<//>
         <span class="text-xs text-[var(--color-fg-muted)]">${formatAutoRefreshLabel(TELEMETRY_AUTO_REFRESH_MS)}</span>
@@ -205,7 +205,7 @@ export function GovernanceMonitor() {
           ${allRejections.length === 0
             ? html`<${EmptyState} message="선택한 시간 범위에 tool rejection이 없습니다." compact />`
             : isFiltering && visibleRejections.length === 0
-              ? html`<div class="py-4 text-center text-2xs text-[var(--color-fg-muted)]">필터 결과 없음 (${allRejections.length} items)</div>`
+              ? html`<div class="py-4 text-center text-2xs text-[var(--color-fg-muted)]">필터 결과 없음 (${allRejections.length}건)</div>`
               : html`
                 <div class="overflow-x-auto" tabindex="0">
                   <table class="w-full text-xs" aria-label="도구 거부 현황">
