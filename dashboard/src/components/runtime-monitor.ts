@@ -428,7 +428,7 @@ export function RuntimeMonitor() {
                   ${provider.note ? html`<div class="text-xs text-fg-muted">${provider.note}</div>` : null}
                 </article>
               `)
-            : html`<${EmptyState} message="provider runtime snapshot이 없습니다." compact />`}
+            : html`<${EmptyState} message="프로바이더 런타임 스냅샷이 없습니다." compact />`}
         </div>
       <//>
 
@@ -632,7 +632,7 @@ export function RuntimeMonitor() {
                 </article>
               `
               })
-            : html`<${EmptyState} message="최근 model inference metrics가 없습니다." compact />`}
+            : html`<${EmptyState} message="최근 모델 추론 지표가 없습니다." compact />`}
         </div>
       <//>
     </div>

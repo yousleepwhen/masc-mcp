@@ -927,7 +927,7 @@ function GoalDetailPanel({
                       `)}
                     </div>
                   `
-                  : html`<${EmptyState} message="approval 대기 없음" compact />`
+                  : html`<${EmptyState} message="승인 대기 없음" compact />`
               ) : null}
             </div>
           </div>

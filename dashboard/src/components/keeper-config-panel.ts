@@ -841,11 +841,11 @@ export function KeeperConfigPanel({ keeperName }: { keeperName: string }) {
           `
         : null}
       <${ConfigRow} label="기본 소스" value=${c.sources.default_source_kind || '--'} />
-      <${ConfigRow} label="선택 cascade" value=${c.execution.selected_cascade_name || '--'} />
+      <${ConfigRow} label="선택 캐스케이드" value=${c.execution.selected_cascade_name || '--'} />
       ${c.execution.selected_cascade_canonical
         && c.execution.selected_cascade_canonical !== c.execution.selected_cascade_name
         ? html`<${ConfigRow}
-            label="정규화 cascade"
+            label="정규화 캐스케이드"
             value=${c.execution.selected_cascade_canonical}
           />`
         : null}

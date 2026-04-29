@@ -377,7 +377,7 @@ export function SafeAutonomyPanel() {
               <${Card} title="키퍼 매트릭스" class="section">
                 <div class="space-y-3">
                   ${data.per_keeper.length === 0
-                    ? html`<${EmptyState} message="표시할 keeper snapshot이 없습니다." compact />`
+                    ? html`<${EmptyState} message="표시할 키퍼 스냅샷이 없습니다." compact />`
                     : data.per_keeper.map(item => html`<${KeeperCard} key=${item.name} item=${item} />`)}
                 </div>
               <//>
