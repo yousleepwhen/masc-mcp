@@ -569,7 +569,7 @@ function cascadeSelectionSummary(c: KeeperConfig): string {
     canonical !== '' && canonical !== selected
       ? ` 현재 값 ${selected} 는 runtime에서 ${canonical} 으로 정규화됩니다.`
       : ''
-  return `이 키퍼는 cascade profile ${selected} 를 사용합니다. ${selectionPart} ${catalogPart}${canonicalPart}`
+  return `이 키퍼는 캐스케이드 프로필 ${selected} 를 사용합니다. ${selectionPart} ${catalogPart}${canonicalPart}`
 }
 
 // ── Main component ───────────────────────────────────────
@@ -654,9 +654,9 @@ export function KeeperConfigPanel({ keeperName }: { keeperName: string }) {
       await updateKeeperCascade(keeperName, nextCascadeName)
       await loadKeeperConfig(keeperName, { force: true })
       await loadCascadeProfiles({ force: true })
-      showToast(`cascade 변경 완료: ${nextCascadeName}`, 'success')
+      showToast(`캐스케이드 변경 완료: ${nextCascadeName}`, 'success')
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'cascade 변경 실패'
+      const message = err instanceof Error ? err.message : '캐스케이드 변경 실패'
       cascadeSaveError.value = message
       showToast(message, 'error')
     } finally {
@@ -885,7 +885,7 @@ export function KeeperConfigPanel({ keeperName }: { keeperName: string }) {
       <${ConfigRow} label="활성 모델" value=${c.execution.active_model || '--'} />
       <${ConfigRow} label="provider timeout" value=${perProviderTimeoutLabel(c.execution)} />
       <div class="mb-1.5 rounded border border-[var(--white-8)] bg-[var(--white-3)] px-3 py-2 text-2xs leading-relaxed text-[var(--color-fg-muted)]">
-        cascade fallback 중 마지막 프로바이더를 제외한 프로바이더들에만 적용됩니다.
+        캐스케이드 fallback 중 마지막 프로바이더를 제외한 프로바이더들에만 적용됩니다.
       </div>
       <div class="flex items-center justify-between py-2 px-3 rounded bg-[var(--white-3)]">
         <span class="text-xs text-[var(--color-fg-muted)]">검증</span>

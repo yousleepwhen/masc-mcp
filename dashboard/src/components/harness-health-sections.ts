@@ -370,7 +370,7 @@ export function RecentVerdictsList({ items }: { items: HarnessVerdictItem[] }) {
           type="search"
           class="min-w-40 max-w-65 flex-1 !px-2 !py-1 !text-2xs"
           value=${query.value}
-          placeholder="task / agent / gate / cascade 필터"
+          placeholder="task / agent / gate / 캐스케이드 필터"
           ariaLabel="판정 필터"
           onInput=${(e: Event) => { query.value = (e.target as HTMLInputElement).value }}
         />
