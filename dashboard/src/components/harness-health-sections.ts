@@ -188,13 +188,13 @@ export function heroBody(data: HarnessHealthData): string {
     return `평가 모델의 대체 처리 비중이 ${ratio}%라 판정을 그대로 신뢰하기 어렵습니다.`
   }
   if (data.overview.handoff_status === 'warning') {
-    return '세대 교체 기록에 누락 필드가 있어 keeper 연속성 점검이 필요합니다.'
+    return '세대 교체 기록에 누락 필드가 있어 키퍼 연속성 점검이 필요합니다.'
   }
   if (data.overview.pre_compact_status === 'warning') {
-    return '압축 직전 컨텍스트 압력이 높아 keeper 연속성이 흔들릴 수 있습니다.'
+    return '압축 직전 컨텍스트 압력이 높아 키퍼 연속성이 흔들릴 수 있습니다.'
   }
   if (data.overview.last_signal_at == null) {
-    return 'keeper 장기 실행 중 평가, 압축, 세대 교체가 정상인지 감시합니다.'
+    return '키퍼 장기 실행 중 평가, 압축, 세대 교체가 정상인지 감시합니다.'
   }
   return `마지막 안전 신호는 ${freshnessLabel(data.overview.last_signal_at)}에 들어왔습니다.`
 }
