@@ -890,7 +890,7 @@ export function CtxCompositionPanel({ keeper }: { keeper: Keeper }) {
           />
           ${visibleCtxEntries.length === 0 ? html`
             <div class="py-4 text-center text-2xs text-[var(--color-fg-disabled)]" role="status" aria-live="polite">
-              필터 결과 없음 (${latestEntries.length} items)
+              필터 결과 없음 (${latestEntries.length}건)
             </div>
           ` : null}
           <div class="flex flex-col gap-1.5">

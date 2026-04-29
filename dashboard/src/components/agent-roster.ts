@@ -842,7 +842,7 @@ export function AgentRoster({ keeperFilter = 'all' }: { keeperFilter?: KeeperFil
           <div class="col-span-full rounded-[var(--radius-xl)] border border-dashed border-[var(--ff-border-subtle)] bg-[var(--white-2)] px-6 py-10">
             <${EmptyState}
               message=${normalizedSearch && scopedAgents.length > 0
-                ? `필터 결과 없음 (${scopedAgents.length} items)`
+                ? `필터 결과 없음 (${scopedAgents.length}건)`
                 : showExecutionFallbackState && expectedScopedCount > 0
                   ? `${fallbackStateTitle}: ${countSourceLabel} 기준 ${scopeLabel}가 보이지만, 현재 조건에 맞는 상세 카드는 아직 없습니다.`
                   : '조건에 맞는 에이전트가 없습니다.'}

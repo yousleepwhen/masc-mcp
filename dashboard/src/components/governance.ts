@@ -508,7 +508,7 @@ function KeeperApprovalQueueSection() {
         : isFiltering && visibleItems.length === 0
           ? html`
               <div class="py-4 text-center text-2xs text-[var(--color-fg-disabled)]" data-testid="keeper-hitl-approval-empty-filter" role="status" aria-live="polite">
-                필터 결과 없음 (${items.length} items)
+                필터 결과 없음 (${items.length}건)
               </div>
             `
           : html`

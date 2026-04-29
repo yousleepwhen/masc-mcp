@@ -1247,7 +1247,7 @@ export function CascadeConfigPanel() {
       ${current.error ? html`<${ErrorState} message=${current.error} />` : null}
 
       ${current.loading && !config && !rawConfig && !health
-        ? html`<${LoadingState}>cascade snapshot 불러오는 중...<//>`
+        ? html`<${LoadingState}>캐스케이드 스냅샷 불러오는 중...<//>`
         : null}
 
       <${Card} title="캐스케이드 라우팅">
