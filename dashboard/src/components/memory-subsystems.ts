@@ -575,7 +575,7 @@ export function MemorySubsystems() {
       <div class="rounded border border-[var(--white-10)] bg-[var(--white-5)] px-3 py-2 text-xs text-[var(--color-fg-muted)]">
         이 화면은 <span class="text-[var(--color-fg-muted)] font-medium">global memory surface</span>만 보여줍니다.
         institution episodes와 Hebbian graph는 여기서 보고,
-        keeper checkpoint/history/memory bank는 Keeper Detail에서 확인합니다.
+        keeper checkpoint/history/memory bank는 키퍼 Detail에서 확인합니다.
       </div>
 
       <!-- Architecture Flow (collapsible) -->
@@ -591,7 +591,7 @@ export function MemorySubsystems() {
             아키텍처 — 데이터 흐름도
           </span>
           <span class="text-xs text-[var(--color-fg-muted)]">
-            Keeper turn → episodes / task_done → Hebbian. Keeper memory bank와 checkpoint는 다른 패널에서 본다.
+            Keeper turn → episodes / task_done → Hebbian. Keeper memory bank와 체크포인트는 다른 패널에서 본다.
           </span>
         </button>
         ${

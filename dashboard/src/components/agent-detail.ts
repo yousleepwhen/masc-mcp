@@ -215,7 +215,7 @@ export function AgentDetailOverlay() {
       const targetLabel = keeper ? `${displayName} 키퍼` : displayName
       const confirmed = await requestConfirm({
         title: '에이전트 완전 삭제',
-        message: `${targetLabel}를 완전 삭제합니다.\n런타임 상태, 인증, metrics가 제거되고 키퍼면 config/keepers TOML도 함께 삭제됩니다.`,
+        message: `${targetLabel}를 완전 삭제합니다.\n런타임 상태, 인증, 지표가 제거되고 키퍼면 config/keepers TOML도 함께 삭제됩니다.`,
         tone: 'danger',
         confirmText: '완전 삭제',
       })

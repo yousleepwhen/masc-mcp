@@ -228,7 +228,7 @@ const STATE_DESCRIPTIONS: Record<string, string> = {
   prompting: '컨텍스트와 도구로 LLM 프롬프트 구성 중',
   executing: 'LLM 이 응답 생성 또는 도구 호출 중',
   compacting: '컨텍스트를 윈도우 안에 맞도록 압축 중',
-  finalizing: '턴 후 정리: checkpoint 저장, 메트릭 발송',
+  finalizing: '턴 후 정리: 체크포인트 저장, 메트릭 발송',
   // KDP (Decision Pipeline)
   undecided: '아직 결정 없음 — 턴 시작 대기 중',
   guard_ok: '모든 safety guard 통과, 도구 실행으로 진행',

@@ -110,7 +110,7 @@ export function Tools() {
       ${data?.generated_at
         ? html`<div class="flex flex-wrap gap-x-3 gap-y-2 mt-3 text-[var(--color-fg-muted)] text-xs">
             <span>생성 시각: ${data.generated_at}</span>
-            <span>metrics 기준: 최근 1시간</span>
+            <span>지표 기준: 최근 1시간</span>
           </div>`
         : null}
 

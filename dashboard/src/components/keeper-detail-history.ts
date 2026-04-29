@@ -61,7 +61,7 @@ function CheckpointSummaryCard({
   if (!summary) {
     return html`
       <div class="rounded border border-[var(--color-border-default)] bg-[var(--white-2)] px-3 py-3 text-xs text-[var(--color-fg-muted)]">
-        ${title}: 저장된 checkpoint 없음
+        ${title}: 저장된 체크포인트 없음
       </div>
     `
   }
@@ -147,7 +147,7 @@ export function KeeperCheckpointPanel({
       }
       const confirmed = await requestConfirm({
         title: 'OAS 스냅샷 삭제',
-        message: `${selectedIds.length}개 스냅샷 history를 삭제합니다.\n현재 active checkpoint는 건드리지 않습니다.`,
+        message: `${selectedIds.length}개 스냅샷 history를 삭제합니다.\n현재 active 체크포인트는 건드리지 않습니다.`,
         tone: 'danger',
         confirmText: '삭제',
       })
@@ -196,7 +196,7 @@ export function KeeperCheckpointPanel({
     <div class="flex flex-col gap-3">
       <div class="flex items-center justify-between gap-3">
         <div class="text-2xs text-[var(--color-fg-muted)]">
-          current OAS checkpoint와 OAS 스냅샷 history만 노출합니다.
+          current OAS 체크포인트와 OAS 스냅샷 history만 노출합니다.
           ${inventory && inventory.legacy_shadow_count > 0
             ? html`<span class="block mt-1 text-[var(--color-status-warn)]">legacy shadow ${inventory.legacy_shadow_count}개는 picker에서 제외됩니다.</span>`
             : null}

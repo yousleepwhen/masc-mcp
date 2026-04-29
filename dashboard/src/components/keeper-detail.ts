@@ -511,7 +511,7 @@ function KeeperClearContextDialog({
         <div class="flex flex-col gap-1">
           <h3 id=${titleId} class="m-0 text-[17px] font-semibold text-[var(--color-fg-secondary)]">키퍼 컨텍스트 비우기</h3>
           <p id=${descId} class="m-0 text-sm leading-relaxed text-[var(--color-fg-muted)]">
-            ${keeperName}의 checkpoint 대화와 continuity summary를 비웁니다. 사유는 감사 로그에 남습니다.
+            ${keeperName}의 체크포인트 대화와 continuity summary를 비웁니다. 사유는 감사 로그에 남습니다.
           </p>
         </div>
 
@@ -827,7 +827,7 @@ export function KeeperDetailPage() {
     void (async () => {
       const confirmed = await requestConfirm({
         title: '키퍼 완전 삭제',
-        message: `${keeper.name}를 완전 삭제합니다.\n런타임 상태, 세션 trace, 인증, metrics와 config/keepers/${keeper.name}.toml까지 함께 제거됩니다.`,
+        message: `${keeper.name}를 완전 삭제합니다.\n런타임 상태, 세션 trace, 인증, 지표와 config/keepers/${keeper.name}.toml까지 함께 제거됩니다.`,
         tone: 'danger',
         confirmText: '완전 삭제',
       })
