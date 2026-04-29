@@ -1156,7 +1156,7 @@ function ConnectorLivePanel({
                                     <span class="mr-1 text-[var(--color-fg-disabled)]" aria-hidden="true">·</span>
                                     ${humanized
                                       ? html`<span>${humanized}</span>`
-                                      : html`<span class="text-[var(--color-fg-disabled)]" title="sidecar has not sent names yet">names pending</span>`}
+                                      : html`<span class="text-[var(--color-fg-disabled)]" title="sidecar가 아직 이름을 보내지 않았습니다">이름 대기 중</span>`}
                                     <span class="ml-2 text-3xs text-[var(--color-fg-disabled)]">(${truncateMiddle(binding.channel_id, 14)})</span>
                                   </div>
                                   ${bindingActionsEnabled
