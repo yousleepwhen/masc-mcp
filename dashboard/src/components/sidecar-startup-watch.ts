@@ -121,7 +121,7 @@ export function StartupCheckBanner({ connectorId, sidecarUp }: {
       <button
         type="button"
         class="shrink-0 cursor-pointer rounded border border-[var(--warn-20)] px-1.5 py-0.5 text-base leading-none text-[var(--color-status-warn)]/70 hover:text-[var(--color-status-warn)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)]"
-        aria-label="dismiss startup warning"
+        aria-label="시작 경고 닫기"
         onClick=${() => clearStartAttempt(connectorId)}
       >×</button>
     </div>

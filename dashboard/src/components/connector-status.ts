@@ -865,7 +865,7 @@ function ConnectorLivePanel({
           <button
             type="button"
             class="cursor-pointer rounded border border-[var(--color-border-default)] px-1.5 text-2xs text-[var(--color-fg-disabled)] hover:text-[var(--color-fg-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)]"
-            aria-label="toggle header details"
+            aria-label="헤더 상세 토글"
             aria-expanded=${ui.headerExpanded}
             onClick=${() => { patchConnectorUiState(connectorId, { headerExpanded: !ui.headerExpanded }) }}
           >${ui.headerExpanded ? '▴' : '▾'}</button>

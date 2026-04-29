@@ -528,7 +528,7 @@ export function ConfigResolutionPanel({
               </div>
 
               <div class="mb-4">
-                <${WarningBlock} title="config warnings" warnings=${resolution.warnings} />
+                <${WarningBlock} title="설정 경고" warnings=${resolution.warnings} />
               </div>
 
               <div class="grid gap-3 md:grid-cols-2">
@@ -588,7 +588,7 @@ export function ConfigResolutionPanel({
               </div>
 
               <div class="mb-4">
-                <${WarningBlock} title="runtime warnings" warnings=${runtimeResolution.warnings} />
+                <${WarningBlock} title="런타임 경고" warnings=${runtimeResolution.warnings} />
               </div>
 
               <div class="grid gap-3 md:grid-cols-2">
