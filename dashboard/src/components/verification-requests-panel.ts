@@ -483,7 +483,7 @@ function RequestsTable({
     if (hasFilter && totalBeforeFilter > 0) {
       return html`
         <${EmptyState} role="status" aria-live="polite">
-          필터 결과 없음 (${totalBeforeFilter} items)
+          필터 결과 없음 (${totalBeforeFilter}건)
         <//>
       `
     }

@@ -401,7 +401,7 @@ export function TransitionTrail({
         />
       </div>
       ${isFiltering && visibleHistory.length === 0
-        ? html`<div class="py-3 text-center text-3xs text-[var(--color-fg-disabled)]" role="status" aria-live="polite">필터 결과 없음 (${history.length} items)</div>`
+        ? html`<div class="py-3 text-center text-3xs text-[var(--color-fg-disabled)]" role="status" aria-live="polite">필터 결과 없음 (${history.length}건)</div>`
         : html`
       <div ref=${scrollRef} class="flex flex-col gap-0.5 max-h-30 overflow-y-auto" role="log" aria-label="상태 변경 히스토리">
         ${visibleHistory.map((entry, trailIndex) => {

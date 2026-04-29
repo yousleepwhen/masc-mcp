@@ -689,7 +689,7 @@ function JourneyCard({ record }: { record: JourneyRecord }) {
                           ? html`<div class="text-xs leading-relaxed text-[var(--color-status-warn)]">${trimText(keeper.runtime_blocker_summary, 100)}</div>`
                           : null}
                       `
-                    : html`<${TileHint} text="연결된 keeper turn 정보가 없습니다." />`}
+                    : html`<${TileHint} text="연결된 키퍼 turn 정보가 없습니다." />`}
                 <//>
 
                 <${JourneyTile} label="생애" class="lg:col-span-2">
