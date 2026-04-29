@@ -322,7 +322,7 @@ function blockingNextStep(snapshot: KeeperCompositeSnapshot): string {
     return '필수 tool contract를 만족시키거나 task/preset 조정'
   }
   if (execution.operator_disposition === 'pause_human') {
-    return 'operator gate/approval 상태와 최신 receipt 확인'
+    return '운영자 gate/approval 상태와 최신 receipt 확인'
   }
   if (execution.terminal_reason_code && execution.terminal_reason_code !== 'completed') {
     return `terminal=${execution.terminal_reason_code} receipt 확인`
@@ -385,7 +385,7 @@ export function buildRuntimeAssistPrompt(
     '응답 형식:',
     '1. 판정: 실제 막힘인지, 단순 idle/stale 표시인지',
     '2. 근거: 어떤 receipt/FSM 신호를 봤는지',
-    '3. resolve 후보: keeper_probe, keeper_recover, operator 승인, task/preset 수정 중 무엇이 맞는지',
+    '3. resolve 후보: keeper_probe, keeper_recover, 운영자 승인, task/preset 수정 중 무엇이 맞는지',
     '4. 위험: 실행 전 사람 확인이 필요한 항목',
   ].join('\n')
 }

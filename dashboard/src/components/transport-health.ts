@@ -92,7 +92,7 @@ const PRACTICAL_CASES: PracticalCase[] = [
     title: '양방향 UI / 브라우저 브릿지',
     transport: 'WebSocket',
     endpoint: () => '/ws',
-    description: '양방향 소켓. operator UI 제어용.',
+    description: '양방향 소켓. 운영자 UI 제어용.',
     live: (data) => `${data.websocket.listening ? 'live' : 'down'} · ${data.websocket.sessions} sessions · port ${data.websocket.port}`,
   },
   {

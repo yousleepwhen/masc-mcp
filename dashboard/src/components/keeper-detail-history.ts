@@ -398,7 +398,7 @@ export function lineageVerdictMeta(verdict: string | undefined): LineageVerdictM
     case 'drift_detected':
       return {
         badgeLabel: '드리프트 검토',
-        detail: '핸드오프는 완료됐지만 저장된 continuity 요약이 충분히 변경되어 operator 의 검토가 필요합니다.',
+        detail: '핸드오프는 완료됐지만 저장된 continuity 요약이 충분히 변경되어 운영자의 검토가 필요합니다.',
       }
     case 'unavailable':
       return {
@@ -408,7 +408,7 @@ export function lineageVerdictMeta(verdict: string | undefined): LineageVerdictM
     default:
       return {
         badgeLabel: '알 수 없음',
-        detail: 'continuity 신호는 존재하지만 본 판정이 아직 operator-facing 설명에 매핑되지 않았습니다.',
+        detail: 'continuity 신호는 존재하지만 본 판정이 아직 운영자용 설명에 매핑되지 않았습니다.',
       }
   }
 }
@@ -565,7 +565,7 @@ export function GenerationLineagePanel({ keeperName }: { keeperName: string }) {
 
         <div>
           <div class="text-3xs font-semibold uppercase tracking-wider text-[var(--color-fg-muted)] mb-1">최근 핸드오프</div>
-          <div class="text-2xs text-[var(--color-fg-disabled)] mb-2">최신 rollover 가 먼저 표시되어 operator 가 현재 trace 를 최근 이력과 비교할 수 있습니다.</div>
+          <div class="text-2xs text-[var(--color-fg-disabled)] mb-2">최신 rollover 가 먼저 표시되어 운영자가 현재 trace를 최근 이력과 비교할 수 있습니다.</div>
           ${recent.length > 0
             ? html`
               <div class="flex flex-col gap-2" role="list" aria-label="최근 핸드오프 목록">

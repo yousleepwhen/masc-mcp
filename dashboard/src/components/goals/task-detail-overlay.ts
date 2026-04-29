@@ -265,7 +265,7 @@ function ContractSection({ task }: { task: Task }) {
             다른 keeper가 completion_contract의 정량 기준을 독립 실측 중입니다.
             통과 시 approve_verification → done, 미충족 시 reject_verification → in_progress로 복귀.
             인간 판단이 필요하면 우측 상단 버튼으로 검증 패널에서 직접 승인/반려할 수 있습니다
-            (operator: 접두어로 감사 로그에 기록).
+            (운영자: 접두어로 감사 로그에 기록).
           </div>
         </div>
       ` : null}
