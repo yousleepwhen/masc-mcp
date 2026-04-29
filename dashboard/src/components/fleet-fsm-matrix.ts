@@ -336,8 +336,8 @@ function blockingNextStep(snapshot: KeeperCompositeSnapshot): string {
 function staleCause(snapshot: KeeperCompositeSnapshot, ageText: string): string {
   const receiptReason = snapshot.execution?.operator_disposition_reason
   const base = snapshot.phase === 'Running'
-    ? 'KSM=Running이지만 live turn 없음'
-    : `live turn 없음 · KSM=${snapshot.phase}`
+    ? 'KSM=Running이지만 live 턴 없음'
+    : `live 턴 없음 · KSM=${snapshot.phase}`
   const receipt = receiptReason ? ` · last receipt: ${receiptReason}` : ''
   return `${base} · latest ${ageText}${receipt}`
 }
@@ -510,7 +510,7 @@ export function runtimeAttentionForSnapshot(
     }
   }
   const cause = snapshot.is_live
-    ? `live turn 관측 중 · latest ${ageText}`
+    ? `live 턴 관측 중 · latest ${ageText}`
     : `latest ${ageText}`
   return {
     level: 'ok',

@@ -26,8 +26,8 @@ const MEASUREMENT_FLAG_DESCRIPTIONS: Record<string, { on: string; off: string }>
     off: '예약된 핸드오프 없음 — 현재 세대가 같은 trace 에서 계속 실행됩니다.',
   },
   guardrail: {
-    on: 'guardrail 발동됨 — 키퍼가 운영자 개입 대기 상태로 멈춥니다.',
-    off: '활성 guardrail 없음 — 키퍼가 일반 safety envelope 안에서 실행됩니다.',
+    on: '가드레일 발동됨 — 키퍼가 운영자 개입 대기 상태로 멈춥니다.',
+    off: '활성 가드레일 없음 — 키퍼가 일반 safety envelope 안에서 실행됩니다.',
   },
 }
 
@@ -50,7 +50,7 @@ export function MeasurementCard({ snapshot }: { snapshot: KeeperCompositeSnapsho
             <${Flag} label="guardrail" on=${m.auto_rules.guardrail_stop} tone="warn" />
             <span
               class="text-3xs text-[var(--color-fg-disabled)] cursor-help"
-              title="Goal drift: 0 = 키퍼가 목표와 정렬됨; 높을수록 키퍼 출력이 선언된 goal 에서 벗어남. 약 0.5 이상이면 보통 guardrail 발동."
+              title="Goal drift: 0 = 키퍼가 목표와 정렬됨; 높을수록 키퍼 출력이 선언된 goal 에서 벗어남. 약 0.5 이상이면 보통 가드레일 발동."
             >drift ${m.auto_rules.goal_drift.toFixed(2)}</span>
           </div>
           ${m.auto_rules.guardrail_reason ? html`
