@@ -143,8 +143,8 @@ export function buildHarnessFlowMermaid(data: HarnessHealthData): string {
     '  classDef idleRail fill:#111827,stroke:var(--slate-600),color:var(--slate-400),stroke-dasharray: 3 4;',
     '  classDef activeRail stroke:#7dd3fc,stroke-width:3px;',
     '  taskDone["작업 완료<br/>판정 검증"]',
-    '  keeperTurn["keeper 턴<br/>압축 압력"]',
-    '  keeperRollover["keeper 교체<br/>지표 스냅샷"]',
+    '  keeperTurn["키퍼 턴<br/>압축 압력"]',
+    '  keeperRollover["키퍼 교체<br/>지표 스냅샷"]',
     `  evaluator["${flowNodeLabel('평가 모델', data.overview.evaluator_status, railDetail(data, 'evaluator'), railFreshness(data, 'evaluator'))}"]`,
     `  preCompact["${flowNodeLabel('압축 전 상태', data.overview.pre_compact_status, railDetail(data, 'pre_compact'), railFreshness(data, 'pre_compact'))}"]`,
     `  handoff["${flowNodeLabel('세대 교체', data.overview.handoff_status, railDetail(data, 'handoff'), railFreshness(data, 'handoff'))}"]`,
@@ -319,7 +319,7 @@ export function HarnessHealth() {
           <div class="space-y-4">
             <${RailHeader}
               title="평가 모델 건강도"
-              description="keeper 출력을 채점하는 모델이 제대로 작동하는지 봅니다."
+              description="키퍼 출력을 채점하는 모델이 제대로 작동하는지 봅니다."
               status=${data.overview.evaluator_status}
               lastEventAt=${data.overview.evaluator_last_event_at}
             />
@@ -409,7 +409,7 @@ export function HarnessHealth() {
         ` : html`
           <div class="space-y-4">
             <${RailHeader}
-              title="keeper 세대 교체"
+              title="키퍼 세대 교체"
               description=${data.recent_handoffs.description}
               status=${data.recent_handoffs.status}
               lastEventAt=${data.recent_handoffs.last_event_at}

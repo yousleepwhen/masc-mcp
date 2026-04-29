@@ -149,7 +149,7 @@ function KanbanCard({ task }: { task: Task }) {
 
       <div class="flex flex-wrap items-center gap-2 text-2xs text-fg-muted">
         ${task.status === 'awaiting_verification'
-          ? html`<span class="rounded border border-accent/30 bg-[var(--accent-10)] px-2 py-1 text-accent" title="verifier keeper의 독립 실측을 기다리는 중">검증 대기${task.updated_at ? html` <${TimeAgo} timestamp=${task.updated_at} />` : null}</span>`
+          ? html`<span class="rounded border border-accent/30 bg-[var(--accent-10)] px-2 py-1 text-accent" title="verifier 키퍼의 독립 실측을 기다리는 중">검증 대기${task.updated_at ? html` <${TimeAgo} timestamp=${task.updated_at} />` : null}</span>`
           : task.completed_at && task.status === 'done'
             ? html`<span class="rounded border border-ok/25 bg-ok/10 px-2 py-1 text-ok">완�� <${TimeAgo} timestamp=${task.completed_at} /></span>`
             : task.completed_at && task.status === 'cancelled'
@@ -325,7 +325,7 @@ export function TaskBacklog() {
         <${TaskColumn}
           title="검증 대기"
           count=${sortedAwaitingVerification.length}
-          description="verifier keeper가 completion_contract 정량 기준을 독립 실측 중인 태스크입니다."
+          description="verifier 키퍼가 completion_contract 정량 기준을 독립 실측 중인 태스크입니다."
           badgeClass="border border-accent/30 bg-[var(--accent-10)] text-accent"
         >
           ${sortedAwaitingVerification.length === 0

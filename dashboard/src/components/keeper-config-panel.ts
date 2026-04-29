@@ -569,7 +569,7 @@ function cascadeSelectionSummary(c: KeeperConfig): string {
     canonical !== '' && canonical !== selected
       ? ` 현재 값 ${selected} 는 runtime에서 ${canonical} 으로 정규화됩니다.`
       : ''
-  return `이 keeper는 cascade profile ${selected} 를 사용합니다. ${selectionPart} ${catalogPart}${canonicalPart}`
+  return `이 키퍼는 cascade profile ${selected} 를 사용합니다. ${selectionPart} ${catalogPart}${canonicalPart}`
 }
 
 // ── Main component ───────────────────────────────────────
@@ -800,7 +800,7 @@ export function KeeperConfigPanel({ keeperName }: { keeperName: string }) {
       <${Callout}
         title="캐스케이드 선택"
         body=${hasCascadeSelector
-          ? '이 selector는 keeper TOML의 cascade_name 을 바꿉니다. catalog authoring source와 generated runtime JSON 경로는 아래 읽기 전용 메타데이터를 보세요.'
+          ? '이 selector는 키퍼 TOML의 cascade_name 을 바꿉니다. catalog authoring source와 generated runtime JSON 경로는 아래 읽기 전용 메타데이터를 보세요.'
           : cascadeSelectionSummary(c)}
       />
       ${hasCascadeSelector
@@ -829,7 +829,7 @@ export function KeeperConfigPanel({ keeperName }: { keeperName: string }) {
                   ? 'cascade_name 저장 중...'
                   : cascadeState.status === 'loading'
                     ? '사용 가능한 캐스케이드 프로필 불러오는 중...'
-                    : '변경 시 keeper manifest의 cascade_name 이 즉시 갱신됩니다.'}
+                    : '변경 시 키퍼 manifest의 cascade_name 이 즉시 갱신됩니다.'}
               </span>
               ${cascadeSaveError.value
                 ? html`<span class="text-2xs text-[var(--bad)]" role="alert">${cascadeSaveError.value}</span>`
@@ -1090,7 +1090,7 @@ export function KeeperConfigPanel({ keeperName }: { keeperName: string }) {
       ${isVerifierRoleKeeper(c.coordination.mention_targets) ? html`
       <div class="mb-2 flex items-center gap-2 rounded border border-accent/30 bg-[var(--accent-10)] px-3 py-2">
         <span class="rounded border border-accent/40 bg-[var(--accent-5)] px-2 py-0.5 text-3xs font-semibold uppercase tracking-1 text-accent">검증자</span>
-        <span class="text-2xs text-fg-primary">이 keeper는 task completion_contract를 독립 실측하는 검증자 역할입니다.</span>
+        <span class="text-2xs text-fg-primary">이 키퍼는 task completion_contract를 독립 실측하는 검증자 역할입니다.</span>
       </div>
       ` : null}
       ${c.coordination.mention_targets.length > 0 ? html`

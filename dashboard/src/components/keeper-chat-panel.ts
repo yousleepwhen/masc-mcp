@@ -239,7 +239,7 @@ export function KeeperChatPanel({ name }: { name: string }) {
       <div class="border-t border-[var(--slate-gray-12)] bg-[var(--white-3)] px-4 py-4">
         <${ChatComposer}
           draft=${chatInput.value}
-          placeholder=${chatAccess.blocked ? '현재 actor는 direct keeper chat 권한이 없습니다' : '메시지 입력...'}
+          placeholder=${chatAccess.blocked ? '현재 actor는 direct 키퍼 chat 권한이 없습니다' : '메시지 입력...'}
           disabled=${chatAccess.blocked}
           streaming=${isStreaming}
           streamStartedAt=${streamStartedAt.value}

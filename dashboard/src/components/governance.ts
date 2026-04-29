@@ -197,11 +197,11 @@ function judgmentsEmptyStateMessage(): { message: string; tone: 'warn' | 'defaul
     return { message: `AI Judge 오류: ${lastError}`, tone: 'warn' }
   }
   if (status === 'offline') {
-    return { message: 'AI Judge 오프라인 — keeper 기동 여부를 확인하세요.', tone: 'warn' }
+    return { message: 'AI Judge 오프라인 — 키퍼 기동 여부를 확인하세요.', tone: 'warn' }
   }
   const lastSeen = judge?.generated_at ?? summary?.judge_last_seen_at
   if (lastSeen) {
-    return { message: '최근 판단 이후 새 입력 대기 중입니다. keeper가 새 판단을 올리면 여기 표시됩니다.', tone: 'default' }
+    return { message: '최근 판단 이후 새 입력 대기 중입니다. 키퍼가 새 판단을 올리면 여기 표시됩니다.', tone: 'default' }
   }
   return { message: 'AI Judge가 판단을 생성하면 자동으로 여기 표시됩니다. 현재 수집된 판단이 없습니다.', tone: 'default' }
 }
@@ -362,7 +362,7 @@ function KeeperApprovalAlertBanner() {
           ${maxRisk ? html`<span class="text-2xs font-bold uppercase tracking-wider opacity-80">최고 ${maxRisk}</span>` : null}
         </div>
         <div class="mt-1 text-xs opacity-85">
-          위험도 threshold를 넘은 keeper tool call이 사용자 판단을 기다리고 있습니다.
+          위험도 threshold를 넘은 키퍼 tool call이 사용자 판단을 기다리고 있습니다.
         </div>
       </div>
       <${ActionButton}

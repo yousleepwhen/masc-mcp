@@ -393,7 +393,7 @@ export function lineageVerdictMeta(verdict: string | undefined): LineageVerdictM
     case 'verified':
       return {
         badgeLabel: '상태 보존',
-        detail: 'keeper 목표, 지침, 저장된 상태 요약이 핸드오프를 통해 전달됐는지 continuity 가 검사합니다.',
+        detail: '키퍼 목표, 지침, 저장된 상태 요약이 핸드오프를 통해 전달됐는지 continuity 가 검사합니다.',
       }
     case 'drift_detected':
       return {
@@ -458,7 +458,7 @@ export function GenerationLineagePanel({ keeperName }: { keeperName: string }) {
     <div class="md:col-span-2">
       <${KeeperDetailSectionCard} title="생성 계보">
         <div class="text-2xs text-[var(--color-fg-muted)] mb-3">
-          성공한 핸드오프에서 keeper 상태 전이를 추적합니다. 계보 telemetry 는 append-only 이며 최신 rollover 가 먼저 표시되어 동일한 keeper identity 가 새 trace 로 이어졌는지 설명합니다.
+          성공한 핸드오프에서 키퍼 상태 전이를 추적합니다. 계보 telemetry 는 append-only 이며 최신 rollover 가 먼저 표시되어 동일한 키퍼 identity 가 새 trace 로 이어졌는지 설명합니다.
         </div>
 
         ${latestEntry

@@ -189,7 +189,7 @@ function MatrixCellButton({ cell }: { cell: MatrixCell }) {
       case 'bound':   return `${cell.keeperName} · ${conn} · ${cell.bindingCount} channel(s) — 클릭하면 상세로 이동`
       case 'unbound': return `${cell.keeperName} · ${conn} — 클릭하면 바인딩 추가`
       case 'na':      return `${cell.keeperName} · ${conn} — 커넥터 오프라인`
-      case 'unknown': return `${cell.keeperName} · ${conn} — 디렉토리 밖 keeper 참조됨`
+      case 'unknown': return `${cell.keeperName} · ${conn} — 디렉토리 밖 키퍼 참조됨`
     }
   })()
   const disabled = cell.state === 'na'
@@ -227,7 +227,7 @@ export function ConnectorKeeperMatrix({ matrix }: { matrix: MatrixData }) {
   const gridCols = `grid-template-columns: minmax(160px, 1fr) repeat(${matrix.columns.length}, minmax(80px, 1fr)) minmax(90px, auto);`
 
   return html`
-    <section class="mb-4 rounded border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3" data-panel="connector-keeper-matrix" aria-label="Keeper × Connector 매트릭스">
+    <section class="mb-4 rounded border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3" data-panel="connector-keeper-matrix" aria-label="키퍼 × Connector 매트릭스">
       <header class="mb-2 flex items-baseline justify-between gap-3">
         <div>
           <h2 class="text-xs font-semibold uppercase tracking-4 text-[var(--color-fg-primary)]">
@@ -355,8 +355,8 @@ function MatrixRowRender({ row }: { row: MatrixRow }) {
       type="button"
       class=${`flex cursor-pointer items-center gap-2 truncate rounded px-2 py-1 text-left text-xs hover:bg-[var(--white-4)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] ${row.known ? 'text-[var(--color-fg-primary)]' : 'text-[var(--color-status-warn)]'}`}
       onClick=${() => scrollToKeeper(row.keeperName)}
-      title=${row.known ? row.keeperName : `${row.keeperName} — directory 밖 keeper`}
-      aria-label=${row.known ? row.keeperName : `${row.keeperName} — directory 밖 keeper`}
+      title=${row.known ? row.keeperName : `${row.keeperName} — directory 밖 키퍼`}
+      aria-label=${row.known ? row.keeperName : `${row.keeperName} — directory 밖 키퍼`}
     >
       ${row.known ? null : html`<span class="text-[var(--color-status-warn)]" aria-hidden="true">⚠</span>`}
       <span class="truncate" title=${row.keeperName}>${row.keeperName}</span>

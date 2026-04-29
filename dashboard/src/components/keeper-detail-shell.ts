@@ -140,7 +140,7 @@ export function KeeperDetailMissingState({
         <div class="text-3xs font-semibold uppercase tracking-[0.18em] text-[var(--color-fg-muted)]">키퍼 상세</div>
         <h2 class="m-0 mt-2 text-xl font-semibold text-[var(--color-fg-secondary)]">${keeperName}</h2>
         <p class="m-0 mt-2 text-sm leading-relaxed text-[var(--text-secondary)]">
-          현재 스냅샷에서 keeper를 찾지 못했습니다. 목록으로 돌아가서 다시 선택하거나, 최신 dashboard refresh 이후 다시 열어 보세요.
+          현재 스냅샷에서 키퍼를 찾지 못했습니다. 목록으로 돌아가서 다시 선택하거나, 최신 dashboard refresh 이후 다시 열어 보세요.
         </p>
         <div class="mt-4">
           <button
@@ -291,7 +291,7 @@ export function KeeperDetailOverviewSidebar({
         <div>
           <div class="text-3xs font-semibold uppercase tracking-[0.18em] text-[var(--color-fg-muted)]">개요</div>
           <p class="m-0 mt-2 text-sm leading-relaxed text-[var(--text-secondary)]">
-            긴 단일 모달 대신 keeper 상세를 별도 화면으로 펼쳤습니다. 운영자가 자주 오가는 맥락 단위로 나눠서 바로 점프할 수 있습니다.
+            긴 단일 모달 대신 키퍼 상세를 별도 화면으로 펼쳤습니다. 운영자가 자주 오가는 맥락 단위로 나눠서 바로 점프할 수 있습니다.
           </p>
         </div>
 
