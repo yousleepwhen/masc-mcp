@@ -198,7 +198,7 @@ function EvidenceDetail({ event }: { event: AttributionEvent | null }) {
   if (!event) {
     return html`
       <${SurfaceCard} variant="light" ariaLabel="증거 상세">
-        <${EmptyState} message="이벤트를 선택하면 evidence가 여기 표시됩니다." />
+        <${EmptyState} message="이벤트를 선택하면 증거가 여기 표시됩니다." />
       </${SurfaceCard}>
     `
   }

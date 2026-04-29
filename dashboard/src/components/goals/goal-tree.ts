@@ -727,7 +727,7 @@ function KeeperCard({ keeper }: { keeper: GoalDetailKeeper }) {
 
 function GoalTimeline({ events }: { events: GoalDetailTimelineEvent[] }) {
   if (events.length === 0) {
-    return html`<${EmptyState} message="최근 evidence가 없습니다" compact />`
+    return html`<${EmptyState} message="최근 증거가 없습니다" compact />`
   }
   return html`
     <div class="flex flex-col gap-2">
@@ -1030,7 +1030,7 @@ export function GoalTree() {
             <div class="text-2xs font-semibold uppercase tracking-[0.18em] text-fg-muted">목표 관리자</div>
             <h3 class="mt-1 text-2xl font-semibold tracking-[-0.02em] text-fg-secondary">목표 중심 계획 뷰</h3>
             <p class="mt-1.5 text-sm leading-relaxed text-fg-muted">
-              goal-task 연결, keeper evidence, approval 대기, sandbox/캐스케이드 신호를 한 표면에서 봅니다.
+              goal-task 연결, 키퍼 증거, approval 대기, sandbox/캐스케이드 신호를 한 표면에서 봅니다.
               신규 태스크는 <code class="rounded bg-white/5 px-1 py-0.5 text-2xs text-fg-secondary">goal_id</code>로 직접 연결됩니다.
             </p>
           </div>
