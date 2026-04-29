@@ -44,7 +44,7 @@ function actionDescription(action: OperatorActionDescriptor): string {
     case 'keeper_github_identity_login_prepare':
       return '선택한 keeper의 GitHub login 준비 정보를 생성합니다.'
     default:
-      return '서버 catalog에는 있지만 아직 전용 UI adapter가 없습니다.'
+      return '서버 카탈로그에는 있지만 아직 전용 UI adapter가 없습니다.'
   }
 }
 
@@ -78,7 +78,7 @@ export function KeeperUtilitiesPanel() {
         <div class="min-w-0">
           <h3 class="text-sm font-semibold text-[var(--color-fg-secondary)]">키퍼 유틸리티</h3>
           <p class="mt-1 text-xs leading-[1.45] text-[var(--color-fg-muted)]">
-            서버 available_actions catalog 기준으로 노출합니다.
+            서버 available_actions 카탈로그 기준으로 노출합니다.
           </p>
         </div>
         <${Select}

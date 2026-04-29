@@ -564,7 +564,7 @@ function cascadeSelectionSummary(c: KeeperConfig): string {
     : '선택 source 경로를 확인할 수 없습니다.'
   const catalogPart = catalog
     ? `프로필 정의는 ${catalog} 에서 materialize됩니다.`
-    : '프로필 catalog source 경로를 확인할 수 없습니다.'
+    : '프로필 카탈로그 source 경로를 확인할 수 없습니다.'
   const canonicalPart =
     canonical !== '' && canonical !== selected
       ? ` 현재 값 ${selected} 는 runtime에서 ${canonical} 으로 정규화됩니다.`
@@ -800,7 +800,7 @@ export function KeeperConfigPanel({ keeperName }: { keeperName: string }) {
       <${Callout}
         title="캐스케이드 선택"
         body=${hasCascadeSelector
-          ? '이 selector는 키퍼 TOML의 cascade_name 을 바꿉니다. catalog authoring source와 generated runtime JSON 경로는 아래 읽기 전용 메타데이터를 보세요.'
+          ? '이 selector는 키퍼 TOML의 cascade_name 을 바꿉니다. 카탈로그 authoring source와 generated runtime JSON 경로는 아래 읽기 전용 메타데이터를 보세요.'
           : cascadeSelectionSummary(c)}
       />
       ${hasCascadeSelector
