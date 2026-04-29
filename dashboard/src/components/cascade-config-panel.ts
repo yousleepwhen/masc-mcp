@@ -1238,7 +1238,7 @@ export function CascadeConfigPanel() {
         >
           새로고침
         </button>
-        ${current.loading ? html`<span class="text-xs text-[var(--color-fg-muted)]" role="status">로딩 중...</span>` : null}
+        ${current.loading ? html`<span class="text-xs text-[var(--color-fg-muted)]" role="status">불러오는 중...</span>` : null}
         ${config?.updated_at
           ? html`<span class="text-xs text-[var(--color-fg-muted)]">config · ${config.updated_at}</span>`
           : null}

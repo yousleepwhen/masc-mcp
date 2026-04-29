@@ -388,7 +388,7 @@ function HealthIndicator({ collapsed }: { collapsed?: boolean }) {
     label = '신호 없음'
   } else if (!snap) {
     dotClass = 'bg-[var(--color-fg-muted)]'
-    label = missionLoading.value ? '로딩 중' : '대기 중'
+    label = missionLoading.value ? '불러오는 중' : '대기 중'
   } else if (blockers > 0 || attentionCount > 0) {
     dotClass = 'bg-[var(--color-status-warn)]'
     const total = blockers + attentionCount

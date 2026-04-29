@@ -918,7 +918,7 @@ export function TelemetryUnified() {
           Refresh
         </button>
         <span class="text-xs text-[var(--color-fg-muted)]">${formatAutoRefreshLabel(TELEMETRY_AUTO_REFRESH_MS)}</span>
-        ${loading ? html`<span class="text-xs text-[var(--color-fg-muted)]" role="status">로딩 중...</span>` : null}
+        ${loading ? html`<span class="text-xs text-[var(--color-fg-muted)]" role="status">불러오는 중...</span>` : null}
       </div>
 
       ${error ? html`

@@ -828,7 +828,7 @@ export function KeeperConfigPanel({ keeperName }: { keeperName: string }) {
                 ${cascadeSaving.value
                   ? 'cascade_name 저장 중...'
                   : cascadeState.status === 'loading'
-                    ? '사용 가능한 cascade profile 로딩 중...'
+                    ? '사용 가능한 cascade profile 불러오는 중...'
                     : '변경 시 keeper manifest의 cascade_name 이 즉시 갱신됩니다.'}
               </span>
               ${cascadeSaveError.value
@@ -1053,7 +1053,7 @@ export function KeeperConfigPanel({ keeperName }: { keeperName: string }) {
           <span class="text-3xs text-[var(--color-fg-muted)]" role="status" aria-live="polite">${selectedActiveGoalIds.length}개 선택</span>
         </div>
         ${goalState.status === 'loading' ? html`
-          <div class="text-2xs text-[var(--color-fg-muted)]" role="status">목표 목록 로딩 중...</div>
+          <div class="text-2xs text-[var(--color-fg-muted)]" role="status">목표 목록 불러오는 중...</div>
         ` : goalState.status === 'error' ? html`
           <div class="text-2xs text-[var(--bad)]" role="alert">${goalState.message}</div>
         ` : goalOptions.length > 0 && rd ? html`

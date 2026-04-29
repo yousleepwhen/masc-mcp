@@ -629,7 +629,7 @@ export function KeeperNeighborhood({ keeper }: { keeper: Keeper }) {
             showAllowlistEditor.value = !showAllowlistEditor.value
             if (showAllowlistEditor.value) loadTools()
           }}
-        >${policyLoading ? '로딩 중' : policyEditable ? (showAllowlistEditor.value ? '닫기' : '편집') : policyError ? '설정 오류' : '설정 필요'}</button>
+        >${policyLoading ? '불러오는 중' : policyEditable ? (showAllowlistEditor.value ? '닫기' : '편집') : policyError ? '설정 오류' : '설정 필요'}</button>
       </div>
 
       ${showAllowlistEditor.value && policyEditable
