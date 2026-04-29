@@ -67,7 +67,7 @@ function ToolDetail() {
 export function ToolExecutor() {
   useEffect(() => { void loadToolSchemas() }, [])
   if (schemasLoading.value && !selectedTool.value) {
-    return html`<${SurfaceCard} ariaLabel="도구 실행기"><p class="text-xs text-[var(--color-fg-muted)] py-8 text-center" role="status">도구 스키마 로딩 중...</p><//>`
+    return html`<${SurfaceCard} ariaLabel="도구 실행기"><p class="text-xs text-[var(--color-fg-muted)] py-8 text-center" role="status">도구 스키마 불러오는 중...</p><//>`
   }
   if (schemasError.value) {
     return html`<${SurfaceCard} ariaLabel="도구 실행기"><div class="py-4 text-center">
