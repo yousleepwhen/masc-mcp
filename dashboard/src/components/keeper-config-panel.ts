@@ -784,7 +784,7 @@ export function KeeperConfigPanel({ keeperName }: { keeperName: string }) {
 
       <${Callout}
         title="편집 가능 범위"
-        body="여기서 저장되는 값은 keeper 프롬프트와 live override 계층입니다. 활성 모델은 keeper별 설정이 아니라 resolved config root의 cascade.json 해석 결과로 결정됩니다."
+        body="여기서 저장되는 값은 키퍼 프롬프트와 live override 계층입니다. 활성 모델은 키퍼별 설정이 아니라 resolved config root의 cascade.json 해석 결과로 결정됩니다."
       />
 
       ${promptSection}

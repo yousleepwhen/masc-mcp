@@ -994,7 +994,7 @@ export function KeeperDetailPage() {
             id="keeper-comms"
             eyebrow="대화 & 세션"
             title="대화 / 활동 흐름"
-            description="운영자가 keeper와 바로 대화하고, 같은 화면에서 세션 이벤트를 대조할 수 있도록 묶었습니다."
+            description="운영자가 키퍼와 바로 대화하고, 같은 화면에서 세션 이벤트를 대조할 수 있도록 묶었습니다."
           >
             <${KeeperCommsPanel} keeper=${keeper} />
             <${SectionCard} title="세션 활동 로그">
@@ -1119,7 +1119,7 @@ export function KeeperDetailPage() {
             id="keeper-config"
             eyebrow="설정"
             title="설정 / 작업 방식"
-            description="분산되어 있던 tool policy, 작업 budget, playground repo, keeper config를 한 섹션으로 모았습니다."
+            description="분산되어 있던 tool policy, 작업 budget, playground repo, 키퍼 설정을 한 섹션으로 모았습니다."
           >
             <${TurnBudgetSection} keeper=${keeper} />
             <details class="p-5 rounded border border-card-border bg-card/40 backdrop-blur-sm shadow-sm">

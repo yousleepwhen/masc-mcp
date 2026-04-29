@@ -387,7 +387,7 @@ export function KpiGrid({ keeper }: { keeper: Keeper }) {
           <${KpiCard}
             label="세대"
             value=${keeper.generation ?? '-'}
-            hint="같은 keeper의 trace 교체 횟수"
+            hint="같은 키퍼의 trace 교체 횟수"
           />
           <${KpiCard}
             label="턴"
