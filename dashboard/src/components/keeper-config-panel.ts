@@ -885,7 +885,7 @@ export function KeeperConfigPanel({ keeperName }: { keeperName: string }) {
       <${ConfigRow} label="활성 모델" value=${c.execution.active_model || '--'} />
       <${ConfigRow} label="provider timeout" value=${perProviderTimeoutLabel(c.execution)} />
       <div class="mb-1.5 rounded border border-[var(--white-8)] bg-[var(--white-3)] px-3 py-2 text-2xs leading-relaxed text-[var(--color-fg-muted)]">
-        cascade fallback 중 마지막 provider를 제외한 provider들에만 적용됩니다.
+        cascade fallback 중 마지막 프로바이더를 제외한 프로바이더들에만 적용됩니다.
       </div>
       <div class="flex items-center justify-between py-2 px-3 rounded bg-[var(--white-3)]">
         <span class="text-xs text-[var(--color-fg-muted)]">검증</span>

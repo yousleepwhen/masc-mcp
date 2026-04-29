@@ -701,8 +701,8 @@ function HealthTable({
       <${TextInput}
         type="search"
         class="max-w-70"
-        placeholder="provider 필터 (key, cooldown...)"
-        ariaLabel="health provider 검색"
+        placeholder="프로바이더 필터 (key, cooldown...)"
+        ariaLabel="health 프로바이더 검색"
         value=${searchQuery.value}
         onInput=${(e: Event) => { searchQuery.value = (e.target as HTMLInputElement).value }}
       />

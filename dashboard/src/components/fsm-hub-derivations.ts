@@ -147,9 +147,9 @@ export function inferTransitionReason(field: string, from: string, to: string): 
     if (to === 'tool_policy_selected') return '도구 정책이 적용되어 호출 가능한 도구 셋이 정해짐'
   }
   if (field === 'KCL') {
-    if (to === 'trying') return 'cascade 의 provider 호출 진행 중'
-    if (to === 'exhausted') return '모든 cascade provider 가 실패 — fallback 도 소진'
-    if (from === 'trying' && to === 'idle') return 'provider 호출 종료 (성공/실패와 무관)'
+    if (to === 'trying') return 'cascade 의 프로바이더 호출 진행 중'
+    if (to === 'exhausted') return '모든 cascade 프로바이더 가 실패 — fallback 도 소진'
+    if (from === 'trying' && to === 'idle') return '프로바이더 호출 종료 (성공/실패와 무관)'
   }
   if (field === 'KMC') {
     if (to === 'compacting') return '컨텍스트 압축 작업 시작 (KMC 동기화)'
