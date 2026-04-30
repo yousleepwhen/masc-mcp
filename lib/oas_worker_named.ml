@@ -370,7 +370,11 @@ let run_named
             Keeper_types.Other_detail
               (Printf.sprintf "provider terminal %s: %s" subtype message)
         | Some (Llm_provider.Http_client.ProviderFailure _ as err) ->
-            Keeper_types.Other_detail (Oas_compat.Http_client.error_message err)
+            let detail = Oas_compat.Http_client.error_message err in
+            if message_looks_like_cli_wrapped_max_turns detail then
+              Keeper_types.Max_turns_exceeded
+            else
+              Keeper_types.Other_detail detail
         | None -> Keeper_types.No_providers_available
       in
       let observation =

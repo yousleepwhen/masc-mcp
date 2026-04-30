@@ -32,6 +32,7 @@ type cascade_failure_class =
   | Provider_failure_cli_startup_failed
   | Provider_failure_unknown
   | Provider_terminal
+  | Provider_hard_quota
 
 let classify_failure err = Oas_compat.Http_client.classify err
 
