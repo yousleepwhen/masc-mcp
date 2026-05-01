@@ -24,6 +24,9 @@ let sandbox_profile_enum_strings =
   [ "local"; "docker" ]
 let network_mode_enum_strings =
   [ "none"; "inherit" ]
+let shared_memory_scope_enum_strings =
+  [ "disabled"; "room"; "keeper_only"; "room_readonly" ]
+
 (** Issue #8486: hand-mirrored from
     [Keeper_status_detail.valid_tail_order_strings].  Same cycle
     constraint — Keeper_schema is upstream of Keeper_status_detail.
@@ -398,6 +401,11 @@ let keeper_schemas : tool_schema list = [
           ("type", `String "string");
           ("enum", `List (List.map (fun s -> `String s) network_mode_enum_strings));
           ("description", `String "Network policy associated with the sandbox profile. 'none' is valid only with sandbox_profile='docker'.");
+        ]);
+        ("shared_memory_scope", `Assoc [
+          ("type", `String "string");
+          ("enum", `List (List.map (fun s -> `String s) shared_memory_scope_enum_strings));
+          ("description", `String "Typed shared-memory lane policy retained for metadata compatibility. Legacy masc_team_memory_* MCP tools are retired.");
         ]);
         ("allowed_paths", `Assoc [
           ("type", `String "array");

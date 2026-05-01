@@ -208,7 +208,6 @@ let explicit_metadata : (string * metadata) list =
     ("masc_who", readonly_tool);
     ("masc_agents", readonly_tool);
     ("masc_dashboard", readonly_tool);
-    ("masc_agent_card", readonly_tool);
     ("masc_board_list", readonly_tool);
     ("masc_board_get", readonly_tool);
     ("masc_tool_help", readonly_tool);
@@ -232,12 +231,6 @@ let explicit_metadata : (string * metadata) list =
       { readonly_tool with required_permission = Some Types.CanReadState } );
     ( "channel_gate",
       { masc_coordination_tool with required_permission = Some Types.CanBroadcast } );
-    ( "masc_portal_open",
-      { masc_coordination_tool with required_permission = Some Types.CanOpenPortal } );
-    ( "masc_portal_close",
-      { masc_coordination_tool with required_permission = Some Types.CanOpenPortal } );
-    ( "masc_portal_send",
-      { masc_coordination_tool with required_permission = Some Types.CanSendPortal } );
     ( "masc_room_status",
       hidden_active ~canonical_name:"masc_status" ~replacement:"masc_status"
         "Managed-agent compatibility alias. Prefer masc_status for canonical namespace state reads." );

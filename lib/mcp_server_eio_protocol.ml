@@ -128,10 +128,7 @@ let affected_resource_ids_for_tool = function
   | "masc_heartbeat"
   | "masc_suspend" ->
       agent_resource_ids
-  | "masc_broadcast"
-  | "masc_portal_open"
-  | "masc_portal_send"
-  | "masc_portal_close" ->
+  | "masc_broadcast" ->
       message_resource_ids
   | "masc_worktree_create"
   | "masc_worktree_remove" ->

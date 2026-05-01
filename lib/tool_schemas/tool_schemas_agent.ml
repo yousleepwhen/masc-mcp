@@ -1,13 +1,5 @@
 open Types
 
-(** Issue #8501: hand-mirrored from
-    [Tool_agent.valid_agent_card_action_strings] and
-    [Tool_agent.valid_collaboration_format_strings]. masc_tool_schemas
-    only depends on masc_types so it cannot derive directly. The sync
-    regression test [test_types.ml :: agent_tool_variants_ssot] catches
-    drift. Same shape as #8467/#8480/#8484/#8490/#8493 mirror+sync
-    pattern. *)
-
 let schemas : tool_schema list = [
   {
     name = "masc_agents";
@@ -85,7 +77,6 @@ let schemas : tool_schema list = [
       ("required", `List [`String "agent_name"; `String "capabilities"]);
     ];
   };
-
   {
     name = "masc_get_metrics";
     description = "Fetch raw performance metrics for an agent: task completion, timing, error rates, collaboration history.";

@@ -30,12 +30,6 @@ let result_to_response = function
   | Ok msg -> (true, msg)
   | Error e -> (false, Types.masc_error_to_string e)
 
-(* Issue #8501: Variant SSOT for masc_agent_card.action.  Adding a
-   new constructor forces compilation in [agent_card_action_to_string]
-   AND extends [valid_agent_card_action_strings]; the schema in
-   [tool_schemas_agent.ml] mirrors the SSOT (cycle-aware, sync test).
-   The previous code used a string match with a wildcard `_ -> Get`
-   branch which silently routed any unknown action to Get. *)
 (** Handle masc_agents *)
 let handle_agents ctx args =
   let limit = get_int args "limit" 20 |> max 1 |> min 50 in
@@ -222,8 +216,6 @@ let handle_agent_fitness ctx args =
     ] in
     (true, Yojson.Safe.to_string json)
 
-(** Handle masc_collaboration_graph *)
-(** Handle masc_agent_card *)
 (** Dispatch handler. Returns Some (success, result) if handled, None otherwise *)
 let dispatch ctx ~name ~args =
   match name with
@@ -232,7 +224,7 @@ let dispatch ctx ~name ~args =
   | "masc_agent_update" -> Some (handle_agent_update ctx args)
   | "masc_get_metrics" -> Some (handle_get_metrics ctx args)
   | "masc_agent_fitness" -> Some (handle_agent_fitness ctx args)
-      | _ -> None
+  | _ -> None
 
 let schemas = Tool_schemas_agent.schemas
 
@@ -241,12 +233,11 @@ let schemas = Tool_schemas_agent.schemas
 (* ================================================================ *)
 
 let _tool_spec_read_only =
-  [ "masc_agents";  ]
+  [ "masc_agents" ]
 let _tool_spec_requires_join = [ "masc_register_capabilities" ]
 
 let tool_required_permission = function
-  | "masc_agents" | "masc_agent_fitness"
-  | "masc_get_metrics" ->
+  | "masc_agents" | "masc_agent_fitness" | "masc_get_metrics" ->
       Some Types.CanReadState
   | "masc_register_capabilities" | "masc_agent_update" ->
       Some Types.CanBroadcast

@@ -2,8 +2,7 @@
 
     Tests dispatch routing, handler execution, helper functions for:
     masc_agents, masc_register_capabilities, masc_agent_update,
-    masc_get_metrics, masc_agent_fitness, masc_collaboration_graph,
-    masc_agent_card
+    masc_get_metrics, masc_agent_fitness
 *)
 module Tool_args = Masc_mcp.Tool_args
 module Meta_cognition = Masc_mcp.Meta_cognition

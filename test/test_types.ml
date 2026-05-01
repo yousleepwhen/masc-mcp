@@ -14,7 +14,9 @@ let test_agent_status_roundtrip () =
 let test_agent_status_of_string_r () =
   match agent_status_of_string_r "unknown_status" with
   | Ok _ -> Alcotest.fail "expected error for unknown status"
-  | Error msg -> Alcotest.(check string) "error message" "unknown agent_status: \"unknown_status\"" msg
+  | Error msg ->
+      Alcotest.(check string) "error message"
+        "unknown agent_status: \"unknown_status\"" msg
 
 let test_task_status_todo () =
   let status = Todo in
@@ -480,6 +482,19 @@ let () =
         in
         witness Network_none; witness Network_inherit;
         Alcotest.(check int) "count" 2 (List.length valid_network_mode_strings));
+      Alcotest.test_case "shared_memory_scope witness covers all variants" `Quick (fun () ->
+        let open Masc_mcp.Keeper_types_profile in
+        let witness s =
+          let actual = shared_memory_scope_to_string s in
+          if not (List.mem actual valid_shared_memory_scope_strings) then
+            Alcotest.failf "shared_memory_scope_to_string %S not in valid_shared_memory_scope_strings" actual
+        in
+        witness Shared_memory_disabled;
+        witness Shared_memory_room;
+        witness Shared_memory_keeper_only;
+        witness Shared_memory_room_readonly;
+        Alcotest.(check int) "count" 4
+          (List.length valid_shared_memory_scope_strings));
       Alcotest.test_case "schema mirrors stay in sync" `Quick (fun () ->
         (* Cycle-avoidance: Keeper_schema cannot depend on
            Keeper_types_profile directly, so it hand-mirrors the SSOT.
@@ -490,7 +505,10 @@ let () =
           Masc_mcp.Keeper_schema.sandbox_profile_enum_strings;
         Alcotest.(check (list string)) "network_mode mirror"
           Masc_mcp.Keeper_types_profile.valid_network_mode_strings
-          Masc_mcp.Keeper_schema.network_mode_enum_strings);
+          Masc_mcp.Keeper_schema.network_mode_enum_strings;
+        Alcotest.(check (list string)) "shared_memory_scope mirror"
+          Masc_mcp.Keeper_types_profile.valid_shared_memory_scope_strings
+          Masc_mcp.Keeper_schema.shared_memory_scope_enum_strings);
     ];
     "admin_section_ssot", [
       (* Issue #8546: schema advertised [auth; unit_policy] while the
