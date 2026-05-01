@@ -1,31 +1,53 @@
-// @ts-nocheck
-import { describe, expect, it } from 'vitest'
-import { render } from 'preact'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { html } from 'htm/preact'
+import { render } from 'preact'
 import { KeeperDetailSectionCard } from './keeper-detail-layout'
 
 describe('KeeperDetailSectionCard', () => {
-  const makeContainer = () => document.createElement('div')
+  let container: HTMLDivElement
 
-  it('renders title', () => {
-    const container = makeContainer()
-    render(html`<${KeeperDetailSectionCard} title="Test Title">content<//>`, container)
-    expect(container.textContent).toContain('Test Title')
-    render(null, container)
+  beforeEach(() => {
+    container = document.createElement('div')
+    document.body.appendChild(container)
   })
 
-  it('renders children', () => {
-    const container = makeContainer()
-    render(html`<${KeeperDetailSectionCard} title="Title">child content<//>`, container)
-    expect(container.textContent).toContain('child content')
+  afterEach(() => {
     render(null, container)
+    container.remove()
   })
 
-  it('has decorative dot', () => {
-    const container = makeContainer()
-    render(html`<${KeeperDetailSectionCard} title="T" />`, container)
-    const dot = container.querySelector('[aria-hidden="true"]')
+  it('renders title and children', () => {
+    render(
+      html`<${KeeperDetailSectionCard} title="Overview">
+        <div data-testid="child">Child content</div>
+      <//>`,
+      container,
+    )
+
+    expect(container.textContent).toContain('Overview')
+    expect(container.textContent).toContain('Child content')
+    expect(container.querySelector('[data-testid="child"]')).not.toBeNull()
+  })
+
+  it('applies card styling classes', () => {
+    render(
+      html`<${KeeperDetailSectionCard} title="Test">content<//>`,
+      container,
+    )
+
+    const card = container.querySelector('div')
+    expect(card?.classList.contains('rounded')).toBe(true)
+    expect(card?.classList.contains('border')).toBe(true)
+  })
+
+  it('renders accent dot indicator', () => {
+    render(
+      html`<${KeeperDetailSectionCard} title="Test">content<//>`,
+      container,
+    )
+
+    const dot = container.querySelector('span[aria-hidden="true"]')
     expect(dot).not.toBeNull()
-    render(null, container)
+    expect(dot?.classList.contains('rounded-full')).toBe(true)
   })
 })
