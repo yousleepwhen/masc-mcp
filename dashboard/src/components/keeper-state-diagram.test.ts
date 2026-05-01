@@ -1,6 +1,13 @@
 // @vitest-environment happy-dom
-import { describe, expect, it, vi } from "vitest"
-import { normalizePhase, transitionType, signalTone, badgeTone } from "./keeper-state-diagram"
+import { cleanup, render, screen } from "@testing-library/preact"
+import { afterEach, describe, expect, it, vi } from "vitest"
+import "@testing-library/jest-dom"
+import { html } from "htm/preact"
+import { normalizePhase, transitionType, signalTone, badgeTone, PhaseBadge } from "./keeper-state-diagram"
+
+afterEach(() => {
+  cleanup()
+})
 
 describe("normalizePhase", () => {
   it.each([
@@ -52,21 +59,17 @@ describe("transitionType", () => {
 })
 
 describe("signalTone", () => {
-  const warnClasses = "border-[var(--warn-24)] bg-[var(--warn-8)] text-[var(--color-status-warn)]"
-  const errClasses = "border-[var(--bad-30)] bg-[var(--bad-10)] text-[var(--color-status-err)]"
-  const okClasses = "border-[rgba(34,197,94,0.24)] bg-[var(--emerald-8)] text-[var(--color-status-ok)]"
-
   it.each([
-    ["bad", errClasses],
-    ["warn", warnClasses],
-    ["ok", okClasses],
-  ])("maps %s to correct classes", (severity, expected) => {
+    ["bad", "bad"],
+    ["warn", "warn"],
+    ["ok", "ok"],
+  ])("maps %s to StatusChip tone %s", (severity, expected) => {
     expect(signalTone(severity)).toBe(expected)
   })
 
   it("warns on unknown severity and returns warn tone", () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
-    expect(signalTone("unknown")).toBe(warnClasses)
+    expect(signalTone("unknown")).toBe("warn")
     expect(warnSpy).toHaveBeenCalledWith(
       "[signalTone] unknown severity; rendering as warn",
       { severity: "unknown" },
@@ -75,14 +78,24 @@ describe("signalTone", () => {
   })
 
   it.each([
-    [null, warnClasses],
-    [undefined, warnClasses],
-    ["", warnClasses],
+    [null, "warn"],
+    [undefined, "warn"],
+    ["", "warn"],
   ])("returns warn tone for %s without console warning", (input, expected) => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
     expect(signalTone(input)).toBe(expected)
     expect(warnSpy).not.toHaveBeenCalled()
     warnSpy.mockRestore()
+  })
+})
+
+describe("PhaseBadge", () => {
+  it("renders through the shared StatusChip primitive", () => {
+    render(html`<${PhaseBadge} accent>composite Running<//>`)
+
+    const chip = screen.getByText("composite Running").closest("[data-status-chip]")
+    expect(chip).toHaveAttribute("data-status-chip-tone", "info")
+    expect(chip).toHaveAttribute("data-status-chip-uppercase", "false")
   })
 })
 

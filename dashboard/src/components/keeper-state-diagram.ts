@@ -17,6 +17,7 @@ import { MermaidGraph } from './common/mermaid-graph'
 import { FilterChips } from './common/filter-chips'
 import { buildCompositeFsmSpec } from './keeper-fsm-specs'
 import { TurnFsmDetailPanel } from './turn-fsm-detail-panel'
+import { StatusChip, type StatusChipTone } from './common/status-chip'
 import {
   normalizePhaseDiagnosis,
   PhaseConditionsPanel,
@@ -28,11 +29,8 @@ interface KeeperStateDiagramProps {
   currentPhase?: KeeperPhase | string | null
 }
 
-function PhaseBadge({ accent, children }: { accent?: boolean; children: unknown }) {
-  const cls = accent
-    ? 'inline-flex items-center rounded-sm border border-[var(--accent-30)] bg-[var(--accent-10)] px-2 py-0.5 text-[var(--color-accent-fg)]'
-    : 'inline-flex items-center rounded-sm border border-[var(--white-8)] bg-[var(--white-4)] px-2 py-0.5'
-  return html`<span class="${cls}">${children}</span>`
+export function PhaseBadge({ accent, children }: { accent?: boolean; children: unknown }) {
+  return html`<${StatusChip} tone=${accent ? 'info' : 'neutral'} uppercase=${false}>${children}</${StatusChip}>`
 }
 
 const PHASE_ID_MAP: Record<string, string> = {
@@ -91,7 +89,7 @@ export function transitionType(selectedEvent: unknown): string {
   return 'event'
 }
 
-export function signalTone(severity: string | null | undefined): string {
+export function signalTone(severity: string | null | undefined): StatusChipTone {
   // Unknown severity → treat as warn (fail-closed). Only an explicit "ok" from
   // the backend renders as green. See issue #9894 (Unknown → Permissive Default
   // anti-pattern; CLAUDE.md #2). Backend emits 'ok' | 'warn' | 'bad' today via
@@ -99,18 +97,18 @@ export function signalTone(severity: string | null | undefined): string {
   // here explicitly before it is allowed to show as healthy.
   switch (severity) {
     case 'bad':
-      return 'border-[var(--bad-30)] bg-[var(--bad-10)] text-[var(--color-status-err)]'
+      return 'bad'
     case 'warn':
-      return 'border-[var(--warn-24)] bg-[var(--warn-8)] text-[var(--color-status-warn)]'
+      return 'warn'
     case 'ok':
-      return 'border-[rgba(34,197,94,0.24)] bg-[var(--emerald-8)] text-[var(--color-status-ok)]'
+      return 'ok'
     default:
       // Client-side observability: record unexpected severities so future
       // backend additions are noticed before they regress to silent-OK.
       if (typeof console !== 'undefined' && severity != null && severity !== '') {
         console.warn('[signalTone] unknown severity; rendering as warn', { severity })
       }
-      return 'border-[var(--warn-24)] bg-[var(--warn-8)] text-[var(--color-status-warn)]'
+      return 'warn'
   }
 }
 
@@ -269,12 +267,8 @@ export function KeeperStateDiagramPanel({ keeperName, currentPhase }: KeeperStat
                   fallbackText=${mermaidSource}
                 />
                 <div class="flex flex-wrap items-center gap-1.5 text-3xs text-[var(--color-fg-disabled)]">
-                  <span class="rounded-sm border border-[var(--white-8)] bg-[var(--white-4)] px-2 py-0.5">
-                    backend phase ${stateDiagram?.current_phase ?? 'unknown'}
-                  </span>
-                  <span class="rounded-sm border border-[var(--white-8)] bg-[var(--white-4)] px-2 py-0.5">
-                    response.mermaid
-                  </span>
+                  <${PhaseBadge}>backend phase ${stateDiagram?.current_phase ?? 'unknown'}<//>
+                  <${PhaseBadge}>response.mermaid<//>
                 </div>
               </div>
             ` : html`
@@ -311,13 +305,13 @@ export function KeeperStateDiagramPanel({ keeperName, currentPhase }: KeeperStat
                 <span class="font-mono text-[var(--color-fg-secondary)]">${normalizePhase(transition.prev_phase) ?? transition.prev_phase}</span>
                 <span class="text-[var(--color-fg-disabled)]">→</span>
                 <span class="font-mono text-[var(--color-accent-fg)]">${normalizePhase(transition.new_phase) ?? transition.new_phase}</span>
-                <span class="rounded-sm border border-[var(--white-8)] bg-[var(--white-4)] px-2 py-0.5 text-3xs text-[var(--color-fg-muted)]">
+                <${StatusChip} tone="neutral" uppercase=${false}>
                   ${transition.event_type ?? transitionType(transition.selected_event)}
-                </span>
+                </${StatusChip}>
                 ${transition.operator_signal ? html`
-                  <span class=${`rounded-sm border px-2 py-0.5 text-3xs ${signalTone(transition.operator_signal.severity)}`}>
+                  <${StatusChip} tone=${signalTone(transition.operator_signal.severity)} uppercase=${false}>
                     ${transition.operator_signal.requires_operator_decision ? 'decision required' : transition.operator_signal.class}
-                  </span>
+                  </${StatusChip}>
                 ` : null}
               </div>
               ${transition.operator_signal ? html`
