@@ -155,6 +155,22 @@ let test_timeout_failure_class_turn_wall_clock () =
   check_timeout_class "turn timeout legacy message" "turn_wall_clock_timeout"
     (make_provider_timeout "Turn wall-clock timeout after 1200s")
 
+let test_transient_timeout_predicate_uses_timeout_class () =
+  check bool "provider timeout is transient" true
+    (KEC.is_transient_network_error
+       (make_provider_timeout "request timed out after 30s"));
+  check bool "OAS budget timeout is structural" false
+    (KEC.is_transient_network_error (make_oas_timeout_budget ()));
+  check bool "legacy OAS budget timeout is structural" false
+    (KEC.is_transient_network_error
+       (make_provider_timeout
+          "OAS execution timed out before dispatch (budget=90.000s)"));
+  check bool "turn wall-clock timeout is structural" false
+    (KEC.is_transient_network_error (make_turn_timeout ()));
+  check bool "legacy turn wall-clock timeout is structural" false
+    (KEC.is_transient_network_error
+       (make_provider_timeout "Turn wall-clock timeout after 1200s"))
+
 let () =
   run "keeper_error_classify_recoverable"
     [
@@ -188,5 +204,7 @@ let () =
             test_timeout_failure_class_oas_budget;
           test_case "turn wall-clock timeout is structural" `Quick
             test_timeout_failure_class_turn_wall_clock;
+          test_case "transient predicate follows timeout class" `Quick
+            test_transient_timeout_predicate_uses_timeout_class;
         ] );
     ]

@@ -64,8 +64,13 @@ let timeout_failure_class_of_error (err : Oas.Error.sdk_error) :
 let is_transient_network_error (err : Oas.Error.sdk_error) : bool =
   match err with
   | Oas.Error.Api (NetworkError _) -> true
-  | Oas.Error.Api (Timeout { message }) ->
-      not (is_structural_oas_timeout_message message)
+  | Oas.Error.Api (Timeout _) -> (
+      match timeout_failure_class_of_error err with
+      | Some Provider_timeout -> true
+      | Some Oas_timeout_budget
+      | Some Turn_wall_clock_timeout
+      | None ->
+          false)
   | Oas.Error.Api (Overloaded _) -> true
   | Oas.Error.Api (ServerError { status = 503; _ }) -> true
   | _ -> false
