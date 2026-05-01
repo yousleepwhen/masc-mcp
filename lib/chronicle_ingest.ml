@@ -151,7 +151,13 @@ let extract_goal_ids (ev : commit_event) =
 
 (* Group contiguous commits sharing at least one goal ID. *)
 let group_by_goal_id events =
-  let rec loop current_group groups remaining =
+  let merge_goals left right =
+    left @ right |> List.sort_uniq String.compare
+  in
+  let shares_goal left right =
+    left <> [] && right <> [] && List.exists (fun g -> List.mem g left) right
+  in
+  let rec loop current_group current_goals groups remaining =
     match remaining with
     | [] ->
       let groups =
@@ -165,26 +171,20 @@ let group_by_goal_id events =
       match current_group with
       | [] ->
         if goals = [] then
-          loop [] ([ ev ] :: groups) rest
+          loop [] [] ([ ev ] :: groups) rest
         else
-          loop [ ev ] groups rest
-      | first :: _ ->
-        let first_goals = extract_goal_ids first in
-        let shared =
-          goals <> []
-          && first_goals <> []
-          && List.exists (fun g -> List.mem g first_goals) goals
-        in
-        if shared then
-          loop (ev :: current_group) groups rest
+          loop [ ev ] goals groups rest
+      | _ ->
+        if shares_goal current_goals goals then
+          loop (ev :: current_group) (merge_goals current_goals goals) groups rest
         else
           let groups = List.rev current_group :: groups in
           if goals = [] then
-            loop [] ([ ev ] :: groups) rest
+            loop [] [] ([ ev ] :: groups) rest
           else
-            loop [ ev ] groups rest
+            loop [ ev ] goals groups rest
   in
-  loop [] [] events
+  loop [] [] [] events
 
 (* Group remaining commits by time window (days). *)
 let rec group_by_time_window events ~days =
@@ -201,9 +201,8 @@ let rec group_by_time_window events ~days =
       let date = String.sub ev.author_date 0 10 in
       match current_group with
       | [] -> loop [ ev ] date groups rest
-      | first :: _ ->
-        let first_date = String.sub first.author_date 0 10 in
-        if date = first_date || within_days first_date date days then
+      | _ ->
+        if date = current_date || within_days current_date date days then
           loop (ev :: current_group) current_date groups rest
         else
           let groups = List.rev current_group :: groups in
@@ -225,8 +224,16 @@ and within_days d1 d2 days =
   in
   match (parse_date d1, parse_date d2) with
   | Some (y1, m1, day1), Some (y2, m2, day2) ->
-    let to_days y m d = y * 366 + m * 31 + d in
-    abs (to_days y1 m1 day1 - to_days y2 m2 day2) <= days
+    let days_from_civil y m d =
+      let y = if m <= 2 then y - 1 else y in
+      let era = if y >= 0 then y / 400 else (y - 399) / 400 in
+      let yoe = y - (era * 400) in
+      let mp = m + if m > 2 then -3 else 9 in
+      let doy = ((153 * mp) + 2) / 5 + d - 1 in
+      let doe = (yoe * 365) + (yoe / 4) - (yoe / 100) + doy in
+      (era * 146097) + doe
+    in
+    abs (days_from_civil y1 m1 day1 - days_from_civil y2 m2 day2) <= days
   | _ -> false
 
 (* Build a candidate_epoch from a group of commits. *)
@@ -234,7 +241,11 @@ let make_candidate commits =
   match commits with
   | [] -> assert false
   | first :: _ ->
-    let last = List.hd (List.rev commits) in
+    let chronological =
+      List.sort (fun a b -> String.compare a.author_date b.author_date) commits
+    in
+    let first_chronological = List.hd chronological in
+    let last_chronological = List.hd (List.rev chronological) in
     let all_goals =
       commits
       |> List.map extract_goal_ids
@@ -263,10 +274,10 @@ let make_candidate commits =
     in
     { id
     ; label
-    ; start_commit = first.sha
-    ; end_commit = last.sha
-    ; start_date = String.sub first.author_date 0 10
-    ; end_date = String.sub last.author_date 0 10
+    ; start_commit = first_chronological.sha
+    ; end_commit = last_chronological.sha
+    ; start_date = String.sub first_chronological.author_date 0 10
+    ; end_date = String.sub last_chronological.author_date 0 10
     ; goal_ids = all_goals
     ; file_paths = all_files
     ; commit_count = List.length commits

@@ -57,17 +57,17 @@ let test_extract_from_subject () =
 let test_extract_task_pattern () =
   let ev = { CI.sha = "a"; CI.parents = []; CI.author_date = ""; CI.subject = "task-42 cleanup"; CI.files = [] } in
   let ids = CI.extract_goal_ids ev in
-  check bool "contains task-42" (List.mem "task-42" ids) true
+  check bool "contains task-42" true (List.mem "task-42" ids)
 
 let test_extract_hash_pattern () =
   let ev = { CI.sha = "a"; CI.parents = []; CI.author_date = ""; CI.subject = "fix issue #789"; CI.files = [] } in
   let ids = CI.extract_goal_ids ev in
-  check bool "contains #789" (List.mem "#789" ids) true
+  check bool "contains #789" true (List.mem "#789" ids)
 
 let test_extract_from_files () =
   let ev = { CI.sha = "a"; CI.parents = []; CI.author_date = ""; CI.subject = "misc"; CI.files = [ "planning/task-059/context.json"; "lib/core.ml" ] } in
   let ids = CI.extract_goal_ids ev in
-  check bool "extracts task-059 from path" (List.mem "task-059" ids) true
+  check bool "extracts task-059 from path" true (List.mem "task-059" ids)
 
 let test_extract_no_match () =
   let ev = { CI.sha = "a"; CI.parents = []; CI.author_date = ""; CI.subject = "misc cleanup"; CI.files = [ "README.md" ] } in
@@ -92,7 +92,21 @@ let test_group_single_goal () =
   check int "1 epoch" 1 (List.length epochs);
   let ep = List.hd epochs in
   check int "3 commits" 3 ep.CI.commit_count;
-  check bool "has PK-100 goal" (List.mem "PK-100" ep.CI.goal_ids) true
+  check bool "has PK-100 goal" true (List.mem "PK-100" ep.CI.goal_ids)
+
+let test_group_transitive_goal_chain () =
+  let events =
+    [ { CI.sha = "a1"; CI.parents = []; CI.author_date = "2026-05-01T10:00:00Z"; CI.subject = "PK-1 start"; CI.files = [] }
+    ; { CI.sha = "a2"; CI.parents = [ "a1" ]; CI.author_date = "2026-05-01T11:00:00Z"; CI.subject = "PK-1 PK-2 bridge"; CI.files = [] }
+    ; { CI.sha = "a3"; CI.parents = [ "a2" ]; CI.author_date = "2026-05-01T12:00:00Z"; CI.subject = "PK-2 finish"; CI.files = [] }
+    ]
+  in
+  let epochs = CI.group_events events in
+  check int "1 transitive epoch" 1 (List.length epochs);
+  let ep = List.hd epochs in
+  check int "3 commits" 3 ep.CI.commit_count;
+  check bool "has PK-1" true (List.mem "PK-1" ep.CI.goal_ids);
+  check bool "has PK-2" true (List.mem "PK-2" ep.CI.goal_ids)
 
 let test_group_separate_goals () =
   let events =
@@ -120,6 +134,25 @@ let test_group_ungrouped_outside_window () =
   in
   let epochs = CI.group_events ~time_window_days:7 events in
   check int "2 separate epochs" 2 (List.length epochs)
+
+let test_group_time_window_uses_stable_anchor () =
+  let events =
+    [ { CI.sha = "a1"; CI.parents = []; CI.author_date = "2026-05-01T10:00:00Z"; CI.subject = "cleanup 1"; CI.files = [] }
+    ; { CI.sha = "a2"; CI.parents = []; CI.author_date = "2026-05-07T10:00:00Z"; CI.subject = "cleanup 2"; CI.files = [] }
+    ; { CI.sha = "a3"; CI.parents = []; CI.author_date = "2026-05-13T10:00:00Z"; CI.subject = "cleanup 3"; CI.files = [] }
+    ]
+  in
+  let epochs = CI.group_events ~time_window_days:7 events in
+  check int "anchored window splits third commit" 2 (List.length epochs)
+
+let test_group_time_window_uses_real_calendar_days () =
+  let events =
+    [ { CI.sha = "a1"; CI.parents = []; CI.author_date = "2026-04-30T10:00:00Z"; CI.subject = "cleanup 1"; CI.files = [] }
+    ; { CI.sha = "a2"; CI.parents = []; CI.author_date = "2026-05-01T10:00:00Z"; CI.subject = "cleanup 2"; CI.files = [] }
+    ]
+  in
+  let epochs = CI.group_events ~time_window_days:1 events in
+  check int "month boundary remains within one day" 1 (List.length epochs)
 
 let test_group_empty () =
   let epochs = CI.group_events [] in
@@ -181,6 +214,20 @@ let test_candidate_epoch_fields () =
   check int "commit_count" 1 ep.CI.commit_count;
   check int "2 files" 2 (List.length ep.CI.file_paths)
 
+let test_candidate_epoch_uses_chronological_bounds () =
+  let events =
+    [ { CI.sha = "newer"; CI.parents = [ "older" ]; CI.author_date = "2026-05-02T10:00:00Z"; CI.subject = "PK-900 finish"; CI.files = [] }
+    ; { CI.sha = "older"; CI.parents = []; CI.author_date = "2026-05-01T10:00:00Z"; CI.subject = "PK-900 start"; CI.files = [] }
+    ]
+  in
+  let epochs = CI.group_events events in
+  check int "1 epoch" 1 (List.length epochs);
+  let ep = List.hd epochs in
+  check string "start_commit is oldest" "older" ep.CI.start_commit;
+  check string "end_commit is newest" "newer" ep.CI.end_commit;
+  check string "start_date" "2026-05-01" ep.CI.start_date;
+  check string "end_date" "2026-05-02" ep.CI.end_date
+
 let test_candidate_epoch_no_goal_uses_sha () =
   let events =
     [ { CI.sha = "deadbeef1234567"; CI.parents = []; CI.author_date = "2026-03-15T10:00:00Z"; CI.subject = "random work"; CI.files = [] }
@@ -188,8 +235,8 @@ let test_candidate_epoch_no_goal_uses_sha () =
   in
   let epochs = CI.group_events events in
   let ep = List.hd epochs in
-  check bool "id starts with year" (String.length ep.CI.id > 4) true;
-  check bool "id contains cluster" (String.contains ep.CI.id '-') true
+  check bool "id starts with year" true (String.length ep.CI.id > 4);
+  check bool "id contains cluster" true (String.contains ep.CI.id '-')
 
 let () =
   run "Chronicle_ingest" [
@@ -206,19 +253,23 @@ let () =
       test_case "no match" `Quick test_extract_no_match;
       test_case "dedup" `Quick test_extract_dedup;
     ]);
-    ("group_events", [
-      test_case "single goal cluster" `Quick test_group_single_goal;
-      test_case "separate goals" `Quick test_group_separate_goals;
-      test_case "ungrouped by time window" `Quick test_group_ungrouped_by_time;
-      test_case "outside time window" `Quick test_group_ungrouped_outside_window;
-      test_case "empty" `Quick test_group_empty;
-    ]);
+	    ("group_events", [
+	      test_case "single goal cluster" `Quick test_group_single_goal;
+	      test_case "transitive goal chain" `Quick test_group_transitive_goal_chain;
+	      test_case "separate goals" `Quick test_group_separate_goals;
+	      test_case "ungrouped by time window" `Quick test_group_ungrouped_by_time;
+	      test_case "outside time window" `Quick test_group_ungrouped_outside_window;
+	      test_case "stable time-window anchor" `Quick test_group_time_window_uses_stable_anchor;
+	      test_case "real calendar day distance" `Quick test_group_time_window_uses_real_calendar_days;
+	      test_case "empty" `Quick test_group_empty;
+	    ]);
     ("mock_git", [
       test_case "ingest_range" `Quick test_ingest_range_mock;
       test_case "ingest_since no change" `Quick test_ingest_since_no_change;
     ]);
-    ("candidate_epoch", [
-      test_case "fields" `Quick test_candidate_epoch_fields;
-      test_case "no-goal uses sha" `Quick test_candidate_epoch_no_goal_uses_sha;
-    ]);
+	    ("candidate_epoch", [
+	      test_case "fields" `Quick test_candidate_epoch_fields;
+	      test_case "chronological bounds" `Quick test_candidate_epoch_uses_chronological_bounds;
+	      test_case "no-goal uses sha" `Quick test_candidate_epoch_no_goal_uses_sha;
+	    ]);
   ]

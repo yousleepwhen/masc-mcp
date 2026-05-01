@@ -14,19 +14,19 @@
 type git_capture_hook =
   workdir:string -> string list -> (Unix.process_status * string) option
 
-let git_capture_hook_for_tests : git_capture_hook option Atomic.t =
-  Atomic.make None
+let git_capture_hook_for_tests : git_capture_hook option Domain.DLS.key =
+  Domain.DLS.new_key (fun () -> None)
 
 let set_git_capture_hook_for_tests hook =
-  Atomic.set git_capture_hook_for_tests (Some hook)
+  Domain.DLS.set git_capture_hook_for_tests (Some hook)
 
 let clear_git_capture_hook_for_tests () =
-  Atomic.set git_capture_hook_for_tests None
+  Domain.DLS.set git_capture_hook_for_tests None
 
 (* --- Execution helpers --- *)
 
 let run_git ~timeout_sec ~workdir args =
-  match Atomic.get git_capture_hook_for_tests with
+  match Domain.DLS.get git_capture_hook_for_tests with
   | Some hook -> hook ~workdir args
   | None ->
     let argv = [ "git"; "-C"; workdir; "--no-optional-locks" ] @ args in
@@ -67,22 +67,28 @@ let sha_exists ~workdir sha =
 
 (* --- File range validation --- *)
 
+module StringSet = Set.Make (String)
+
+let split_git_paths output =
+  String.split_on_char '\n' output
+  |> List.filter (fun s -> s <> "")
+  |> List.sort_uniq String.compare
+
 let files_in_range ~workdir start_commit end_commit =
   if String.equal start_commit end_commit then
     match
       run_git_output ~workdir
         [ "show"; "--name-only"; "--pretty=format:"; start_commit ]
     with
-    | Some output ->
-      String.split_on_char '\n' output
-      |> List.filter (fun s -> s <> "")
+    | Some output -> split_git_paths output
     | None -> []
   else
-    let range = Printf.sprintf "%s..%s" start_commit end_commit in
-    match run_git_output ~workdir [ "diff"; "--name-only"; range ] with
-    | Some output ->
-      String.split_on_char '\n' output
-      |> List.filter (fun s -> s <> "")
+    let inclusive_range = Printf.sprintf "%s^..%s" start_commit end_commit in
+    match
+      run_git_output ~workdir
+        [ "log"; "--format="; "--name-only"; inclusive_range ]
+    with
+    | Some output -> split_git_paths output
     | None -> []
 
 (* --- RFC file validation --- *)
@@ -92,8 +98,8 @@ let rfc_file_exists ~workdir rfc_ref =
     workdir |> Filename.concat "docs" |> Filename.concat "rfc"
   in
   let candidates =
-    [ Printf.sprintf "%s/%s.md" base rfc_ref
-    ; Printf.sprintf "%s/%s.org" base rfc_ref
+    [ Filename.concat base (rfc_ref ^ ".md")
+    ; Filename.concat base (rfc_ref ^ ".org")
     ]
   in
   List.exists Sys.file_exists candidates
@@ -136,7 +142,13 @@ let validate_epoch ~workdir epoch =
   let file_range_check =
     match key_paths with
     | [] -> true
-    | _ -> List.for_all (fun p -> List.mem p range_files) key_paths
+    | _ ->
+      let range_file_set =
+        List.fold_left
+          (fun acc path -> StringSet.add path acc)
+          StringSet.empty range_files
+      in
+      List.for_all (fun p -> StringSet.mem p range_file_set) key_paths
   in
   let rfc_refs_valid =
     List.map (rfc_file_exists ~workdir) epoch.Chronicle_types.rfc_refs

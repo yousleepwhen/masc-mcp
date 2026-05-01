@@ -96,7 +96,7 @@ let test_file_range_all_covered () =
   let mock_hook ~workdir:_ = function
     | [ "cat-file"; "-t"; _ ] ->
       Some (Unix.WEXITED 0, "commit\n")
-    | [ "diff"; "--name-only"; "abc123..def456" ] ->
+    | [ "log"; "--format="; "--name-only"; "abc123^..def456" ] ->
       Some (Unix.WEXITED 0, "lib/foo.ml\nlib/bar.ml\nlib/baz.ml\n")
     | _ -> None
   in
@@ -120,7 +120,7 @@ let test_file_range_missing () =
   let mock_hook ~workdir:_ = function
     | [ "cat-file"; "-t"; _ ] ->
       Some (Unix.WEXITED 0, "commit\n")
-    | [ "diff"; "--name-only"; "abc123..def456" ] ->
+    | [ "log"; "--format="; "--name-only"; "abc123^..def456" ] ->
       Some (Unix.WEXITED 0, "lib/foo.ml\n")
     | _ -> None
   in
@@ -170,6 +170,26 @@ let test_file_range_single_commit () =
       let ep =
         epoch ~start_commit:"same123" ~end_commit:"same123"
           ~key_files:[ { CT.path = "lib/core.ml"; CT.role = "source" } ]
+          ()
+      in
+      let result = CV.validate_epoch ~workdir:"/fake/repo" ep in
+      check bool "file_range_check" true result.CV.file_range_check)
+
+let test_file_range_uses_commit_history () =
+  let mock_hook ~workdir:_ = function
+    | [ "cat-file"; "-t"; _ ] ->
+      Some (Unix.WEXITED 0, "commit\n")
+    | [ "log"; "--format="; "--name-only"; "abc123^..def456" ] ->
+      Some (Unix.WEXITED 0, "lib/reverted.ml\nlib/other.ml\n")
+    | _ -> None
+  in
+  CV.set_git_capture_hook_for_tests mock_hook;
+  Fun.protect
+    ~finally:(fun () -> CV.clear_git_capture_hook_for_tests ())
+    (fun () ->
+      let ep =
+        epoch
+          ~key_files:[ { CT.path = "lib/reverted.ml"; CT.role = "source" } ]
           ()
       in
       let result = CV.validate_epoch ~workdir:"/fake/repo" ep in
@@ -258,11 +278,12 @@ let () =
         ; test_case "end missing" `Quick test_sha_end_missing
         ] )
     ; ( "file_range_check",
-        [ test_case "all covered" `Quick test_file_range_all_covered
-        ; test_case "missing file" `Quick test_file_range_missing
-        ; test_case "no key files" `Quick test_file_range_no_key_files
-        ; test_case "single commit" `Quick test_file_range_single_commit
-        ] )
+	        [ test_case "all covered" `Quick test_file_range_all_covered
+	        ; test_case "missing file" `Quick test_file_range_missing
+	        ; test_case "no key files" `Quick test_file_range_no_key_files
+	        ; test_case "single commit" `Quick test_file_range_single_commit
+	        ; test_case "commit history includes reverted files" `Quick test_file_range_uses_commit_history
+	        ] )
     ; ( "score",
         [ test_case "perfect score" `Quick test_score_perfect
         ; test_case "all fail" `Quick test_score_all_fail
