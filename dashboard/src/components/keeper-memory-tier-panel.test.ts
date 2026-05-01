@@ -31,6 +31,38 @@ const sample: MemoryKindUsageEntry[] = [
   { kind: 'uncapped', used: 99, cap: 0, priority: 4 },
 ]
 
+function compositeSnapshot(overrides: Partial<KeeperCompositeSnapshot> = {}): KeeperCompositeSnapshot {
+  const base: KeeperCompositeSnapshot = {
+    correlation_id: 'keeper-1:run-1',
+    run_id: 'run-1',
+    ts: 0,
+    phase: 'Compacting',
+    turn_phase: 'idle',
+    decision: { stage: 'idle' },
+    cascade: { state: 'idle' },
+    compaction: { stage: 'compacting' },
+    measurement: { captured: false },
+    invariants: {
+      phase_turn_alignment: true,
+      no_cascade_before_measurement: true,
+      compaction_atomicity: true,
+      event_priority_monotone: true,
+    },
+    is_live: true,
+    last_outcome: null,
+    recommended_actions: [],
+  }
+  return {
+    ...base,
+    ...overrides,
+    decision: { ...base.decision, ...(overrides.decision ?? {}) },
+    cascade: { ...base.cascade, ...(overrides.cascade ?? {}) },
+    compaction: { ...base.compaction, ...(overrides.compaction ?? {}) },
+    measurement: { ...base.measurement, ...(overrides.measurement ?? {}) },
+    invariants: { ...base.invariants, ...(overrides.invariants ?? {}) },
+  }
+}
+
 describe('filterMemoryKindUsage', () => {
   it('returns the input reference when query empty and filter=all', () => {
     expect(filterMemoryKindUsage(sample, '')).toBe(sample)
@@ -93,26 +125,9 @@ function mockMemoryTierFetches(usage: MemoryKindUsageEntry[]) {
     mermaid: 'graph TD',
     memory_kind_usage: usage,
   } satisfies KeeperStateDiagramResponse)
-  fetchKeeperCompositeMock.mockResolvedValue({
-    correlation_id: 'keeper-1:run-1',
-    run_id: 'run-1',
-    ts: 0,
-    phase: 'Compacting',
-    turn_phase: 'idle',
-    decision: { stage: 'idle' },
-    cascade: { state: 'idle' },
-    compaction: { stage: 'compacting' },
-    measurement: { captured: false },
-    invariants: {
-      phase_turn_alignment: true,
-      no_cascade_before_measurement: true,
-      compaction_atomicity: true,
-      event_priority_monotone: true,
-    },
-    is_live: true,
-    last_outcome: null,
-    recommended_actions: [],
-  } as KeeperCompositeSnapshot)
+  fetchKeeperCompositeMock.mockResolvedValue(
+    compositeSnapshot()
+  )
 }
 
 afterEach(() => {

@@ -14,6 +14,75 @@ vi.mock("./common/cytoscape-fsm", () => ({
   CytoscapeFsm: () => html`<div data-testid="fsm-graph"></div>`,
 }))
 
+type SnapshotOverrides = Partial<
+  Omit<KeeperCompositeSnapshot, "cascade" | "compaction" | "decision" | "execution" | "invariants" | "measurement">
+> & {
+  cascade?: Partial<KeeperCompositeSnapshot["cascade"]>
+  compaction?: Partial<KeeperCompositeSnapshot["compaction"]>
+  decision?: Partial<KeeperCompositeSnapshot["decision"]>
+  execution?: Partial<NonNullable<KeeperCompositeSnapshot["execution"]>>
+  invariants?: Partial<KeeperCompositeSnapshot["invariants"]>
+  measurement?: Partial<KeeperCompositeSnapshot["measurement"]>
+}
+
+function compositeSnapshot(overrides: SnapshotOverrides = {}): KeeperCompositeSnapshot {
+  const base: KeeperCompositeSnapshot = {
+    correlation_id: "keeper-1:run-1",
+    run_id: "run-1",
+    ts: 0,
+    phase: "Running",
+    turn_phase: "idle",
+    decision: { stage: "undecided" },
+    cascade: { state: "idle" },
+    compaction: { stage: "accumulating" },
+    measurement: { captured: false },
+    invariants: {
+      phase_turn_alignment: true,
+      no_cascade_before_measurement: true,
+      compaction_atomicity: true,
+      event_priority_monotone: true,
+    },
+    is_live: true,
+    last_outcome: null,
+    recommended_actions: [],
+  }
+  const baseExecution: NonNullable<KeeperCompositeSnapshot["execution"]> = {
+    latest_receipt_present: true,
+    recorded_at: null,
+    outcome: null,
+    terminal_reason_code: null,
+    operator_disposition: null,
+    operator_disposition_reason: null,
+    model_used: null,
+    stop_reason: null,
+    tool_contract_result: null,
+    duration_ms: null,
+    error: null,
+    cascade: null,
+    tool_surface: null,
+  }
+  const {
+    cascade,
+    compaction,
+    decision,
+    execution,
+    invariants,
+    measurement,
+    ...rest
+  } = overrides
+
+  return {
+    ...base,
+    ...rest,
+    decision: { ...base.decision, ...decision },
+    cascade: { ...base.cascade, ...cascade },
+    compaction: { ...base.compaction, ...compaction },
+    measurement: { ...base.measurement, ...measurement },
+    invariants: { ...base.invariants, ...invariants },
+    execution: execution ? { ...baseExecution, ...execution } : base.execution,
+  }
+}
+
 describe("turnFsmChipTone", () => {
   it.each([
     ["accent", "info"],
@@ -72,7 +141,7 @@ describe("TurnFsmDetailPanel", () => {
   })
 
   it("renders turn state and receipt badges through StatusChip", () => {
-    const snapshot = {
+    const snapshot = compositeSnapshot({
       turn_phase: "awaiting_tool",
       execution: {
         outcome: "failed",
@@ -80,7 +149,7 @@ describe("TurnFsmDetailPanel", () => {
         tool_contract_result: "violated",
         model_used: "glm-4.5",
       },
-    } as KeeperCompositeSnapshot
+    })
 
     render(html`<${TurnFsmDetailPanel} snapshot=${snapshot} />`, container)
 
