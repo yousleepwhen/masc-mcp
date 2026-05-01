@@ -100,10 +100,10 @@ function AlertPanel({ agentAlerts, taskAlerts }: { agentAlerts: AgentAlert[]; ta
   const warnCount = allAlerts.filter(a => a.severity === 'warn').length
 
   return html`
-    <${SectionCard} 
-      title="Alerts" 
-      tone=${hasCritical ? 'danger' : 'warn'}
-      right=${html`<${StatusDot} tone=${hasCritical ? 'danger' : 'warn'} />`}
+    <${SectionCard}
+      title="Alerts"
+      tone=${hasCritical ? 'border-[var(--color-status-err)]/45' : 'border-[var(--color-status-warn)]/45'}
+      right=${html`<${StatusDot} class=${hasCritical ? 'bg-[var(--color-status-err)]' : 'bg-[var(--color-status-warn)]'} />`}
       data-testid="overview-alerts"
     >
       <div class="mb-4">
@@ -118,7 +118,7 @@ function AlertPanel({ agentAlerts, taskAlerts }: { agentAlerts: AgentAlert[]; ta
       <ul class="space-y-2 border-t border-[var(--color-border-default)] pt-4">
         ${allAlerts.map(
           a => html`
-            <li 
+            <li
               class="flex items-start justify-between gap-4 cursor-pointer hover:bg-[var(--color-bg-secondary)]/50 p-1 -m-1 rounded transition-colors"
               onClick=${() => {
                 if ('name' in a) openAgentDetail(a.name)
@@ -247,7 +247,7 @@ function MissionPartyCard({ active }: { active: DashboardMissionSessionCard | nu
     `
   }
 
-  const progress = progressPct(active) ?? 0
+  const progress = progressPct(active)
   const status = active.status ?? 'unknown'
   const members = active.member_names
 
@@ -262,10 +262,10 @@ function MissionPartyCard({ active }: { active: DashboardMissionSessionCard | nu
              ${members.map(m => html`<${AgentAvatar} key=${m} name=${m} size="xs" class="ring-1 ring-[var(--color-bg-default)]" />`)}
            </div>
         </div>
-        
+
         <div class="grid grid-cols-2 gap-3">
-          <${StatTile} label="Progress" value="${progress}%" variant="${progress > 80 ? 'accent' : 'default'}" />
-          <${StatTile} label="Status" value="${status.toUpperCase()}" variant="${status === 'running' || status === 'active' ? 'accent' : 'default'}" />
+          <${StatTile} label="Progress" value=${progress === null ? 'n/a' : `${progress}%`} variant=${progress !== null && progress > 80 ? 'accent' : 'default'} />
+          <${StatTile} label="Status" value=${status.toUpperCase()} variant=${status === 'running' || status === 'active' ? 'accent' : 'default'} />
         </div>
       </div>
     <//>
@@ -278,15 +278,15 @@ function keeperStatusToneClass(status?: string | null): string {
   switch ((status ?? '').toLowerCase()) {
     case 'active':
     case 'live':
-      return 'tone-good'
+      return 'bg-[var(--color-status-ok)]'
     case 'busy':
     case 'executing':
-      return 'tone-info'
+      return 'bg-[var(--color-accent-fg)]'
     case 'offline':
     case 'dead':
-      return 'tone-danger'
+      return 'bg-[var(--color-status-err)]'
     default:
-      return 'tone-muted'
+      return 'bg-[var(--color-fg-muted)]'
   }
 }
 
@@ -302,7 +302,7 @@ export function pickActiveKeepers(keeperList: readonly Keeper[], max = 3): Keepe
     .slice(0, max)
 }
 
-function KeeperStrip({ keeperList }: { keeperList: Keeper[] }) {
+function KeeperStrip({ keeperList }: { keeperList: readonly Keeper[] }) {
   const activeKeepers = pickActiveKeepers(keeperList)
 
   if (activeKeepers.length === 0) {
@@ -318,9 +318,9 @@ function KeeperStrip({ keeperList }: { keeperList: Keeper[] }) {
       <div class="space-y-4">
         ${activeKeepers.slice(0, 1).map(
           k => html`
-            <${LifelineBar} 
+            <${LifelineBar}
               label=${k.koreanName && k.koreanName !== '' ? k.koreanName : k.name}
-              bpm=${72} 
+              bpm=${72}
             />
           `,
         )}
@@ -328,12 +328,10 @@ function KeeperStrip({ keeperList }: { keeperList: Keeper[] }) {
           ${activeKeepers.slice(1).map(
             k => html`
               <li key=${k.name} class="flex items-center gap-2">
-                <${StatusDot} tone=${keeperStatusToneClass(k.status)} />
+                <${StatusDot} class=${keeperStatusToneClass(k.status)} />
                 <div class="min-w-0">
                   <p class="text-xs font-medium truncate">${k.koreanName && k.koreanName !== '' ? k.koreanName : k.name}</p>
-                  ${k.last_heartbeat !== undefined
-                    ? html`<${TimeAgo} timestamp=${k.last_heartbeat} class="text-3xs text-[var(--color-fg-muted)]" />`
-                    : null}
+                  ${k.last_heartbeat ? html`<${TimeAgo} timestamp=${k.last_heartbeat} class="text-3xs text-[var(--color-fg-muted)]" />` : null}
                 </div>
               </li>
             `,
@@ -345,7 +343,7 @@ function KeeperStrip({ keeperList }: { keeperList: Keeper[] }) {
 }
 
 export function pickActiveSession(snap: DashboardMissionResponse | null): DashboardMissionSessionCard | null {
-  if (snap === null) return null
+  if (!snap) return null
   const running = snap.sessions.find(s => s.status === 'running' || s.status === 'active' || s.status === 'busy')
   return running ?? snap.sessions[0] ?? null
 }
