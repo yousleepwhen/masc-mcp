@@ -142,8 +142,8 @@ describe('AgentsUnified', () => {
     expect(btn).not.toBeUndefined()
     await act(async () => {
       btn!.click()
+      await Promise.resolve()
     })
-    render(h(AgentsUnified, null), container)
     const roster = container.querySelector('[data-testid="agent-roster"]')
     expect(roster!.getAttribute('data-filter')).toBe('agent-only')
   })

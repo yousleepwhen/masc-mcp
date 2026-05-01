@@ -60,8 +60,8 @@ describe('KeeperMultiSelect', () => {
     expect(btn!.getAttribute('aria-checked')).toBe('false')
     await act(async () => {
       btn!.click()
+      await Promise.resolve()
     })
-    render(h(KeeperMultiSelect, null), container)
     const btn2 = container.querySelector<HTMLButtonElement>('button[aria-label="alpha"]')
     expect(btn2!.getAttribute('aria-checked')).toBe('true')
   })
