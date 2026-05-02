@@ -889,7 +889,10 @@ function KeeperCard({ keeper }: { keeper: GoalDetailKeeper }) {
             ${latestNextAction ? html`
               <span>권장 ${latestNextAction}</span>
             ` : null}
-            ${/* Show operator_disposition_reason only when trustSummary is absent to avoid duplication. */
+            ${/* Show operator_disposition_reason only when trustSummary is absent to avoid
+               repeating the root-cause twice. trustSummary coalesces attention_reason,
+               disposition_reason, sandbox_summary, and mutation_guard_summary — any of
+               those already convey the stopped-reaction context. */
               operatorDispositionReason && !trustSummary ? html`
               <span>운영자 ${operatorDispositionReason}</span>
             ` : null}

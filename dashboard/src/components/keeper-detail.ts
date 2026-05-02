@@ -448,8 +448,11 @@ function KeeperRuntimeAlertStrip({ keeper }: { keeper: Keeper }) {
         ${latestNextAction
           ? html`<span><strong class="text-[var(--color-fg-secondary)]">권장 조치</strong> · ${latestNextAction}</span>`
           : null}
-        ${/* Show operator_disposition_reason only when trustSummary (attention_reason/disposition_reason) is absent
-             to avoid duplicating the same root-cause information in two labels. */
+        ${/* Show operator_disposition_reason only when trustSummary is absent to avoid
+             repeating the same root-cause text twice. trustSummary coalesces
+             attention_reason, disposition_reason, and mutation_guard_summary — any of
+             those already convey the stopped-reaction context that operator_disposition_reason
+             would otherwise supply. */
           operatorDispositionReason && !trustSummary
           ? html`<span><${StrongSecondary}>운영자 판단</${StrongSecondary}> · ${operatorDispositionReason}</span>`
           : null}
