@@ -268,17 +268,21 @@ function normalizeSession(raw: unknown): OperatorSessionSnapshot | null {
   }
 }
 
-function normalizeOperatorKeeperRuntimeTrust(raw: unknown): OperatorKeeperRuntimeTrust | null {
+function normalizeTerminalReason(raw: unknown): OperatorKeeperRuntimeTrust['latest_terminal_reason'] {
   if (!isRecord(raw)) return null
-  const terminalReason = isRecord(raw.latest_terminal_reason)
-    ? {
-        code: asString(raw.latest_terminal_reason.code) ?? null,
-        source: asString(raw.latest_terminal_reason.source) ?? null,
-        severity: asString(raw.latest_terminal_reason.severity) ?? null,
-        summary: asString(raw.latest_terminal_reason.summary) ?? null,
-        next_action: asString(raw.latest_terminal_reason.next_action) ?? null,
-      }
-    : null
+  const code = asString(raw.code)
+  if (!code) return null
+  return {
+    code,
+    source: asString(raw.source) ?? null,
+    severity: asString(raw.severity) ?? null,
+    summary: asString(raw.summary) ?? null,
+    next_action: asString(raw.next_action) ?? null,
+  }
+}
+
+export function normalizeOperatorKeeperRuntimeTrust(raw: unknown): OperatorKeeperRuntimeTrust | null {
+  if (!isRecord(raw)) return null
   return {
     disposition: asString(raw.disposition) ?? null,
     disposition_reason: asString(raw.disposition_reason) ?? null,
@@ -287,7 +291,7 @@ function normalizeOperatorKeeperRuntimeTrust(raw: unknown): OperatorKeeperRuntim
     needs_attention: typeof raw.needs_attention === 'boolean' ? raw.needs_attention : null,
     attention_reason: asString(raw.attention_reason) ?? null,
     next_human_action: asString(raw.next_human_action) ?? null,
-    latest_terminal_reason: terminalReason,
+    latest_terminal_reason: normalizeTerminalReason(raw.latest_terminal_reason),
     latest_next_action: asString(raw.latest_next_action) ?? null,
   }
 }
@@ -315,9 +319,7 @@ function normalizeKeeper(raw: unknown): OperatorKeeperSnapshot | null {
     needs_attention: typeof raw.needs_attention === 'boolean' ? raw.needs_attention : null,
     attention_reason: asString(raw.attention_reason) ?? null,
     next_human_action: asString(raw.next_human_action) ?? null,
-    runtime_trust: isRecord(raw.runtime_trust)
-      ? normalizeOperatorKeeperRuntimeTrust(raw.runtime_trust)
-      : null,
+    runtime_trust: normalizeOperatorKeeperRuntimeTrust(raw.runtime_trust),
   }
 }
 

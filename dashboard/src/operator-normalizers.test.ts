@@ -332,6 +332,18 @@ describe('normalizeOperatorSnapshot', () => {
     expect(result.keepers[0]!.next_human_action).toBeNull()
   })
 
+  it('drops terminal_reason in runtime_trust when code is missing', () => {
+    const result = normalizeOperatorSnapshot({
+      keepers: [
+        {
+          name: 'incomplete-trust-keeper',
+          runtime_trust: { latest_terminal_reason: { source: 'execution_receipt' } },
+        },
+      ],
+    })
+    expect(result.keepers[0]!.runtime_trust?.latest_terminal_reason).toBeNull()
+  })
+
   it('extracts recent_messages', () => {
     const result = normalizeOperatorSnapshot({
       recent_messages: [
