@@ -889,7 +889,8 @@ function KeeperCard({ keeper }: { keeper: GoalDetailKeeper }) {
             ${latestNextAction ? html`
               <span>권장 ${latestNextAction}</span>
             ` : null}
-            ${operatorDispositionReason && !trustSummary ? html`
+            ${/* Show operator_disposition_reason only when trustSummary is absent to avoid duplication. */
+              operatorDispositionReason && !trustSummary ? html`
               <span>운영자 ${operatorDispositionReason}</span>
             ` : null}
           </div>

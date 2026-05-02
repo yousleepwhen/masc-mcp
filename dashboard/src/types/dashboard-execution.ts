@@ -1,4 +1,4 @@
-import type { Agent, BoardPost } from './core'
+import type { Agent, BoardPost, KeeperTrustTerminalReason } from './core'
 import type { OperatorAttentionItem, OperatorRecommendedAction } from './dashboard-mission'
 import type { BoardMonitoring, GovernanceMonitoring, GovernanceDecisionItem, GovernanceTimelineEvent, GovernanceJudgeSummary, GovernanceJudgment, KeeperApprovalQueueItem, KeeperApprovalRule, PendingConfirmation, PendingConfirmSummary } from './governance'
 
@@ -612,13 +612,7 @@ export interface GoalKeeperTrustSummary {
   needs_attention?: boolean | null
   attention_reason?: string | null
   next_human_action?: string | null
-  latest_terminal_reason?: {
-    code?: string | null
-    source?: string | null
-    severity?: string | null
-    summary?: string | null
-    next_action?: string | null
-  } | null
+  latest_terminal_reason?: KeeperTrustTerminalReason | null
   latest_next_action?: string | null
   approval_state?: GoalKeeperTrustApprovalState | null
   execution_summary?: GoalKeeperTrustExecutionSummary | null

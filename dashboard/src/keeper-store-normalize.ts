@@ -168,7 +168,7 @@ function normalizeKeeperTrustLatestEvent(raw: unknown): KeeperTrustLatestEvent |
   }
 }
 
-function normalizeKeeperTrustTerminalReason(raw: unknown): KeeperTrustTerminalReason | null {
+export function normalizeKeeperTrustTerminalReason(raw: unknown): KeeperTrustTerminalReason | null {
   if (!isRecord(raw)) return null
   const code = asString(raw.code)
   if (!code) return null

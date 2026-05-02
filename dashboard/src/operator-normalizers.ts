@@ -5,6 +5,7 @@ import {
   normalizePendingConfirmEnvelope,
   normalizePendingConfirmSummary,
 } from './pending-confirm'
+import { normalizeKeeperTrustTerminalReason } from './keeper-store-normalize'
 import type {
   Message,
   OperatorActionDescriptor,
@@ -268,19 +269,6 @@ function normalizeSession(raw: unknown): OperatorSessionSnapshot | null {
   }
 }
 
-function normalizeTerminalReason(raw: unknown): OperatorKeeperRuntimeTrust['latest_terminal_reason'] {
-  if (!isRecord(raw)) return null
-  const code = asString(raw.code)
-  if (!code) return null
-  return {
-    code,
-    source: asString(raw.source) ?? null,
-    severity: asString(raw.severity) ?? null,
-    summary: asString(raw.summary) ?? null,
-    next_action: asString(raw.next_action) ?? null,
-  }
-}
-
 export function normalizeOperatorKeeperRuntimeTrust(raw: unknown): OperatorKeeperRuntimeTrust | null {
   if (!isRecord(raw)) return null
   return {
@@ -291,7 +279,7 @@ export function normalizeOperatorKeeperRuntimeTrust(raw: unknown): OperatorKeepe
     needs_attention: typeof raw.needs_attention === 'boolean' ? raw.needs_attention : null,
     attention_reason: asString(raw.attention_reason) ?? null,
     next_human_action: asString(raw.next_human_action) ?? null,
-    latest_terminal_reason: normalizeTerminalReason(raw.latest_terminal_reason),
+    latest_terminal_reason: normalizeKeeperTrustTerminalReason(raw.latest_terminal_reason),
     latest_next_action: asString(raw.latest_next_action) ?? null,
   }
 }

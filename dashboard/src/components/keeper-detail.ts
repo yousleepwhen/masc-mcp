@@ -448,7 +448,9 @@ function KeeperRuntimeAlertStrip({ keeper }: { keeper: Keeper }) {
         ${latestNextAction
           ? html`<span><strong class="text-[var(--color-fg-secondary)]">권장 조치</strong> · ${latestNextAction}</span>`
           : null}
-        ${operatorDispositionReason && !trustSummary
+        ${/* Show operator_disposition_reason only when trustSummary (attention_reason/disposition_reason) is absent
+             to avoid duplicating the same root-cause information in two labels. */
+          operatorDispositionReason && !trustSummary
           ? html`<span><${StrongSecondary}>운영자 판단</${StrongSecondary}> · ${operatorDispositionReason}</span>`
           : null}
         ${trustDisposition
