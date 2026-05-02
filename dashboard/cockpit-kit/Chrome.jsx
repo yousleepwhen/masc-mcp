@@ -6,7 +6,12 @@ const PLANES = ["Dashboard", "Work", "Comms", "Observe", "Cognition", "IDE"];
 // ============== Topbar ==============
 function Topbar({ goal, goals, mode, setMode, density, setDensity, branch, setBranch }) {
   const [brOpen, setBrOpen] = useState(false);
-  const branches = (window.MASC_P2 && window.MASC_P2.branches) || [];
+  
+  const [cs] = (window.useCockpitState ? window.useCockpitState() : [{}]);
+  const activeRepo = cs.repo || "masc-mcp";
+  const allBranches = (window.MASC_P2 && window.MASC_P2.branches) || [];
+  const branches = allBranches.filter(b => !b.repo || b.repo === activeRepo);
+
   const cur = branches.find(b => b.name === branch) || branches[0] || { name:"main", ahead:0, behind:0, head:"—" };
   const popRef = useRef(null);
 

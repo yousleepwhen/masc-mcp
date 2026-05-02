@@ -964,3 +964,55 @@ button { font: inherit; }
 }
 .zone-actL { grid-area: actL; }
 .zone-actR { grid-area: actR; }
+
+/* Command Palette */
+.cmd-palette-overlay {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 15vh;
+  z-index: 10000;
+  backdrop-filter: blur(2px);
+}
+.cmd-palette {
+  width: 600px;
+  background: var(--bg-1);
+  border: 1px solid var(--line-3);
+  border-radius: var(--r-2);
+  box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+  display: flex;
+  flex-direction: column;
+}
+.cmd-palette input {
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--line-1);
+  padding: 16px;
+  font-size: 16px;
+  color: var(--fg-1);
+  outline: none;
+}
+.cmd-list {
+  max-height: 400px;
+  overflow-y: auto;
+  padding: 8px;
+}
+.cmd-item {
+  padding: 10px 12px;
+  color: var(--fg-2);
+  cursor: pointer;
+  border-radius: var(--r-1);
+  font-family: var(--font-sans);
+}
+.cmd-item:hover, .cmd-item.active {
+  background: var(--brass-glow-soft);
+  color: var(--brass-1);
+}
+.cmd-empty {
+  padding: 12px;
+  color: var(--fg-4);
+  text-align: center;
+}

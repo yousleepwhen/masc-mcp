@@ -69,6 +69,13 @@ function App() {
 
   return (
     <div className="app" data-screen-label="MASC Cockpit" data-density={density}>
+      {window.CommandPalette ? <window.CommandPalette onSelect={(cmd) => {
+        if (cmd.id.startsWith("mode-")) {
+          const modeMap = { "mode-dash": "Dashboard", "mode-work": "Work", "mode-comms": "Comms", "mode-obs": "Observe", "mode-cog": "Cognition", "mode-ide": "IDE" };
+          setMode(modeMap[cmd.id]);
+        }
+      }} /> : null}
+
       {window.ViewportBanner ? <window.ViewportBanner/> : null}
       <Topbar goal={activeGoal} goals={D.goals} mode={mode} setMode={setMode}
               density={density} setDensity={setDensity}
