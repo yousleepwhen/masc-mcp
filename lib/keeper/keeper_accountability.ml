@@ -303,7 +303,7 @@ let read_window_entries (config : Coord_query.config) =
   | Some count -> window_read_count_for_testing_ref := Some (count + 1)
   | None -> ());
   let now = Time_compat.now () in
-  let since = event_date_string (now -. (float_of_int summary_window_days *. 86400.0)) in
+  let since = event_date_string (now -. Masc_time_constants.days_to_seconds summary_window_days) in
   let until = event_date_string now in
   Dated_jsonl.read_range (get_store config) ~since ~until
 
@@ -367,7 +367,7 @@ let read_file_tail_lines path ~max_bytes ~max_lines =
     | _ -> []
 
 let recent_decision_timestamps config ~keeper_name ~now =
-  let cutoff = now -. (float_of_int summary_window_days *. 86400.0) in
+  let cutoff = now -. Masc_time_constants.days_to_seconds summary_window_days in
   candidate_decision_keeper_names keeper_name
   |> List.concat_map (fun candidate ->
          let path = keeper_decision_log_path config candidate in
@@ -701,7 +701,7 @@ let risk_band_of_metrics ~evidence_coverage ~unsupported_completion_rate
     "high"
 
 let summary_cutoff now =
-  now -. (float_of_int summary_window_days *. 86400.0)
+  now -. Masc_time_constants.days_to_seconds summary_window_days
 
 let summary_json_of_snapshots ~keeper_name ~agent_name ~now snapshots =
   let supported_claims = ref 0 in

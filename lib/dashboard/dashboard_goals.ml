@@ -206,8 +206,8 @@ let stagnation_threshold_seconds = function
 
 let human_duration seconds =
   if seconds < 3600 then Printf.sprintf "%dm" (seconds / 60)
-  else if seconds < 86400 then Printf.sprintf "%dh" (seconds / 3600)
-  else Printf.sprintf "%dd" (seconds / 86400)
+  else if seconds < Masc_time_constants.day_int then Printf.sprintf "%dh" (seconds / 3600)
+  else Printf.sprintf "%dd" (seconds / Masc_time_constants.day_int)
 
 let compute_convergence (goal : Goal_store.goal) linked_tasks children =
   let goal_done_weight =

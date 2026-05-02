@@ -161,7 +161,7 @@ let build_profile ~config ~agent_id ~window_days =
   in
   if List.length entries < 3 then None
   else
-    let cutoff = Unix.gettimeofday () -. (float_of_int window_days *. 86400.0) in
+    let cutoff = Unix.gettimeofday () -. Masc_time_constants.days_to_seconds window_days in
     let recent = List.filter (fun e -> e.Audit_log.timestamp >= cutoff) entries in
     if List.length recent < 3 then None
     else
