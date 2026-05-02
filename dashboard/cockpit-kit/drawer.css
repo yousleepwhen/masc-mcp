@@ -293,7 +293,7 @@
   color: var(--color-fg-primary);
   white-space: nowrap;
   overflow: hidden;
-  text-overflow: ellipsis;
+  text-overflow: ellipsis; min-width: 0;
 }
 .dr-csc-h .out {
   text-align: center;
@@ -389,14 +389,14 @@
   color: var(--color-fg-secondary);
   white-space: nowrap;
   overflow: hidden;
-  text-overflow: ellipsis;
+  text-overflow: ellipsis; min-width: 0;
 }
 .dr-aud-row .nt {
   color: var(--color-fg-muted);
   font-size: var(--fs-10);
   white-space: nowrap;
   overflow: hidden;
-  text-overflow: ellipsis;
+  text-overflow: ellipsis; min-width: 0;
 }
 
 /* ─── COST ────────────────────────────────────────────────── */

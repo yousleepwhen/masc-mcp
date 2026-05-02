@@ -408,45 +408,29 @@ function Rail({ events, cascade }) {
 }
 
 // ============== Composer ==============
+
 function Composer({ selKeeper }) {
-  const [val, setVal] = useState("");
-  const [hist, setHist] = useState([
-    { ts:"16:31", kp:"nick0cave", cmd:"keeper.claim(t-9f2a)",  ok:true  },
-    { ts:"16:24", kp:"sangsu",    cmd:"keeper.trace(cascade-3f19)", ok:true },
-    { ts:"16:18", kp:"qa-king",   cmd:"verify(suite-merge-blockers)", ok:false },
-  ]);
-  const ctxLabel = (window.MASC_P2 && window.MASC_P2.repos)
-    ? `${selKeeper} → ${(window.MASC_EXT?.initialState?.().repo) || "runtime"} / ${(window.MASC_EXT?.initialState?.().branch) || "main"}`
-    : selKeeper;
-  const submit = () => {
-    if (!val.trim()) return;
-    setHist(h => [{ ts:"now", kp:selKeeper, cmd: val.trim(), ok:true }, ...h.slice(0,4)]);
-    setVal("");
-  };
+  const [collapsed, setCollapsed] = React.useState(false);
   return (
-    <div className="compose">
-      <span className="compose-prompt" title={ctxLabel}>▸ {selKeeper}:</span>
-      <input className="compose-input"
-             value={val}
-             onChange={(e)=>setVal(e.target.value)}
-             onKeyDown={(e)=>{ if (e.key === "Enter") submit(); }}
-             placeholder="keeper.claim(task) · keeper.trace(cascade_id) · /goal goal-keeper-clarity …" />
-      <div className="compose-hist" title="recent commands">
-        {hist.slice(0,3).map((h,i) => (
-          <span key={i} className={"hb " + (h.ok?"ok":"err")}>
-            <span className="ht">{h.ts}</span>
-            <span className="hk">{h.kp}</span>
-            <span className="hc">{h.cmd}</span>
-          </span>
-        ))}
+    <div className={"zone-composer pane " + (collapsed ? "is-collapsed" : "")}>
+      <div className="pane-head" onClick={() => setCollapsed(!collapsed)}>
+        <span className="pane-chev">▼</span>
+        <span className="ti">Composer</span>
+        <span className="sub">· ⏎ to send</span>
+        <span className="ctx">to <span className="kp">{selKeeper}</span></span>
+        <div style={{flex:1}}></div>
+        <div className="composer-actions">
+          <button className="btn"><span className="ic">⌘</span></button>
+          <button className="btn primary">Send</button>
+        </div>
       </div>
-      <span className="compose-hint">⏎ run · ⌘K palette · ? help</span>
-      <button className="compose-btn" onClick={submit}>Run</button>
+      <div className="pane-body composer-body">
+        <textarea className="composer-input" placeholder="Interject... (⌘K for palette, ? for help)"></textarea>
+      </div>
     </div>
   );
 }
 
-// ============== Status Bar ==============
 function StatusBar({ providers }) {
   return (
     <div className="status">

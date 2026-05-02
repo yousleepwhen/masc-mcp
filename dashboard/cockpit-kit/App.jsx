@@ -15,6 +15,20 @@ function App() {
   const [branch, setBranchRaw] = useState(cs.branch || "main");
   const [selectedKeepers, setSelectedKeepers] = useState(new Set(["nick0cave","sangsu"]));
 
+  const [leftTab, setLeftTab] = useState('explorer');
+  const [rightTab, setRightTab] = useState('debug');
+
+  const leftTabs = [
+    { id: 'explorer', label: 'Explorer', icon: '📂' },
+    { id: 'search', label: 'Search', icon: '🔍' },
+    { id: 'scm', label: 'Source Control', icon: '🔀' },
+  ];
+  const rightTabs = [
+    { id: 'debug', label: 'Debug', icon: '🐛' },
+    { id: 'timeline', label: 'Timeline', icon: '⏱' },
+  ];
+
+
   // cs is the source of truth for mode/branch — mirror to local state for child props
   useEffect(() => {
     if (cs.mode && cs.mode !== mode) setModeRaw(cs.mode);
@@ -62,12 +76,20 @@ function App() {
       <Ticker events={D.events} />
       <KpiStrip />
       <Lifeline />
+      
+      {window.ActivityBar ? <div className="zone-actL"><window.ActivityBar side="left" activeTab={leftTab} onTabClick={setLeftTab} tabs={leftTabs} /></div> : null}
+      
+      {window.ActivityBar ? <div className="zone-actL"><window.ActivityBar side="left" activeTab={leftTab} onTabClick={setLeftTab} tabs={leftTabs} /></div> : null}
       <Sidebar keepers={D.keepers} goals={D.goals}
                selKeeper={selKeeper} setSelKeeper={setSelKeeper}
                selGoal={selGoal} setSelGoal={setSelGoal}
                selectedKeepers={selectedKeepers} toggleKeeper={toggleKeeper} />
       {renderCenter()}
       <Rail events={D.events} cascade={D.cascade} />
+      {window.ActivityBar ? <div className="zone-actR"><window.ActivityBar side="right" activeTab={rightTab} onTabClick={setRightTab} tabs={rightTabs} /></div> : null}
+
+      {window.ActivityBar ? <div className="zone-actR"><window.ActivityBar side="right" activeTab={rightTab} onTabClick={setRightTab} tabs={rightTabs} /></div> : null}
+
       {window.Drawer ? <window.Drawer/> : null}
       <Composer selKeeper={selKeeper} />
       <StatusBar providers={D.providers} />

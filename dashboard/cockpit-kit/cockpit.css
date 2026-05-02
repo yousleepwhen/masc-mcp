@@ -541,7 +541,7 @@ button { font: inherit; }
 .activity .d.flag  { background: var(--warn-fg); }
 .activity .d.err   { background: var(--err-fg); }
 .activity .d.note  { background: var(--color-fg-muted); }
-.activity .tx { color: var(--color-fg-primary); min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.activity .tx { color: var(--color-fg-primary); min-width: 0; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .activity .tx .kn {
   display: inline-block; font-weight: 600;
   margin-right: 5px;
@@ -814,7 +814,7 @@ button { font: inherit; }
   min-width: 0;
   max-width: 260px;
   overflow: hidden;
-  text-overflow: ellipsis;
+  text-overflow: ellipsis; min-width: 0;
   white-space: nowrap;
   padding: 2px 7px;
   background: var(--color-bg-panel-alt);
@@ -907,3 +907,60 @@ button { font: inherit; }
 /* Mode tabs need to scroll horizontally on narrow screens (now 6 modes) */
 .tb-modes { overflow-x: auto; max-width: 360px; flex-shrink: 0; }
 .tb-modes::-webkit-scrollbar { display: none; }
+
+/* Activity Bar */
+.activity-bar {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-1);
+  border-right: 1px solid var(--line-1);
+  width: var(--w-activity-bar, 48px);
+  z-index: 100;
+}
+.activity-bar-right {
+  border-right: none;
+  border-left: 1px solid var(--line-1);
+}
+.ab-tab {
+  width: 100%;
+  height: 48px;
+  background: transparent;
+  border: none;
+  color: var(--fg-3);
+  font-size: 20px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.2s;
+}
+.ab-tab:hover {
+  color: var(--fg-1);
+}
+.ab-tab.active {
+  color: var(--brass-1);
+  border-left: 2px solid var(--brass-1);
+}
+.activity-bar-right .ab-tab.active {
+  border-left: none;
+  border-right: 2px solid var(--brass-1);
+}
+
+/* Phase A: Tool Window System Layout Override */
+:root {
+  --w-activity-bar: 48px;
+}
+.cockpit {
+  grid-template-columns: var(--w-activity-bar) var(--w-sidebar) minmax(0, 1fr) var(--w-rail) var(--w-activity-bar);
+  grid-template-areas:
+    "topbar topbar topbar topbar topbar"
+    "ticker ticker ticker ticker ticker"
+    "kpi    kpi    kpi    kpi    kpi"
+    "life   life   life   life   life"
+    "actL   side   center rail   actR"
+    "drawer drawer drawer drawer drawer"
+    "compose compose compose compose compose"
+    "status status status status status";
+}
+.zone-actL { grid-area: actL; }
+.zone-actR { grid-area: actR; }

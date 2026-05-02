@@ -456,13 +456,13 @@ body.has-vp-banner.compact-vp .cockpit-fs-fab { display: inline-block; }
   white-space: nowrap;
   max-width: 130px;
   overflow: hidden;
-  text-overflow: ellipsis;
+  text-overflow: ellipsis; min-width: 0;
 }
 .compose-hist .hb.err { border-color: rgba(208,72,72,.4); color: var(--err-fg, #d04848); }
 .compose-hist .hb.ok:hover  { border-color: var(--brass-3, #6b5022); color: var(--color-fg-primary); }
 .compose-hist .hb .ht { color: var(--color-fg-disabled); }
 .compose-hist .hb .hk { color: var(--brass-1, #f0c674); font-weight: 600; }
-.compose-hist .hb .hc { overflow: hidden; text-overflow: ellipsis; }
+.compose-hist .hb .hc { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 
 
 /* ═══════════════ IDE v3 (Phase B-C) ═══════════════ */

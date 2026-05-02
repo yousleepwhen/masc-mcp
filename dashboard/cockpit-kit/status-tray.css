@@ -154,7 +154,7 @@
   color: var(--color-fg-secondary);
   white-space: nowrap;
   overflow: hidden;
-  text-overflow: ellipsis;
+  text-overflow: ellipsis; min-width: 0;
 }
 
 /* In widget-solo mode hide the tray (chromeless surfaces don't need it) */
