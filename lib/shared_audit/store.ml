@@ -21,26 +21,29 @@ let rec mkdir_p dir =
 
 let ensure_dir_exists path = mkdir_p (Filename.dirname path)
 
-let read_jsonl_file path =
+let parse_jsonl_line line =
+  try Yojson.Safe.from_string line |> Envelope.of_json with
+  | Yojson.Json_error _ -> Error "malformed JSONL line"
+
+let read_jsonl_file_with_status path =
   let ic = open_in path in
   Fun.protect
     ~finally:(fun () -> close_in_noerr ic)
     (fun () ->
       let entries = ref [] in
+      let malformed_seen = ref false in
       (try
          while true do
            let line = input_line ic in
            if String.length line > 0 then
-             match Yojson.Safe.from_string line with
-             | json -> (
-                 match Envelope.of_json json with
-                 | Ok env -> entries := env :: !entries
-                 | Error _ -> () )
-             | exception Yojson.Json_error _ -> ()
-             | exception Yojson.Safe.Util.Type_error (_, _) -> ()
+             match parse_jsonl_line line with
+             | Ok env -> entries := env :: !entries
+             | Error _ -> malformed_seen := true
          done
        with End_of_file -> ());
-      List.rev !entries)
+      List.rev !entries, !malformed_seen)
+
+let read_jsonl_file path = fst (read_jsonl_file_with_status path)
 
 let load_latest_hash ~base_dir =
   if not (Sys.file_exists base_dir) then None
@@ -68,10 +71,13 @@ let load_latest_hash ~base_dir =
            | [] -> find_in_months rest
            | d :: _ ->
              let path = Filename.concat m_dir d in
-             let entries = read_jsonl_file path in
-             (match List.rev entries with
-              | last :: _ -> Some (Envelope.hash_for_chain last)
-              | [] -> find_in_months rest))
+             let entries, malformed_seen = read_jsonl_file_with_status path in
+             if malformed_seen then
+               None
+             else
+               (match List.rev entries with
+                | last :: _ -> Some (Envelope.hash_for_chain last)
+                | [] -> find_in_months rest))
     in
     find_in_months months
 

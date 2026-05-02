@@ -216,9 +216,15 @@ let test_store_skips_malformed_jsonl_lines () =
     close_out oc;
     let entries = Store.recent store ~n:10 in
     check int "malformed line skipped" 1 (List.length entries);
-    match entries with
+    (match entries with
     | [ entry ] -> check string "valid entry preserved" valid.id entry.id
-    | _ -> fail "expected exactly one valid audit entry")
+    | _ -> fail "expected exactly one valid audit entry");
+    let resumed = Store.create ~base_dir:dir in
+    let next = Store.append resumed ~category:"X" ~payload:(`Int 2) in
+    check (option string) "resume does not hide corrupt tail" None next.prev_hash;
+    match Store.verify_chain (Store.recent resumed ~n:10) with
+    | Ok () -> fail "corrupt-tail resume should leave a detectable chain break"
+    | Error (_idx, _reason) -> ())
 
 let test_store_base_dir_inspector () =
   let dir = unique_temp_dir "audit_inspector" in
