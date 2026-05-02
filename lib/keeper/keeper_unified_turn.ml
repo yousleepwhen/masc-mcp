@@ -1555,8 +1555,19 @@ let run_keeper_cycle ~(config : Coord.config) ~(meta : keeper_meta)
              the keeper fiber for a transient API blip is an overreaction
              that causes unnecessary restarts and context loss.
              Only persistent errors (auth failure, config error, context
-             overflow after compaction) increment the crash counter. *)
-          if not is_auto_recoverable then
+             overflow after compaction) increment the crash counter.
+
+             EXCEPTION: cascade exhaustion errors always increment the
+             counter regardless of auto-recoverable classification.
+             Auto-recoverable cascade subtypes (Candidates_filtered_after_cycles,
+             Max_turns_exceeded) were skipping the counter, preventing
+             auto-pause from ever triggering. The keeper would loop
+             indefinitely on a broken cascade without operator notification.
+             Retry eligibility != failure tracking. *)
+          let counts_toward_crash =
+            not is_auto_recoverable || EC.is_cascade_exhausted_error err
+          in
+          if counts_toward_crash then
             Keeper_registry.increment_turn_failures ~base_path meta.name
           else
             Log.Keeper.info
@@ -1991,7 +2002,15 @@ let run_keeper_cycle ~(config : Coord.config) ~(meta : keeper_meta)
              between the cycle's read and its write. #9764 / #9769:
              field-level merge preserves heartbeat-owned fields from
              disk so the retry does not clobber concurrent heartbeat
-             writes (previous "caller wins" retry was losing the race). *)
+             writes (previous "caller wins" retry was losing the race).
+             Self-healing circuit breaker: clear [auto_resume_after_sec]
+             so a successful turn resets the exponential back-off to the
+             initial delay for the next auto-pause cycle. *)
+          let updated_meta =
+            if updated_meta.auto_resume_after_sec <> None
+            then { updated_meta with auto_resume_after_sec = None }
+            else updated_meta
+          in
           (match
              write_meta_with_merge
                ~merge:Keeper_meta_merge.heartbeat_fields_from_disk

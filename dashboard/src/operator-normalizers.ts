@@ -5,7 +5,7 @@ import {
   normalizePendingConfirmEnvelope,
   normalizePendingConfirmSummary,
 } from './pending-confirm'
-import { normalizeKeeperTrustTerminalReason } from './keeper-store-normalize'
+import { normalizeKeeperTrustTerminalReason, normalizeKeeperTrust } from './keeper-store-normalize'
 import type {
   Message,
   OperatorActionDescriptor,
@@ -308,6 +308,7 @@ function normalizeKeeper(raw: unknown): OperatorKeeperSnapshot | null {
     attention_reason: asString(raw.attention_reason) ?? null,
     next_human_action: asString(raw.next_human_action) ?? null,
     runtime_trust: normalizeOperatorKeeperRuntimeTrust(raw.runtime_trust),
+    trust: normalizeKeeperTrust(raw.trust),
   }
 }
 

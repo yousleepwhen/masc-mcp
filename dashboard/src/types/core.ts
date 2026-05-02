@@ -285,7 +285,7 @@ export interface KeeperTrustExecutionSummary {
 export interface KeeperTrustTerminalReason {
   code?: string | null
   source?: string | null
-  severity?: string | null
+  severity?: 'ok' | 'warn' | 'bad' | string | null
   summary?: string | null
   next_action?: string | null
 }
@@ -302,6 +302,8 @@ export interface KeeperTrustSummary {
   latest_next_action?: string | null
   approval_state?: KeeperTrustApprovalState | null
   execution_summary?: KeeperTrustExecutionSummary | null
+  latest_terminal_reason?: KeeperTrustTerminalReason | null
+  latest_next_action?: string | null
   latest_causal_event?: KeeperTrustLatestEvent | null
 }
 

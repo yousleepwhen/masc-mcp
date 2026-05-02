@@ -4,6 +4,7 @@ import {
   normalizeRecommendedAction,
 } from './store-normalizers'
 import { normalizeOperatorKeeperRuntimeTrust } from './operator-normalizers'
+import { normalizeKeeperTrust } from './keeper-store-normalize'
 import {
   normalizeAgentBrief,
   normalizeAttentionQueueItem,
@@ -189,6 +190,7 @@ function normalizeKeeper(raw: unknown): OperatorKeeperSnapshot | null {
     attention_reason: asString(raw.attention_reason) ?? null,
     next_human_action: asString(raw.next_human_action) ?? null,
     runtime_trust: normalizeOperatorKeeperRuntimeTrust(raw.runtime_trust),
+    trust: normalizeKeeperTrust(raw.trust),
   }
 }
 
