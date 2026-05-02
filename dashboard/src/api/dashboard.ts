@@ -1350,15 +1350,28 @@ function decodeGoalKeeperTrustExecutionSummary(raw: unknown): GoalKeeperTrustExe
 
 function decodeGoalKeeperTrustSummary(raw: unknown): GoalKeeperTrustSummary | null {
   if (!isRecord(raw)) return null
+  const terminalReason = isRecord(raw.latest_terminal_reason)
+    ? {
+        code: asNullableString(raw.latest_terminal_reason.code),
+        source: asNullableString(raw.latest_terminal_reason.source),
+        severity: asNullableString(raw.latest_terminal_reason.severity),
+        summary: asNullableString(raw.latest_terminal_reason.summary),
+        next_action: asNullableString(raw.latest_terminal_reason.next_action),
+      }
+    : null
   return {
     disposition: asNullableString(raw.disposition),
     disposition_reason: asNullableString(raw.disposition_reason),
+    operator_disposition: asNullableString(raw.operator_disposition),
+    operator_disposition_reason: asNullableString(raw.operator_disposition_reason),
     needs_attention:
       typeof raw.needs_attention === 'boolean'
         ? raw.needs_attention
         : null,
     attention_reason: asNullableString(raw.attention_reason),
     next_human_action: asNullableString(raw.next_human_action),
+    latest_terminal_reason: terminalReason,
+    latest_next_action: asNullableString(raw.latest_next_action),
     approval_state: decodeGoalKeeperTrustApprovalState(raw.approval_state ?? raw.approval),
     execution_summary:
       decodeGoalKeeperTrustExecutionSummary(raw.execution_summary ?? raw.execution),

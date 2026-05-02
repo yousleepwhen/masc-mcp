@@ -5,6 +5,7 @@ import type {
   KeeperMetricPoint,
   KeeperPhase,
   KeeperTrustLatestEvent,
+  KeeperTrustTerminalReason,
   PipelineStage,
   PromptTelemetry,
 } from './types'
@@ -167,15 +168,32 @@ function normalizeKeeperTrustLatestEvent(raw: unknown): KeeperTrustLatestEvent |
   }
 }
 
+function normalizeKeeperTrustTerminalReason(raw: unknown): KeeperTrustTerminalReason | null {
+  if (!isRecord(raw)) return null
+  const code = asString(raw.code)
+  if (!code) return null
+  return {
+    code,
+    source: asString(raw.source) ?? null,
+    severity: asString(raw.severity) ?? null,
+    summary: asString(raw.summary) ?? null,
+    next_action: asString(raw.next_action) ?? null,
+  }
+}
+
 function normalizeKeeperTrust(raw: unknown): Keeper['trust'] {
   if (!isRecord(raw)) return null
   return {
     disposition: asString(raw.disposition) ?? null,
     disposition_reason: asString(raw.disposition_reason) ?? null,
+    operator_disposition: asString(raw.operator_disposition) ?? null,
+    operator_disposition_reason: asString(raw.operator_disposition_reason) ?? null,
     needs_attention:
       typeof raw.needs_attention === 'boolean' ? raw.needs_attention : null,
     attention_reason: asString(raw.attention_reason) ?? null,
     next_human_action: asString(raw.next_human_action) ?? null,
+    latest_terminal_reason: normalizeKeeperTrustTerminalReason(raw.latest_terminal_reason),
+    latest_next_action: asString(raw.latest_next_action) ?? null,
     approval_state: isRecord(raw.approval_state)
       ? {
           state: asString(raw.approval_state.state) ?? null,

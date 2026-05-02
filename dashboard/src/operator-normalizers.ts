@@ -12,6 +12,7 @@ import type {
   OperatorDigest,
   OperatorGuidanceSummary,
   OperatorJudgment,
+  OperatorKeeperRuntimeTrust,
   OperatorKeeperSnapshot,
   OperatorLinkedAutoresearch,
   OperatorReviewDecision,
@@ -267,6 +268,30 @@ function normalizeSession(raw: unknown): OperatorSessionSnapshot | null {
   }
 }
 
+function normalizeOperatorKeeperRuntimeTrust(raw: unknown): OperatorKeeperRuntimeTrust | null {
+  if (!isRecord(raw)) return null
+  const terminalReason = isRecord(raw.latest_terminal_reason)
+    ? {
+        code: asString(raw.latest_terminal_reason.code) ?? null,
+        source: asString(raw.latest_terminal_reason.source) ?? null,
+        severity: asString(raw.latest_terminal_reason.severity) ?? null,
+        summary: asString(raw.latest_terminal_reason.summary) ?? null,
+        next_action: asString(raw.latest_terminal_reason.next_action) ?? null,
+      }
+    : null
+  return {
+    disposition: asString(raw.disposition) ?? null,
+    disposition_reason: asString(raw.disposition_reason) ?? null,
+    operator_disposition: asString(raw.operator_disposition) ?? null,
+    operator_disposition_reason: asString(raw.operator_disposition_reason) ?? null,
+    needs_attention: typeof raw.needs_attention === 'boolean' ? raw.needs_attention : null,
+    attention_reason: asString(raw.attention_reason) ?? null,
+    next_human_action: asString(raw.next_human_action) ?? null,
+    latest_terminal_reason: terminalReason,
+    latest_next_action: asString(raw.latest_next_action) ?? null,
+  }
+}
+
 function normalizeKeeper(raw: unknown): OperatorKeeperSnapshot | null {
   if (!isRecord(raw)) return null
   const name = asString(raw.name)
@@ -287,6 +312,12 @@ function normalizeKeeper(raw: unknown): OperatorKeeperSnapshot | null {
     last_autonomous_action_at: asString(raw.last_autonomous_action_at) ?? null,
     last_turn_ago_s: asNumber(raw.last_turn_ago_s),
     model: asString(raw.model) ?? asString(raw.active_model) ?? asString(raw.primary_model),
+    needs_attention: typeof raw.needs_attention === 'boolean' ? raw.needs_attention : null,
+    attention_reason: asString(raw.attention_reason) ?? null,
+    next_human_action: asString(raw.next_human_action) ?? null,
+    runtime_trust: isRecord(raw.runtime_trust)
+      ? normalizeOperatorKeeperRuntimeTrust(raw.runtime_trust)
+      : null,
   }
 }
 

@@ -367,6 +367,24 @@ export interface OperatorSessionSnapshot {
   recent_events?: Record<string, unknown>[]
 }
 
+export interface OperatorKeeperRuntimeTrust {
+  disposition?: string | null
+  disposition_reason?: string | null
+  operator_disposition?: string | null
+  operator_disposition_reason?: string | null
+  needs_attention?: boolean | null
+  attention_reason?: string | null
+  next_human_action?: string | null
+  latest_terminal_reason?: {
+    code?: string | null
+    source?: string | null
+    severity?: string | null
+    summary?: string | null
+    next_action?: string | null
+  } | null
+  latest_next_action?: string | null
+}
+
 export interface OperatorKeeperSnapshot {
   name: string
   runtime_class?: 'keeper'
@@ -396,8 +414,11 @@ export interface OperatorKeeperSnapshot {
   active_model_label?: string | null
   diagnostic?: Record<string, unknown>
   recent_activity?: Record<string, unknown>[]
+  needs_attention?: boolean | null
+  attention_reason?: string | null
+  next_human_action?: string | null
+  runtime_trust?: OperatorKeeperRuntimeTrust | null
 }
-
 
 
 export interface OperatorAttentionItem {

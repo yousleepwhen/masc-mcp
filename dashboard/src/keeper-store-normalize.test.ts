@@ -375,6 +375,59 @@ describe('normalizeKeepers lifecycle metrics', () => {
     })
   })
 
+  it('preserves stopped-reaction fields in trust summary', () => {
+    const [keeper] = normalizeKeepers([
+      {
+        name: 'blocked-keeper',
+        status: 'active',
+        trust: {
+          disposition: 'Alert',
+          operator_disposition: 'pause_runtime',
+          operator_disposition_reason: 'timeout_budget_exhausted',
+          needs_attention: true,
+          attention_reason: 'timeout_budget_exhausted',
+          latest_terminal_reason: {
+            code: 'timeout_budget_exhausted',
+            source: 'execution_receipt',
+            severity: 'bad',
+            summary: 'Turn budget exhausted after 15 turns',
+            next_action: 'inspect_timeout_budget',
+          },
+          latest_next_action: 'inspect_timeout_budget',
+        },
+      },
+    ])
+
+    expect(keeper?.trust).toMatchObject({
+      disposition: 'Alert',
+      operator_disposition: 'pause_runtime',
+      operator_disposition_reason: 'timeout_budget_exhausted',
+      needs_attention: true,
+      attention_reason: 'timeout_budget_exhausted',
+      latest_terminal_reason: {
+        code: 'timeout_budget_exhausted',
+        source: 'execution_receipt',
+        severity: 'bad',
+        summary: 'Turn budget exhausted after 15 turns',
+        next_action: 'inspect_timeout_budget',
+      },
+      latest_next_action: 'inspect_timeout_budget',
+    })
+  })
+
+  it('returns null latest_terminal_reason when code is missing', () => {
+    const [keeper] = normalizeKeepers([
+      {
+        name: 'no-code-keeper',
+        status: 'active',
+        trust: {
+          latest_terminal_reason: { source: 'execution_receipt' },
+        },
+      },
+    ])
+    expect(keeper?.trust?.latest_terminal_reason).toBeNull()
+  })
+
   it('preserves runtime cascade identity and metric provider observations', () => {
     const [keeper] = normalizeKeepers([
       {
