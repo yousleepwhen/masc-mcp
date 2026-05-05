@@ -68,3 +68,17 @@ The catalog accepts either a top-level JSON array or an object with
 `findings`.  Each finding requires `finding_id`, `title`, `severity`, and
 `patterns`.  A full audit corpus, including the 206-finding production-audit
 set, can use the same format without changing the Orient script.
+
+Replay Decide with an explicit decision catalog when the audit corpus has its
+own finding-to-action map:
+
+```bash
+python3 scripts/decide_goal_loop_findings.py \
+  test/fixtures/goal_loop/orient.startup.json \
+  --decision-catalog test/fixtures/goal_loop/decision-catalog.sample.json \
+  --format text
+```
+
+The decision catalog accepts either a top-level JSON array or an object with
+`decisions`.  Each decision requires `decision_id`, `priority`, `finding_ids`,
+`action`, `owner`, `estimated_hours`, `impact`, `urgency`, and `difficulty`.

@@ -145,6 +145,92 @@ class DecideGoalLoopFindingsTest(unittest.TestCase):
             ],
         )
 
+    def test_decide_accepts_external_decision_catalog(self) -> None:
+        decision_specs = decide_goal_loop_findings.parse_decision_catalog(
+            {
+                "decisions": [
+                    {
+                        "decision_id": "D-AUD-1",
+                        "priority": "P0",
+                        "finding_ids": ["AUD-001"],
+                        "action": "Fix provider audit finding",
+                        "owner": "provider",
+                        "estimated_hours": 3,
+                        "impact": 10,
+                        "urgency": 9,
+                        "difficulty": 3,
+                    },
+                    {
+                        "decision_id": "D-AUD-2",
+                        "priority": "P2",
+                        "finding_ids": ["AUD-002", "AUD-003"],
+                        "action": "Triage governance audit finding",
+                        "owner": "governance",
+                        "estimated_hours": 5,
+                        "impact": 5,
+                        "urgency": 4,
+                        "difficulty": 5,
+                    },
+                ]
+            }
+        )
+        report = decide_goal_loop_findings.decide_orient(
+            {
+                "findings": [
+                    {"finding_id": "AUD-001", "status": "EVIDENCE_PRESENT"},
+                    {"finding_id": "AUD-002", "status": "EVIDENCE_PRESENT"},
+                    {"finding_id": "AUD-003", "status": "EVIDENCE_ABSENT"},
+                ]
+            },
+            act_map={"D-AUD-1": ["PR#1"]},
+            decision_specs=decision_specs,
+        )
+
+        by_id = {decision.decision_id: decision for decision in report.decisions}
+        self.assertEqual(report.source_findings_total, 3)
+        self.assertEqual(report.decisions_total, 2)
+        self.assertEqual(report.p0_count, 1)
+        self.assertEqual(report.act_linked_count, 1)
+        self.assertEqual(report.act_missing_count, 1)
+        self.assertEqual(by_id["D-AUD-1"].score, 30.0)
+        self.assertEqual(by_id["D-AUD-1"].matched_findings, ["AUD-001"])
+        self.assertEqual(by_id["D-AUD-2"].matched_findings, ["AUD-002"])
+
+    def test_cli_uses_decision_catalog_fixture(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_dir:
+            orient_path = Path(raw_dir) / "orient.json"
+            orient_path.write_text(
+                json.dumps(
+                    {
+                        "findings": [
+                            {"finding_id": "NF-1", "status": "EVIDENCE_PRESENT"},
+                            {"finding_id": "NF-4", "status": "EVIDENCE_PRESENT"},
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_PATH),
+                    str(orient_path),
+                    "--decision-catalog",
+                    str(FIXTURE_DIR / "decision-catalog.sample.json"),
+                    "--fail-on",
+                    "p0",
+                ],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('"decisions_total": 2', result.stdout)
+        self.assertIn('"decision_id": "D-EMERGENCY-2"', result.stdout)
+        self.assertIn('"decision_id": "D-P2-2"', result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,30 @@
+{
+  "decisions": [
+    {
+      "action": "Run bootstrap provider health checks instead of advisory skip",
+      "decision_id": "D-EMERGENCY-2",
+      "difficulty": 4,
+      "estimated_hours": 4,
+      "finding_ids": [
+        "NF-1"
+      ],
+      "impact": 10,
+      "owner": "provider",
+      "priority": "P0",
+      "urgency": 10
+    },
+    {
+      "action": "Strictly surface governance parse failures",
+      "decision_id": "D-P2-2",
+      "difficulty": 5,
+      "estimated_hours": 8,
+      "finding_ids": [
+        "NF-4"
+      ],
+      "impact": 6,
+      "owner": "governance",
+      "priority": "P2",
+      "urgency": 5
+    }
+  ]
+}

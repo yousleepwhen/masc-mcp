@@ -148,6 +148,12 @@ def load_act_map_input(path: str) -> dict[str, list[str]]:
     return normalize_act_map(data)
 
 
+def load_decision_catalog_input(path: str) -> tuple[DecisionSpec, ...]:
+    with Path(path).open("r", encoding="utf-8") as handle:
+        data = json.load(handle)
+    return parse_decision_catalog(data)
+
+
 def normalize_act_map(raw: dict[str, Any]) -> dict[str, list[str]]:
     act_map: dict[str, list[str]] = {}
     for decision_id, value in raw.items():
@@ -159,6 +165,81 @@ def normalize_act_map(raw: dict[str, Any]) -> dict[str, list[str]]:
         if isinstance(value, list):
             act_map[decision_id] = [item for item in value if isinstance(item, str)]
     return act_map
+
+
+def parse_decision_catalog(raw: Any) -> tuple[DecisionSpec, ...]:
+    if isinstance(raw, dict):
+        raw_decisions = raw.get("decisions")
+    else:
+        raw_decisions = raw
+    if not isinstance(raw_decisions, list):
+        raise ValueError(
+            "expected decision catalog JSON array or object with decisions array"
+        )
+
+    specs: list[DecisionSpec] = []
+    seen_ids: set[str] = set()
+    for index, item in enumerate(raw_decisions):
+        if not isinstance(item, dict):
+            raise ValueError(f"decision catalog entry {index} must be an object")
+        decision_id = item.get("decision_id")
+        priority = item.get("priority")
+        finding_ids = item.get("finding_ids")
+        action = item.get("action")
+        owner = item.get("owner")
+        if not isinstance(decision_id, str) or not decision_id:
+            raise ValueError(f"decision catalog entry {index} missing decision_id")
+        if decision_id in seen_ids:
+            raise ValueError(f"duplicate decision_id in catalog: {decision_id}")
+        if priority not in PRIORITY_RANK:
+            raise ValueError(
+                f"decision catalog entry {decision_id} has invalid priority: {priority!r}"
+            )
+        if not isinstance(finding_ids, list) or not finding_ids:
+            raise ValueError(
+                f"decision catalog entry {decision_id} missing finding_ids"
+            )
+        normalized_finding_ids = tuple(
+            finding_id
+            for finding_id in finding_ids
+            if isinstance(finding_id, str) and finding_id
+        )
+        if len(normalized_finding_ids) != len(finding_ids):
+            raise ValueError(
+                f"decision catalog entry {decision_id} contains non-string finding_ids"
+            )
+        if not isinstance(action, str) or not action:
+            raise ValueError(f"decision catalog entry {decision_id} missing action")
+        if not isinstance(owner, str) or not owner:
+            raise ValueError(f"decision catalog entry {decision_id} missing owner")
+
+        def require_positive_int(field_name: str) -> int:
+            value = item.get(field_name)
+            if not isinstance(value, int) or value <= 0:
+                raise ValueError(
+                    f"decision catalog entry {decision_id} has invalid {field_name}: {value!r}"
+                )
+            return value
+
+        estimated_hours = require_positive_int("estimated_hours")
+        impact = require_positive_int("impact")
+        urgency = require_positive_int("urgency")
+        difficulty = require_positive_int("difficulty")
+        seen_ids.add(decision_id)
+        specs.append(
+            DecisionSpec(
+                decision_id=decision_id,
+                priority=priority,
+                finding_ids=normalized_finding_ids,
+                action=action,
+                owner=owner,
+                estimated_hours=estimated_hours,
+                impact=impact,
+                urgency=urgency,
+                difficulty=difficulty,
+            )
+        )
+    return tuple(specs)
 
 
 def priority_score(spec: DecisionSpec) -> float:
@@ -197,10 +278,11 @@ def decide_orient(
     orient: dict[str, Any],
     *,
     act_map: dict[str, list[str]] | None = None,
+    decision_specs: tuple[DecisionSpec, ...] = DECISIONS,
 ) -> DecideReport:
     present = present_finding_ids(orient)
     decisions: list[DecisionReport] = []
-    for spec in DECISIONS:
+    for spec in decision_specs:
         matched = [
             finding_id for finding_id in spec.finding_ids if finding_id in present
         ]
@@ -315,13 +397,31 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             "When provided, unmapped decisions are reported as ACT_MISSING."
         ),
     )
+    parser.add_argument(
+        "--decision-catalog",
+        help=(
+            "Optional JSON decision catalog. Accepts an array or an object with "
+            "a decisions array. Each decision needs decision_id, priority, "
+            "finding_ids, action, owner, estimated_hours, impact, urgency, "
+            "and difficulty. Use this with larger audit corpora."
+        ),
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     act_map = load_act_map_input(args.act_map) if args.act_map else None
-    report = decide_orient(load_json_input(args.orient_json), act_map=act_map)
+    decision_specs = (
+        load_decision_catalog_input(args.decision_catalog)
+        if args.decision_catalog
+        else DECISIONS
+    )
+    report = decide_orient(
+        load_json_input(args.orient_json),
+        act_map=act_map,
+        decision_specs=decision_specs,
+    )
     if args.format == "json":
         print(report_to_json(report))
     else:
