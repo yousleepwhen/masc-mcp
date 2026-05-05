@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { statusLabel } from './feature-health'
 
 describe('statusLabel', () => {
+  // FIXME: Add a minimal component-level test that exercises filtering and validates the rendered status chip tone/labels.
   it.each([
     ['healthy', '정상'],
     ['warning', '실험적'],

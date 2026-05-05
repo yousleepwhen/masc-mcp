@@ -66,7 +66,7 @@ const STATUS_FILTER_OPTIONS: { value: StatusFilter; label: string }[] = [
   { value: 'deprecated', label: '폐기 예정' },
 ]
 
-// Pure filter helpers — exported for isolated testing.
+// Pure filter helpers (module-internal).
 function featureMatchesSearch(
   item: Pick<FeatureHealthItem, 'env_name' | 'description'>,
   query: string,
