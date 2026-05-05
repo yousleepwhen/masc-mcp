@@ -204,11 +204,12 @@ function CategorySection({ group }: { group: { category: ContentCategory; posts:
 }
 
 function ReactionSummaryPreview({ summaries }: { summaries?: readonly BoardReactionSummary[] }) {
-  const visible = (summaries ?? [])
+  const allSummaries = (summaries ?? [])
     .filter(summary => summary.count > 0)
+  const visible = allSummaries
     .slice(0, 3)
   if (visible.length === 0) return null
-  const total = visible.reduce((sum, summary) => sum + summary.count, 0)
+  const total = allSummaries.reduce((sum, summary) => sum + summary.count, 0)
   return html`
     <span
       class="inline-flex items-center gap-1 text-2xs text-[var(--color-fg-muted)]"

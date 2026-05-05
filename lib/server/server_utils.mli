@@ -162,6 +162,14 @@ val board_reaction_summaries :
     the current reaction summary for dashboard embedding. Lookup failures
     degrade to [] so stale/deleted rows do not break the board list. *)
 
+val board_reaction_summaries_batch :
+  targets:(Board.reaction_target_type * string) list ->
+  user_id:string option ->
+  ((Board.reaction_target_type * string) * Board.reaction_summary list) list
+(** [board_reaction_summaries_batch ~targets ~user_id] returns dashboard
+    reaction summaries for a request's target set using one board-store
+    scan. *)
+
 (** {1 Dashboard helpers} *)
 
 val board_comment_dashboard_json :

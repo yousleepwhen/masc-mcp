@@ -1,5 +1,5 @@
 import { h } from 'preact'
-import { cleanup, fireEvent, render, screen } from '@testing-library/preact'
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/preact'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { BoardSurface } from './board-surface'
 import { boardPosts, boardLoading, boardSortMode, boardExcludeSystem, boardExcludeAutomation, boardHiddenCategories, boardAuthorFilter, boardHearthFilter } from '../../store'
@@ -220,15 +220,32 @@ describe('BoardSurface Component', () => {
             has_reacted: false,
             recent_user_ids: ['keeper'],
           },
+          {
+            emoji: '👀',
+            count: 4,
+            reacted: false,
+            has_reacted: false,
+            recent_user_ids: ['observer'],
+          },
+          {
+            emoji: '🔥',
+            count: 5,
+            reacted: false,
+            has_reacted: false,
+            recent_user_ids: ['moderator'],
+          },
         ],
       }),
     ]
 
     render(h(BoardSurface, null))
 
-    expect(screen.getByLabelText('리액션 요약 5개')).toBeInTheDocument()
-    expect(screen.getByText('🚀')).toBeInTheDocument()
-    expect(screen.getByText('👏')).toBeInTheDocument()
+    const preview = screen.getByLabelText('리액션 요약 14개')
+    expect(preview).toBeInTheDocument()
+    expect(within(preview).getByText('🚀')).toBeInTheDocument()
+    expect(within(preview).getByText('👏')).toBeInTheDocument()
+    expect(within(preview).getByText('👀')).toBeInTheDocument()
+    expect(preview).not.toHaveTextContent('🔥')
   })
 
   it('hides system posts by default', () => {

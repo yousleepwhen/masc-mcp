@@ -138,6 +138,11 @@ let board_reaction_summaries ~target_type ~target_id ~user_id =
   | Ok summaries -> summaries
   | Error _ -> []
 
+let board_reaction_summaries_batch ~targets ~user_id =
+  match targets with
+  | [] -> []
+  | _ -> Board_dispatch.list_reactions_batch ~targets ?user_id ()
+
 let max_filtered_board_window = 5200
 
 let board_fetch_limit ~exclude_system ~exclude_automation ~limit ~offset =
