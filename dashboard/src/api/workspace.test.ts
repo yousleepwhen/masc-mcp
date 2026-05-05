@@ -32,16 +32,16 @@ describe('workspace API', () => {
 
     const result = await fetchWorkspaceTree(2)
     expect(result).toHaveLength(1)
-    expect(result[0].path).toBe('lib/main.ml')
+    expect(result[0]!.path).toBe('lib/main.ml')
 
-    expect(mockFetch.mock.calls[0][0]).toContain('/api/v1/workspace/tree?depth=2')
+    expect(mockFetch.mock.calls[0]![0]!).toContain('/api/v1/workspace/tree?depth=2')
   })
 
   it('fetchWorkspaceTree appends keeper param when provided', async () => {
     stubFetch([])
 
     await fetchWorkspaceTree(1, { keeper: 'sangsu' })
-    expect(mockFetch.mock.calls[0][0]).toContain('keeper=sangsu')
+    expect(mockFetch.mock.calls[0]![0]!).toContain('keeper=sangsu')
   })
 
   it('fetchWorkspaceFile returns file content', async () => {
@@ -51,8 +51,8 @@ describe('workspace API', () => {
     expect(result?.ok).toBe(true)
     expect(result?.content).toBe('let x = 1\n')
 
-    expect(mockFetch.mock.calls[0][0]).toContain('/api/v1/workspace/file?path=')
-    expect(mockFetch.mock.calls[0][0]).toContain('lib%2Fmain.ml')
+    expect(mockFetch.mock.calls[0]![0]!).toContain('/api/v1/workspace/file?path=')
+    expect(mockFetch.mock.calls[0]![0]!).toContain('lib%2Fmain.ml')
   })
 
   it('fetchGitBlame returns blame blocks', async () => {
@@ -61,7 +61,7 @@ describe('workspace API', () => {
 
     const result = await fetchGitBlame('a.ml')
     expect(result).toHaveLength(1)
-    expect(result[0].keeper_id).toBe('claude')
+    expect(result[0]!.keeper_id).toBe('claude')
   })
 
   it('fetchGitDiff extracts unified rows from response', async () => {
@@ -70,7 +70,7 @@ describe('workspace API', () => {
 
     const result = await fetchGitDiff('a.ml')
     expect(result).toHaveLength(1)
-    expect(result[0].kind).toBe('add')
+    expect(result[0]!.kind).toBe('add')
   })
 
   it('fetchGitDiff defaults to empty array when unified missing', async () => {
@@ -84,13 +84,13 @@ describe('workspace API', () => {
     stubFetch({ unified: [] })
 
     await fetchGitDiff('a.ml')
-    expect(mockFetch.mock.calls[0][0]).toContain('base_ref=HEAD')
+    expect(mockFetch.mock.calls[0]![0]!).toContain('base_ref=HEAD')
   })
 
   it('fetchGitDiff accepts custom baseRef', async () => {
     stubFetch({ unified: [] })
 
     await fetchGitDiff('a.ml', { baseRef: 'v0.19.0' })
-    expect(mockFetch.mock.calls[0][0]).toContain('base_ref=v0.19.0')
+    expect(mockFetch.mock.calls[0]![0]!).toContain('base_ref=v0.19.0')
   })
 })
