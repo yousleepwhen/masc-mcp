@@ -291,7 +291,7 @@ No convergence claim is valid yet. The only safe current statement is:
    Decide -> Verify against those logs.
 2. Extend Orient input from the 10 startup fixture findings to the full
    206-finding audit corpus, or attach the corpus source path if it already
-   exists outside this repo.
+   exists outside this repo. Tracked as #13265.
 3. Wire `goal_loop_status.py` JSON into the operator dashboard only after the
    fixture's critical state is preserved in UI tests.
 4. Add SLA state for anti-stagnation after ACT coverage is complete; otherwise
@@ -302,5 +302,5 @@ No convergence claim is valid yet. The only safe current statement is:
 Do not mark the GOAL LOOP objective complete while any of these are true:
 
 - `verify.fail.json` is the latest Verify fixture.
-- The full 206-finding audit corpus is not replayed by Orient.
+- The full 206-finding audit corpus is not replayed by Orient (#13265).
 - Live runtime evidence is not re-collected after the ACT PRs are merged.
