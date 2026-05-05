@@ -122,6 +122,62 @@ def load_json_handle(handle: TextIO) -> dict[str, Any]:
     return data
 
 
+def load_finding_catalog_input(path: str) -> tuple[FindingSpec, ...]:
+    with Path(path).open("r", encoding="utf-8") as handle:
+        data = json.load(handle)
+    return parse_finding_catalog(data)
+
+
+def parse_finding_catalog(raw: Any) -> tuple[FindingSpec, ...]:
+    if isinstance(raw, dict):
+        raw_findings = raw.get("findings")
+    else:
+        raw_findings = raw
+    if not isinstance(raw_findings, list):
+        raise ValueError(
+            "expected finding catalog JSON array or object with findings array"
+        )
+
+    specs: list[FindingSpec] = []
+    seen_ids: set[str] = set()
+    for index, item in enumerate(raw_findings):
+        if not isinstance(item, dict):
+            raise ValueError(f"finding catalog entry {index} must be an object")
+        finding_id = item.get("finding_id")
+        title = item.get("title")
+        severity = item.get("severity")
+        patterns = item.get("patterns")
+        if not isinstance(finding_id, str) or not finding_id:
+            raise ValueError(f"finding catalog entry {index} missing finding_id")
+        if finding_id in seen_ids:
+            raise ValueError(f"duplicate finding_id in catalog: {finding_id}")
+        if not isinstance(title, str) or not title:
+            raise ValueError(f"finding catalog entry {finding_id} missing title")
+        if severity not in {"critical", "warning", "info"}:
+            raise ValueError(
+                f"finding catalog entry {finding_id} has invalid severity: {severity!r}"
+            )
+        if not isinstance(patterns, list) or not patterns:
+            raise ValueError(f"finding catalog entry {finding_id} missing patterns")
+        normalized_patterns = tuple(
+            pattern for pattern in patterns if isinstance(pattern, str) and pattern
+        )
+        if len(normalized_patterns) != len(patterns):
+            raise ValueError(
+                f"finding catalog entry {finding_id} contains non-string patterns"
+            )
+        seen_ids.add(finding_id)
+        specs.append(
+            FindingSpec(
+                finding_id=finding_id,
+                title=title,
+                severity=severity,
+                patterns=normalized_patterns,
+            )
+        )
+    return tuple(specs)
+
+
 def pattern_count(patterns: dict[str, Any], name: str) -> int:
     raw = patterns.get(name)
     if not isinstance(raw, dict):
@@ -140,7 +196,11 @@ def pattern_samples(patterns: dict[str, Any], name: str) -> list[dict[str, Any]]
     return [sample for sample in samples if isinstance(sample, dict)]
 
 
-def orient_scan(scan: dict[str, Any]) -> OrientReport:
+def orient_scan(
+    scan: dict[str, Any],
+    *,
+    finding_specs: tuple[FindingSpec, ...] = FINDINGS,
+) -> OrientReport:
     patterns_raw = scan.get("patterns", {})
     patterns = patterns_raw if isinstance(patterns_raw, dict) else {}
     files_raw = scan.get("files", [])
@@ -151,7 +211,7 @@ def orient_scan(scan: dict[str, Any]) -> OrientReport:
     )
 
     findings: list[FindingReport] = []
-    for spec in FINDINGS:
+    for spec in finding_specs:
         count = sum(pattern_count(patterns, name) for name in spec.patterns)
         samples: list[dict[str, Any]] = []
         for name in spec.patterns:
@@ -182,7 +242,7 @@ def orient_scan(scan: dict[str, Any]) -> OrientReport:
             "evidence_present": present,
             "evidence_absent": len(findings) - present,
             "critical_present": critical_present,
-            "findings_total": len(findings),
+            "findings_total": len(finding_specs),
         },
         findings=findings,
     )
@@ -245,12 +305,26 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default="none",
         help="Exit non-zero when oriented findings match this condition.",
     )
+    parser.add_argument(
+        "--finding-catalog",
+        help=(
+            "Optional JSON finding catalog. Accepts an array or an object with "
+            "a findings array. Each finding needs finding_id, title, severity, "
+            "and patterns. Use this to replay larger audit corpora without "
+            "changing the script."
+        ),
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
-    report = orient_scan(load_json_input(args.scan_json))
+    finding_specs = (
+        load_finding_catalog_input(args.finding_catalog)
+        if args.finding_catalog
+        else FINDINGS
+    )
+    report = orient_scan(load_json_input(args.scan_json), finding_specs=finding_specs)
     if args.format == "json":
         print(report_to_json(report))
     else:

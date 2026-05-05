@@ -1,0 +1,29 @@
+{
+  "findings": [
+    {
+      "finding_id": "NF-1",
+      "patterns": [
+        "provider_health_skipped"
+      ],
+      "severity": "critical",
+      "title": "provider_health_skipped_all_models"
+    },
+    {
+      "finding_id": "NF-2",
+      "patterns": [
+        "credential_archived_starvation"
+      ],
+      "severity": "critical",
+      "title": "credential_archived_all_keepers"
+    },
+    {
+      "finding_id": "NF-4",
+      "patterns": [
+        "governance_unparseable",
+        "lenient_json_fallback"
+      ],
+      "severity": "warning",
+      "title": "governance_judge_unparseable_fallback"
+    }
+  ]
+}

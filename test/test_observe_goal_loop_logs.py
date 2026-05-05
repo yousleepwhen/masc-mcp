@@ -157,6 +157,92 @@ class ObserveGoalLoopLogsTest(unittest.TestCase):
         self.assertEqual(report.summary["evidence_present"], 2)
         self.assertEqual(report.summary["critical_present"], 1)
 
+    def test_orient_accepts_external_finding_catalog(self) -> None:
+        finding_specs = orient_goal_loop_logs.parse_finding_catalog(
+            {
+                "findings": [
+                    {
+                        "finding_id": "AUD-001",
+                        "title": "provider_probe_skipped",
+                        "severity": "critical",
+                        "patterns": ["provider_health_skipped"],
+                    },
+                    {
+                        "finding_id": "AUD-002",
+                        "title": "governance_fallback_pair",
+                        "severity": "warning",
+                        "patterns": [
+                            "governance_unparseable",
+                            "lenient_json_fallback",
+                        ],
+                    },
+                    {
+                        "finding_id": "AUD-003",
+                        "title": "checkpoint_data_loss",
+                        "severity": "critical",
+                        "patterns": ["keeper_checkpoint_migration_data_loss"],
+                    },
+                ]
+            }
+        )
+        report = orient_goal_loop_logs.orient_scan(
+            {
+                "files": ["server.log"],
+                "total_lines": 3,
+                "matched_lines": 2,
+                "patterns": {
+                    "provider_health_skipped": {
+                        "count": 55,
+                        "samples": [{"path": "server.log", "line": 1}],
+                    },
+                    "governance_unparseable": {"count": 1, "samples": []},
+                    "lenient_json_fallback": {"count": 1, "samples": []},
+                },
+            },
+            finding_specs=finding_specs,
+        )
+
+        by_id = {finding.finding_id: finding for finding in report.findings}
+        self.assertEqual(report.summary["findings_total"], 3)
+        self.assertEqual(report.summary["evidence_present"], 2)
+        self.assertEqual(report.summary["critical_present"], 1)
+        self.assertEqual(by_id["AUD-001"].count, 55)
+        self.assertEqual(by_id["AUD-002"].count, 2)
+        self.assertEqual(by_id["AUD-003"].status, "EVIDENCE_ABSENT")
+
+    def test_orient_cli_uses_finding_catalog_fixture(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_dir:
+            scan_path = Path(raw_dir) / "observe.json"
+            scan_path.write_text(
+                '{"files":["server.log"],"total_lines":1,"matched_lines":1,'
+                '"patterns":{"provider_health_skipped":{"count":55,"samples":[]}}}',
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(ORIENT_SCRIPT_PATH),
+                    str(scan_path),
+                    "--finding-catalog",
+                    str(
+                        REPO_ROOT
+                        / "test"
+                        / "fixtures"
+                        / "goal_loop"
+                        / "finding-catalog.sample.json"
+                    ),
+                ],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('"findings_total": 3', result.stdout)
+        self.assertIn('"finding_id": "NF-1"', result.stdout)
+        self.assertIn('"count": 55', result.stdout)
+
     def test_decide_prioritizes_p0_actions_from_orient_json(self) -> None:
         report = decide_goal_loop_findings.decide_orient(
             {

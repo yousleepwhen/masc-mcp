@@ -54,3 +54,17 @@ python3 scripts/validate_goal_loop_act_map.py \
 
 For live validation, capture a current PR snapshot first and pass that file as
 `--known-prs-json`.
+
+Replay with an explicit finding catalog when testing a larger audit corpus:
+
+```bash
+python3 scripts/orient_goal_loop_logs.py \
+  test/fixtures/goal_loop/observe.startup.json \
+  --finding-catalog test/fixtures/goal_loop/finding-catalog.sample.json \
+  --format text
+```
+
+The catalog accepts either a top-level JSON array or an object with
+`findings`.  Each finding requires `finding_id`, `title`, `severity`, and
+`patterns`.  A full audit corpus, including the 206-finding production-audit
+set, can use the same format without changing the Orient script.
