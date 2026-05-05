@@ -25,7 +25,7 @@ import { agents, tasks, keepers } from '../../store'
 import { openAgentDetail } from '../agent-detail-state'
 import type { Agent, Task, Keeper } from '../../types/core'
 
-// ─── Pure helpers (exported for tests) ───────────────────────────────────────
+// ─── Pure helpers (module-internal) ──────────────────────────────────────────
 
 interface TopologyNode {
   id: string
