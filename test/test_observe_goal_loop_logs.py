@@ -14,6 +14,7 @@ SCRIPT_PATH = REPO_ROOT / "scripts" / "observe_goal_loop_logs.py"
 ORIENT_SCRIPT_PATH = REPO_ROOT / "scripts" / "orient_goal_loop_logs.py"
 DECIDE_SCRIPT_PATH = REPO_ROOT / "scripts" / "decide_goal_loop_findings.py"
 VERIFY_SCRIPT_PATH = REPO_ROOT / "scripts" / "verify_goal_loop_logs.py"
+FIXTURE_DIR = REPO_ROOT / "test" / "fixtures" / "goal_loop"
 
 spec = importlib.util.spec_from_file_location("observe_goal_loop_logs", SCRIPT_PATH)
 assert spec is not None
@@ -358,6 +359,35 @@ class ObserveGoalLoopLogsTest(unittest.TestCase):
             report.violations[0].pattern, "provider_health_probe_completed"
         )
 
+    def test_log_contract_accepts_catalog_fixture(self) -> None:
+        contract = verify_goal_loop_logs.load_log_contract_catalog_input(
+            str(FIXTURE_DIR / "log-contract.sample.json")
+        )
+        with tempfile.TemporaryDirectory() as raw_dir:
+            path = Path(raw_dir) / "server.log"
+            path.write_text(
+                "\n".join(
+                    [
+                        "[INFO] recovery_strategy_executed keeper=executor",
+                        "[INFO] provider_health_probe_completed provider=ollama",
+                        "[INFO] fallback_ladder_activated keeper=executor",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            report = verify_goal_loop_logs.verify_log_contract(
+                [str(path)],
+                must_contain=list(contract.must_contain),
+                must_not_contain=list(contract.must_not_contain),
+                max_samples=2,
+            )
+
+        self.assertEqual(report.status, "PASS")
+        self.assertEqual(report.required_patterns, 3)
+        self.assertEqual(report.forbidden_patterns, 6)
+
     def test_log_contract_cli_returns_json_failure(self) -> None:
         with tempfile.TemporaryDirectory() as raw_dir:
             path = Path(raw_dir) / "server.log"
@@ -384,6 +414,41 @@ class ObserveGoalLoopLogsTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 1)
         self.assertIn('"kind": "forbidden_present"', result.stdout)
+
+    def test_log_contract_cli_uses_catalog_fixture(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_dir:
+            path = Path(raw_dir) / "server.log"
+            path.write_text(
+                "\n".join(
+                    [
+                        "[INFO] recovery_strategy_executed keeper=executor",
+                        "[INFO] provider_health_probe_completed provider=ollama",
+                        "[INFO] fallback_ladder_activated keeper=executor",
+                        "[WARN] [Keeper] alive-but-stuck detected",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(VERIFY_SCRIPT_PATH),
+                    "--mode",
+                    "log-contract",
+                    "--log",
+                    str(path),
+                    "--log-contract-catalog",
+                    str(FIXTURE_DIR / "log-contract.sample.json"),
+                ],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('"pattern": "alive-but-stuck detected"', result.stdout)
 
 
 if __name__ == "__main__":

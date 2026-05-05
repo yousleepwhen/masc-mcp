@@ -1,0 +1,15 @@
+{
+  "must_contain": [
+    "recovery_strategy_executed",
+    "provider_health_probe_completed",
+    "fallback_ladder_activated"
+  ],
+  "must_not_contain": [
+    "skipping turn.*semaphore wait",
+    "pricing_catalog_miss",
+    "persistence UTF-8 repaired",
+    "alive-but-stuck detected",
+    "Lenient_json fallback hit",
+    "archived credential.*starvation"
+  ]
+}

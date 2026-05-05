@@ -82,3 +82,17 @@ python3 scripts/decide_goal_loop_findings.py \
 The decision catalog accepts either a top-level JSON array or an object with
 `decisions`.  Each decision requires `decision_id`, `priority`, `finding_ids`,
 `action`, `owner`, `estimated_hours`, `impact`, `urgency`, and `difficulty`.
+
+Replay Verify log contracts from a JSON catalog when checking post-ACT logs:
+
+```bash
+python3 scripts/verify_goal_loop_logs.py \
+  --mode log-contract \
+  --log path/to/server.log \
+  --log-contract-catalog test/fixtures/goal_loop/log-contract.sample.json \
+  --format text
+```
+
+The log contract catalog is a JSON object with `must_contain` and
+`must_not_contain` arrays.  This mirrors the GOAL LOOP verify log gates while
+keeping the regex set outside the script.

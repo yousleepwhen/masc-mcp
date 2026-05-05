@@ -59,6 +59,12 @@ class LogContractReport:
     violations: list[LogContractViolation]
 
 
+@dataclass(frozen=True)
+class LogContractSpec:
+    must_contain: tuple[str, ...]
+    must_not_contain: tuple[str, ...]
+
+
 def load_json_input(path: str) -> dict[str, Any]:
     if path == "-":
         return load_json_handle(sys.stdin)
@@ -71,6 +77,36 @@ def load_json_handle(handle: TextIO) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError("expected Orient JSON object")
     return data
+
+
+def load_log_contract_catalog_input(path: str) -> LogContractSpec:
+    with Path(path).open("r", encoding="utf-8") as handle:
+        data = json.load(handle)
+    return parse_log_contract_catalog(data)
+
+
+def parse_log_contract_catalog(raw: Any) -> LogContractSpec:
+    if not isinstance(raw, dict):
+        raise ValueError("expected log contract catalog JSON object")
+
+    def read_pattern_list(field_name: str) -> tuple[str, ...]:
+        value = raw.get(field_name, [])
+        if not isinstance(value, list):
+            raise ValueError(f"log contract catalog field {field_name} must be a list")
+        patterns = tuple(item for item in value if isinstance(item, str) and item)
+        if len(patterns) != len(value):
+            raise ValueError(
+                f"log contract catalog field {field_name} contains non-string patterns"
+            )
+        return patterns
+
+    spec = LogContractSpec(
+        must_contain=read_pattern_list("must_contain"),
+        must_not_contain=read_pattern_list("must_not_contain"),
+    )
+    if not spec.must_contain and not spec.must_not_contain:
+        raise ValueError("log contract catalog must define at least one pattern")
+    return spec
 
 
 def finding_fails(finding: dict[str, Any], policy: str) -> bool:
@@ -242,9 +278,7 @@ def log_contract_report_to_text(report: LogContractReport) -> str:
         f"violations: {len(report.violations)}",
     ]
     for violation in report.violations:
-        lines.append(
-            f"- {violation.kind} {violation.pattern}: count={violation.count}"
-        )
+        lines.append(f"- {violation.kind} {violation.pattern}: count={violation.count}")
         for sample in violation.samples:
             lines.append(f"  {sample.path}:{sample.line}: {sample.text}")
     return "\n".join(lines)
@@ -289,6 +323,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Regex that must be absent in --mode log-contract.",
     )
     parser.add_argument(
+        "--log-contract-catalog",
+        help=(
+            "Optional JSON log contract catalog for --mode log-contract. "
+            "The object can define must_contain and must_not_contain arrays."
+        ),
+    )
+    parser.add_argument(
         "--max-samples",
         type=int,
         default=3,
@@ -309,10 +350,15 @@ def main(argv: list[str] | None = None) -> int:
         paths = list(args.log)
         if not paths and args.orient_json != "-":
             paths.append(args.orient_json)
+        catalog = (
+            load_log_contract_catalog_input(args.log_contract_catalog)
+            if args.log_contract_catalog
+            else LogContractSpec(must_contain=(), must_not_contain=())
+        )
         report = verify_log_contract(
             paths,
-            must_contain=list(args.must_contain),
-            must_not_contain=list(args.must_not_contain),
+            must_contain=[*args.must_contain, *catalog.must_contain],
+            must_not_contain=[*args.must_not_contain, *catalog.must_not_contain],
             max_samples=args.max_samples,
         )
         if args.format == "json":
