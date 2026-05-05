@@ -74,6 +74,29 @@
   test/fixtures/goal_loop/orient.startup.json --policy critical --format text`
   checked at 2026-05-05T14:16:53Z, confidence High: Verify still returns
   `FAIL` with critical evidence for `NF-1`, `NF-2`, and `NF-3`.
+- [근거] `python3 scripts/observe_goal_loop_logs.py
+  /Users/dancer/me/.masc/logs/masc-mcp-8935.log
+  /Users/dancer/me/.masc/logs/masc-prod.out.log
+  /Users/dancer/me/.masc/logs/masc-prod.err.log
+  /Users/dancer/me/.masc/logs/system_log_2026-05-05.jsonl --format text`
+  checked at 2026-05-05T14:32:11Z, confidence High: live replay scanned
+  `89513` lines, matched `33682`, and still found critical counts for
+  `keeper_skipping_turn=2771`, `credential_archived_starvation=602`,
+  `pricing_catalog_miss=440`, `alive_but_stuck=281`, and `utf8_repair=9983`.
+- [근거] `python3 scripts/orient_goal_loop_logs.py
+  /private/tmp/goal-loop-live-observe-20260505.json --format text` checked at
+  2026-05-05T14:32:11Z, confidence High: live Orient reported
+  `8 present / 10 total` with `5 critical present`:
+  `R-FATAL-1`, `CF-1`, `NF-1`, `NF-2`, and `NF-3`.
+- [근거] `python3 scripts/verify_goal_loop_logs.py --mode log-contract
+  --log /Users/dancer/me/.masc/logs/masc-mcp-8935.log
+  --log /Users/dancer/me/.masc/logs/masc-prod.out.log
+  --log /Users/dancer/me/.masc/logs/masc-prod.err.log
+  --log /Users/dancer/me/.masc/logs/system_log_2026-05-05.jsonl
+  --log-contract-catalog test/fixtures/goal_loop/log-contract.sample.json
+  --format text` checked at 2026-05-05T14:32:11Z, confidence High: live raw
+  log contract returned `FAIL` with `violations=9`; forbidden evidence remains
+  present and required recovery/probe/fallback markers are still absent.
 
 ## Current Completion State
 
@@ -87,6 +110,7 @@
 | Slot forced reclaim + credential auto-recovery | **PARTIAL** | `D-EMERGENCY-1` now has ACT links to #13218, #13231, and #13246; live post-ACT verification is still required. |
 | Full 206-finding Orient engine | **NOT PROVEN** | Current deterministic fixture covers 10 startup findings, not all 206 audit findings. |
 | Full Verify pipeline | **FAIL BY DESIGN** | `verify.fail.json` intentionally keeps the replay red until post-ACT live/runtime checks pass. |
+| Current live runtime replay | **FAIL** | 2026-05-05 live logs still contain five critical finding classes and fail the raw log contract. |
 
 ## Section-by-Section Audit
 
@@ -103,12 +127,17 @@ fallback, unknown TOML keys, all-zero metrics, linear warmup.
 - `test/fixtures/goal_loop/verify.fail.json`
 - `docs/examples/goal-loop-fixture.md`
 
-**Status**: **PARTIAL**.
+**Status**: **PARTIAL**, with current live evidence still **FAIL**.
 
 The fixture pins concrete startup evidence for NF-1, NF-2, NF-3, NF-4, and
 NF-6. It does not yet prove all 206 audit findings from live production state,
 and several prompt claims remain evidence-absent in the fixture (`NF-5`,
 `NF-7`, `NF-8`, `R-FATAL-1`, `CF-1`).
+
+The 2026-05-05 live replay against `/Users/dancer/me/.masc/logs` does recover
+additional runtime evidence absent from the small fixture: `R-FATAL-1`,
+`CF-1`, `NF-5`, and high-volume `utf8_repair` evidence remain present. This
+is a stronger red signal, not a completion signal.
 
 **Verification command**:
 
@@ -236,6 +265,12 @@ This is correct current behavior. A PASS would be unsafe because the fixture
 still contains critical startup evidence for `NF-1`, `NF-2`, and `NF-3`, and no
 post-ACT live replay has disproven those signatures.
 
+The raw live log contract also fails. Current logs still contain forbidden
+semaphore skips, pricing misses, UTF-8 repairs, alive-but-stuck warnings,
+Lenient_json fallback hits, and archived starvation credentials. They also do
+not contain the required post-ACT markers `recovery_strategy_executed`,
+`provider_health_probe_completed`, or `fallback_ladder_activated`.
+
 ### 7. GOAL LOOP Dashboard
 
 **Claimed requirement**: unified real-time dashboard showing phase state,
@@ -287,8 +322,9 @@ No convergence claim is valid yet. The only safe current statement is:
 
 ## Next Concrete ACT
 
-1. Recollect live runtime logs after the ACT PRs and run Observe -> Orient ->
-   Decide -> Verify against those logs.
+1. Treat the 2026-05-05 live replay as current red baseline and keep rerunning
+   Observe -> Orient -> Decide -> Verify after each ACT merge until the raw log
+   contract passes.
 2. Extend Orient input from the 10 startup fixture findings to the full
    206-finding audit corpus, or attach the corpus source path if it already
    exists outside this repo. Tracked as #13265.
