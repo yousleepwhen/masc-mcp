@@ -41,17 +41,39 @@
   checked at 2026-05-05T11:27:03Z, confidence High:
   #13178 merged at 2026-05-05T11:23:39Z, merge
   `23887a0101c812907ed2b7348c5cf80351f4939c`.
+- [근거] `gh pr view 13218 --json number,state,mergedAt,mergeCommit,title,url`
+  checked at 2026-05-05T14:16:53Z, confidence High:
+  #13218 merged at 2026-05-05T12:25:02Z, merge
+  `0dd9de8e0d91808b35b4847d6f36b669679816ac`.
+- [근거] `gh pr view 13231 --json number,state,mergedAt,mergeCommit,title,url`
+  checked at 2026-05-05T14:16:53Z, confidence High:
+  #13231 merged at 2026-05-05T13:03:23Z, merge
+  `23f81803a7d17d5a4cff740c372ee45bc9dc3fe4`.
+- [근거] `gh pr view 13190 --json number,state,mergedAt,mergeCommit,title,url`
+  checked at 2026-05-05T14:16:53Z, confidence High:
+  #13190 merged at 2026-05-05T13:37:54Z, merge
+  `b4b69417732d4545a3b19e6dcaf0659488ccc782`.
+- [근거] `gh pr view 13246 --json number,state,mergedAt,mergeCommit,title,url`
+  checked at 2026-05-05T14:16:53Z, confidence High:
+  #13246 merged at 2026-05-05T13:40:04Z, merge
+  `0ab0076a14dc64a30ffb79cd461530790e6e98f6`.
+- [근거] `gh pr view 13252 --json number,state,mergedAt,mergeCommit,title,url`
+  checked at 2026-05-05T14:16:53Z, confidence High:
+  #13252 merged at 2026-05-05T13:49:38Z, merge
+  `aec1b2cbbb717e8859c8a4475c4f0acd5fd43e4e`.
 - [근거] `python3 scripts/validate_goal_loop_act_map.py
   test/fixtures/goal_loop/act-map.startup.json --known-prs-json
   test/fixtures/goal_loop/known-prs.startup.json --require-pr-ref --fail-on any`
   is the deterministic ACT-reference guard added by #13178.
-- [근거] `python3 scripts/goal_loop_status.py --observe-json
-  test/fixtures/goal_loop/observe.startup.json --orient-json
-  test/fixtures/goal_loop/orient.startup.json --decide-json
-  /tmp/goal-loop-decide-audit.json --verify-json
-  test/fixtures/goal_loop/verify.fail.json --loop-iteration '#fixture'
-  --format text` checked at 2026-05-05T11:30:45Z, confidence High:
-  `next_action` is `D-EMERGENCY-1`, the missing ACT item.
+- [근거] `python3 scripts/decide_goal_loop_findings.py
+  test/fixtures/goal_loop/orient.startup.json --act-map
+  test/fixtures/goal_loop/act-map.startup.json --format text` checked at
+  2026-05-05T14:16:53Z, confidence High: `act_linked_count=5` and
+  `act_missing_count=0`.
+- [근거] `python3 scripts/verify_goal_loop_logs.py
+  test/fixtures/goal_loop/orient.startup.json --policy critical --format text`
+  checked at 2026-05-05T14:16:53Z, confidence High: Verify still returns
+  `FAIL` with critical evidence for `NF-1`, `NF-2`, and `NF-3`.
 
 ## Current Completion State
 
@@ -62,9 +84,9 @@
 | Alive-but-stuck recovery ACT | **PARTIAL** | #13123 adds recovery side effect; #13126 adds timeout phase diagnostics. Runtime recovery success SLO remains unproven. |
 | Keeper TOML unknown-key visibility | **PARTIAL** | #13138 surfaces unknown keys in health; strict schema rejection is not yet enforced. |
 | Governance fallback visibility | **PARTIAL** | #13143 exposes fallback counters; strict judge-output failure policy is not complete. |
-| Slot forced reclaim + credential auto-recovery | **FAIL** | `D-EMERGENCY-1` is still `ACT_MISSING` in `act-map.startup.json`. |
+| Slot forced reclaim + credential auto-recovery | **PARTIAL** | `D-EMERGENCY-1` now has ACT links to #13218, #13231, and #13246; live post-ACT verification is still required. |
 | Full 206-finding Orient engine | **NOT PROVEN** | Current deterministic fixture covers 10 startup findings, not all 206 audit findings. |
-| Full Verify pipeline | **FAIL BY DESIGN** | `verify.fail.json` intentionally keeps the replay red until missing ACT is linked and runtime checks pass. |
+| Full Verify pipeline | **FAIL BY DESIGN** | `verify.fail.json` intentionally keeps the replay red until post-ACT live/runtime checks pass. |
 
 ## Section-by-Section Audit
 
@@ -147,12 +169,14 @@ current runtime/code state, including 206 findings.
 - `orient_goal_loop_logs.py` classifies startup findings into
   `EVIDENCE_PRESENT` and `EVIDENCE_ABSENT`.
 - `orient.startup.json` produces 10 deterministic finding rows.
+- This branch adds `--finding-catalog` so the full 206-finding corpus can be
+  supplied as data instead of hardcoded script edits.
 
 **Status**: **PARTIAL**.
 
-The Orient skeleton is testable, but the prompt's full 206-finding audit set is
-not encoded. Current output should be treated as startup-regression coverage,
-not complete audit closure.
+The Orient skeleton is testable, and the catalog input path is now available.
+The prompt's full 206-finding audit set is still not present in this repo, so
+current output remains startup-regression coverage, not complete audit closure.
 
 ### 4. DECIDE
 
@@ -163,13 +187,17 @@ queue.
 
 - `decide_goal_loop_findings.py` maps evidence-present findings to:
   `D-EMERGENCY-1`, `D-EMERGENCY-2`, `D-P1-1`, `D-P1-2`, `D-P2-1`, `D-P2-2`.
-- `act-map.startup.json` links four decisions to real PR artifacts.
+- `act-map.startup.json` links five startup decisions to real PR artifacts.
 - `validate_goal_loop_act_map.py` verifies PR-shaped ACT artifacts.
+- This branch adds `--decision-catalog` so larger audit corpora can supply
+  finding-to-decision mappings without script edits.
 
 **Status**: **PARTIAL**.
 
-The priority queue is deterministic. It intentionally reports
-`D-EMERGENCY-1` as `ACT_MISSING`, so Decide cannot be considered complete.
+The priority queue is deterministic and the startup fixture now reports
+`act_missing_count=0`. Decide still cannot be marked complete for the original
+goal because the full 206-finding decision catalog is not present and live
+post-ACT verification has not passed.
 
 ### 5. ACT
 
@@ -178,15 +206,16 @@ decisions.
 
 | Decision | Finding | ACT status | Evidence |
 |----------|---------|------------|----------|
-| `D-EMERGENCY-1` | `NF-2` credential archived starvation | **MISSING** | No linked ACT artifact. |
+| `D-EMERGENCY-1` | `NF-2` credential archived starvation | **LINKED** | #13218 credential auto-recovery, #13231 slot reclaim regression, #13246 crash-path force release. |
 | `D-EMERGENCY-2` | `NF-1` provider health skipped | **LINKED** | #13124 `fix: probe local providers in cascade catalog`. |
 | `D-P1-1` | `NF-3`, `R-FATAL-1` recovery/fallback | **LINKED** | #13123 recovery side effect, #13126 timeout phase diagnostics. |
 | `D-P1-2` | `CF-1` pricing catalog miss | **NOT QUEUED IN FIXTURE** | `CF-1` is `EVIDENCE_ABSENT` in `orient.startup.json`; needs live-pricing audit if seen again. |
 | `D-P2-1` | `NF-6` unknown keeper TOML keys | **LINKED** | #13138 health visibility. |
 | `D-P2-2` | `NF-4` governance fallback | **LINKED** | #13143 fallback counters. |
 
-**Status**: **FAIL** until `D-EMERGENCY-1` has an ACT PR or the Orient evidence
-is disproven by live replay.
+**Status**: **PARTIAL** until the linked ACT PRs are proven by live post-ACT
+replay. The startup fixture now has ACT coverage, but it is still pre-ACT
+evidence and must remain red.
 
 ### 6. VERIFY
 
@@ -198,11 +227,14 @@ log verification, metric verification, and Orient re-check.
 - Deterministic fixture replay.
 - Regression tests for Decide/status/ACT-map validation.
 - `verify.fail.json` that keeps the loop red.
+- This branch adds `--log-contract-catalog` so Verify log gates can be loaded
+  from JSON catalog data instead of repeated CLI flags.
 
 **Status**: **FAIL BY DESIGN**.
 
 This is correct current behavior. A PASS would be unsafe because the fixture
-still contains `NF-2` and `D-EMERGENCY-1` is missing ACT.
+still contains critical startup evidence for `NF-1`, `NF-2`, and `NF-3`, and no
+post-ACT live replay has disproven those signatures.
 
 ### 7. GOAL LOOP Dashboard
 
@@ -231,7 +263,8 @@ findings escalate.
 
 - #13178 adds an ACT-reference guard so artifact strings cannot silently point
   to nonexistent PR numbers.
-- The fixture explicitly fails when a P0 decision has no ACT artifact.
+- The fixture validates that all current ACT artifacts point at known PR
+  numbers.
 
 **Status**: **PARTIAL**.
 
@@ -248,14 +281,14 @@ healthy and `STILL_PRESENT < 20`; after one month, `STILL_PRESENT = 0`.
 No convergence claim is valid yet. The only safe current statement is:
 
 - The deterministic fixture still reports overall critical.
-- Four ACT artifacts are linked and merged.
-- One P0 ACT artifact is missing.
+- Eight ACT artifacts are linked to known merged PRs.
+- No current startup decision is missing an ACT artifact.
 - Live runtime replay is required before any "fixed" or "healthy" claim.
 
 ## Next Concrete ACT
 
-1. Implement or disprove `D-EMERGENCY-1`: slot forced reclaim plus keeper
-   credential auto-recovery for `NF-2`.
+1. Recollect live runtime logs after the ACT PRs and run Observe -> Orient ->
+   Decide -> Verify against those logs.
 2. Extend Orient input from the 10 startup fixture findings to the full
    206-finding audit corpus, or attach the corpus source path if it already
    exists outside this repo.
@@ -268,7 +301,6 @@ No convergence claim is valid yet. The only safe current statement is:
 
 Do not mark the GOAL LOOP objective complete while any of these are true:
 
-- `D-EMERGENCY-1` remains absent from `act-map.startup.json`.
 - `verify.fail.json` is the latest Verify fixture.
 - The full 206-finding audit corpus is not replayed by Orient.
 - Live runtime evidence is not re-collected after the ACT PRs are merged.
