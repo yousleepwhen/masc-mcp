@@ -559,9 +559,9 @@ class GoalLoopCompletionAuditTest(unittest.TestCase):
         evidence = by_id["verify_pipeline_complete"].evidence
         self.assertEqual(evidence["pipeline_status"], "FAIL")
         self.assertEqual(evidence["gates_total"], 14)
-        self.assertEqual(evidence["gates_passed"], 6)
+        self.assertEqual(evidence["gates_passed"], 8)
         self.assertEqual(evidence["gates_failed"], 5)
-        self.assertEqual(evidence["gates_blocked"], 2)
+        self.assertEqual(evidence["gates_blocked"], 0)
         self.assertEqual(evidence["gates_skipped"], 1)
         self.assertEqual(evidence["missing_gate_ids"], [])
         self.assertIn("keeper_turn_success_rate_healthy", evidence["non_pass_gate_ids"])
@@ -1236,8 +1236,8 @@ class GoalLoopCompletionAuditTest(unittest.TestCase):
         )
         self.assertEqual(checklist_evidence["implementation_pr_refs_total"], 11)
         self.assertEqual(checklist_evidence["invalid_implementation_pr_refs"], [])
-        self.assertEqual(checklist_evidence["artifact_refs_total"], 110)
-        self.assertEqual(checklist_evidence["artifact_refs_resolved"], 110)
+        self.assertEqual(checklist_evidence["artifact_refs_total"], 112)
+        self.assertEqual(checklist_evidence["artifact_refs_resolved"], 112)
         self.assertEqual(checklist_evidence["artifact_ref_anchors_total"], 9)
         self.assertEqual(checklist_evidence["artifact_ref_anchors_resolved"], 9)
         self.assertTrue(checklist_evidence["artifact_refs_all_resolved"])
@@ -1282,8 +1282,11 @@ class GoalLoopCompletionAuditTest(unittest.TestCase):
         # index so the test stays correct under any harmless fixture
         # reordering.
         verifier_row = next(
-            (row for row in keeper_rows
-             if isinstance(row, dict) and row.get("keeper_name") == "verifier"),
+            (
+                row
+                for row in keeper_rows
+                if isinstance(row, dict) and row.get("keeper_name") == "verifier"
+            ),
             None,
         )
         assert verifier_row is not None, "fixture must contain a verifier row"
@@ -1492,8 +1495,8 @@ class GoalLoopCompletionAuditTest(unittest.TestCase):
         checklist_evidence = by_id["prompt_to_artifact_checklist_recorded"].evidence
         self.assertFalse(checklist_evidence["recorded"])
         self.assertFalse(checklist_evidence["artifact_refs_all_resolved"])
-        self.assertEqual(checklist_evidence["artifact_refs_total"], 109)
-        self.assertEqual(checklist_evidence["artifact_refs_resolved"], 108)
+        self.assertEqual(checklist_evidence["artifact_refs_total"], 111)
+        self.assertEqual(checklist_evidence["artifact_refs_resolved"], 110)
         self.assertEqual(
             checklist_evidence["missing_artifact_refs"],
             [
@@ -1527,8 +1530,8 @@ class GoalLoopCompletionAuditTest(unittest.TestCase):
         checklist_evidence = by_id["prompt_to_artifact_checklist_recorded"].evidence
         self.assertFalse(checklist_evidence["recorded"])
         self.assertFalse(checklist_evidence["artifact_refs_all_resolved"])
-        self.assertEqual(checklist_evidence["artifact_refs_total"], 108)
-        self.assertEqual(checklist_evidence["artifact_refs_resolved"], 107)
+        self.assertEqual(checklist_evidence["artifact_refs_total"], 110)
+        self.assertEqual(checklist_evidence["artifact_refs_resolved"], 109)
         self.assertEqual(checklist_evidence["artifact_ref_anchors_total"], 9)
         self.assertEqual(checklist_evidence["artifact_ref_anchors_resolved"], 8)
         self.assertEqual(
