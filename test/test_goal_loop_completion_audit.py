@@ -542,8 +542,8 @@ class GoalLoopCompletionAuditTest(unittest.TestCase):
         evidence = by_id["verify_pipeline_complete"].evidence
         self.assertEqual(evidence["pipeline_status"], "BLOCKED")
         self.assertEqual(evidence["gates_total"], 14)
-        self.assertEqual(evidence["gates_passed"], 0)
-        self.assertEqual(evidence["gates_blocked"], 13)
+        self.assertEqual(evidence["gates_passed"], 3)
+        self.assertEqual(evidence["gates_blocked"], 10)
         self.assertEqual(evidence["gates_skipped"], 1)
         self.assertEqual(evidence["missing_gate_ids"], [])
         self.assertIn("post_act_log_contract", evidence["non_pass_gate_ids"])
@@ -1217,8 +1217,8 @@ class GoalLoopCompletionAuditTest(unittest.TestCase):
         )
         self.assertEqual(checklist_evidence["implementation_pr_refs_total"], 11)
         self.assertEqual(checklist_evidence["invalid_implementation_pr_refs"], [])
-        self.assertEqual(checklist_evidence["artifact_refs_total"], 100)
-        self.assertEqual(checklist_evidence["artifact_refs_resolved"], 100)
+        self.assertEqual(checklist_evidence["artifact_refs_total"], 107)
+        self.assertEqual(checklist_evidence["artifact_refs_resolved"], 107)
         self.assertEqual(checklist_evidence["artifact_ref_anchors_total"], 9)
         self.assertEqual(checklist_evidence["artifact_ref_anchors_resolved"], 9)
         self.assertTrue(checklist_evidence["artifact_refs_all_resolved"])
@@ -1473,8 +1473,8 @@ class GoalLoopCompletionAuditTest(unittest.TestCase):
         checklist_evidence = by_id["prompt_to_artifact_checklist_recorded"].evidence
         self.assertFalse(checklist_evidence["recorded"])
         self.assertFalse(checklist_evidence["artifact_refs_all_resolved"])
-        self.assertEqual(checklist_evidence["artifact_refs_total"], 99)
-        self.assertEqual(checklist_evidence["artifact_refs_resolved"], 98)
+        self.assertEqual(checklist_evidence["artifact_refs_total"], 106)
+        self.assertEqual(checklist_evidence["artifact_refs_resolved"], 105)
         self.assertEqual(
             checklist_evidence["missing_artifact_refs"],
             [
@@ -1508,8 +1508,8 @@ class GoalLoopCompletionAuditTest(unittest.TestCase):
         checklist_evidence = by_id["prompt_to_artifact_checklist_recorded"].evidence
         self.assertFalse(checklist_evidence["recorded"])
         self.assertFalse(checklist_evidence["artifact_refs_all_resolved"])
-        self.assertEqual(checklist_evidence["artifact_refs_total"], 98)
-        self.assertEqual(checklist_evidence["artifact_refs_resolved"], 97)
+        self.assertEqual(checklist_evidence["artifact_refs_total"], 105)
+        self.assertEqual(checklist_evidence["artifact_refs_resolved"], 104)
         self.assertEqual(checklist_evidence["artifact_ref_anchors_total"], 9)
         self.assertEqual(checklist_evidence["artifact_ref_anchors_resolved"], 8)
         self.assertEqual(
