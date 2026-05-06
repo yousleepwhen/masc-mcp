@@ -171,6 +171,16 @@ val board_reactions_lookup :
   Board.reaction_target_type * string ->
   Board.reaction_summary list
 
+val board_contributor_quality_json :
+  Agent_reputation.agent_reputation -> Yojson.Safe.t
+(** [board_contributor_quality_json rep] projects the existing agent
+    reputation record into the compact board contributor-quality contract. *)
+
+val board_contributor_quality_lookup :
+  ?config:Coord.config -> unit -> string -> Yojson.Safe.t option
+(** [board_contributor_quality_lookup ?config ()] returns a request-local
+    memoized lookup by author.  Without [config], it returns [None]. *)
+
 (** {1 Dashboard helpers} *)
 
 val board_comment_dashboard_json :
@@ -186,6 +196,7 @@ val board_comment_dashboard_json :
 
 val board_post_dashboard_json :
   ?include_moderation:bool ->
+  ?contributor_quality:Yojson.Safe.t ->
   ?current_vote:Board.vote_direction option ->
   ?reactions:Board.reaction_summary list ->
   author_karma:int ->
@@ -204,6 +215,8 @@ val board_post_dashboard_json :
     - [author_identity] from {!board_actor_identity_json}.
     - [report_count] / [moderation_status] from {!Board_moderation}
       only when [include_moderation] is [true].
+    - [contributor_quality] when supplied by the route layer from
+      {!Agent_reputation}.
 
     The base fields [title] / [votes] / [comment_count] /
     [created_at_iso] / [updated_at_iso] / [hearth_count] are

@@ -19,19 +19,24 @@ let dashboard_namespace_truth_focus_json =
 let dashboard_namespace_truth_http_json =
   Server_dashboard_http_namespace_truth.dashboard_namespace_truth_http_json
 
-let dashboard_board_json ?hearth ?author_filter
+let dashboard_board_json ?config ?hearth ?author_filter
     ?(sort_by = Board_dispatch.Hot) ?(exclude_system = false)
     ?(exclude_automation = false) ?(limit = 100) ?(offset = 0) () :
     Yojson.Safe.t =
   let limit = clamp ~min_v:1 ~max_v:500 limit in
   let offset = clamp ~min_v:0 ~max_v:5000 offset in
   let author_filter = Option.map board_actor_author_for_write author_filter in
+  let config_key =
+    match config with
+    | None -> "-"
+    | Some config -> config.Coord.base_path
+  in
   let cache_key =
-    Printf.sprintf "board:memory:%s;%s;%s;%b;%b;%d;%d"
+    Printf.sprintf "board:memory:%s;%s;%s;%b;%b;%d;%d;%s"
       (Option.value ~default:"-" hearth)
       (Option.value ~default:"-" author_filter)
       (board_sort_label sort_by)
-      exclude_system exclude_automation limit offset
+      exclude_system exclude_automation limit offset config_key
   in
   Dashboard_cache.get_or_compute cache_key ~ttl:10.0 (fun () ->
     let base_fetch = board_fetch_limit ~exclude_system ~exclude_automation ~limit ~offset in
@@ -54,11 +59,14 @@ let dashboard_board_json ?hearth ?author_filter
       if has_more then `Null else `Int fetched_len
     in
     let paged = posts |> drop offset |> take limit in
+    let contributor_quality_for = board_contributor_quality_lookup ?config () in
     let posts_json =
       List.map
         (fun (post : Board.post) ->
           let author = Board.Agent_id.to_string post.author in
-          board_post_dashboard_json ~author_karma:(get_karma author) post)
+          let contributor_quality = contributor_quality_for author in
+          board_post_dashboard_json ?contributor_quality
+            ~author_karma:(get_karma author) post)
         paged
     in
     `Assoc
@@ -81,7 +89,7 @@ let dashboard_board_json ?hearth ?author_filter
         ("sort_by", `String (board_sort_label sort_by));
       ])
 
-let dashboard_memory_http_json request : Yojson.Safe.t =
+let dashboard_memory_http_json ?config request : Yojson.Safe.t =
   let hearth = query_param request "hearth" in
   let author_filter =
     query_param request "author"
@@ -100,7 +108,7 @@ let dashboard_memory_http_json request : Yojson.Safe.t =
   let offset =
     int_query_param request "offset" ~default:0 |> clamp ~min_v:0 ~max_v:5000
   in
-  dashboard_board_json ?hearth ?author_filter ~sort_by ~exclude_system
+  dashboard_board_json ?config ?hearth ?author_filter ~sort_by ~exclude_system
     ~exclude_automation ~limit ~offset ()
 
 let memory_subsystems_entry_cache_ttl_sec = 30.0

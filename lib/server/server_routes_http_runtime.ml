@@ -294,8 +294,8 @@ let readiness_handler _request reqd =
             ]))
       reqd
 
-let board_post_detail_json ~include_moderation ~voter ~response_format
-    ~post_id =
+let board_post_detail_json ~include_moderation ~config ~voter
+    ~response_format ~post_id =
   match Board_dispatch.get_post ~post_id with
   | Error err ->
       (`Not_found, Printf.sprintf {|{"error":"%s"}|}
@@ -322,9 +322,12 @@ let board_post_detail_json ~include_moderation ~voter ~response_format
       let reaction_rows = board_reactions_batch ~targets:reaction_targets ~voter in
       let reactions_for = board_reactions_lookup reaction_rows in
       let reactions = reactions_for (Board.Reaction_post, post_id) in
+      let contributor_quality =
+        board_contributor_quality_lookup ?config () author
+      in
       let post_json =
-        board_post_dashboard_json ~include_moderation ?current_vote ~reactions
-          ~author_karma post
+        board_post_dashboard_json ~include_moderation ?contributor_quality
+          ?current_vote ~reactions ~author_karma post
       in
       let comments_json =
         `List (List.map (fun (comment : Board.comment) ->
