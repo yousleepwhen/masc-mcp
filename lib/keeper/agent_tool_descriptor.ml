@@ -59,6 +59,8 @@ type runtime_handler =
   | Tool_masc_tool_shard_dispatch
   | Tool_masc_approval_dispatch
   | Tool_masc_persona_dispatch
+  | Tool_masc_persona_create
+  | Tool_masc_persona_update
   | Tool_masc_keeper_dispatch
   | Tool_masc_surface_audit
 
@@ -149,6 +151,8 @@ let runtime_handler_to_string = function
   | Tool_masc_tool_shard_dispatch -> "tool_masc_tool_shard_dispatch"
   | Tool_masc_approval_dispatch -> "tool_masc_approval_dispatch"
   | Tool_masc_persona_dispatch -> "tool_masc_persona_dispatch"
+  | Tool_masc_persona_create -> "tool_masc_persona_create"
+  | Tool_masc_persona_update -> "tool_masc_persona_update"
   | Tool_masc_keeper_dispatch -> "tool_masc_keeper_dispatch"
   | Tool_masc_surface_audit -> "tool_masc_surface_audit"
 ;;
@@ -1149,6 +1153,10 @@ let internal_descriptors : t list =
       "Read the persona JSON schema (optionally with examples)." ~readonly:true
   ; masc_persona_descriptor "save" "masc_persona_save"
       "Persist a persona profile JSON (supports overwrite/dry-run)." ~readonly:false
+  ; masc_persona_descriptor "create" "masc_persona_create"
+      "Create a new persona with name, display_name, role, trait, and instructions." ~readonly:false
+  ; masc_persona_descriptor "update" "masc_persona_update"
+      "Update an existing persona's display_name, role, trait, and instructions." ~readonly:false
   (* ── RFC-0182 §3.1 — masc_keeper cluster (1 entry today) ──── *)
   (* Other masc_keeper_ tools (status, msg, clear, compact, repair,
      sandbox lifecycle) use the keeper Eio context and are gated on

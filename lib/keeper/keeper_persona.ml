@@ -45,6 +45,42 @@ let handle_persona_save = Authoring.handle_persona_save
 let persona_save_handler args : tool_result =
   Authoring.handle_persona_save_no_ctx args
 
+let persona_create_handler args : tool_result =
+  let name = get_string args "name" "" in
+  let display_name = get_string args "display_name" "" in
+  let role = get_string_opt args "role" in
+  let trait = get_string_opt args "trait" in
+  let instructions = get_string args "instructions" "" in
+  if String.length name = 0 then
+    tool_result_error "name is required"
+  else if String.length display_name = 0 then
+    tool_result_error "display_name is required"
+  else if String.length instructions = 0 then
+    tool_result_error "instructions is required"
+  else
+    match Keeper_persona_crud.create_persona ~name ~display_name ~role ~trait ~instructions with
+    | Error e -> tool_result_error e
+    | Ok (path, json) ->
+      tool_result_ok (Yojson.Safe.to_string ~std:true json)
+
+let persona_update_handler args : tool_result =
+  let name = get_string args "name" "" in
+  let display_name = get_string args "display_name" "" in
+  let role = get_string_opt args "role" in
+  let trait = get_string_opt args "trait" in
+  let instructions = get_string args "instructions" "" in
+  if String.length name = 0 then
+    tool_result_error "name is required"
+  else if String.length display_name = 0 then
+    tool_result_error "display_name is required"
+  else if String.length instructions = 0 then
+    tool_result_error "instructions is required"
+  else
+    match Keeper_persona_crud.update_persona ~name ~display_name ~role ~trait ~instructions with
+    | Error e -> tool_result_error e
+    | Ok (path, json) ->
+      tool_result_ok (Yojson.Safe.to_string ~std:true json)
+
 let handle_keeper_create_from_persona ctx args : tool_result =
   match resolved_keeper_args_from_persona args with
   | Error e -> tool_result_error ("" ^ e)

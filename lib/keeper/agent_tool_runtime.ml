@@ -76,6 +76,8 @@ let handle_filesystem ctx descriptor args =
   | Tool_masc_tool_shard_dispatch
   | Tool_masc_approval_dispatch
   | Tool_masc_persona_dispatch
+  | Tool_masc_persona_create
+  | Tool_masc_persona_update
   | Tool_masc_keeper_dispatch
   | Tool_masc_surface_audit -> None
 ;;
@@ -133,6 +135,8 @@ let handle_shell_ir ctx descriptor args =
   | Tool_masc_tool_shard_dispatch
   | Tool_masc_approval_dispatch
   | Tool_masc_persona_dispatch
+  | Tool_masc_persona_create
+  | Tool_masc_persona_update
   | Tool_masc_keeper_dispatch
   | Tool_masc_surface_audit -> None
 ;;
@@ -185,6 +189,8 @@ let handle_remote_mcp ctx descriptor args =
   | Tool_masc_tool_shard_dispatch
   | Tool_masc_approval_dispatch
   | Tool_masc_persona_dispatch
+  | Tool_masc_persona_create
+  | Tool_masc_persona_update
   | Tool_masc_keeper_dispatch
   | Tool_masc_surface_audit -> None
 ;;
@@ -311,6 +317,10 @@ let handle_in_process ctx descriptor args =
   | Tool_masc_approval_dispatch ->
     Some (Agent_tool_in_process_runtime.handle_masc_approval ~name ~args)
   | Tool_masc_persona_dispatch ->
+    Some (Agent_tool_in_process_runtime.handle_masc_persona ~name ~args)
+  | Tool_masc_persona_create ->
+    Some (Agent_tool_in_process_runtime.handle_masc_persona ~name ~args)
+  | Tool_masc_persona_update ->
     Some (Agent_tool_in_process_runtime.handle_masc_persona ~name ~args)
   | Tool_masc_keeper_dispatch ->
     Some

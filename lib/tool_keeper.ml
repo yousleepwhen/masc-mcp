@@ -704,6 +704,10 @@ let () =
       Some (tool_result_with_tool_name ~tool_name:name (Keeper_persona.persona_schema_handler args))
     | "masc_persona_save" ->
       Some (tool_result_with_tool_name ~tool_name:name (Keeper_persona.persona_save_handler args))
+    | "masc_persona_create" ->
+      Some (tool_result_with_tool_name ~tool_name:name (Keeper_persona.persona_create_handler args))
+    | "masc_persona_update" ->
+      Some (tool_result_with_tool_name ~tool_name:name (Keeper_persona.persona_update_handler args))
     | _ -> None
 ;;
 
