@@ -76,6 +76,16 @@ let audit_event_names ~base_path ~keeper_name =
   |> List.map (fun json ->
          Yojson.Safe.Util.(json |> member "event" |> to_string))
 
+let test_first_cmd_token_uses_shared_words () =
+  Alcotest.(check (option string))
+    "quoted command basename preserved"
+    (Some "gh cli")
+    (AQ.For_testing.first_cmd_token {|"/tmp/bin/gh cli" pr list|});
+  Alcotest.(check (option string))
+    "malformed quote fails closed"
+    None
+    (AQ.For_testing.first_cmd_token {|"/tmp/bin/gh cli pr list|})
+
 let test_approval_queue_failure_metric_labels_site () =
   Eio_main.run @@ fun env ->
   Fs_compat.set_fs (Eio.Stdenv.fs env);
@@ -90,7 +100,7 @@ let test_approval_queue_failure_metric_labels_site () =
   in
   let before =
     Masc_mcp.Prometheus.metric_value_or_zero
-      Masc_mcp.Prometheus.metric_keeper_approval_queue_failures
+      Masc_mcp.Keeper_metrics.(to_string ApprovalQueueFailures)
       ~labels
       ()
   in
@@ -102,16 +112,16 @@ let test_approval_queue_failure_metric_labels_site () =
       AQ.For_testing.reset_audit_store ();
       AQ.audit_approval_event ~base_path ~event_type:"warmup"
         ~id:"audit-failure-warmup" ~keeper_name:(keeper_name ^ "-warmup")
-        ~tool_name:"keeper_shell" ~risk_level:AQ.Medium ();
+        ~tool_name:"tool_search_files" ~risk_level:AQ.Medium ();
       cleanup_dir audit_dir;
       let oc = open_out_bin audit_dir in
       close_out oc;
       AQ.audit_approval_event ~base_path ~event_type:"pending"
-        ~id:"audit-failure-path-test" ~keeper_name ~tool_name:"keeper_shell"
+        ~id:"audit-failure-path-test" ~keeper_name ~tool_name:"tool_search_files"
         ~risk_level:AQ.Medium ();
       let after =
         Masc_mcp.Prometheus.metric_value_or_zero
-          Masc_mcp.Prometheus.metric_keeper_approval_queue_failures
+          Masc_mcp.Keeper_metrics.(to_string ApprovalQueueFailures)
           ~labels
           ()
       in
@@ -129,9 +139,25 @@ let execute_approval_get args =
   Fun.protect
     ~finally:(fun () -> cleanup_dir base_path)
     (fun () ->
+      let raw_token =
+        match
+          Masc_mcp.Auth.create_token
+            base_path
+            ~agent_name:"approval-admin"
+            ~role:Types.Admin
+        with
+        | Ok (raw, _) -> raw
+        | Error err ->
+          Alcotest.fail
+            ("admin token setup failed: " ^ Masc_domain.masc_error_to_string err)
+      in
       let state = Mcp_eio.create_state ~test_mode:true ~base_path () in
-      Mcp_eio.execute_tool_eio ~sw ~clock ~mcp_session_id:"approval-get-test"
-        state ~name:"masc_approval_get" ~arguments:args)
+      let result =
+        Mcp_eio.execute_tool_eio ~sw ~clock ~mcp_session_id:"approval-get-test"
+          ~auth_token:raw_token
+          state ~name:"masc_approval_get" ~arguments:args
+      in
+      ((Tool_result.is_success result), (Tool_result.message result)))
 
 let with_test_config f =
   Eio_main.run @@ fun env ->
@@ -144,6 +170,19 @@ let with_test_config f =
     (fun () ->
       let state = Mcp_eio.create_state ~test_mode:true ~base_path () in
       f state.room_config)
+
+let with_eio_base_path f =
+  Eio_main.run @@ fun env ->
+  Fs_compat.set_fs (Eio.Stdenv.fs env);
+  Mcp_eio.set_net (Eio.Stdenv.net env);
+  Mcp_eio.set_clock (Eio.Stdenv.clock env);
+  let base_path = temp_dir () in
+  AQ.For_testing.reset_audit_store ();
+  Fun.protect
+    ~finally:(fun () ->
+      AQ.For_testing.reset_audit_store ();
+      cleanup_dir base_path)
+    (fun () -> f base_path)
 
 let with_temp_masc_base f =
   Eio_main.run @@ fun env ->
@@ -170,7 +209,7 @@ let with_temp_masc_base f =
 
 let test_risk_classification_critical () =
   let tools = [
-    ("masc_code_delete", GP.Critical);
+    ("tool_edit_file", GP.Critical);
     ("masc_force_reset", GP.Critical);
     ("keeper_destroy", GP.Critical);
   ] in
@@ -184,9 +223,8 @@ let test_risk_classification_critical () =
 
 let test_risk_classification_high () =
   let tools = [
-    ("masc_code_write", GP.High);
-    ("keeper_write", GP.High);
-    ("keeper_fs_edit", GP.High);
+    ("tool_write_file", GP.High);
+    ("tool_edit_file", GP.High);
     ("masc_create_task", GP.High);
   ] in
   List.iter (fun (tool_name, expected) ->
@@ -212,26 +250,6 @@ let test_risk_classification_low () =
       (GP.risk_level_to_string expected)
       (GP.risk_level_to_string actual)
   ) tools
-
-let test_keeper_shell_gh_read_only_stays_low () =
-  let actual =
-    GP.assess_risk
-      ~tool_name:"keeper_shell"
-      ~input:(`Assoc [("op", `String "gh"); ("cmd", `String "pr view 123")])
-  in
-  check "keeper_shell op=gh pr view → low"
-    (GP.risk_level_to_string GP.Low)
-    (GP.risk_level_to_string actual)
-
-let test_keeper_shell_gh_mutation_escalates_high () =
-  let actual =
-    GP.assess_risk
-      ~tool_name:"keeper_shell"
-      ~input:(`Assoc [("op", `String "gh"); ("cmd", `String "pr comment 123 --body hi")])
-  in
-  check "keeper_shell op=gh pr comment → high"
-    (GP.risk_level_to_string GP.High)
-    (GP.risk_level_to_string actual)
 
 (* ── 2. Threshold decisions ──────────────────────────────── *)
 
@@ -279,7 +297,7 @@ let test_approval_queue_submit_and_resolve () =
     let decision =
       AQ.submit_and_await
         ~keeper_name:"test-keeper"
-        ~tool_name:"masc_code_delete"
+        ~tool_name:"tool_edit_file"
         ~input:(`Assoc [("path", `String "/dangerous")])
         ~risk_level:AQ.Critical
         ()
@@ -460,7 +478,7 @@ let test_submit_and_await_clock_returns_manual_decision () =
     let decision =
       AQ.submit_and_await
         ~keeper_name
-        ~tool_name:"keeper_shell"
+        ~tool_name:"tool_search_files"
         ~input:(`Assoc [ ("op", `String "write") ])
         ~risk_level:AQ.Medium
         ~clock
@@ -520,6 +538,44 @@ let test_approval_queue_cancel_cleans_up () =
   (* After cancellation, the pending entry should be cleaned up *)
   let final_count = AQ.pending_count () in
   Alcotest.(check int) "no orphan entries" initial_count final_count
+
+let test_approval_queue_cancel_records_terminal_audit () =
+  Eio_main.run @@ fun _env ->
+  let base_path = temp_dir () in
+  let keeper_name = "cancel-audit-test" in
+  AQ.For_testing.reset_audit_store ();
+  Fun.protect
+    ~finally:(fun () ->
+      AQ.For_testing.reset_audit_store ();
+      cleanup_dir base_path)
+    (fun () ->
+      let initial_count = AQ.pending_count () in
+      (try
+         Eio.Switch.run @@ fun sw ->
+         Eio.Fiber.fork ~sw (fun () ->
+           ignore
+             (AQ.submit_and_await
+                ~keeper_name
+                ~tool_name:"tool_edit_file"
+                ~input:(`Assoc [ ("path", `String "lib/example.ml") ])
+                ~risk_level:AQ.Critical
+                ~base_path
+                ()));
+         yield_until (fun () ->
+           AQ.pending_count_for_keeper ~keeper_name = 1);
+         Eio.Switch.fail sw (Failure "simulated shutdown")
+       with Failure _ -> ());
+      Alcotest.(check int) "no orphan entries" initial_count (AQ.pending_count ());
+      match AQ.read_recent_audit ~base_path ~keeper_name ~n:1 () with
+      | latest :: _ ->
+        let open Yojson.Safe.Util in
+        Alcotest.(check string) "latest event is terminal" "cancelled"
+          (latest |> member "event" |> to_string);
+        Alcotest.(check bool) "decision records cancellation" true
+          (contains_substring
+             (latest |> member "decision" |> to_string)
+             "approval await cancelled")
+      | [] -> Alcotest.fail "expected cancellation audit row")
 
 let test_background_pending_callback_and_keeper_lookup () =
   Eio_main.run @@ fun _env ->
@@ -593,8 +649,12 @@ let test_background_pending_distinct_inputs_do_not_reuse_entry () =
   let id1 =
     AQ.submit_pending
       ~keeper_name:"gate-keeper"
-      ~tool_name:"keeper_shell"
-      ~input:(`Assoc [("op", `String "gh"); ("cmd", `String "pr view 123")])
+      ~tool_name:"tool_execute"
+      ~input:
+        (`Assoc
+          [ "executable", `String "git"
+          ; "argv", `List [ `String "status"; `String "--short" ]
+          ])
       ~risk_level:AQ.Medium
       ~on_resolution:(fun decision -> callback_result := decision :: !callback_result)
       ()
@@ -602,8 +662,12 @@ let test_background_pending_distinct_inputs_do_not_reuse_entry () =
   let id2 =
     AQ.submit_pending
       ~keeper_name:"gate-keeper"
-      ~tool_name:"keeper_shell"
-      ~input:(`Assoc [("op", `String "gh"); ("cmd", `String "pr comment 123 --body hi")])
+      ~tool_name:"tool_execute"
+      ~input:
+        (`Assoc
+          [ "executable", `String "git"
+          ; "argv", `List [ `String "log"; `String "--oneline"; `String "-1" ]
+          ])
       ~risk_level:AQ.High
       ~on_resolution:(fun decision -> callback_result := decision :: !callback_result)
       ()
@@ -630,7 +694,7 @@ let test_approval_queue_get_pending_detail () =
   let id =
     AQ.submit_pending
       ~keeper_name:"detail-keeper"
-      ~tool_name:"masc_code_delete"
+      ~tool_name:"tool_edit_file"
       ~input
       ~risk_level:AQ.Critical
       ~turn_id:7
@@ -650,9 +714,9 @@ let test_approval_queue_get_pending_detail () =
   Alcotest.(check string) "detail id" id (detail |> member "id" |> to_string);
   Alcotest.(check string) "detail keeper" "detail-keeper"
     (detail |> member "keeper_name" |> to_string);
-  Alcotest.(check string) "detail tool" "masc_code_delete"
+  Alcotest.(check string) "detail tool" "tool_edit_file"
     (detail |> member "tool_name" |> to_string);
-  Alcotest.(check string) "detail action key" "tool:masc_code_delete"
+  Alcotest.(check string) "detail action key" "tool:tool_edit_file"
     (detail |> member "action_key" |> to_string);
   Alcotest.(check string) "detail sandbox target" "docker"
     (detail |> member "sandbox_target" |> to_string);
@@ -696,7 +760,7 @@ let test_approval_get_dispatch_success () =
   let id =
     AQ.submit_pending
       ~keeper_name:"dispatch-detail-keeper"
-      ~tool_name:"masc_code_delete"
+      ~tool_name:"tool_edit_file"
       ~input
       ~risk_level:AQ.Critical
       ~on_resolution:(fun decision -> callback_result := Some decision)
@@ -709,7 +773,7 @@ let test_approval_get_dispatch_success () =
       let ok, payload =
         execute_approval_get (`Assoc [("id", `String id)])
       in
-      Alcotest.(check bool) "dispatch approval_get success" true ok;
+      if not ok then Alcotest.fail ("dispatch approval_get failed: " ^ payload);
       let open Yojson.Safe.Util in
       let json = Yojson.Safe.from_string payload in
       Alcotest.(check string) "dispatch detail id" id
@@ -723,15 +787,13 @@ let test_approval_get_dispatch_success () =
     (match !callback_result with Some (Agent_sdk.Hooks.Reject _) -> true | _ -> false)
 
 let test_resolve_with_policy_remembers_medium_allow () =
-  let base_path = temp_dir () in
-  Fun.protect
-    ~finally:(fun () -> cleanup_dir base_path)
-    (fun () ->
+  with_eio_base_path @@ fun base_path ->
       let id =
         AQ.submit_pending
+          ~base_path
           ~keeper_name:"remember-keeper"
-          ~tool_name:"masc_claim_task"
-          ~input:(`Assoc [])
+          ~tool_name:"masc_transition"
+          ~input:(`Assoc [ ("action", `String "claim") ])
           ~risk_level:AQ.Medium
           ~on_resolution:(fun _ -> ())
           ()
@@ -750,17 +812,15 @@ let test_resolve_with_policy_remembers_medium_allow () =
       | Ok { remembered_rule = None } ->
           Alcotest.fail "expected remembered_rule for medium allow"
       | Error err ->
-          Alcotest.fail ("resolve_with_policy failed: " ^ AQ.resolve_error_to_string err))
+          Alcotest.fail ("resolve_with_policy failed: " ^ AQ.resolve_error_to_string err)
 
 let test_resolve_with_policy_does_not_remember_high_allow () =
-  let base_path = temp_dir () in
-  Fun.protect
-    ~finally:(fun () -> cleanup_dir base_path)
-    (fun () ->
+  with_eio_base_path @@ fun base_path ->
       let id =
         AQ.submit_pending
+          ~base_path
           ~keeper_name:"remember-keeper"
-          ~tool_name:"keeper_fs_edit"
+          ~tool_name:"tool_edit_file"
           ~input:(`Assoc [("path", `String "lib/example.ml")])
           ~risk_level:AQ.High
           ~on_resolution:(fun _ -> ())
@@ -780,7 +840,7 @@ let test_resolve_with_policy_does_not_remember_high_allow () =
       | Ok { remembered_rule = Some _ } ->
           Alcotest.fail "high-risk allow should not be remembered"
       | Error err ->
-          Alcotest.fail ("resolve_with_policy failed: " ^ AQ.resolve_error_to_string err))
+          Alcotest.fail ("resolve_with_policy failed: " ^ AQ.resolve_error_to_string err)
 
 let test_dashboard_resolve_and_delete_rules_use_room_base_path () =
   let env_base = temp_dir () in
@@ -805,8 +865,13 @@ let test_dashboard_resolve_and_delete_rules_use_room_base_path () =
       let id =
         AQ.submit_pending
           ~keeper_name:"dashboard-room-keeper"
-          ~tool_name:"masc_claim_task"
-          ~input:(`Assoc [ ("task_id", `String "task-room") ])
+          ~tool_name:"masc_transition"
+          ~input:
+            (`Assoc
+              [
+                ("action", `String "claim");
+                ("task_id", `String "task-room");
+              ])
           ~risk_level:AQ.Medium
           ~base_path:room_base
           ~on_resolution:(fun _ -> ())
@@ -874,8 +939,13 @@ let test_submit_pending_audit_uses_room_base_path () =
       ignore
         (AQ.submit_pending
            ~keeper_name
-           ~tool_name:"masc_claim_task"
-           ~input:(`Assoc [ ("task_id", `String "task-room-audit") ])
+           ~tool_name:"masc_transition"
+           ~input:
+             (`Assoc
+               [
+                 ("action", `String "claim");
+                 ("task_id", `String "task-room-audit");
+               ])
            ~risk_level:AQ.High
            ~base_path:room_base
            ~on_resolution:(fun _ -> ())
@@ -932,7 +1002,7 @@ let test_callback_approves_low_risk () =
     Alcotest.fail ("expected Approve for low-risk tool, got Reject: " ^ r)
   | _ -> Alcotest.fail "unexpected decision"
 
-let test_callback_production_keeper_write_requires_approval () =
+let test_callback_production_tool_edit_file_requires_approval () =
   Eio_main.run @@ fun env ->
   Fs_compat.set_fs (Eio.Stdenv.fs env);
   Mcp_eio.set_net (Eio.Stdenv.net env);
@@ -952,7 +1022,7 @@ let test_callback_production_keeper_write_requires_approval () =
         ~config ~governance_level:"production" ~keeper_name:"test" () in
     let decision =
       cb
-        ~tool_name:"keeper_fs_edit"
+        ~tool_name:"tool_edit_file"
         ~input:(`Assoc [
           ("path", `String "lib/example.ml");
           ("content", `String "let x = 1\n");
@@ -981,20 +1051,100 @@ let test_callback_production_keeper_write_requires_approval () =
   | Some _ -> Alcotest.fail "expected Approve after operator resolution"
   | None -> Alcotest.fail "keeper write callback did not suspend for approval")
 
-let test_callback_production_keeper_shell_gh_read_only_auto_approved () =
+let test_callback_production_claimed_worktree_write_auto_approved () =
   with_test_config @@ fun config ->
+  let keeper_name = "sandbox-writer" in
+  let meta =
+    meta_from_json
+      (`Assoc
+        [
+          ("name", `String keeper_name);
+          ("agent_name", `String ("keeper-" ^ keeper_name ^ "-agent"));
+          ("trace_id", `String "sandbox-write-trace");
+          ("sandbox_profile", `String "docker");
+          ("network_mode", `String "inherit");
+          ("current_task_id", `String "task-210");
+        ])
+  in
+  let pending_before = AQ.pending_count () in
   let cb =
     GP.to_oas_approval_callback
-      ~config ~governance_level:"production" ~keeper_name:"test" () in
+      ~config
+      ~governance_level:"production"
+      ~keeper_name
+      ~meta
+      ()
+  in
   let decision =
-    cb ~tool_name:"keeper_shell"
-      ~input:(`Assoc [("op", `String "gh"); ("cmd", `String "pr view 123")])
+    cb
+      ~tool_name:"WriteFile"
+      ~input:
+        (`Assoc
+          [
+            ( "file_path",
+              `String
+                "repos/masc-mcp/.worktrees/keeper-sandbox-writer-task-210/lib/example.ml"
+            );
+            ("content", `String "let x = 1\n");
+          ])
   in
   match decision with
-  | Agent_sdk.Hooks.Approve -> ()
+  | Agent_sdk.Hooks.Approve ->
+    Alcotest.(check int)
+      "claimed sandbox worktree write does not enqueue approval"
+      pending_before
+      (AQ.pending_count ())
   | Agent_sdk.Hooks.Reject r ->
-    Alcotest.fail ("expected Approve for read-only keeper_shell op=gh, got Reject: " ^ r)
+    Alcotest.fail
+      ("expected Approve for claimed sandbox worktree write, got Reject: " ^ r)
   | _ -> Alcotest.fail "unexpected decision"
+
+let test_sandbox_worktree_write_rule_rejects_unclaimed_or_root_checkout () =
+  with_test_config @@ fun config ->
+  let keeper_name = "sandbox-writer-negative" in
+  let claimed_meta =
+    meta_from_json
+      (`Assoc
+        [
+          ("name", `String keeper_name);
+          ("agent_name", `String ("keeper-" ^ keeper_name ^ "-agent"));
+          ("trace_id", `String "sandbox-write-negative-trace");
+          ("sandbox_profile", `String "docker");
+          ("network_mode", `String "inherit");
+          ("current_task_id", `String "task-210");
+        ])
+  in
+  let unclaimed_meta = { claimed_meta with current_task_id = None } in
+  let worktree_input =
+    `Assoc
+      [
+        ( "file_path",
+          `String
+            "repos/masc-mcp/.worktrees/keeper-sandbox-writer-negative-task-210/lib/example.ml"
+        );
+      ]
+  in
+  let root_checkout_input =
+    `Assoc [ ("file_path", `String "repos/masc-mcp/lib/example.ml") ]
+  in
+  Alcotest.(check (option string))
+    "unclaimed keeper has no code-write routine label"
+    None
+    (Masc_mcp.Keeper_routine_allowlist.sandboxed_code_write_rule_label
+       ~config
+       ~meta:unclaimed_meta
+       ~tool_name:"WriteFile"
+       ~input:worktree_input
+       ~risk_level:AQ.High);
+  Alcotest.(check (option string))
+    "root checkout path has no code-write routine label"
+    None
+    (Masc_mcp.Keeper_routine_allowlist.sandboxed_code_write_rule_label
+       ~config
+       ~meta:claimed_meta
+       ~tool_name:"WriteFile"
+       ~input:root_checkout_input
+       ~risk_level:AQ.High)
 
 let test_callback_production_worktree_create_auto_approved () =
   with_test_config @@ fun config ->
@@ -1003,7 +1153,7 @@ let test_callback_production_worktree_create_auto_approved () =
     GP.to_oas_approval_callback
       ~config ~governance_level:"production" ~keeper_name:"test" () in
   let decision =
-    cb ~tool_name:"masc_worktree_create"
+    cb ~tool_name:"tool_execute"
       ~input:(`Assoc [
         ("task_id", `String "task-187");
         ("repo_name", `String "masc-mcp");
@@ -1018,15 +1168,13 @@ let test_callback_production_worktree_create_auto_approved () =
   | _ -> Alcotest.fail "unexpected decision"
 
 let test_callback_paranoid_medium_risk_uses_remembered_policy () =
-  let base_path = temp_dir () in
-  Fun.protect
-    ~finally:(fun () -> cleanup_dir base_path)
-    (fun () ->
+  with_eio_base_path @@ fun base_path ->
       let id =
         AQ.submit_pending
+          ~base_path
           ~keeper_name:"remember-keeper"
-          ~tool_name:"masc_claim_task"
-          ~input:(`Assoc [])
+          ~tool_name:"masc_transition"
+          ~input:(`Assoc [ ("action", `String "claim") ])
           ~risk_level:AQ.Medium
           ~on_resolution:(fun _ -> ())
           ()
@@ -1048,7 +1196,11 @@ let test_callback_paranoid_medium_risk_uses_remembered_policy () =
           ~governance_level:"paranoid" ~keeper_name:"remember-keeper"
           ~config ()
       in
-      let decision = cb ~tool_name:"masc_claim_task" ~input:(`Assoc []) in
+      let decision =
+        cb
+          ~tool_name:"masc_transition"
+          ~input:(`Assoc [ ("action", `String "claim") ])
+      in
       match decision with
       | Agent_sdk.Hooks.Approve ->
           Alcotest.(check int) "remembered policy bypasses queue"
@@ -1056,7 +1208,7 @@ let test_callback_paranoid_medium_risk_uses_remembered_policy () =
       | Agent_sdk.Hooks.Reject reason ->
           Alcotest.fail ("expected remembered approve, got reject: " ^ reason)
       | Agent_sdk.Hooks.Edit _ ->
-          Alcotest.fail "expected remembered approve, got edit")
+          Alcotest.fail "expected remembered approve, got edit"
 
 let test_callback_always_approve_bypasses_threshold () =
   with_test_config @@ fun config ->
@@ -1065,6 +1217,8 @@ let test_callback_always_approve_bypasses_threshold () =
       (`Assoc [
         ("name", `String "test-keeper");
         ("trace_id", `String "test-trace");
+        ("sandbox_profile", `String "docker");
+        ("network_mode", `String "inherit");
         ("always_approve", `Bool true);
       ])
   in
@@ -1094,6 +1248,8 @@ let test_runtime_trust_classifies_always_approve_flag () =
           (`Assoc [
             ("name", `String keeper_name);
             ("trace_id", `String "trace-always-flag");
+            ("sandbox_profile", `String "docker");
+            ("network_mode", `String "inherit");
             ("always_approve", `Bool true);
           ])
       in
@@ -1131,6 +1287,8 @@ let test_callback_always_approve_respects_forbidden () =
           (`Assoc [
             ("name", `String "test-keeper");
             ("trace_id", `String "test-trace");
+            ("sandbox_profile", `String "docker");
+            ("network_mode", `String "inherit");
             ("always_approve", `Bool true);
           ])
       in
@@ -1140,7 +1298,7 @@ let test_callback_always_approve_respects_forbidden () =
             ~config ~governance_level:"production" ~keeper_name:"test-keeper" ~meta ()
         in
         let decision =
-          cb ~tool_name:"masc_code_delete"
+          cb ~tool_name:"tool_edit_file"
             ~input:(`Assoc [("path", `String "/dangerous")])
         in
         result := Some decision
@@ -1170,23 +1328,79 @@ let test_read_recent_audit_filters_after_wide_scan () =
   with_temp_masc_base @@ fun () ->
   let keeper_name = "audit-target-keeper" in
   AQ.audit_approval_event ~event_type:"resolved" ~id:"target-audit"
-    ~keeper_name ~tool_name:"keeper_shell" ~risk_level:AQ.Medium
+    ~keeper_name ~tool_name:"tool_search_files" ~risk_level:AQ.Medium
+    ~selected_model:"openai:gpt-5.4"
     ~decision:(AQ.Approval_resolved Agent_sdk.Hooks.Approve) ();
   for i = 1 to 32 do
     AQ.audit_approval_event ~event_type:"resolved"
       ~id:(Printf.sprintf "other-audit-%02d" i)
       ~keeper_name:(Printf.sprintf "busy-keeper-%02d" i)
-      ~tool_name:"keeper_shell" ~risk_level:AQ.Medium
+      ~tool_name:"tool_search_files" ~risk_level:AQ.Medium
       ~decision:(AQ.Approval_resolved Agent_sdk.Hooks.Approve) ()
   done;
   match AQ.read_recent_audit ~keeper_name ~n:1 () with
   | [ json ] ->
       Alcotest.(check string) "target approval survives unrelated tail"
         "target-audit"
-        Yojson.Safe.Util.(json |> member "id" |> to_string)
+        Yojson.Safe.Util.(json |> member "id" |> to_string);
+      Alcotest.(check bool) "audit selected model redacted" true
+        Yojson.Safe.Util.(json |> member "selected_model" = `Null)
   | items ->
       Alcotest.fail
         (Printf.sprintf "expected one target audit, got %d" (List.length items))
+
+let test_runtime_trust_approval_read_model_filters_after_wide_scan () =
+  with_test_config @@ fun config ->
+  AQ.For_testing.reset_audit_store ();
+  Fun.protect
+    ~finally:AQ.For_testing.reset_audit_store
+    (fun () ->
+      let keeper_name = "runtime-trust-audit-target" in
+      let meta =
+        meta_from_json
+          (`Assoc [
+            ("name", `String keeper_name);
+            ("trace_id", `String "trace-runtime-trust-audit-target");
+            ("sandbox_profile", `String "docker");
+            ("network_mode", `String "inherit");
+          ])
+      in
+      AQ.audit_approval_event ~base_path:config.base_path
+        ~event_type:"resolved" ~id:"runtime-trust-target-audit"
+        ~keeper_name ~tool_name:"tool_search_files" ~risk_level:AQ.Medium
+        ~decision:(AQ.Approval_resolved Agent_sdk.Hooks.Approve) ();
+      for i = 1 to 64 do
+        AQ.audit_approval_event ~base_path:config.base_path
+          ~event_type:"resolved"
+          ~id:(Printf.sprintf "runtime-trust-other-audit-%02d" i)
+          ~keeper_name:(Printf.sprintf "busy-runtime-keeper-%02d" i)
+          ~tool_name:"tool_search_files" ~risk_level:AQ.Medium
+          ~decision:(AQ.Approval_resolved Agent_sdk.Hooks.Approve) ()
+      done;
+      let snapshot =
+        Masc_mcp.Keeper_runtime_trust_snapshot.snapshot_json ~config ~meta
+      in
+      let open Yojson.Safe.Util in
+      let approval = snapshot |> member "approval" in
+      Alcotest.(check string) "runtime trust approval state" "resolved"
+        (approval |> member "state" |> to_string);
+      Alcotest.(check string) "runtime trust latest event kind" "resolved"
+        (approval |> member "latest_event_kind" |> to_string);
+      let approval_events =
+        snapshot |> member "causal_timeline" |> to_list
+        |> List.filter (fun event ->
+          String.equal "approval_resolved"
+            (event |> member "kind" |> to_string))
+      in
+      Alcotest.(check int) "one filtered approval event" 1
+        (List.length approval_events);
+      match approval_events with
+      | [ event ] ->
+        Alcotest.(check bool) "approval event title mentions tool" true
+          (contains_substring (event |> member "title" |> to_string) "tool_search_files");
+        Alcotest.(check bool) "approval event summary mentions target keeper" true
+          (contains_substring (event |> member "summary" |> to_string) keeper_name)
+      | _ -> Alcotest.fail "expected exactly one target approval event")
 
 (* ── Test runner ──────────────────────────────────────────── *)
 
@@ -1196,10 +1410,6 @@ let () =
       Alcotest.test_case "critical tools" `Quick test_risk_classification_critical;
       Alcotest.test_case "high-risk tools" `Quick test_risk_classification_high;
       Alcotest.test_case "low-risk tools" `Quick test_risk_classification_low;
-      Alcotest.test_case "keeper_shell op=gh read-only stays low" `Quick
-        test_keeper_shell_gh_read_only_stays_low;
-      Alcotest.test_case "keeper_shell op=gh mutation escalates high" `Quick
-        test_keeper_shell_gh_mutation_escalates_high;
     ]);
     ("threshold_decisions", [
       Alcotest.test_case "development allows all" `Quick test_development_allows_all;
@@ -1218,8 +1428,12 @@ let () =
         test_submit_and_await_clock_returns_manual_decision;
       Alcotest.test_case "resolve nonexistent" `Quick test_approval_resolve_nonexistent;
       Alcotest.test_case "cancel cleans up" `Quick test_approval_queue_cancel_cleans_up;
+      Alcotest.test_case "cancel records terminal audit" `Quick
+        test_approval_queue_cancel_records_terminal_audit;
       Alcotest.test_case "failure observation labels site" `Quick
         test_approval_queue_failure_metric_labels_site;
+      Alcotest.test_case "first cmd token uses shared words" `Quick
+        test_first_cmd_token_uses_shared_words;
       Alcotest.test_case "background pending callback" `Quick
         test_background_pending_callback_and_keeper_lookup;
       Alcotest.test_case "background pending reuses existing entry" `Quick
@@ -1246,13 +1460,20 @@ let () =
         test_submit_pending_audit_uses_room_base_path;
       Alcotest.test_case "read_recent_audit scans before keeper filter" `Quick
         test_read_recent_audit_filters_after_wide_scan;
+      Alcotest.test_case
+        "runtime trust approval read model scans before keeper filter" `Quick
+        test_runtime_trust_approval_read_model_filters_after_wide_scan;
     ]);
     ("callback_integration", [
       Alcotest.test_case "low risk auto-approved" `Quick test_callback_approves_low_risk;
       Alcotest.test_case "production keeper write requires approval" `Quick
-        test_callback_production_keeper_write_requires_approval;
-      Alcotest.test_case "production keeper_shell op=gh read-only auto-approved" `Quick
-        test_callback_production_keeper_shell_gh_read_only_auto_approved;
+        test_callback_production_tool_edit_file_requires_approval;
+      Alcotest.test_case "production claimed worktree write auto-approved" `Quick
+        test_callback_production_claimed_worktree_write_auto_approved;
+      Alcotest.test_case
+        "sandbox worktree write routine rejects unclaimed/root checkout"
+        `Quick
+        test_sandbox_worktree_write_rule_rejects_unclaimed_or_root_checkout;
       Alcotest.test_case "production worktree create auto-approved" `Quick
         test_callback_production_worktree_create_auto_approved;
       Alcotest.test_case "paranoid medium risk uses remembered policy" `Quick

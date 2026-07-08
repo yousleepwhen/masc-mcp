@@ -27,7 +27,7 @@ module Float = Stdlib.Float
     3. TOP TASKS — what are the important tasks?
     4. SWARM HEALTH — is the system healthy?
     5. RECENT ACTIVITY — what just happened?
-    6. Footer — tempo, locks, worktrees (one line)
+    6. Footer — tempo and locks (one line)
 *)
 
 (* ===== Runtime-tunable parameters =====
@@ -177,56 +177,6 @@ let add_group label lines empty_msg =
     [Printf.sprintf "%s: %s" label empty_msg]
   else
     (label ^ ":") :: List.map (fun line -> "  " ^ line) lines
-
-let normalize_worktree_branch branch =
-  let branch = String.trim branch in
-  let prefix = "refs/heads/" in
-  if String.length branch >= String.length prefix
-     && String.equal (Stdlib.String.sub branch 0 (String.length prefix)) prefix then
-    String.sub branch (String.length prefix)
-      (String.length branch - String.length prefix)
-  else
-    branch
-
-let worktree_path_of_json item =
-  let module U = Yojson.Safe.Util in
-  match item |> U.member "path" with
-  | `String path when not (String.equal (String.trim path) "") -> Some path
-  | _ ->
-      (match item |> U.member "worktree" with
-       | `String path when not (String.equal (String.trim path) "") -> Some path
-       | _ -> None)
-
-let parse_worktrees (json : Yojson.Safe.t) : (string * string) list =
-  let module U = Yojson.Safe.Util in
-  match json |> U.member "worktrees" with
-  | `List items ->
-      List.filter_map
-        (fun item ->
-          match item with
-          | `Assoc _ ->
-              let branch =
-                match item |> U.member "branch" with
-                | `String raw_branch -> Some (normalize_worktree_branch raw_branch)
-                | _ -> None
-              in
-              (match worktree_path_of_json item, branch with
-               | Some worktree, Some branch
-                 when String.length branch > 0 && not (String.equal branch "HEAD") ->
-                   Some (branch, worktree)
-               | _ -> None)
-          | _ -> None)
-        items
-  | `Null -> []
-  | _ -> []
-
-let worktrees_section (config : Coord_utils.config) : section =
-  let json = Coord.worktree_list config in
-  let worktrees = parse_worktrees json in
-  let content = List.map (fun (branch, path) ->
-    Printf.sprintf "%s -> %s" branch (truncate_path path)
-  ) worktrees in
-  { title = "Worktrees"; content; empty_msg = "(no worktrees)" }
 
 let rec count_lock_files path =
   try
@@ -422,8 +372,8 @@ let format_elapsed_float now ts =
   let elapsed = now -. ts in
   if Stdlib.Float.compare elapsed 0.0 < 0 then "0s"
   else if Stdlib.Float.compare elapsed 60.0 < 0 then Printf.sprintf "%.0fs" elapsed
-  else if Stdlib.Float.compare elapsed 3600.0 < 0 then Printf.sprintf "%.0fm" (elapsed /. 60.0)
-  else Printf.sprintf "%.1fh" (elapsed /. 3600.0)
+  else if Stdlib.Float.compare elapsed Masc_time_constants.hour < 0 then Printf.sprintf "%.0fm" (elapsed /. 60.0)
+  else Printf.sprintf "%.1fh" (elapsed /. Masc_time_constants.hour)
 
 (** Keepers section: real-time FSM phase from Keeper_registry.
     Reads registry snapshot each render — no dashboard-side cache. *)
@@ -457,11 +407,11 @@ let keepers_section now : section =
     Prometheus.metric_total Prometheus.metric_fsm_guard_violation |> int_of_float
   in
   let write_meta_failures =
-    Prometheus.metric_total Prometheus.metric_keeper_write_meta_failures |> int_of_float
+    Prometheus.metric_total Keeper_metrics.(to_string WriteMetaFailures) |> int_of_float
   in
   let tool_failures =
-    (Prometheus.metric_total Prometheus.metric_keeper_tool_selection_failures |> int_of_float)
-    + (Prometheus.metric_total Prometheus.metric_keeper_task_load_failures |> int_of_float)
+    (Prometheus.metric_total Keeper_metrics.(to_string ToolSelectionFailures) |> int_of_float)
+    + (Prometheus.metric_total Keeper_metrics.(to_string TaskLoadFailures) |> int_of_float)
   in
   let title =
     match guard_violations, write_meta_failures, tool_failures with
@@ -523,13 +473,12 @@ let generate ?(scope = All) (config : Coord_utils.config) : string =
     ]
   in
   let tempo = Tempo.get_tempo config in
-  let worktrees = parse_worktrees (Coord.worktree_list config) in
   let total_locks =
     List.fold_left (fun acc s -> acc + s.locks) 0 snapshots
   in
   let footer =
-    Printf.sprintf "-- Tempo: %.0fs | Locks: %d | Worktrees: %d"
-      tempo.Tempo.current_interval_s total_locks (List.length worktrees)
+    Printf.sprintf "-- Tempo: %.0fs | Locks: %d"
+      tempo.Tempo.current_interval_s total_locks
   in
   let section_strs = List.map format_section sections in
   String.concat "\n\n" ([header] @ section_strs @ [footer])
@@ -602,76 +551,94 @@ let generate_compact ?(scope = All) (config : Coord_utils.config) : string =
         Prometheus.metric_total Prometheus.metric_fsm_guard_violation |> int_of_float
       in
       let write_meta_failures =
-        Prometheus.metric_total Prometheus.metric_keeper_write_meta_failures |> int_of_float
+        Prometheus.metric_total Keeper_metrics.(to_string WriteMetaFailures) |> int_of_float
+      in
+      let board_capped =
+        Prometheus.metric_total
+          Keeper_metrics.(to_string BoardSignalWakeupCappedTotal)
+        |> int_of_float
       in
       let tool_failures =
-        (Prometheus.metric_total Prometheus.metric_keeper_tool_selection_failures |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_task_load_failures |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_reconcile_failures |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_decision_audit_flush_failures |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_persona_drift_missing |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_room_init_failures |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_presence_sync_failures |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_self_preservation_universal |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_cycle_exceptions |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_snapshot_write_failures |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_sse_broadcast_failures |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_room_heartbeat_failures |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_turn_metrics_snapshot_failures |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_oas_execution_errors |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_episode_create_failures |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_memory_activity_emit_failures |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_supervisor_sweep_failures |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_toml_reconcile_sweep_failures |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_tool_usage_flush_failures |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_turn_livelock_blocks |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_turn_timeout_committed |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_turn_error_after_tools |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_turn_cleanup_failures |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_cleanup_tracking_failures |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_cascade_sync_failures |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_local_discovery_failures |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_thinking_persist_failures |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_checkpoint_failures |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_memory_write_failures |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_write_meta_cycle_failures |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_alert_persist_failures |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_metrics_sse_failures |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_dispatch_event_failures |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_session_cleanup_failures |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_chat_store_failures |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_observation_query_failures |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_stale_termination_threshold_breached |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_stale_termination_batch |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_stale_broadcast_emit_failures |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_tool_use_failure |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_config_env_parse_failures |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_turn_gate_rejected_terminal |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_receipt_unmapped_disposition |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_post_turn_wirein_failures |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_meta_read_failures |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_approval_queue_failures |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_guards_failures |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_profile_load_failures |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_compact_audit_failures |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_fs_failures |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_crash_persistence_failures |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_generation_lineage_failures |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_keepalive_signal_failures |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_meta_json_failures |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_tools_oas_failures |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_turn_up_update_failures |> int_of_float)
-+ (Prometheus.metric_total Prometheus.metric_keeper_execution_receipt_failures |> int_of_float)
-+ (Prometheus.metric_total Prometheus.metric_keeper_llm_bridge_failures |> int_of_float)
-+ (Prometheus.metric_total Prometheus.metric_keeper_shell_bash_failures |> int_of_float)
-      + (Prometheus.metric_total Prometheus.metric_keeper_rollover_failures |> int_of_float)
-        + (Prometheus.metric_total Prometheus.metric_keeper_recurring_failures |> int_of_float)
+        (Prometheus.metric_total Keeper_metrics.(to_string ToolSelectionFailures) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string TaskLoadFailures) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string ReconcileFailures) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string DecisionAuditFlushFailures) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string PersonaDriftMissing) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string RoomInitFailures) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string PresenceSyncFailures) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string SelfPreservationUniversal) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string CycleExceptions) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string SnapshotWriteFailures) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string SseBroadcastFailures) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string RoomHeartbeatFailures) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string TurnMetricsSnapshotFailures) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string OasExecutionErrors) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string EpisodeCreateFailures) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string MemoryActivityEmitFailures) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string SupervisorSweepFailures) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string TomlReconcileSweepFailures) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string ToolUsageFlushFailures) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string TurnLivelockBlocks) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string TurnTimeoutCommitted) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string TurnErrorAfterTools) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string TurnCleanupFailures) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string CleanupTrackingFailures) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string CascadeSyncFailures) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string LocalDiscoveryFailures) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string ThinkingPersistFailures) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string CheckpointFailures) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string MemoryWriteFailures) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string WriteMetaCycleFailures) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string AlertPersistFailures) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string MetricsSseFailures) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string DispatchEventFailures) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string SessionCleanupFailures) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string ChatStoreFailures) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string ObservationQueryFailures) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string StaleTerminationThresholdBreached) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string StaleTerminationBatch) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string StaleBroadcastEmitFailures) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string ToolUseFailure) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string ConfigEnvParseFailures) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string TurnGateRejectedTerminal) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string ReceiptUnmappedDisposition) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string PostTurnWireinFailures) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string MetaReadFailures) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string ApprovalQueueFailures) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string GuardsFailures) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string ProfileLoadFailures) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string CompactAuditFailures) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string FsFailures) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string CrashPersistenceFailures) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string GenerationLineageFailures) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string KeepaliveSignalFailures) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string MetaJsonFailures) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string ToolsOasFailures) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string TurnUpUpdateFailures) |> int_of_float)
++ (Prometheus.metric_total Keeper_metrics.(to_string ExecutionReceiptFailures) |> int_of_float)
++ (Prometheus.metric_total Keeper_metrics.(to_string LlmBridgeFailures) |> int_of_float)
++ (Prometheus.metric_total Keeper_metrics.(to_string ToolExecuteFailures) |> int_of_float)
+      + (Prometheus.metric_total Keeper_metrics.(to_string RolloverFailures) |> int_of_float)
+        + (Prometheus.metric_total Keeper_metrics.(to_string RecurringFailures) |> int_of_float)
       in
       let tool_suffix =
         if tool_failures > 0
         then Printf.sprintf " | TOOL-ERR: %d" tool_failures
         else ""
       in
-      Printf.sprintf "KEEPERS: %d running / %d dead / %d other | GUARD: %d | META-WRITE-ERR: %d%s"
-        k_running k_dead k_other guard_violations write_meta_failures tool_suffix;
+      let board_suffix =
+        if board_capped > 0
+        then Printf.sprintf " | BOARD-CAPPED: %d" board_capped
+        else ""
+      in
+      Printf.sprintf
+        "KEEPERS: %d running / %d dead / %d other | GUARD: %d | \
+         META-WRITE-ERR: %d%s%s"
+        k_running
+        k_dead
+        k_other
+        guard_violations
+        write_meta_failures
+        tool_suffix
+        board_suffix;
     ]

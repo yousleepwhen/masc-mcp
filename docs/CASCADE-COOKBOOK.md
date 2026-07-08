@@ -1,161 +1,206 @@
 # Cascade Cookbook
 
-Copy-paste examples for `config/cascade.toml`.
+Copy-paste examples for declarative `config/cascade.toml`.
 
-Use this document for local/private live config under:
+The old flat profile cookbook is retired. Do not write top-level profile tables
+with inline model lists; declare providers, models, bindings, tiers,
+tier-groups, and routes explicitly.
 
-- `~/.masc/config/cascade.toml`
-- `$MASC_BASE_PATH/.masc/config/cascade.toml`
-
-The runtime will materialize sibling `cascade.json` automatically.
-
-Do not treat these examples as a mandate for checked-in repo defaults. Repo
-defaults must stay limited to providers that the currently pinned OAS runtime
-can execute when selected.
-
-## Quick Rules
-
-- Use explicit `provider:model_id` labels in committed defaults when review-stable pinning matters; use `provider:auto` only when the adapter default is the intended contract.
-- A cascade profile is a top-level TOML table such as `[keeper_unified]`.
-- `comment` at the root maps to the runtime `_comment`; `[profile].comment`
-  maps to `_comment_<profile>`.
-- `[default]` acts as fallback for cascades that omit per-profile values.
-- `[profile].keeper_assignable = false` keeps a profile visible in the catalog
-  but hides it from keeper assignment dropdowns.
-- `[profile.api_key_env]` maps provider ids to env var names.
-- `kimi_cli:auto` is the preferred Kimi lane for current live configs when you
-  want the CLI/runtime-MCP tool path.
-- `glm-coding-plan:auto` is the preferred GLM coding-plan lane for current live
-  configs.
-- Direct `kimi:` still exists for Moonshot/OpenAI-compatible routing, but keep
-  it as an explicit choice rather than the default cookbook path.
-
-## Example 1: GLM Coding Plan + Kimi CLI + Local Ollama Fallback
-
-Use this when your keepers are primarily coding/text agents and you want:
-
-- `glm-coding-plan` as the main tool-using cloud path
-- `kimi_cli` as the secondary coding cloud path
-- local `ollama` as the cheap fallback/recovery lane
+## Provider-K Coding Plan + Provider-C CLI
 
 ```toml
-comment = "Local/private live config example. Requires valid GLM/Kimi credentials and local fallback runtime health."
+[providers.provider-k-coding]
+display-name = "Zhipu Provider-K Coding"
+protocol = "provider-d-http"
+endpoint = "https://api.z.ai/api/coding/paas/v4"
 
-[default]
-temperature = 0.2
-max_tokens = 8192
-models = [
-  { model = "glm-coding-plan:auto", weight = 45 },
-  { model = "kimi_cli:auto", weight = 35 },
-  { model = "ollama:qwen3.5:35b-a3b-nvfp4", weight = 20, supports_tool_choice = true },
-]
+[providers.provider-k-coding.credentials]
+type = "env"
+key = "ZAI_API_KEY"
 
-[default.api_key_env]
-glm = "ZAI_API_KEY_SB"
-"glm-coding-plan" = "ZAI_API_KEY_SB"
-kimi_cli = "KIMI_API_KEY_SB"
+[providers.cli-tool-c]
+display-name = "Provider-B Provider-C CLI"
+protocol = "provider-c-cli"
+command = "provider-c"
+is-non-interactive = true
 
-[keeper_unified]
-temperature = 0.2
-max_tokens = 16384
-strategy = "circuit_breaker_cycling"
-max_cycles = 2
-backoff_base_ms = 250
-backoff_cap_ms = 2000
-ollama_max_concurrent = 1
-models = [
-  { model = "glm-coding-plan:auto", weight = 45 },
-  { model = "kimi_cli:auto", weight = 35 },
-  { model = "ollama:qwen3.5:35b-a3b-nvfp4", weight = 20, supports_tool_choice = true },
-]
+[providers.cli-tool-c.credentials]
+type = "env"
+key = "PROVIDER-B_API_KEY"
 
-[local_recovery]
-temperature = 0.1
-max_tokens = 8192
-models = ["ollama:qwen3.5:35b-a3b-nvfp4"]
+[models.provider-k-5-turbo]
+api-name = "provider-k-5-turbo"
+max-context = 128000
+tools-support = true
+streaming = true
 
-[tool_rerank]
-temperature = 0.0
-max_tokens = 200
-keeper_assignable = false
+[models.provider-c-coding]
+api-name = "model-c-coding"
+max-context = 128000
+tools-support = true
+streaming = true
+
+[provider-k-coding.provider-k-5-turbo]
+is-default = true
+max-concurrent = 2
+
+[cli-tool-c.provider-c-coding]
+is-default = true
+max-concurrent = 1
+
+[tier.provider-k-coding-with-spark]
+members = ["provider-k-coding.provider-k-5-turbo", "cli-tool-c.provider-c-coding"]
+strategy = "failover"
+
+[tier-group.provider-k-coding-with-spark]
+tiers = ["provider-k-coding-with-spark"]
+strategy = "priority_tier"
+fallback = true
+
+[routes.keeper_turn]
+target = "tier-group.provider-k-coding-with-spark"
 ```
 
-Operational notes:
+## Ollama Fallback
 
-- Keep `glm-coding-plan` first if you want reliable cloud tool use.
-- Keep `ollama` in `local_recovery_*` even if the main cascade already contains
-  it; recovery profiles should stay deterministic and cheap.
-- `supports_tool_choice` on the local candidate is only a hint for known local
-  models that do obey tool-choice overrides.
-
-## Example 2: GLM Coding Plan + Kimi CLI + Local MLX-VLM Fallback
-
-Use this when the local lane is an OpenAI-compatible MLX-VLM endpoint instead
-of `ollama`.
+Use the same shape for local Ollama or a compatible remote Ollama endpoint.
+Only the provider `endpoint` changes.
 
 ```toml
-comment = "Local/private live config example. Requires valid GLM/Kimi credentials and an OpenAI-compatible MLX-VLM endpoint."
+[providers.ollama]
+display-name = "Ollama HTTP"
+protocol = "ollama-http"
+endpoint = "http://localhost:11434"
 
-[default]
-temperature = 0.2
-max_tokens = 8192
-models = [
-  { model = "glm-coding-plan:auto", weight = 45 },
-  { model = "kimi_cli:auto", weight = 35 },
-  { model = "custom:mlx-community/Huihui-Qwen3.6-35B-A3B-abliterated-4.4bit-msq@http://127.0.0.1:18080/v1", weight = 20 },
-]
+[models.qwen3]
+api-name = "qwen3"
+max-context = 262144
+tools-support = true
+streaming = true
 
-[default.api_key_env]
-glm = "ZAI_API_KEY_SB"
-"glm-coding-plan" = "ZAI_API_KEY_SB"
-kimi_cli = "KIMI_API_KEY_SB"
+[ollama.qwen3]
+is-default = true
+max-concurrent = 1
 
-[keeper_unified]
-temperature = 0.2
-max_tokens = 16384
-strategy = "circuit_breaker_cycling"
-max_cycles = 2
-backoff_base_ms = 250
-backoff_cap_ms = 2000
-models = [
-  { model = "glm-coding-plan:auto", weight = 45 },
-  { model = "kimi_cli:auto", weight = 35 },
-  { model = "custom:mlx-community/Huihui-Qwen3.6-35B-A3B-abliterated-4.4bit-msq@http://127.0.0.1:18080/v1", weight = 20 },
-]
+[tier.recovery]
+members = ["ollama.qwen3"]
+strategy = "failover"
 
-[local_mlx_vlm_qwen36]
-temperature = 0.2
-max_tokens = 16384
-models = [
-  "custom:mlx-community/Huihui-Qwen3.6-35B-A3B-abliterated-4.4bit-msq@http://127.0.0.1:18080/v1",
-]
+[tier-group.recovery]
+tiers = ["recovery", "provider-k-coding-with-spark"]
+strategy = "priority_tier"
+fallback = true
 
-[tool_rerank]
-temperature = 0.0
-max_tokens = 200
-keeper_assignable = false
+[routes.phase_recovery]
+target = "tier-group.recovery"
 ```
 
-Operational notes:
+## Qwen3.6 35B-A3B MTP GGUF
 
-- Keep the `custom:` model on a canonical localhost URL so telemetry and
-  troubleshooting stay stable.
-- If the MLX-VLM lane is only for vision-heavy work, consider assigning it to a
-  separate keeper via `cascade_name` instead of making it your main keeper
-  default.
+Use the repo path, not only the GGUF basename, to identify this model. The
+MTP artifact is:
 
-## Choosing Between Ollama and MLX-VLM
+```text
+unsloth/Qwen3.6-35B-A3B-MTP-GGUF/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf
+unsloth/Qwen3.6-35B-A3B-MTP-GGUF/mmproj-F16.gguf
+```
 
-- Choose `ollama` when the local fallback is mostly text/code and you want the
-  most boring operational path.
-- Choose `mlx-vlm` when the local fallback must accept image-heavy or multimodal
-  turns through an OpenAI-compatible endpoint.
-- Keep `glm-coding-plan` first unless you explicitly want local-first
-  economics and are comfortable with tool-call fallback behavior.
+Do not confuse it with the non-MTP repo:
 
-## Where This Connects
+```text
+unsloth/Qwen3.6-35B-A3B-GGUF/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf
+```
 
-- Schema reference: [docs/spec/14-configuration.md](./spec/14-configuration.md)
-- Checked-in authoring seed: [config/cascade.toml](../config/cascade.toml)
-- Materialized runtime artifact: [config/cascade.json](../config/cascade.json)
-- Reload contract: [README.md](../README.md)
+The basename is intentionally similar, but the artifacts are not identical.
+On 2026-05-17, Hugging Face HEAD metadata differed:
+
+| Repo | Size | Linked etag prefix |
+| --- | ---: | --- |
+| `Qwen3.6-35B-A3B-GGUF` | `22,360,456,160` | `707a55...` |
+| `Qwen3.6-35B-A3B-MTP-GGUF` | `22,853,663,008` | `55983c...` |
+
+The llama.cpp MTP shape is main GGUF plus projector plus speculative decoding:
+
+```bash
+export QWEN36_MTP_DIR="/path/to/unsloth/Qwen3.6-35B-A3B-MTP-GGUF"
+
+./build/bin/llama-server \
+  --model "$QWEN36_MTP_DIR/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf" \
+  --mmproj "$QWEN36_MTP_DIR/mmproj-F16.gguf" \
+  --alias provider-h-local-35b-a3b \
+  -ngl 99 \
+  -c 65536 \
+  -fa on \
+  -np 1 \
+  --temp 0.7 \
+  --top-p 0.8 \
+  --top-k 20 \
+  --presence-penalty 1.5 \
+  --min-p 0.00 \
+  --spec-type draft-mtp \
+  --spec-draft-n-max 6 \
+  --reasoning off \
+  --host 127.0.0.1 \
+  --port 8080
+```
+
+Cascade entries should keep the context and output caps at the model level.
+Do not set a per-keeper `max-output` override unless the keeper truly needs a
+different cap.
+
+```toml
+[providers.local_mtp]
+display-name = "Local Qwen3.6 35B-A3B MTP"
+protocol = "provider-d-http"
+endpoint = "http://127.0.0.1:8080"
+
+[models.qwen36-35b-a3b-mtp-local]
+api-name = "provider-h-local-35b-a3b"
+max-context = 65536
+tools-support = true
+thinking-support = true
+streaming = true
+
+[models.qwen36-35b-a3b-mtp-local.capabilities]
+max-output-tokens = 8192
+supports-tool-choice = true
+supports-extended-thinking = true
+supports-reasoning-budget = true
+thinking-control-format = "chat-template-kwargs"
+supports-native-streaming = true
+supports-response-format-json = true
+
+[local_mtp.qwen36-35b-a3b-mtp-local]
+is-default = true
+max-concurrent = 1
+
+[local_mtp.qwen36-35b-a3b-mtp-local.keeper]
+temperature = 0.3
+```
+
+Runtime proof points:
+
+- Process args include `--mmproj .../mmproj-F16.gguf`,
+  `--spec-type draft-mtp`, and `--spec-draft-n-max 6`.
+- `server.log` should include `creating MTP draft context`,
+  `loaded multimodal model`, and `adding speculative implementation
+  'draft-mtp'`.
+- A smoke completion should include non-zero `timings.draft_n` and
+  `timings.draft_n_accepted`.
+
+Observed smoke on 2026-05-17 KST:
+
+| Endpoint | Predicted tok/s | Draft generated | Draft accepted | Notes |
+| --- | ---: | ---: | ---: | --- |
+| local `127.0.0.1:8080` | `80-81` | `162` | `144` | 160-word repeat prompt, `reasoning off` |
+| RunPod proxy | `212-215` | `197` | `156` | Same prompt; remote launch flags not locally visible |
+
+Official source: <https://unsloth.ai/docs/models/qwen3.6#mtp-qwen3.6-35b-a3b>
+
+## Notes
+
+- Routes should target `tier-group.<name>` unless a caller intentionally needs a
+  single tier or binding.
+- Keep provider credentials in provider sub-tables; do not recreate per-profile
+  `api_key_env` blocks.
+- The checked-in seed is `config/cascade.toml`.

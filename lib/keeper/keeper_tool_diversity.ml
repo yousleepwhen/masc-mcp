@@ -92,7 +92,7 @@ let compute_diversity ~(available_tools : string list)
     |> List.map (fun s -> s.name)
   in
   (* Underused: available tools never called or called < 1% *)
-  let module SS = Set.Make (String) in
+  let module SS = Set_util.StringSet in
   let used_set =
     List.fold_left (fun acc s ->
       if s.count > 0 then SS.add s.name acc else acc)
@@ -115,7 +115,7 @@ let record_underused_tool_metrics ~keeper_name ~available_tools summary =
     List.sort_uniq String.compare summary.underused_tools
   in
   Prometheus.set_gauge
-    Prometheus.metric_keeper_tool_underused_allowed_count
+    Keeper_metrics.(to_string ToolUnderusedAllowedCount)
     ~labels:[ ("keeper", keeper_name) ]
     (float_of_int (List.length underused_tools));
   List.iter
@@ -124,7 +124,7 @@ let record_underused_tool_metrics ~keeper_name ~available_tools summary =
          if List.mem tool underused_tools then 1.0 else 0.0
        in
        Prometheus.set_gauge
-         Prometheus.metric_keeper_tool_underused_allowed
+         Keeper_metrics.(to_string ToolUnderusedAllowed)
          ~labels:[ ("keeper", keeper_name); ("tool", tool) ]
          value)
     available_tools

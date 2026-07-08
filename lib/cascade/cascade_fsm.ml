@@ -5,16 +5,19 @@
 (* ── Types ──────────────────────────────────────── *)
 
 type provider_outcome =
-  | Call_ok of Llm_provider.Types.api_response
-  | Call_err of Llm_provider.Http_client.http_error
+  | Call_ok of Llm_provider.Types.api_response [@tla.symbol "call_ok"]
+  | Call_err of Llm_provider.Http_client.http_error [@tla.symbol "call_err"]
   | Accept_rejected of { response : Llm_provider.Types.api_response; reason : string }
-  | Slot_full
+      [@tla.symbol "accept_rejected"]
+[@@deriving tla]
 
 type decision =
-  | Accept of Llm_provider.Types.api_response
+  | Accept of Llm_provider.Types.api_response [@tla.symbol "accept"]
   | Accept_on_exhaustion of { response : Llm_provider.Types.api_response; reason : string }
-  | Try_next of { last_err : Llm_provider.Http_client.http_error option }
-  | Exhausted of { last_err : Llm_provider.Http_client.http_error option }
+      [@tla.symbol "accept_on_exhaustion"]
+  | Try_next of { last_err : Llm_provider.Http_client.http_error option } [@tla.symbol "try_next"]
+  | Exhausted of { last_err : Llm_provider.Http_client.http_error option } [@tla.symbol "exhausted"]
+
 
 (* ── Decision function ──────────────────────────── *)
 
@@ -22,17 +25,6 @@ let decide ~accept_on_exhaustion ~is_last outcome =
   match outcome with
   | Call_ok resp ->
     Accept resp
-  | Slot_full ->
-    Try_next
-      {
-        last_err =
-          Some
-            (Llm_provider.Http_client.NetworkError
-               {
-                 message = "slot full, cascading to next provider";
-                 kind = Llm_provider.Http_client.Local_resource_exhaustion;
-               });
-      }
   | Accept_rejected { response; reason } ->
     if is_last && accept_on_exhaustion then
       Accept_on_exhaustion { response; reason }
@@ -61,6 +53,7 @@ let to_user_message last_err =
   | Some (Llm_provider.Http_client.CliTransportRequired { kind }) ->
       Printf.sprintf "%s provider requires a CLI transport" kind
   | Some (Llm_provider.Http_client.NetworkError { message; _ }) -> message
+  | Some (Llm_provider.Http_client.TimeoutError { message; _ }) -> message
   | Some
       ( (Llm_provider.Http_client.ProviderTerminal _
         | Llm_provider.Http_client.ProviderFailure _) as err ) ->
@@ -77,6 +70,7 @@ let format_exhausted_error last_err =
   let network_error_kind =
     match last_err with
     | Some (Llm_provider.Http_client.NetworkError { kind; _ }) -> kind
+    | Some (Llm_provider.Http_client.TimeoutError _) -> Timeout
     | _ -> Unknown
   in
   match last_err with
@@ -94,10 +88,50 @@ let provider_outcome_to_string = function
   | Call_ok _ -> "call-ok"
   | Call_err _ -> "call-err"
   | Accept_rejected _ -> "accept-rejected"
-  | Slot_full -> "slot-full"
 
 let provider_outcome_option_to_string = function
   | Some outcome -> "some-" ^ provider_outcome_to_string outcome
   | None -> "none"
+
+let exhaustion_reason_of_last_err = function
+  | Some (Llm_provider.Http_client.HttpError _) -> "http_error"
+  | Some (Llm_provider.Http_client.AcceptRejected _) -> "accept_rejected"
+  | Some (Llm_provider.Http_client.CliTransportRequired _) -> "cli_required"
+  | Some (Llm_provider.Http_client.NetworkError _) -> "network_error"
+  | Some (Llm_provider.Http_client.TimeoutError _) -> "timeout"
+  | Some (Llm_provider.Http_client.ProviderTerminal _) -> "provider_terminal"
+  | Some (Llm_provider.Http_client.ProviderFailure _) -> "provider_failure"
+  | None -> "no_providers"
+
+(* ── Observable wrapper (preserves pure decide) ── *)
+
+let decide_and_record ~cascade_name ~accept_on_exhaustion ~is_last outcome =
+  let decision = decide ~accept_on_exhaustion ~is_last outcome in
+  let decision_label =
+    match decision with
+    | Accept _ -> "accept"
+    | Accept_on_exhaustion _ -> "accept_on_exhaustion"
+    | Try_next _ -> "try_next"
+    | Exhausted _ -> "exhausted"
+  in
+  Cascade_metrics.on_decision ~cascade_name ~decision_label;
+  (match decision with
+   | Try_next _ ->
+       let reason =
+         match outcome with
+         | Accept_rejected _ -> "accept_rejected"
+         | Call_err err ->
+             if Cascade_health_filter.should_cascade_to_next err then
+               "call_err_cascadeable"
+             else
+               "call_err_non_cascadeable"
+         | Call_ok _ -> "unexpected"
+       in
+       Cascade_metrics.on_fallback ~cascade_name ~reason
+   | Exhausted { last_err } ->
+       let reason = exhaustion_reason_of_last_err last_err in
+       Cascade_metrics.on_exhausted ~cascade_name ~reason
+   | _ -> ());
+  decision
 
 (* ── Inline tests ───────────────────────────────── *)

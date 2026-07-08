@@ -68,8 +68,11 @@ function snapshot(
       no_cascade_before_measurement: allHold,
       compaction_atomicity: allHold,
       event_priority_monotone: allHold,
+      phase_derivation_agreement: allHold,
       ...overrides.violate,
     },
+    fsm_guard_violations: 0,
+    fsm_guard_violation_breakdown: [],
     is_live: false,
     last_outcome: null,
     recommended_actions: [],
@@ -83,7 +86,7 @@ function execution(
   return {
     latest_receipt_present: true,
     recorded_at: '2026-04-25T07:30:00Z',
-    outcome: 'ok',
+    outcome: 'receipt_done',
     terminal_reason_code: 'completed',
     operator_disposition: 'pass',
     operator_disposition_reason: 'healthy',
@@ -167,6 +170,7 @@ describe('tallyInvariantViolations', () => {
       no_cascade_before_measurement: 0,
       compaction_atomicity: 0,
       event_priority_monotone: 0,
+      phase_derivation_agreement: 0,
     })
   })
 
@@ -189,6 +193,7 @@ describe('tallyInvariantViolations', () => {
       no_cascade_before_measurement: 0,
       compaction_atomicity: 0,
       event_priority_monotone: 0,
+      phase_derivation_agreement: 0,
     })
   })
 })
@@ -200,7 +205,7 @@ describe('runtimeAttentionForSnapshot', () => {
     const snap = snapshot({
       is_live: false,
       execution: execution({
-        outcome: 'error',
+        outcome: 'receipt_failed',
         terminal_reason_code: 'api_error',
         operator_disposition: 'pause_human',
         operator_disposition_reason: 'tool_required_unsatisfied',
@@ -226,7 +231,7 @@ describe('runtimeAttentionForSnapshot', () => {
     const snap = snapshot({
       is_live: false,
       execution: execution({
-        outcome: 'ok',
+        outcome: 'receipt_done',
         terminal_reason_code: 'completed',
         operator_disposition: 'pass',
         operator_disposition_reason: 'healthy',
@@ -301,6 +306,56 @@ describe('runtimeAttentionForSnapshot', () => {
     expect(attention.reason).toContain('healthy idle')
   })
 
+  it('does not revive a previous terminal receipt while a live turn is running', () => {
+    const snap = snapshot({
+      is_live: true,
+      turn_phase: 'executing',
+      decision: { stage: 'tool_policy_selected' },
+      cascade: { state: 'trying' },
+      live_turn: {
+        turn_id: 42,
+        started_at: generatedAt - 30,
+        last_progress_at: generatedAt - 5,
+        last_progress_kind: 'provider_attempt_started',
+      },
+      execution: execution({
+        recorded_at: '2026-04-25T07:30:00Z',
+        outcome: 'receipt_failed',
+        terminal_reason_code: 'cascade_exhausted',
+        operator_disposition: 'alert_exhausted',
+        operator_disposition_reason: 'cascade_exhausted',
+        tool_contract_result: 'unknown',
+        error: {
+          kind: 'internal',
+          message_preview: 'cascade exhausted',
+          message_truncated: false,
+        },
+      }),
+      runtime_attention: {
+        state: 'ok',
+        needs_attention: false,
+        blocked: false,
+        fiber_stop_requested: false,
+        reason: null,
+        raw_phase: 'running',
+        is_live: true,
+        source: 'live_turn',
+        execution_current: false,
+        stale_execution_receipt: true,
+        live_turn_started_at: generatedAt - 30,
+        live_turn_last_progress_at: generatedAt - 5,
+      },
+    })
+
+    expect(latestRuntimeActivityEpoch(snap)).toBe(generatedAt - 5)
+    const attention = runtimeAttentionForSnapshot(snap, generatedAt)
+    expect(attention.level).toBe('ok')
+    expect(attention.label).toBe('live')
+    expect(attention.cause).toContain('live turn 관측 중')
+    expect(attention.title).toContain('receipt=previous_turn')
+    expect(attention.title).toContain('previous_terminal=cascade_exhausted')
+  })
+
   it('keeps raw lifecycle separate by flagging stale liveness without changing phase', () => {
     const snap = snapshot({
       is_live: false,
@@ -338,7 +393,7 @@ describe('runtimeAttentionForSnapshot', () => {
       name: 'blocked',
       is_live: false,
       execution: execution({
-        outcome: 'error',
+        outcome: 'receipt_failed',
         terminal_reason_code: 'api_error',
         operator_disposition: 'pause_human',
       }),
@@ -383,31 +438,38 @@ describe('runtimeAttentionForSnapshot', () => {
     const snap = snapshot({
       is_live: false,
       execution: execution({
-        outcome: 'error',
+        outcome: 'receipt_failed',
         terminal_reason_code: 'completion_contract_violation:require_tool_use',
         operator_disposition: 'pause_human',
         operator_disposition_reason: 'tool_required_unsatisfied',
         tool_contract_result: 'missing_required_tool_use',
         tool_surface: {
           tool_requirement: 'required',
+          turn_lane: 'tool_required',
+          tool_surface_class: 'mixed',
+          visible_tool_count: 0,
           tool_gate_enabled: true,
-          missing_required_tools: ['keeper_bash'],
-          required_tools: ['keeper_bash'],
+          tool_surface_fallback_used: true,
+          missing_required_tools: ['Execute'],
+          required_tools: ['Execute'],
         },
       }),
     })
 
     const attention = runtimeAttentionForSnapshot(snap, generatedAt)
     expect(attention.level).toBe('blocked')
-    expect(attention.cause).toContain('missing_required_tool_use (keeper_bash)')
-    expect(attention.nextStep).toContain('keeper_bash')
+    expect(attention.cause).toContain('missing_required_tool_use (Execute)')
+    expect(attention.reason).toContain('turn_lane=tool_required')
+    expect(attention.reason).toContain('visible_tools=0')
+    expect(attention.reason).toContain('tool_surface_fallback=true')
+    expect(attention.nextStep).toContain('Execute')
   })
 
   it('routes provider timeout blockers away from generic approval guidance', () => {
     const snap = snapshot({
       is_live: true,
       execution: execution({
-        outcome: 'error',
+        outcome: 'receipt_failed',
         terminal_reason_code: 'api_error_timeout',
         operator_disposition: 'pause_human',
         operator_disposition_reason: 'tool_required_unsatisfied',
@@ -434,10 +496,20 @@ describe('fleetCellPresentation', () => {
       phase: 'Running',
       is_live: false,
       execution: execution({
-        outcome: 'error',
+        outcome: 'receipt_failed',
         terminal_reason_code: 'api_error',
         operator_disposition: 'pause_human',
         operator_disposition_reason: 'tool_required_unsatisfied',
+        tool_surface: {
+          tool_requirement: 'required',
+          turn_lane: 'tool_required',
+          tool_surface_class: 'mixed',
+          visible_tool_count: 0,
+          tool_gate_enabled: true,
+          tool_surface_fallback_used: true,
+          missing_required_tools: ['Execute'],
+          required_tools: ['Execute'],
+        },
       }),
     })
     const attention = runtimeAttentionForSnapshot(snap, generatedAt)
@@ -449,7 +521,7 @@ describe('fleetCellPresentation', () => {
     expect(cell.className).toContain('var(--bad-light)')
     expect(cell.title).toContain('KSM Running')
     expect(cell.title).toContain('runtime 정체')
-    expect(cell.title).toContain('operator pause: tool_required_unsatisfied')
+    expect(cell.title).toContain('blocked: tool_required_unsatisfied')
   })
 
   it('keeps non-KSM lanes tied to their raw FSM state', () => {
@@ -475,10 +547,20 @@ describe('buildRuntimeAssistPrompt', () => {
       phase: 'Running',
       is_live: false,
       execution: execution({
-        outcome: 'error',
+        outcome: 'receipt_failed',
         terminal_reason_code: 'api_error',
         operator_disposition: 'pause_human',
         operator_disposition_reason: 'tool_required_unsatisfied',
+        tool_surface: {
+          tool_requirement: 'required',
+          turn_lane: 'tool_required',
+          tool_surface_class: 'mixed',
+          visible_tool_count: 0,
+          tool_gate_enabled: true,
+          tool_surface_fallback_used: true,
+          missing_required_tools: ['Execute'],
+          required_tools: ['Execute'],
+        },
       }),
     })
     const attention = runtimeAttentionForSnapshot(snap, generatedAt)
@@ -486,8 +568,11 @@ describe('buildRuntimeAssistPrompt', () => {
 
     expect(prompt).toContain('감독형 런타임 진단 요청: blocked')
     expect(prompt).toContain('cause=')
-    expect(prompt).toContain('operator pause: tool_required_unsatisfied')
+    expect(prompt).toContain('blocked: tool_required_unsatisfied')
     expect(prompt).toContain('evidence=')
+    expect(prompt).toContain('"turn_lane":"tool_required"')
+    expect(prompt).toContain('"visible_tool_count":0')
+    expect(prompt).toContain('"tool_surface_fallback_used":true')
     expect(prompt).toContain('KSM=Running')
     expect(prompt).toContain('resolve 후보')
     expect(prompt).toContain('keeper_probe')
@@ -674,7 +759,7 @@ describe('FleetFsmMatrix streaming fallback', () => {
           phase: 'Running',
           is_live: false,
           execution: execution({
-            outcome: 'error',
+            outcome: 'receipt_failed',
             terminal_reason_code: 'api_error',
             operator_disposition: 'pause_human',
           }),
@@ -689,6 +774,26 @@ describe('FleetFsmMatrix streaming fallback', () => {
     expect(cell.getAttribute('data-runtime-phase-conflict')).toBe('true')
   })
 
+  it('adds the top FSM guard violation source to the strip tooltip', async () => {
+    fetchKeepersCompositeMock.mockResolvedValue(
+      fleetSnapshot([
+        snapshot({
+          name: 'guarded',
+          fsm_guard_violations: 3,
+          fsm_guard_violation_breakdown: [
+            { action: 'turn_phase_transition', stage: 'guard', count: 2 },
+            { action: 'completion_contract', stage: 'finalize', count: 1 },
+          ],
+        }),
+      ]),
+    )
+
+    render(html`<${FleetFsmMatrix} pollIntervalMs=${1000} />`)
+
+    const chip = await screen.findByTestId('fsm-guard-violation-chip')
+    expect(chip.title).toContain('turn_phase_transition/guard: 2')
+  })
+
   it('requests supervised AI diagnosis with the row cause and evidence', async () => {
     const onRequestRuntimeAssist = vi.fn()
     fetchKeepersCompositeMock.mockResolvedValue(
@@ -698,7 +803,7 @@ describe('FleetFsmMatrix streaming fallback', () => {
           phase: 'Running',
           is_live: false,
           execution: execution({
-            outcome: 'error',
+            outcome: 'receipt_failed',
             terminal_reason_code: 'api_error',
             operator_disposition: 'pause_human',
             operator_disposition_reason: 'tool_required_unsatisfied',
@@ -744,7 +849,7 @@ describe('FleetFsmMatrix streaming fallback', () => {
           phase: 'Running',
           is_live: false,
           execution: execution({
-            outcome: 'error',
+            outcome: 'receipt_failed',
             terminal_reason_code: 'api_error',
             operator_disposition: 'pause_human',
             operator_disposition_reason: 'tool_required_unsatisfied',
@@ -803,7 +908,7 @@ describe('FleetFsmMatrix streaming fallback', () => {
           phase: 'Running',
           is_live: false,
           execution: execution({
-            outcome: 'error',
+            outcome: 'receipt_failed',
             terminal_reason_code: 'api_error',
             operator_disposition: 'unknown',
           }),

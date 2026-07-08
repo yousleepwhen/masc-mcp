@@ -33,52 +33,56 @@ OCaml 서버가 JSON API를 제공하고, Preact SPA가 SSE로 실시간 업데�
 
 ### 1.1. Current v1 Shell Contract
 
-현재 visible Dashboard v1 shell은 다음 top-level tab으로 고정된다. `code`는 IDE shell placeholder 단계라 route/readiness만 보존하고 메인 내비에서는 숨긴다.
+현재 Dashboard v1 shell은 다음 top-level tab으로 고정된다. `cockpit`은 hidden surface이고, `code`는 IDE shell surface로 메인 내비와 readiness에 포함된다.
 
+- `cockpit` (hidden)
 - `overview`
 - `monitoring`
 - `command`
 - `connectors`
 - `workspace`
 - `lab`
+- `code`
 - `logs`
 
 탭별 canonical section inventory:
 
+- `cockpit`
+  - `#cockpit` (hidden)
 - `overview`
   - `#overview`
 - `monitoring`
-  - `#monitoring?section=journey`
-  - `#monitoring?section=observatory` (hidden diagnostic)
-  - `#monitoring?section=agents`
   - `#monitoring?section=runtime`
+  - `#monitoring?section=agents`
+  - `#monitoring?section=goal-loop`
   - `#monitoring?section=fleet-health`
-  - `#monitoring?section=memory-subsystems` (hidden diagnostic)
+  - `#monitoring?section=journey` (hidden diagnostic)
+  - `#monitoring?section=observatory` (hidden diagnostic)
+  - `#monitoring?section=cognition` (hidden diagnostic)
 - `command`
   - `#command?section=operations`
 - `connectors`
   - `#connectors?section=connector-status`
 - `workspace`
   - `#workspace?section=board`
+  - `#workspace?section=sub-boards`
   - `#workspace?section=planning`
   - `#workspace?section=repositories`
-  - `#workspace?section=collab-mvp` (hidden diagnostic)
   - `#workspace?section=verification`
 - `lab`
   - `#lab?section=tools`
-  - `#lab?section=autoresearch`
   - `#lab?section=harness`
+- `code`
+  - `#code?section=ide-shell`
 - `logs`
   - `#logs`
-- hidden route
-  - `#code?section=ide-shell`
 
 ## 2. Architecture
 
 ```
 Browser (Preact SPA)
   |
-  |-- SSE (/sse) ---> OCaml HTTP Server (Httpun_eio)
+  |-- Observer SSE (/mcp?sse_kind=observer) ---> OCaml HTTP Server (Httpun_eio)
   |-- REST (/api/v1/*) ---> OCaml HTTP Handler (server_dashboard_http.ml)
   |
   +-- Vite build --> assets/dashboard/ --> web_dashboard.ml (static file serving)
@@ -241,10 +245,10 @@ type attention_item = {
 
 ### 3.5. Governance Surface (`dashboard_governance.ml`)
 
-현재 `dashboard_governance.ml`은 빈 호환성 payload를 반환하는 compatibility stub이다. Governance case tracking은 retire되었고, 대시보드 endpoint는 0 요약치와 empty list를 반환한다.
+현재 `dashboard_governance.ml`은 retired governance case tracking의 read-only projection이다. 대시보드 endpoint는 live case engine을 가장하지 않고 0 요약치와 empty list를 반환한다.
 
 주요 함수:
-- `dashboard_json`: governance summary + judge 상태의 빈 호환 응답
+- `dashboard_json`: governance summary + judge 상태의 empty projection
 - `cases_json`: 빈 case 목록 (pagination 유지)
 - `case_detail_json`: 단일 case 조회 시 not-found 응답
 - `factual_snapshot_json`: judge 입력용 빈 팩트 스냅샷
@@ -254,10 +258,10 @@ type attention_item = {
 **400 LOC.** 주기적으로 governance factual snapshot을 LLM에 보내고 judgment를 생성하는 daemon fiber.
 
 - `start`: `Eio.Fiber.fork_daemon`으로 시작. `MASC_DASHBOARD_GOVERNANCE_JUDGE_INTERVAL_SEC` (기본 60초) 간격으로 반복
-- `refresh_once`: `Oas_worker.run_named_with_masc_tools`로 `"governance_judge"` cascade 호출 -> judgment 파싱 -> `Dated_jsonl` store에 append
+- `refresh_once`: `Keeper_turn_driver_wrappers.run_named_with_masc_tools`로 `"governance_judge"` cascade 호출 -> judgment 파싱 -> `Dated_jsonl` store에 append
 - **date-split store**: `.masc/governance/judgments/YYYY-MM/DD.jsonl` (legacy 단일 파일 fallback 지원)
 - `compute_judgments`: factual JSON을 prompt로 변환하고 LLM 호출. 결과에서 item별 judgment를 파싱하여 반환
-- **allowed_tool whitelist**: recommended_action의 resolved_tool은 5개 도구만 허용 (`masc_governance_status`, `masc_execution_orders`, `masc_execute_dry_run`, `masc_execute`, `masc_operator_confirm`)
+- **allowed_tool whitelist**: recommended_action의 resolved_tool은 active operator/execute 도구만 허용 (`masc_operator_snapshot`, `masc_operator_action`, `masc_operator_confirm`, `masc_surface_audit`, `masc_execute_dry_run`, `masc_execute`)
 - 상태: per-base_path mutable state (`judge_online`, `refreshing`, `generated_at`, `model_used`, `last_error`)
 
 ### 3.7. Execution Surface (`dashboard_execution.ml` + 하위 모듈)
@@ -376,7 +380,7 @@ proof 문서가 존재하지 않으면 `Team_session_report_proof.generate_proof
 
 **529 LOC.** 별도의 OCaml 렌더링 HTML 대시보드. `/dashboard/credits` 경로에서 서빙된다.
 
-`~/me/data/state/credits.json`을 읽어서 AI 서비스 사용량을 시각화한다 (Claude Max, ChatGPT Pro, ElevenLabs, RunPod, Railway, Anthropic API 등).
+`~/me/data/state/credits.json`을 읽어서 AI 서비스 사용량을 시각화한다 (Agent-LLM-A Max, ChatGPT Pro, ElevenLabs, RunPod, Railway, Provider-A API 등).
 
 SPA가 아닌 OCaml에서 직접 HTML을 생성하여 반환하는 독립 페이지이며, JSON API (`/api/v1/credits`)도 함께 제공한다.
 
@@ -456,7 +460,7 @@ dashboard/
       core.ts                  -- Agent, Task, Message, Keeper, BoardPost, ...
       dashboard-execution.ts   -- Execution response types
       dashboard-mission.ts     -- Mission response types
-      command-plane.ts         -- Historical compatibility types
+      command-plane.ts         -- Retired command-plane type snapshots
       governance.ts            -- Governance types
       oas.ts                   -- OAS types
       sse.ts                   -- SSE event types
@@ -464,11 +468,11 @@ dashboard/
     components/
       dashboard-shell.ts       -- Top-level shell (side rail + content)
       overview/                -- Overview surface (7 components)
-      status.ts                -- Monitoring shell (journey / observatory / agents / runtime / fleet-health / memory-subsystems / attribution)
+      status.ts                -- Monitoring shell (runtime / agents / goal-loop / fleet-health / hidden journey / observatory / cognition)
       control.ts               -- Command shell (`operations`)
       connector-status.ts      -- Connectors surface
-      work.ts                  -- Workspace shell (board / planning / verification)
-      lab.ts                   -- Lab shell (tools / autoresearch / harness)
+      work.ts                  -- Workspace shell (board / sub-boards / planning / repositories / verification)
+      lab.ts                   -- Lab shell (tools / harness)
       keeper-*.ts              -- Keeper detail (8 components)
       agent-*.ts               -- Agent views (8 components)
       live/                    -- Live activity (3 components)
@@ -511,12 +515,11 @@ const DEFAULT_ROUTE: RouteState = { tab: 'overview', params: {}, postId: null }
    - `activity|live -> observatory` (+ `view=live` when applicable)
    - `telemetry|fleet|tool-quality|governance|attribution -> fleet-health` (+ `view`)
    - `cascade-inspector|cost -> runtime` (+ `view`)
-   - `safe-autonomy -> command.operations&view=safety`
    - `git-graph -> workspace.repositories&view=graph`
    - `intervene|governance|inspector -> operations`
    - `workspace.goals -> workspace.planning`
    - `connectors.connector-* -> connectors.connector-status?connector=*`
-7. `command?section=operations&view=connectors` 는 top-level `connectors` surface로 canonical redirect 된다
+7. `command:connectors` 는 top-level `connectors:connector-status` surface로 canonical redirect 된다
 
 ### 4.4. SSE Integration
 
@@ -604,7 +607,7 @@ Vite 설정:
 - `base: '/dashboard/'` (SPA base path)
 - `outDir: '../assets/dashboard'` (OCaml 서버가 서빙하는 위치)
 - `manualChunks: { vendor: ['preact', 'preact/hooks', 'htm', '@preact/signals'] }`
-- Dev proxy: `MASC_DASHBOARD_PROXY_TARGET` -> `/api/*`, `/sse/*` 프록시
+- Dev proxy: `MASC_DASHBOARD_PROXY_TARGET` -> `/api/*`, `/mcp*`, `/ws`, `/yjs` 프록시
 - 무토큰 loopback mutation은 기본적으로 `http://localhost:5173`, `http://127.0.0.1:5173`, `http://[::1]:5173`만 허용. 다른 dev origin/port를 쓰면 서버 프로세스에 `MASC_HTTP_DEV_MUTATION_ORIGINS`를 설정
 
 ## 5. HTTP API Endpoints
@@ -618,7 +621,7 @@ Vite 설정:
 | `/api/v1/dashboard/shell` | GET | Overview / runtime shell snapshot |
 | `/api/v1/dashboard/namespace-truth` | GET | Journey / agents namespace truth |
 | `/api/v1/dashboard/telemetry/summary` | GET | Fleet-health summary read model |
-| `/api/v1/dashboard/memory-subsystems` | GET | Memory subsystem health |
+| `/api/v1/dashboard/memory-subsystems` | GET | Cognition memory sub-view read model |
 | `/api/v1/dashboard/transport-health` | GET | Runtime transport health |
 | `/api/v1/dashboard/board` | GET | Workspace board |
 | `/api/v1/dashboard/planning` | GET | Planning surface |
@@ -637,8 +640,6 @@ dashboard prefix:
 - `/api/v1/gate/connectors`
 - `/api/v1/verification/requests`
 - `/api/v1/verification/summary`
-- `/api/v1/autoresearch/loops`
-
 ### Resource APIs
 
 | Endpoint | Method | 용도 |
@@ -656,7 +657,6 @@ dashboard prefix:
 | `/api/v1/gate/connectors` | GET | Connectors surface descriptor + live status |
 | `/api/v1/verification/requests` | GET | Workspace > 검증 read model |
 | `/api/v1/verification/summary` | GET | Verification status bucket summary |
-| `/api/v1/autoresearch/loops` | GET | Lab > autoresearch loop list |
 | `/api/v1/credits` | GET | Credits JSON |
 
 ### Managed Execution and Historical Compatibility Note
@@ -674,7 +674,7 @@ dashboard prefix:
 | `/api/v1/chains/summary` | GET | Chain summary |
 | `/api/v1/chains/runs/:runId` | GET | Chain run detail |
 
-`/api/v1/command-plane/*` HTTP compatibility lane is retired. Current servers answer those paths with a removed-surface response instead of a live read/write contract.
+`/api/v1/command-plane/*` HTTP paths are retired. Current servers answer those paths with a removed-surface response instead of a live read/write contract.
 
 ### Governance
 
@@ -727,7 +727,7 @@ dashboard prefix:
 
 | Endpoint | 용도 |
 |----------|------|
-| `/sse` | Server-Sent Events 스트림 |
+| `/mcp?sse_kind=observer` | Dashboard observer Server-Sent Events 스트림 |
 
 ### Static Files
 

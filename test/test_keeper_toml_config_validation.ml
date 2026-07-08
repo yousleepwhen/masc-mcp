@@ -3,7 +3,7 @@ open Alcotest
 module KTP = Masc_mcp.Keeper_types_profile
 module KT = Masc_mcp.Keeper_types
 module KPolicy = Masc_mcp.Keeper_tool_policy
-module KPR = Masc_mcp.Keeper_tool_pr_review
+module TaskPayloads = Masc_mcp.Tool_task_payloads
 
 (** Validate that every .toml file in config/keepers/ parses successfully
     with the OCaml TOML parser.  This catches syntax that is valid standard
@@ -53,12 +53,12 @@ let test_named_keeper_docker_defaults () =
           defaults.persona_name;
         check (option string) (name ^ " sandbox_profile") (Some "docker")
           (Option.map KTP.sandbox_profile_to_string defaults.sandbox_profile);
-        (* After the host→inherit alias migration, all three docker keepers
-           request [Network_inherit] so keeper_bash can dispatch git/gh. *)
+        (* Docker keepers request [Network_inherit] so tool_execute can dispatch
+           git/gh. *)
         check (option string) (name ^ " network_mode") (Some "inherit")
           (Option.map KTP.network_mode_to_string defaults.network_mode);
-        check (option string) (name ^ " github_identity")
-          (Some "anyang-keepers") defaults.github_identity
+        check (option string) (name ^ " repo_cli_identity")
+          (Some "anyang-keepers") defaults.repo_cli_identity
   in
   expect_keeper ~name:"issue_king" ~persona:"issue_king";
   expect_keeper ~name:"masc-improver" ~persona:"analyst";
@@ -94,10 +94,15 @@ let test_committed_keepers_are_pr_work_capable () =
              (Option.map KTP.sandbox_profile_to_string defaults.sandbox_profile);
            check (option string) (name ^ " network_mode") (Some "inherit")
              (Option.map KTP.network_mode_to_string defaults.network_mode);
-           check (option string) (name ^ " github_identity")
-             (Some "anyang-keepers") defaults.github_identity;
+           let expected_repo_cli_identity =
+             match name with
+             | "verifier" -> "reviewer-keepers-nonoperator-0506b"
+             | _ -> "anyang-keepers"
+           in
+           check (option string) (name ^ " repo_cli_identity")
+             (Some expected_repo_cli_identity) defaults.repo_cli_identity;
            check (option string) (name ^ " git_identity_mode")
-             (Some "github_identity") defaults.git_identity_mode;
+             (Some "repo_cli_identity") defaults.git_identity_mode;
            let preset =
              match defaults.tool_preset with
              | None -> fail (Printf.sprintf "%s: tool_access.preset is required" file)
@@ -106,8 +111,6 @@ let test_committed_keepers_are_pr_work_capable () =
                   | Some preset -> preset
                   | None -> fail (Printf.sprintf "%s: unknown preset %S" file raw))
            in
-           check bool (name ^ " preset can mutate PR reviews") true
-             (KPR.pr_review_mutation_preset_ok (Some preset));
            let meta =
              match
                Masc_test_deps.meta_of_json_fixture
@@ -133,16 +136,144 @@ let test_committed_keepers_are_pr_work_capable () =
                 check bool (name ^ " can execute " ^ tool_name) true
                   (KPolicy.can_execute ~lookup tool_name))
              [
-               "keeper_shell";
-               "masc_code_git";
-               "keeper_preflight_check";
-               "keeper_pr_review_read";
-               "keeper_pr_review_comment";
-               "keeper_pr_review_reply";
-             ];
-           check string (name ^ " approve event maps to gh") "--approve"
-             (KPR.pr_review_event_to_gh_flag KPR.Approve))
+               "tool_search_files";
+               "tool_execute";
+             ])
     files
+
+let test_verifier_config_hides_worker_lifecycle_tools () =
+  let project_root = Masc_test_deps.find_project_root () in
+  Masc_test_deps.init_keeper_tool_registry ();
+  (match KPolicy.init_policy_config ~base_path:project_root with
+   | Ok () -> ()
+   | Error e -> fail (Printf.sprintf "init_policy_config: %s" e));
+  let path = Filename.concat project_root "config/keepers/verifier.toml" in
+  match KTP.load_keeper_toml path with
+  | Error e -> fail (Printf.sprintf "verifier.toml: %s" e)
+  | Ok (_loaded_name, defaults) ->
+      let contains ~needle haystack =
+        let len = String.length haystack in
+        let nlen = String.length needle in
+        let found = ref false in
+        if nlen <= len then
+          for i = 0 to len - nlen do
+            if String.sub haystack i nlen = needle then found := true
+          done;
+        !found
+      in
+      let instructions = Option.value ~default:"" defaults.instructions in
+      check
+        bool
+        "verifier treats PR refs as artifact evidence"
+        true
+        (contains ~needle:"PR artifact 검증" instructions);
+      check
+        bool
+        "verifier must not reject solely on empty task worktree"
+        true
+        (contains ~needle:"task-local worktree가 없거나 비어 있다는 이유만으로 reject하지 마라" instructions);
+      check
+        bool
+        "verifier blocks instead of rejecting inaccessible GitHub artifacts"
+        true
+        (contains ~needle:"GitHub/main artifact에 접근할 수 없으면 reject 대신 blocker" instructions);
+      check
+        bool
+        "verifier instructions avoid hidden Bash implementation name"
+        false
+        (contains ~needle:"tool_execute" instructions);
+      check
+        bool
+        "verifier instructions avoid hidden shell implementation name"
+        false
+        (contains ~needle:"tool_search_files" instructions);
+      let preset =
+        match defaults.tool_preset with
+        | Some raw -> (
+            match KT.tool_preset_of_string raw with
+            | Some preset -> preset
+            | None -> fail (Printf.sprintf "unknown verifier preset %S" raw))
+        | None -> fail "verifier tool_access.preset is required"
+      in
+      let also_allow = Option.value ~default:[] defaults.tool_also_allow in
+      let denylist = Option.value ~default:[] defaults.tool_denylist in
+      let meta =
+        match
+          Masc_test_deps.meta_of_json_fixture
+            (`Assoc
+               [
+                 ("name", `String "verifier");
+                 ("agent_name", `String "keeper-verifier-agent");
+                 ("trace_id", `String "verifier-tool-surface-test");
+                 ( "tool_access",
+                   `Assoc
+                     [
+                       ("kind", `String "preset");
+                       ("preset", `String (KT.tool_preset_to_string preset));
+                       ( "also_allow",
+                         `List (List.map (fun value -> `String value) also_allow) );
+                     ] );
+                 ( "tool_denylist",
+                   `List (List.map (fun value -> `String value) denylist) );
+               ])
+        with
+        | Ok meta -> meta
+        | Error e -> fail (Printf.sprintf "verifier meta fixture: %s" e)
+      in
+      let lookup = KPolicy.tool_access_lookup_of_meta meta in
+      let visible_tools = KPolicy.keeper_allowed_tool_names meta in
+      List.iter
+        (fun tool_name ->
+          check bool ("verifier keeps " ^ tool_name) true
+            (KPolicy.can_execute ~lookup tool_name);
+          check bool ("verifier exposes " ^ tool_name) true
+            (List.mem tool_name visible_tools))
+        [
+          "keeper_tasks_list";
+          "masc_tasks";
+          "masc_task_history";
+          "masc_transition";
+        ];
+      List.iter
+        (fun tool_name ->
+          check bool ("verifier hides " ^ tool_name) false
+            (KPolicy.can_execute ~lookup tool_name);
+          check bool ("verifier does not expose " ^ tool_name) false
+            (List.mem tool_name visible_tools))
+        [
+          "keeper_task_claim";
+          "keeper_task_create";
+          "keeper_task_done";
+          "keeper_task_force_done";
+          "keeper_task_force_release";
+          "keeper_task_submit_for_verification";
+          "masc_add_task";
+          "masc_batch_add_tasks";
+          "masc_claim_next";
+          "masc_deliver";
+        ];
+      List.iter
+        (fun action ->
+          check bool ("verifier blocks transition action " ^ action) true
+            (TaskPayloads.transition_action_denied_by_denylist
+               ~tool_denylist:denylist
+               ~action))
+        [
+          "claim";
+          "start";
+          "done";
+          "cancel";
+          "release";
+          "submit_for_verification";
+          "submit_pr_evidence";
+        ];
+      List.iter
+        (fun action ->
+          check bool ("verifier allows transition action " ^ action) false
+            (TaskPayloads.transition_action_denied_by_denylist
+               ~tool_denylist:denylist
+               ~action))
+        [ "approve"; "reject" ]
 
 (** Write a temporary TOML file, run load_keeper_toml, clean up. *)
 let with_temp_toml content f =
@@ -155,10 +286,128 @@ let with_temp_toml content f =
     (fun () -> f path)
 
 let write_file path contents =
+  let rec mkdir_p path =
+    if path = "" || path = "." || path = "/" then
+      ()
+    else if Sys.file_exists path then
+      ()
+    else begin
+      mkdir_p (Filename.dirname path);
+      Unix.mkdir path 0o755
+    end
+  in
+  mkdir_p (Filename.dirname path);
   let oc = open_out path in
   Fun.protect
     ~finally:(fun () -> close_out_noerr oc)
     (fun () -> output_string oc contents)
+
+let rec rm_rf path =
+  if Sys.file_exists path then
+    if Sys.is_directory path then begin
+      Sys.readdir path
+      |> Array.iter (fun name -> rm_rf (Filename.concat path name));
+      Unix.rmdir path
+    end else
+      Sys.remove path
+
+let with_env key value f =
+  let prior = Sys.getenv_opt key in
+  Unix.putenv key value;
+  Fun.protect
+    ~finally:(fun () ->
+      match prior with
+      | Some value -> Unix.putenv key value
+      | None -> Unix.putenv key "")
+    f
+
+let minimal_cascade_profile_metadata_toml = {|
+[providers.ollama]
+protocol = "ollama-http"
+endpoint = "http://localhost:11434"
+
+[models.qwen3]
+api-name = "qwen3:8b"
+max-context = 32768
+tools-support = true
+
+[models.qwen3-small]
+api-name = "qwen3:1.7b"
+max-context = 32768
+tools-support = true
+
+[ollama.qwen3]
+is-default = true
+max-concurrent = 1
+
+[ollama.qwen3-small]
+max-concurrent = 1
+
+[tier.primary]
+members = ["ollama.qwen3"]
+strategy = "failover"
+
+[tier.backup]
+members = ["ollama.qwen3-small"]
+strategy = "failover"
+
+[tier.scoring]
+keeper-assignable = false
+members = ["ollama.qwen3"]
+strategy = "failover"
+
+[tier-group.primary]
+tiers = ["primary", "backup"]
+strategy = "priority_tier"
+fallback = true
+
+[tier-group.scoring]
+tiers = ["scoring"]
+strategy = "priority_tier"
+fallback = false
+keeper-assignable = false
+
+[routes.keeper_turn]
+target = "tier-group.primary"
+
+[routes.llm_rerank]
+target = "tier-group.scoring"
+|}
+
+let with_temp_config_dir cascade_toml f =
+  let dir = Filename.temp_file "keeper_cascade_config_" "" in
+  Sys.remove dir;
+  Unix.mkdir dir 0o755;
+  let config_root = Filename.concat dir "config" in
+  let cascade_path = Filename.concat config_root "cascade.toml" in
+  write_file cascade_path cascade_toml;
+  let reset () =
+    Config_dir_resolver.reset ();
+    Masc_mcp.Cascade_catalog_runtime.reset_cache_for_tests ()
+  in
+  Fun.protect
+    ~finally:(fun () -> rm_rf dir)
+    (fun () ->
+      with_env "MASC_CONFIG_DIR" config_root @@ fun () ->
+      reset ();
+      Fun.protect ~finally:reset (fun () -> f ~config_root ~cascade_path))
+
+let repo_config_dir () =
+  match Sys.getenv_opt "DUNE_SOURCEROOT" with
+  | Some repo_root -> Filename.concat repo_root "config"
+  | None -> "config"
+
+let with_repo_config_dir f =
+  let prior = Sys.getenv_opt "MASC_CONFIG_DIR" in
+  Unix.putenv "MASC_CONFIG_DIR" (repo_config_dir ());
+  Config_dir_resolver.reset ();
+  Fun.protect
+    ~finally:(fun () ->
+      (match prior with
+       | Some value -> Unix.putenv "MASC_CONFIG_DIR" value
+       | None -> Unix.putenv "MASC_CONFIG_DIR" "");
+      Config_dir_resolver.reset ())
+    f
 
 let contains ~needle haystack =
   let len = String.length haystack in
@@ -170,26 +419,23 @@ let contains ~needle haystack =
     done;
   !found
 
-let with_config_dir contents f =
-  let dir = Filename.temp_file "keeper_config_dir_" "" in
-  Sys.remove dir;
-  Unix.mkdir dir 0o755;
-  let toml_path = Filename.concat dir "cascade.toml" in
-  let json_path = Filename.concat dir "cascade.json" in
-  write_file toml_path contents;
-  let prior = Sys.getenv_opt "MASC_CONFIG_DIR" in
-  Unix.putenv "MASC_CONFIG_DIR" dir;
-  Masc_mcp.Config_dir_resolver.reset ();
-  Fun.protect
-    ~finally:(fun () ->
-      (match prior with
-       | Some value -> Unix.putenv "MASC_CONFIG_DIR" value
-       | None -> Unix.putenv "MASC_CONFIG_DIR" "");
-      Masc_mcp.Config_dir_resolver.reset ();
-      (try Sys.remove json_path with _ -> ());
-      (try Sys.remove toml_path with _ -> ());
-      try Unix.rmdir dir with _ -> ())
-    (fun () -> f dir)
+let test_base_config_avoids_hidden_shell_tool_names () =
+  let project_root = Masc_test_deps.find_project_root () in
+  let path = Filename.concat project_root "config/keepers/base.toml" in
+  match KTP.load_keeper_toml path with
+  | Error e -> fail (Printf.sprintf "base.toml: %s" e)
+  | Ok (_loaded_name, defaults) ->
+      let instructions = Option.value ~default:"" defaults.instructions in
+      check
+        bool
+        "base instructions avoid hidden Bash implementation name"
+        false
+        (contains ~needle:"tool_execute" instructions);
+      check
+        bool
+        "base instructions avoid hidden shell implementation name"
+        false
+        (contains ~needle:"tool_search_files" instructions)
 
 let test_cascade_name_rejects_unknown () =
   let result =
@@ -204,6 +450,7 @@ let test_cascade_name_rejects_unknown () =
         (contains ~needle:"invalid cascade_name" e)
 
 let test_cascade_name_accepts_known () =
+  with_repo_config_dir @@ fun () ->
   let check_ok label cascade_name =
     let result =
       with_temp_toml
@@ -217,7 +464,7 @@ let test_cascade_name_accepts_known () =
         fail (Printf.sprintf "%s: '%s' should be accepted but got: %s" label
                 cascade_name e)
   in
-  check_ok "big_three variant" "big_three";
+  check_ok "primary variant" "primary";
   check_ok "local_only phase-routing" "local_only";
   check_ok "local_recovery phase-routing" "local_recovery";
   check_ok "tool_use_strict reserved tool lane" "tool_use_strict"
@@ -229,13 +476,13 @@ let test_cascade_name_accepts_tool_lane_without_catalog () =
   in
   let prior = Sys.getenv_opt "MASC_CONFIG_DIR" in
   Unix.putenv "MASC_CONFIG_DIR" missing_dir;
-  Masc_mcp.Config_dir_resolver.reset ();
+  Config_dir_resolver.reset ();
   Fun.protect
     ~finally:(fun () ->
       (match prior with
        | Some value -> Unix.putenv "MASC_CONFIG_DIR" value
        | None -> Unix.putenv "MASC_CONFIG_DIR" "");
-      Masc_mcp.Config_dir_resolver.reset ())
+      Config_dir_resolver.reset ())
     (fun () ->
       let result =
         with_temp_toml
@@ -251,49 +498,21 @@ let test_cascade_name_accepts_tool_lane_without_catalog () =
                 a readable live catalog: %s"
                e))
 
-let test_cascade_name_error_lists_live_catalog () =
-  with_config_dir
-    {|
-[custom_live]
-models = ["ollama:auto"]
-
-[tool_use_strict]
-models = ["ollama:auto"]
-keeper_assignable = false
-|}
-    (fun _dir ->
-      let result =
-        with_temp_toml
-          "[keeper]\nname = \"testkeeper\"\ncascade_name = \"missing_profile\"\n"
-          KTP.load_keeper_toml
-      in
-      match result with
-      | Ok _ -> fail "missing_profile cascade_name should be rejected"
-      | Error e ->
-          check bool "error lists live catalog profile" true
-            (contains ~needle:"custom_live" e);
-          check bool "error lists reserved bootstrap profile" true
-            (contains ~needle:Masc_mcp.Keeper_cascade_profile.default_name e))
-
 let test_cascade_name_accepts_catalog_entry () =
-  (* "tool_use_strict" is a known catalog entry in cascade.json,
-     distinct from compile-time variants.  Tests that the live catalog
-     is consulted during validation.
-
-     #10388: must filter out system-only ([keeper_assignable=false])
-     entries — the validator now rejects those, and a real-catalog
-     entry like [cross_verifier] is system-only. *)
+  with_repo_config_dir @@ fun () ->
+  (* Tests that the live declarative catalog is consulted during
+     validation. *)
   let catalog =
     try Masc_mcp.Keeper_cascade_profile.keeper_catalog_names ()
     with _ -> []
   in
   let test_name =
-    (* Pick an assignable catalog entry that is NOT a compile-time variant *)
+    (* Pick any keeper-assignable catalog entry that isn't a phase-routing
+       reserved alias — the validator now treats catalog membership as the
+       only acceptance criterion. *)
     match
       List.find_opt
-        (fun n ->
-           not (List.mem n Masc_mcp.Keeper_cascade_profile.known_cascades)
-           && not (List.mem n [ "local_only"; "local_recovery" ]))
+        (fun n -> not (List.mem n [ "local_only"; "local_recovery" ]))
         catalog
     with
     | Some name -> name
@@ -312,65 +531,546 @@ let test_cascade_name_accepts_catalog_entry () =
       if catalog = [] then ()
       else fail (Printf.sprintf "%s should be accepted: %s" test_name e)
 
-(** #10388: keepers must not reference cascades flagged
-    [keeper_assignable=false].  Pre-fix the validator only checked
-    catalog membership; system-only cascades (e.g. [tool_use_strict])
-    passed and the keeper failed every reconcile tick at runtime
-    (4 keepers / 59 events/day on 2026-04-25). *)
-let test_cascade_name_rejects_system_only () =
-  with_config_dir
+let test_resolve_model_strings_reads_declarative_profile () =
+  with_temp_config_dir minimal_cascade_profile_metadata_toml
+  @@ fun ~config_root:_ ~cascade_path ->
+  let models =
+    Masc_mcp.Cascade_config.resolve_model_strings
+      ~config_path:cascade_path ~name:"primary" ~defaults:["fallback"] ()
+  in
+  check (list string) "primary group models"
+    ["ollama:qwen3:8b"; "ollama:qwen3:1.7b"]
+    models
+
+let test_resolve_model_strings_uses_provider_protocol_for_custom_id () =
+  let cascade_toml =
     {|
-[everyday_assignable]
-models = ["ollama:auto"]
-keeper_assignable = true
+[providers.custom]
+protocol = "provider_d-http"
+endpoint = "https://example.invalid/v1"
 
-[system_only_lane]
-models = ["ollama:auto"]
-keeper_assignable = false
+[models.stable]
+api-name = "gpt-custom"
+max-context = 32768
+tools-support = true
+
+[custom.stable]
+max-concurrent = 1
+
+[tier.primary]
+members = ["custom.stable"]
+strategy = "failover"
+
+[routes.keeper_turn]
+target = "tier.primary"
 |}
-    (fun _dir ->
-      let result =
-        with_temp_toml
-          "[keeper]\nname = \"testkeeper\"\ncascade_name = \"system_only_lane\"\n"
-          KTP.load_keeper_toml
-      in
-      match result with
-      | Ok _ -> fail "system-only cascade_name should be rejected"
-      | Error e ->
-          check bool "error mentions system-only" true
-            (contains ~needle:"system-only" e);
-          check bool "error mentions keeper_assignable" true
-            (contains ~needle:"keeper_assignable=false" e);
-          check bool "error lists assignable subset" true
-            (contains ~needle:"everyday_assignable" e))
+  in
+  with_temp_config_dir cascade_toml @@ fun ~config_root:_ ~cascade_path ->
+  let models =
+    Masc_mcp.Cascade_config.resolve_model_strings
+      ~config_path:cascade_path ~name:"primary" ~defaults:["fallback"] ()
+  in
+  check (list string) "custom provider resolved from protocol"
+    ["custom:gpt-custom@https://example.invalid/v1"]
+    models
 
-let test_cascade_name_accepts_assignable_after_system_only_added () =
-  (* Sanity: the new gate must not regress assignable cascades when a
-     sibling profile happens to be system-only. *)
-  with_config_dir
+let test_cascade_profile_metadata_from_toml () =
+  with_temp_config_dir minimal_cascade_profile_metadata_toml
+  @@ fun ~config_root:_ ~cascade_path:_ ->
+  check (list string) "keeper assignable catalog"
+    ["backup"; "primary"; "tier-group.primary"; "tier.backup"; "tier.primary"]
+    (Masc_mcp.Keeper_cascade_profile.keeper_catalog_names ());
+  check bool "rerank route is system-only" true
+    (Masc_mcp.Keeper_cascade_profile.is_system_only_cascade "llm_rerank");
+  check bool "scoring catalog entry is system-only" true
+    (Masc_mcp.Keeper_cascade_profile.is_system_only_cascade "scoring");
+  check (option string) "primary fallback hint" (Some "tier.backup")
+    (Masc_mcp.Keeper_cascade_profile.fallback_cascade_for "primary")
+
+let test_cascade_name_accepts_unrouted_assignable_catalog_entry () =
+  with_temp_config_dir minimal_cascade_profile_metadata_toml
+  @@ fun ~config_root:_ ~cascade_path:_ ->
+  let result =
+    with_temp_toml
+      "[keeper]\nname = \"testkeeper\"\ncascade_name = \"backup\"\n"
+      KTP.load_keeper_toml
+  in
+  match result with
+  | Ok _ -> ()
+  | Error e ->
+      fail
+        (Printf.sprintf
+           "unrouted keeper-assignable catalog entry should be accepted: %s"
+           e)
+
+let test_keeper_assignability_uses_preferred_qualified_profile () =
+  let cascade_toml =
     {|
-[everyday_assignable]
-models = ["ollama:auto"]
-keeper_assignable = true
+[providers.ollama]
+protocol = "ollama-http"
+endpoint = "http://localhost:11434"
 
-[system_only_lane]
-models = ["ollama:auto"]
-keeper_assignable = false
+[models.qwen3]
+api-name = "qwen3:8b"
+max-context = 32768
+tools-support = true
+
+[ollama.qwen3]
+max-concurrent = 1
+
+[tier.primary]
+members = ["ollama.qwen3"]
+strategy = "failover"
+
+[tier-group.primary]
+tiers = ["primary"]
+strategy = "priority_tier"
+keeper-assignable = false
+
+[routes.keeper_turn]
+target = "tier-group.primary"
 |}
-    (fun _dir ->
-      let result =
-        with_temp_toml
-          "[keeper]\nname = \"testkeeper\"\ncascade_name = \"everyday_assignable\"\n"
-          KTP.load_keeper_toml
-      in
-      match result with
-      | Ok _ -> ()
-      | Error e ->
-          fail
-            (Printf.sprintf
-               "everyday_assignable (keeper_assignable=true) should be \
-                accepted: %s"
-               e))
+  in
+  with_temp_config_dir cascade_toml @@ fun ~config_root:_ ~cascade_path ->
+  check bool "preferred tier-group controls public assignability" false
+    (List.mem "primary" (Masc_mcp.Keeper_cascade_profile.keeper_catalog_names ()));
+  check bool "preferred tier-group is system-only" true
+    (Masc_mcp.Keeper_cascade_profile.is_system_only_cascade "primary");
+  check bool "qualified tier remains assignable" false
+    (Masc_mcp.Keeper_cascade_profile.is_system_only_cascade "tier.primary");
+  check bool "qualified tier-group remains system-only" true
+    (Masc_mcp.Keeper_cascade_profile.is_system_only_cascade "tier-group.primary");
+  let resolved_string raw =
+    match
+      Masc_mcp.Keeper_cascade_profile.resolve_live_result
+        ~config_path:cascade_path raw
+    with
+    | Ok name -> Cascade_name.to_string name
+    | Error (`Unresolved raw) ->
+        fail
+          (Printf.sprintf
+             "qualified cascade %S did not resolve against test catalog"
+             raw)
+  in
+  check string "qualified tier resolves without fallback" "tier.primary"
+    (resolved_string "tier.primary");
+  check string "qualified tier-group resolves without fallback" "tier-group.primary"
+    (resolved_string "tier-group.primary");
+  (match
+     with_temp_toml
+       "[keeper]\nname = \"testkeeper\"\ncascade_name = \"tier.primary\"\n"
+       KTP.load_keeper_toml
+   with
+   | Ok _ -> ()
+   | Error e ->
+       fail
+         (Printf.sprintf
+            "explicit qualified tier.primary should be accepted: %s"
+            e));
+  let result =
+    with_temp_toml
+      "[keeper]\nname = \"testkeeper\"\ncascade_name = \"primary\"\n"
+      KTP.load_keeper_toml
+  in
+  match result with
+  | Ok _ -> fail "preferred system-only tier-group should reject public primary"
+  | Error e ->
+      check bool "error mentions system-only" true
+        (contains ~needle:"system-only" e)
+
+let test_fallback_cascade_preserves_qualified_source_profile () =
+  let cascade_toml =
+    {|
+[providers.ollama]
+protocol = "ollama-http"
+endpoint = "http://localhost:11434"
+
+[models.qwen3]
+api-name = "qwen3:8b"
+max-context = 32768
+tools-support = true
+
+[ollama.qwen3]
+is-default = true
+max-concurrent = 1
+
+[tier.primary]
+members = ["ollama.qwen3"]
+strategy = "failover"
+
+[tier.mid]
+members = ["ollama.qwen3"]
+strategy = "failover"
+
+[tier.slow]
+members = ["ollama.qwen3"]
+strategy = "failover"
+
+[tier-group.primary]
+tiers = ["mid", "slow"]
+strategy = "priority_tier"
+fallback = true
+
+[tier-group.alt]
+tiers = ["primary", "mid"]
+strategy = "priority_tier"
+fallback = true
+
+[routes.keeper_turn]
+target = "tier-group.primary"
+|}
+  in
+  with_temp_config_dir cascade_toml @@ fun ~config_root:_ ~cascade_path ->
+  check (option string) "public primary resolves as tier-group.primary"
+    (Some "tier.slow")
+    (Masc_mcp.Keeper_cascade_profile.fallback_cascade_for
+       ~config_path:cascade_path "primary");
+  check (option string) "qualified tier.primary keeps tier edge"
+    (Some "tier.mid")
+    (Masc_mcp.Keeper_cascade_profile.fallback_cascade_for
+       ~config_path:cascade_path "tier.primary")
+
+let test_fallback_cascade_returns_canonical_tier_target () =
+  let cascade_toml =
+    {|
+[providers.ollama]
+protocol = "ollama-http"
+endpoint = "http://localhost:11434"
+
+[models.qwen3]
+api-name = "qwen3:8b"
+max-context = 32768
+tools-support = true
+
+[ollama.qwen3]
+is-default = true
+max-concurrent = 1
+
+[tier.primary]
+members = ["ollama.qwen3"]
+strategy = "failover"
+
+[tier.local_llama]
+members = ["ollama.qwen3"]
+strategy = "failover"
+
+[tier.glm]
+members = ["ollama.qwen3"]
+strategy = "failover"
+
+[tier-group.coding]
+tiers = ["primary", "local_llama", "glm"]
+strategy = "priority_tier"
+fallback = true
+
+[routes.keeper_turn]
+target = "tier-group.coding"
+|}
+  in
+  with_temp_config_dir cascade_toml @@ fun ~config_root:_ ~cascade_path ->
+  check
+    (option string)
+    "tier-group fallback keeps canonical tier target"
+    (Some "tier.local_llama")
+    (Masc_mcp.Keeper_cascade_profile.fallback_cascade_for
+       ~config_path:cascade_path "tier-group.coding")
+
+let test_normalize_declared_name_canonicalizes_public_catalog_members () =
+  let cascade_toml =
+    {|
+[providers.ollama]
+protocol = "ollama-http"
+endpoint = "http://localhost:11434"
+
+[models.qwen3]
+api-name = "qwen3:8b"
+max-context = 32768
+tools-support = true
+
+[ollama.qwen3]
+is-default = true
+max-concurrent = 1
+
+[tier.strict_tool_candidates]
+members = ["ollama.qwen3"]
+strategy = "failover"
+
+[tier.local_llama]
+members = ["ollama.qwen3"]
+strategy = "failover"
+
+[tier-group.strict_tool_candidates]
+tiers = ["strict_tool_candidates"]
+strategy = "priority_tier"
+
+[routes.keeper_turn]
+target = "tier-group.strict_tool_candidates"
+|}
+  in
+  with_temp_config_dir cascade_toml @@ fun ~config_root:_ ~cascade_path ->
+  check string "public tier-group alias canonicalizes to tier-group"
+    "tier-group.strict_tool_candidates"
+    (Masc_mcp.Keeper_cascade_profile.normalize_declared_name
+       ~config_path:cascade_path "strict_tool_candidates");
+  check string "public tier alias canonicalizes to tier"
+    "tier.local_llama"
+    (Masc_mcp.Keeper_cascade_profile.normalize_declared_name
+       ~config_path:cascade_path "local_llama")
+
+let test_keeper_runtime_declared_name_ignores_non_keeper_route_target () =
+  let cascade_toml =
+    {|
+[providers.ollama]
+protocol = "ollama-http"
+endpoint = "http://localhost:11434"
+
+[models.qwen3]
+api-name = "qwen3:8b"
+max-context = 32768
+tools-support = true
+
+[ollama.qwen3]
+max-concurrent = 1
+
+[tier.provider_k-coding-primary]
+members = ["ollama.qwen3"]
+strategy = "failover"
+
+[tier.ollama_cloud_primary]
+members = ["ollama.qwen3"]
+strategy = "failover"
+keeper-assignable = true
+
+[tier-group.provider_k-coding-with-spark]
+tiers = ["provider_k-coding-primary"]
+strategy = "failover"
+
+[routes.keeper_turn]
+target = "tier-group.provider_k-coding-with-spark"
+
+[routes.provider_benchmark]
+target = "tier.ollama_cloud_primary"
+|}
+  in
+  with_temp_config_dir cascade_toml @@ fun ~config_root:_ ~cascade_path ->
+  check string "assignable concrete route target is preserved"
+    "tier.ollama_cloud_primary"
+    (Masc_mcp.Keeper_cascade_profile.normalize_keeper_runtime_declared_name
+       ~config_path:cascade_path "tier.ollama_cloud_primary")
+
+let test_catalog_validator_surfaces_adapter_errors () =
+  let cascade_toml =
+    {|
+[providers.ollama]
+protocol = "ollama-http"
+endpoint = "http://localhost:11434"
+
+[models.qwen3]
+api-name = "qwen3:8b"
+max-context = 32768
+tools-support = true
+
+[tier.broken]
+members = ["ollama.qwen3"]
+strategy = "failover"
+
+[routes.keeper_turn]
+target = "tier.broken"
+|}
+  in
+  with_temp_config_dir cascade_toml @@ fun ~config_root:_ ~cascade_path ->
+  let issues =
+    Masc_mcp.Cascade_catalog_validator.diagnose_catalog
+      ~config_path:cascade_path
+  in
+  let has_adapter_error =
+    List.exists
+      (fun (issue : Masc_mcp.Cascade_catalog_validator.issue) ->
+         match issue.severity with
+         | Masc_mcp.Cascade_catalog_validator.Catalog_warn -> false
+         | Masc_mcp.Cascade_catalog_validator.Catalog_error ->
+             contains
+               ~needle:"Declarative cascade adapter error"
+               issue.message
+             && contains ~needle:"Binding_resolution_failed" issue.message)
+      issues
+  in
+  check bool "adapter error is surfaced as catalog error" true has_adapter_error
+
+let test_catalog_validator_surfaces_declarative_parse_errors () =
+  let cascade_toml =
+    {|
+[providers.ollama]
+protocol = "ollama-http"
+endpoint = "http://localhost:11434"
+
+[models.qwen3]
+api-name = "qwen3:8b"
+max-context = 32768
+tools-support = true
+
+[ollama.qwen3]
+max-concurrent = 1
+
+[tier.primary]
+members = ["ollama.qwen3"]
+strategy = "not_a_strategy"
+
+[routes.keeper_turn]
+target = "tier.primary"
+|}
+  in
+  with_temp_config_dir cascade_toml @@ fun ~config_root:_ ~cascade_path ->
+  let issues =
+    Masc_mcp.Cascade_catalog_validator.diagnose_catalog
+      ~config_path:cascade_path
+  in
+  let has_parse_error =
+    List.exists
+      (fun (issue : Masc_mcp.Cascade_catalog_validator.issue) ->
+         match issue.severity with
+         | Masc_mcp.Cascade_catalog_validator.Catalog_warn -> false
+         | Masc_mcp.Cascade_catalog_validator.Catalog_error ->
+             contains
+               ~needle:"Declarative cascade parse error"
+               issue.message
+             && contains ~needle:"not_a_strategy" issue.message)
+      issues
+  in
+  check bool "parse error is surfaced as catalog error" true has_parse_error
+
+let rejection_error_messages rejection =
+  let json = Masc_mcp.Cascade_catalog_runtime.rejection_to_yojson rejection in
+  Yojson.Safe.Util.member "errors" json
+  |> Yojson.Safe.Util.to_list
+  |> List.filter_map (function
+       | `String value -> Some value
+       | _ -> None)
+
+let test_runtime_validation_rejects_declarative_parse_errors () =
+  let cascade_toml =
+    {|
+[providers.ollama]
+protocol = "ollama-http"
+endpoint = "http://localhost:11434"
+
+[models.qwen3]
+api-name = "qwen3:8b"
+max-context = 32768
+tools-support = true
+
+[ollama.qwen3]
+max-concurrent = 1
+
+[tier.primary]
+members = ["ollama.qwen3"]
+strategy = "not_a_strategy"
+
+[routes.keeper_turn]
+target = "tier.primary"
+|}
+  in
+  with_temp_config_dir cascade_toml @@ fun ~config_root:_ ~cascade_path ->
+  match
+    Masc_mcp.Cascade_catalog_runtime.validate_path ~config_path:cascade_path ()
+  with
+  | Ok _ -> fail "runtime validation should reject declarative parse errors"
+  | Error rejection ->
+      let errors = rejection_error_messages rejection in
+      check bool "runtime rejection contains parse error" true
+        (List.exists
+           (fun message ->
+              contains ~needle:"declarative cascade parse error" message
+              && contains ~needle:"not_a_strategy" message)
+           errors)
+
+let test_runtime_validation_rejects_declarative_adapter_errors () =
+  let cascade_toml =
+    {|
+[providers.ollama]
+protocol = "ollama-http"
+endpoint = "http://localhost:11434"
+
+[models.qwen3]
+api-name = "qwen3:8b"
+max-context = 32768
+tools-support = true
+
+[tier.broken]
+members = ["ollama.qwen3"]
+strategy = "failover"
+
+[routes.keeper_turn]
+target = "tier.broken"
+|}
+  in
+  with_temp_config_dir cascade_toml @@ fun ~config_root:_ ~cascade_path ->
+  match
+    Masc_mcp.Cascade_catalog_runtime.validate_path ~config_path:cascade_path ()
+  with
+  | Ok _ -> fail "runtime validation should reject declarative adapter errors"
+  | Error rejection ->
+      let errors = rejection_error_messages rejection in
+      check bool "runtime rejection contains adapter error" true
+        (List.exists
+           (fun message ->
+              contains ~needle:"declarative cascade adapter error" message
+              && contains ~needle:"Binding_resolution_failed" message)
+           errors)
+
+let test_runtime_validation_rejects_deprecated_profile_names () =
+  let cascade_toml =
+    {|
+[providers.ollama]
+protocol = "ollama-http"
+endpoint = "http://localhost:11434"
+
+[models.qwen3]
+api-name = "qwen3:8b"
+max-context = 32768
+tools-support = true
+
+[ollama.qwen3]
+max-concurrent = 1
+
+[tier.local_only]
+members = ["ollama.qwen3"]
+strategy = "failover"
+
+[tier-group.local_only]
+tiers = ["local_only"]
+
+[routes.keeper_turn]
+target = "tier-group.local_only"
+|}
+  in
+  with_temp_config_dir cascade_toml @@ fun ~config_root:_ ~cascade_path ->
+  match
+    Masc_mcp.Cascade_catalog_runtime.validate_path ~config_path:cascade_path ()
+  with
+  | Ok _ -> fail "runtime validation should reject deprecated cascade profile names"
+  | Error rejection ->
+      let errors = rejection_error_messages rejection in
+      check bool "runtime rejection contains deprecated profile name" true
+        (List.exists
+           (fun message ->
+              contains ~needle:"deprecated cascade profile name" message
+              && contains ~needle:"local_only" message)
+           errors)
+
+let test_cascade_name_rejects_system_only_catalog_entry () =
+  with_temp_config_dir minimal_cascade_profile_metadata_toml
+  @@ fun ~config_root:_ ~cascade_path:_ ->
+  let result =
+    with_temp_toml
+      "[keeper]\nname = \"testkeeper\"\ncascade_name = \"scoring\"\n"
+      KTP.load_keeper_toml
+  in
+  match result with
+  | Ok _ -> fail "system-only cascade_name should be rejected"
+  | Error e ->
+      check bool "error mentions system-only" true
+        (contains ~needle:"system-only" e)
 
 let test_tool_access_accepts_dispatch () =
   let result =
@@ -396,26 +1096,15 @@ let test_network_mode_rejects_unknown () =
   | Ok _ -> fail "network_mode=bogus should be rejected"
   | Error e ->
       let lowered = String.lowercase_ascii e in
-      let contains needle =
-        let nl = String.length needle in
-        let hl = String.length lowered in
-        let found = ref false in
-        if nl <= hl then
-          for i = 0 to hl - nl do
-            if String.sub lowered i nl = needle then found := true
-          done;
-        !found
-      in
       check bool "error mentions invalid network_mode" true
-        (contains "invalid network_mode");
-      check bool "error mentions deprecated alias" true
-        (contains "host")
+        (contains ~needle:"invalid network_mode" lowered);
+      check bool "error lists canonical values" true
+        (contains ~needle:"allowed: none, inherit" lowered)
 
-(** Accept [network_mode = "host"] as a deprecated alias for "inherit".
-    Ensures operators migrating from docker-run terminology are not
-    silently dropped to persona defaults.  The loader emits a warning and
-    the parsed value equals [Network_inherit]. *)
-let test_network_mode_accepts_host_alias () =
+(** Reject [network_mode = "host"] instead of treating it as an alias.
+    The closed network_mode enum is [none | inherit]; Docker's "--network host"
+    is an execution detail derived downstream from [Network_inherit]. *)
+let test_network_mode_rejects_host_alias () =
   let result =
     with_temp_toml
       "[keeper]\nname = \"hosttest\"\nsandbox_profile = \"docker\"\n\
@@ -423,10 +1112,17 @@ let test_network_mode_accepts_host_alias () =
       KTP.load_keeper_toml
   in
   match result with
-  | Error e -> fail (Printf.sprintf "host alias should be accepted: %s" e)
-  | Ok (_loaded_name, defaults) ->
-      check (option string) "host alias maps to inherit" (Some "inherit")
-        (Option.map KTP.network_mode_to_string defaults.network_mode)
+  | Ok _ -> fail "network_mode=host should be rejected"
+  | Error e ->
+      let lowered = String.lowercase_ascii e in
+      check bool "error mentions invalid network_mode" true
+        (contains ~needle:"invalid network_mode" lowered);
+      check bool "error mentions raw host value" true
+        (contains ~needle:"'host'" lowered);
+      check bool "error lists canonical values" true
+        (contains ~needle:"allowed: none, inherit" lowered);
+      check bool "error does not mention deprecated alias" false
+        (contains ~needle:"deprecated alias" lowered)
 
 (** Regression: classify_toml_failure_reason must bucket raw error strings
     into a small cardinality set so the Prometheus label set stays bounded. *)
@@ -477,11 +1173,21 @@ let () =
     [
       ( "config/keepers",
         [
-          test_case "all toml files parse" `Quick test_all_keeper_tomls_parse;
+          test_case "all toml files parse" `Quick
+            (fun () -> with_repo_config_dir test_all_keeper_tomls_parse);
           test_case "named keepers default to docker" `Quick
-            test_named_keeper_docker_defaults;
+            (fun () -> with_repo_config_dir test_named_keeper_docker_defaults);
           test_case "committed keepers can do PR work" `Quick
-            test_committed_keepers_are_pr_work_capable;
+            (fun () ->
+              with_repo_config_dir test_committed_keepers_are_pr_work_capable);
+          test_case "base instructions avoid hidden shell names" `Quick
+            (fun () ->
+              with_repo_config_dir
+                test_base_config_avoids_hidden_shell_tool_names);
+          test_case "verifier hides worker lifecycle tools" `Quick
+            (fun () ->
+              with_repo_config_dir
+                test_verifier_config_hides_worker_lifecycle_tools);
         ] );
       ( "cascade_name validation",
         [
@@ -491,14 +1197,38 @@ let () =
             test_cascade_name_accepts_known;
           test_case "accepts reserved tool lane without live catalog" `Quick
             test_cascade_name_accepts_tool_lane_without_catalog;
-          test_case "invalid cascade message lists live catalog" `Quick
-            test_cascade_name_error_lists_live_catalog;
-          test_case "accepts catalog entry (legacy alias)" `Quick
+          test_case "accepts live catalog entry" `Quick
             test_cascade_name_accepts_catalog_entry;
-          test_case "rejects system-only cascade (keeper_assignable=false)"
-            `Quick test_cascade_name_rejects_system_only;
-          test_case "accepts assignable when system-only sibling exists"
-            `Quick test_cascade_name_accepts_assignable_after_system_only_added;
+          test_case "resolves declarative profile model strings" `Quick
+            test_resolve_model_strings_reads_declarative_profile;
+          test_case "resolves custom provider ids through protocol" `Quick
+            test_resolve_model_strings_uses_provider_protocol_for_custom_id;
+          test_case "derives profile metadata from cascade.toml" `Quick
+            test_cascade_profile_metadata_from_toml;
+          test_case "accepts unrouted assignable catalog entry" `Quick
+            test_cascade_name_accepts_unrouted_assignable_catalog_entry;
+          test_case "assignability follows preferred qualified profile" `Quick
+            test_keeper_assignability_uses_preferred_qualified_profile;
+          test_case "fallback preserves qualified source profile" `Quick
+            test_fallback_cascade_preserves_qualified_source_profile;
+          test_case "fallback returns canonical tier target" `Quick
+            test_fallback_cascade_returns_canonical_tier_target;
+          test_case "declared public names canonicalize to catalog members" `Quick
+            test_normalize_declared_name_canonicalizes_public_catalog_members;
+          test_case "keeper runtime ignores non-keeper route target" `Quick
+            test_keeper_runtime_declared_name_ignores_non_keeper_route_target;
+          test_case "surfaces declarative adapter errors" `Quick
+            test_catalog_validator_surfaces_adapter_errors;
+          test_case "surfaces declarative parse errors" `Quick
+            test_catalog_validator_surfaces_declarative_parse_errors;
+          test_case "runtime rejects declarative parse errors" `Quick
+            test_runtime_validation_rejects_declarative_parse_errors;
+          test_case "runtime rejects declarative adapter errors" `Quick
+            test_runtime_validation_rejects_declarative_adapter_errors;
+          test_case "runtime rejects deprecated profile names" `Quick
+            test_runtime_validation_rejects_deprecated_profile_names;
+          test_case "rejects system-only catalog entry" `Quick
+            test_cascade_name_rejects_system_only_catalog_entry;
           test_case "accepts dispatch tool_access preset" `Quick
             test_tool_access_accepts_dispatch;
         ] );
@@ -506,8 +1236,8 @@ let () =
         [
           test_case "rejects unknown network_mode" `Quick
             test_network_mode_rejects_unknown;
-          test_case "accepts host as deprecated alias for inherit" `Quick
-            test_network_mode_accepts_host_alias;
+          test_case "rejects host network_mode alias" `Quick
+            test_network_mode_rejects_host_alias;
           test_case "classifies failures into bounded label set" `Quick
             test_classify_toml_failure_reason_buckets;
           test_case "surfaces typed config parse errors" `Quick

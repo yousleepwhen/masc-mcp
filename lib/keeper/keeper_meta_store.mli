@@ -8,8 +8,8 @@ open Keeper_types_profile
 open Keeper_meta_contract
 
 (** Hook invoked after each successful [write_meta] /
-    [write_meta_with_retry] / [write_meta_with_merge]. Reset by the
-    runtime to keep [Coord_state] caches in sync. *)
+    [write_meta_with_merge]. Reset by the runtime to keep
+    [Coord_state] caches in sync. *)
 val runtime_meta_write_sync_hook :
   (Coord.config -> keeper_meta -> unit) ref
 
@@ -60,19 +60,9 @@ val keepalive_keeper_names : Coord.config -> string list
     rather than the keepalive fiber. *)
 val persistent_agent_names : Coord.config -> string list
 
-(** Re-exports from [Keeper_identity] kept on this module for the
-    [Keeper_types.*] facade. *)
-val keeper_name_from_agent_name : string -> string option
-val canonical_keeper_name_from_agent_name : string -> string option
-val canonical_keeper_name : string -> string option
-
-(** Variants of [name] used for alias-tolerant lookup
-    ([_]/[-] swap). Order-preserving + deduped. *)
-val separator_alias_variants : string -> string list
-
-(** Read the keeper meta for [name] under alias-tolerant lookup
-    (separator variants + agent-alias derivation). Returns the
-    matched filename component plus the parsed meta. *)
+(** Read the keeper meta for [name]. The name is the canonical keeper
+    filename component; agent-name aliases are not retried here. Callers
+    that accept aliases must normalize explicitly before reading. *)
 val read_meta_resolved :
   Coord.config ->
   string ->
@@ -82,9 +72,9 @@ val read_meta_resolved :
 val read_meta :
   Coord.config -> string -> (keeper_meta option, string) result
 
-(** Read keeper meta only if the file's mtime exceeds [last_mtime].
-    Returns [Some (meta, mtime)] when changed, [None] when unchanged,
-    missing, or unparsable (logs the parse-failure case). *)
+(** Read keeper meta only if the canonical [name] file's mtime exceeds
+    [last_mtime]. Returns [Some (meta, mtime)] when changed, [None] when
+    unchanged, missing, or unparsable (logs the parse-failure case). *)
 val read_meta_if_changed :
   Coord.config ->
   string ->
@@ -117,21 +107,11 @@ val write_meta :
 (** [true] iff [msg] matches [version_conflict_re]. *)
 val is_version_conflict_error : string -> bool
 
-(** Like [write_meta] but retries up to [max_retries] times on a
-    CAS version conflict, lifting the caller's payload onto the
-    latest disk version each retry. Caller payload wins at the
-    field level (see #9764/#9733/#9769). Heartbeat must NOT use
-    this helper — it would invert the data-loss tradeoff. *)
-val write_meta_with_retry :
-  ?max_retries:int ->
-  Coord.config ->
-  keeper_meta ->
-  (unit, string) result
-
-(** Like [write_meta_with_retry] but lets the caller declare field
-    ownership via [merge]. Used by the turn-failure / cycle path
-    via [Keeper_meta_merge.heartbeat_fields_from_disk] so retry
-    does not clobber heartbeat-owned fields. *)
+(** Retry [write_meta] on CAS version conflicts using caller-declared
+    field ownership via [merge]. Use [Keeper_meta_merge.caller_wins]
+    for payload-wins writes, or a narrower merge such as
+    [Keeper_meta_merge.heartbeat_fields_from_disk] when concurrent
+    writers own specific fields. *)
 val write_meta_with_merge :
   ?max_retries:int ->
   merge:(latest:keeper_meta -> caller:keeper_meta -> keeper_meta) ->

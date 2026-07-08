@@ -94,16 +94,24 @@ let agent_status_of_yojson = function
       (match agent_status_of_string_opt s with
        | Some status -> Ok status
        | None -> Error ("Unknown agent status: " ^ s))
-  | _ -> Error "agent_status: expected string"
+  | other ->
+      (* Mirrors the [agent_role_of_yojson] shape introduced in iter#90
+         #16927 — non-string inputs name the kind actually received so
+         operators can distinguish wrong-type ([`Int]/[`Bool] from a
+         config drift) from wrong-shape ([`Assoc]/[`Null] from a schema
+         change mid-flight) without re-parsing the offending payload. *)
+      Error
+        (Printf.sprintf
+           "agent_status_of_yojson: expected JSON string, got %s"
+           (Json_util.kind_name other))
 
 (** Agent metadata - session identification and environment info *)
 type agent_meta = {
   session_id: string;                     (* short UUID for unique identification *)
-  agent_type: string;                     (* claude, gemini, codex *)
+  agent_type: string;                     (* agent_llm_a, provider_f, agent_code *)
   pid: int option; [@default None]        (* process ID *)
   hostname: string option; [@default None] (* machine hostname *)
   tty: string option; [@default None]     (* terminal identifier *)
-  worktree: string option; [@default None] (* git worktree path *)
   parent_task: string option; [@default None] (* task that spawned this agent *)
   keeper_name: string option; [@default None] (* stable keeper owner, when this runtime is keeper-owned *)
   keeper_id: string option; [@default None] (* stable keeper UUID, when available *)
@@ -112,8 +120,8 @@ type agent_meta = {
 (** Agent info *)
 type agent = {
   id: Agent_id.t option; [@default None]  (* permanent UUID *)
-  name: string;                           (* unique nickname: claude-swift-fox *)
-  agent_type: string; [@default "unknown"] (* original type: claude, gemini, codex *)
+  name: string;                           (* unique nickname: agent_llm_a-swift-fox *)
+  agent_type: string; [@default "unknown"] (* original type: agent_llm_a, provider_f, agent_code *)
   status: agent_status;
   capabilities: string list;
   current_task: string option; [@default None]
@@ -263,36 +271,6 @@ let task_action_of_string s =
   | "submit_pr_evidence" -> Ok Submit_pr_evidence
   | other -> Error (Printf.sprintf "Unknown task action: %s" other)
 
-(** Issue #8312: callers (especially small LLM keepers) often pass target-state
-    aliases such as "claimed" or status verbs from the lifecycle vocabulary.
-    [task_action_of_alias] returns [Some action] when the input maps to a
-    canonical action via a documented alias, and [None] when it does not.
-    Compose with [task_action_of_string] for "permissive input, strict output":
-    canonical strings still parse via [task_action_of_string]; only foreign
-    inputs fall through to the alias map. *)
-let task_action_of_alias s =
-  match String.lowercase_ascii s with
-  | "claimed" -> Some Claim
-  | "started" | "in_progress" | "inprogress" | "running" -> Some Start
-  | "completed" | "complete" | "finished" -> Some Done_action
-  | "cancelled" | "canceled" | "abort" | "aborted" -> Some Cancel
-  | "todo" | "released" | "unclaim" | "unclaimed" -> Some Release
-  | "awaiting_verification" | "submit" -> Some Submit_for_verification
-  | "approved" -> Some Approve_verification
-  | "rejected" -> Some Reject_verification
-  | _ -> None
-
-(** Lenient parser: tries strict canonical first, then alias map.
-    Strict callers (registry validation, schema docs) keep using
-    [task_action_of_string]; user-facing tool dispatch uses this. *)
-let task_action_of_string_lenient s =
-  match task_action_of_string s with
-  | Ok _ as ok -> ok
-  | Error _ as err ->
-    (match task_action_of_alias s with
-     | Some action -> Ok action
-     | None -> err)
-
 let task_action_to_string = function
   | Claim -> "claim"
   | Start -> "start"
@@ -375,28 +353,52 @@ let task_status_is_done = function
   | Done _ -> true
   | Todo | Claimed _ | InProgress _ | AwaitingVerification _ | Cancelled _ -> false
 
-(** Issue #8354: schema enums for [task_status] used to be hand-rolled in
-    [tool_shard.ml] and [mcp_server.ml], dropping [awaiting_verification].
-    [task_status] carries record payloads so we cannot enumerate dummy
-    values like [task_action]. Instead, this helper uses an exhaustive
-    [match] driven by a witness function: adding a 7th constructor to
-    [task_status] forces this match to be updated by the compiler, so
-    schema enums cannot silently drift again.
+(** Issue #8354 + 2026-05-27 follow-up: schema enums for [task_status]
+    used to be hand-rolled in [tool_shard.ml] and [mcp_server.ml],
+    dropping [awaiting_verification].  The first fix introduced a
+    [witness] [function] inside [all_task_status_names] whose
+    exhaustiveness pinned *constructor coverage* but whose return
+    [string list] was a separate literal — renaming an arm in
+    [task_status_to_string] (e.g. "in_progress" -> "running") would
+    not propagate to the published schema, leaving a silent
+    string-identity drift.
+
+    This version closes that gap by deriving the schema enum directly
+    from [task_status_to_string] over a witness list with placeholder
+    payloads.  [task_status] carries record payloads but the schema
+    cares only about the constructor tag, so zero-valued placeholder
+    fields are safe — only [task_status_to_string]'s constructor arm
+    is consulted.  Now both axes are guarded:
+
+    - Constructor coverage: adding a constructor breaks
+      [task_status_to_string]'s exhaustive [match] at compile time.
+    - String identity: schema enum is the actual function image, so
+      renames cannot desync.
+
+    The remaining hand-coded axis is the witness list's length —
+    [test_types.ml] pins it at 6, so adding a constructor without
+    adding a witness here breaks that test.
 
     Order matches the FSM lifecycle (Todo -> Claimed -> InProgress ->
     AwaitingVerification -> Done | Cancelled) for readable schema docs. *)
+let task_status_schema_witnesses : task_status list =
+  let placeholder = "" in
+  [ Todo
+  ; Claimed { assignee = placeholder; claimed_at = placeholder }
+  ; InProgress { assignee = placeholder; started_at = placeholder }
+  ; AwaitingVerification
+      { assignee = placeholder
+      ; submitted_at = placeholder
+      ; verification_id = placeholder
+      ; deadline = None
+      }
+  ; Done { assignee = placeholder; completed_at = placeholder; notes = None }
+  ; Cancelled
+      { cancelled_by = placeholder; cancelled_at = placeholder; reason = None }
+  ]
+
 let all_task_status_names : string list =
-  let witness =
-    function
-    | Todo -> "todo"
-    | Claimed _ -> "claimed"
-    | InProgress _ -> "in_progress"
-    | AwaitingVerification _ -> "awaiting_verification"
-    | Done _ -> "done"
-    | Cancelled _ -> "cancelled"
-  in
-  let _ = witness in
-  [ "todo"; "claimed"; "in_progress"; "awaiting_verification"; "done"; "cancelled" ]
+  List.map task_status_to_string task_status_schema_witnesses
 
 let valid_task_status_strings = all_task_status_names
 
@@ -472,38 +474,60 @@ let task_status_of_yojson json =
     | s -> Error ("Unknown task status: " ^ s)
   with e -> Error (Printexc.to_string e)
 
-(** Worktree info - tracks which worktree is used for a task *)
-type worktree_info = {
-  branch: string;                              (* git branch name *)
-  path: string;                                (* worktree path relative to git root *)
-  git_root: string;                            (* absolute path to .git parent *)
-  repo_name: string;                           (* repository name (basename of git_root) *)
-} [@@deriving show, yojson { strict = false }]
-
 (** Task execution links - tie task state to runtime evidence producers *)
 type task_execution_links = {
   operation_id : string option; [@default None]
   session_id : string option; [@default None]
-  autoresearch_loop_id : string option; [@default None]
 } [@@deriving show, yojson { strict = false }]
 
-(** Task contract - persisted deterministic gate inputs *)
+(** Task contract - persisted deterministic gate inputs.
+
+    RFC-0199 Phase A: [required_evidence_typed] carries the closed-sum
+    typed evidence schema consumed by [Deterministic_evidence_evaluator]
+    (Phase B). The legacy [required_evidence : string list] is kept for
+    backward compatibility — neither writer nor reader is removed in
+    Phase A; migration tool comes with Phase B/C. New task creators
+    should populate [required_evidence_typed] and may also mirror to
+    [required_evidence] for legacy consumers. *)
 type task_contract = {
   strict : bool; [@default false]
   completion_contract : string list; [@default []]
   required_tools : string list; [@default []]
   required_evidence : string list; [@default []]
+  required_evidence_typed : Evidence_claim.t list; [@default []]
   inspect_gate_evidence : string list; [@default []]
   verify_gate_evidence : string list; [@default []]
-  links : task_execution_links; [@default { operation_id = None; session_id = None; autoresearch_loop_id = None }]
+  links : task_execution_links; [@default { operation_id = None; session_id = None }]
 } [@@deriving show, yojson { strict = false }]
 
 (** Handoff context persisted across release/reclaim cycles *)
+type task_reclaim_policy =
+  | Allow_reclaim
+  | Block_reclaim
+[@@deriving show]
+
+let task_reclaim_policy_to_string = function
+  | Allow_reclaim -> "allow_reclaim"
+  | Block_reclaim -> "block_reclaim"
+
+let task_reclaim_policy_of_string = function
+  | "allow_reclaim" -> Ok Allow_reclaim
+  | "block_reclaim" -> Ok Block_reclaim
+  | value -> Error (Printf.sprintf "unknown task_reclaim_policy: %s" value)
+
+let task_reclaim_policy_to_yojson policy =
+  `String (task_reclaim_policy_to_string policy)
+
+let task_reclaim_policy_of_yojson = function
+  | `String value -> task_reclaim_policy_of_string value
+  | _ -> Error "task_reclaim_policy must be a string"
+
 type task_handoff_context = {
   summary : string; [@default ""]
   reason : string option; [@default None]
   next_step : string option; [@default None]
   failure_mode : string option; [@default None]
+  reclaim_policy : task_reclaim_policy option; [@default None]
   evidence_refs : string list; [@default []]
   updated_at : string option; [@default None]
   updated_by : string option; [@default None]
@@ -519,14 +543,86 @@ type task = {
   files: string list; [@default []]
   created_at: string;
   created_by: string option; [@default None]
-  worktree: worktree_info option; [@default None]  (* linked worktree info *)
   goal_id: string option; [@default None]  (** Structured goal linkage SSOT *)
   stage: Task_stage.t option; [@default None]  (** Coding task stage gate *)
   contract: task_contract option; [@default None]
   handoff_context: task_handoff_context option; [@default None]
   cycle_count: int; [@default 0]
+  reclaim_policy: task_reclaim_policy option; [@default None]
   do_not_reclaim_reason: string option; [@default None]
 } [@@deriving show]
+
+type task_reclaim_gate =
+  | Reclaim_gate_open
+  | Reclaim_gate_blocked_by_policy of string
+
+let task_reclaim_gate (t : task) =
+  match t.reclaim_policy with
+  | Some Block_reclaim ->
+    Reclaim_gate_blocked_by_policy
+      (Option.value
+         t.do_not_reclaim_reason
+         ~default:"reclaim blocked by typed policy")
+  | Some Allow_reclaim | None -> Reclaim_gate_open
+;;
+
+let task_reclaim_gate_block_reason t =
+  match task_reclaim_gate t with
+  | Reclaim_gate_open -> None
+  | Reclaim_gate_blocked_by_policy reason -> Some reason
+;;
+
+type task_claim_readiness =
+  | Claim_ready
+
+type task_claim_block =
+  | Claim_block_not_todo of task_status
+  | Claim_block_reclaim_policy of string
+
+type task_claim_decision =
+  | Claim_available of task_claim_readiness
+  | Claim_unavailable of task_claim_block
+
+let task_claim_readiness (_task : task) = Claim_ready
+;;
+
+let task_claim_decision (task : task) =
+  match task.task_status with
+  | Todo ->
+    (match task_reclaim_gate task with
+     | Reclaim_gate_open ->
+       Claim_available (task_claim_readiness task)
+     | Reclaim_gate_blocked_by_policy reason ->
+       Claim_unavailable (Claim_block_reclaim_policy reason))
+  | Claimed _
+  | InProgress _
+  | AwaitingVerification _
+  | Done _
+  | Cancelled _ ->
+    Claim_unavailable (Claim_block_not_todo task.task_status)
+;;
+
+let task_claim_decision_is_available task =
+  match task_claim_decision task with
+  | Claim_available _ -> true
+  | Claim_unavailable _ -> false
+;;
+
+type task_claim_next_action =
+  | Claim_now
+  | Skip_claim of task_claim_block
+
+let task_claim_next_action task =
+  match task_claim_decision task with
+  | Claim_available Claim_ready -> Claim_now
+  | Claim_unavailable block -> Skip_claim block
+;;
+
+let task_claim_next_action_is_claimable task =
+  match task_claim_next_action task with
+  | Claim_now -> true
+  | Skip_claim _ -> false
+;;
 
 (* Manual yojson for task *)
 let task_to_yojson t =
@@ -543,14 +639,9 @@ let task_to_yojson t =
     | None -> base
     | Some created_by -> base @ [("created_by", `String created_by)]
   in
-  (* Add worktree field if present *)
-  let with_worktree = match t.worktree with
-    | None -> with_created_by
-    | Some wt -> with_created_by @ [("worktree", worktree_info_to_yojson wt)]
-  in
   let with_goal_id = match t.goal_id with
-    | None -> with_worktree
-    | Some goal_id -> with_worktree @ [("goal_id", `String goal_id)]
+    | None -> with_created_by
+    | Some goal_id -> with_created_by @ [("goal_id", `String goal_id)]
   in
   (* Add stage if present *)
   let with_stage = match t.stage with
@@ -575,9 +666,16 @@ let task_to_yojson t =
     if t.cycle_count = 0 then with_handoff_context
     else with_handoff_context @ [("cycle_count", `Int t.cycle_count)]
   in
-  let with_do_not_reclaim = match t.do_not_reclaim_reason with
+  let with_reclaim_policy =
+    match t.reclaim_policy with
     | None -> with_cycle_count
-    | Some r -> with_cycle_count @ [("do_not_reclaim_reason", `String r)]
+    | Some policy ->
+        with_cycle_count
+        @ [("reclaim_policy", task_reclaim_policy_to_yojson policy)]
+  in
+  let with_do_not_reclaim = match t.do_not_reclaim_reason with
+    | None -> with_reclaim_policy
+    | Some r -> with_reclaim_policy @ [("do_not_reclaim_reason", `String r)]
   in
   (* Merge status fields into task *)
   match status_json with
@@ -594,14 +692,6 @@ let task_of_yojson json =
     let files = json |> member "files" |> to_list |> List.map to_string in
     let created_at = json |> member "created_at" |> to_string in
     let created_by = json |> member "created_by" |> to_string_option in
-    (* Parse optional worktree field *)
-    let worktree = match json |> member "worktree" with
-      | `Null -> None
-      | wt_json ->
-          match worktree_info_of_yojson wt_json with
-          | Ok wt -> Some wt
-          | Error _ -> None  (* Graceful fallback for backwards compat *)
-    in
     let goal_id = json |> member "goal_id" |> to_string_option in
     (* Parse optional stage field *)
     let stage = match json |> member "stage" |> to_string_option with
@@ -625,6 +715,14 @@ let task_of_yojson json =
     let cycle_count =
       json |> member "cycle_count" |> to_int_option |> Option.value ~default:0
     in
+    let reclaim_policy =
+      match json |> member "reclaim_policy" with
+      | `Null -> None
+      | reclaim_policy_json ->
+          (match task_reclaim_policy_of_yojson reclaim_policy_json with
+           | Ok policy -> Some policy
+           | Error _ -> None)
+    in
     let do_not_reclaim_reason =
       json |> member "do_not_reclaim_reason" |> to_string_option
     in
@@ -640,12 +738,12 @@ let task_of_yojson json =
             files;
             created_at;
             created_by;
-            worktree;
             goal_id;
             stage;
             contract;
             handoff_context;
             cycle_count;
+            reclaim_policy;
             do_not_reclaim_reason;
           }
     | Error e -> Error e
@@ -660,6 +758,8 @@ type message = {
   mention: string option; [@default None]
   timestamp: string;
   trace_context: string option; [@default None]
+  expires_at: float option; [@default None]
+  relevance: string; [@default "medium"]
 } [@@deriving yojson { strict = false }, show]
 
 (** Coord state *)
@@ -710,7 +810,10 @@ let tempo_mode_to_yojson mode = `String (tempo_mode_to_string mode)
 
 let tempo_mode_of_yojson = function
   | `String s -> tempo_mode_of_string s
-  | _ -> Error "Expected string for tempo_mode"
+  | other ->
+    Error
+      (Printf.sprintf "Expected string for tempo_mode (received %s)"
+         (Json_util.kind_name other))
 
 (** Tempo configuration *)
 type tempo_config = {
@@ -773,7 +876,7 @@ let backlog_of_yojson json =
       match task_of_yojson j with Ok t -> Some t | Error _ -> None
     ) tasks_json in
     (* [last_updated] and [version] are display metadata; writers may
-       omit them (observed in live basepath [~/me/.masc/tasks/backlog.json]
+       omit them (observed in live basepath [<base-path>/.masc/tasks/backlog.json]
        where the top-level is just [{"tasks": [...]}]).  Strict
        [to_string]/[to_int] decoders rejected such payloads as
        [Type_error("Expected string, got null")], forcing every reader
@@ -820,7 +923,10 @@ let a2a_task_status_to_yojson s = `String (a2a_task_status_to_string s)
 
 let a2a_task_status_of_yojson = function
   | `String s -> a2a_task_status_of_string s
-  | _ -> Error "Expected string for A2A task status"
+  | other ->
+    Error
+      (Printf.sprintf "Expected string for A2A task status (received %s)"
+         (Json_util.kind_name other))
 
 (** Portal status - enforced at compile time *)
 type portal_state =
@@ -841,7 +947,10 @@ let portal_state_to_yojson s = `String (portal_state_to_string s)
 
 let portal_state_of_yojson = function
   | `String s -> portal_state_of_string s
-  | _ -> Error "Expected string for portal state"
+  | other ->
+    Error
+      (Printf.sprintf "Expected string for portal state (received %s)"
+         (Json_util.kind_name other))
 
 (** A2A Task - Google A2A Protocol task object *)
 type a2a_task = {
@@ -960,5 +1069,15 @@ type claim_next_result =
       message : string;
     }
   | Claim_next_no_unclaimed
-  | Claim_next_no_eligible of { excluded_count : int }
+  | Claim_next_no_eligible of
+      { excluded_count : int
+      ; blocked_count : int
+      ; verification_blocked_count : int
+      ; scope_excluded_count : int
+      ; required_tool_excluded_count : int
+      ; explicit_excluded_count : int
+      ; claim_pool_candidate_count : int
+      ; receipt_required_tool_blocked : bool
+      ; agent_tool_names_known : bool
+      }
   | Claim_next_error of string

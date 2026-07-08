@@ -41,18 +41,6 @@ type metrics_acc = {
   ma_memory_compaction_before_notes : int;
   ma_memory_compaction_dropped_notes : int;
   ma_memory_compaction_invalid_dropped : int;
-  ma_pr_review_action_attempt_count : int;
-  ma_pr_review_action_success_count : int;
-  ma_pr_review_comment_action_count : int;
-  ma_pr_review_approve_action_count : int;
-  ma_pr_review_request_changes_action_count : int;
-  ma_pr_review_reply_action_count : int;
-  ma_pr_work_action_attempt_count : int;
-  ma_pr_work_action_success_count : int;
-  ma_pr_git_add_action_count : int;
-  ma_pr_git_commit_action_count : int;
-  ma_pr_git_push_action_count : int;
-  ma_pr_create_action_count : int;
   ma_proactive_previews_rev : string list;
   ma_last_handoff : Yojson.Safe.t option;
   ma_last_compaction : Yojson.Safe.t option;
@@ -96,18 +84,6 @@ let init_acc = {
   ma_memory_compaction_before_notes = 0;
   ma_memory_compaction_dropped_notes = 0;
   ma_memory_compaction_invalid_dropped = 0;
-  ma_pr_review_action_attempt_count = 0;
-  ma_pr_review_action_success_count = 0;
-  ma_pr_review_comment_action_count = 0;
-  ma_pr_review_approve_action_count = 0;
-  ma_pr_review_request_changes_action_count = 0;
-  ma_pr_review_reply_action_count = 0;
-  ma_pr_work_action_attempt_count = 0;
-  ma_pr_work_action_success_count = 0;
-  ma_pr_git_add_action_count = 0;
-  ma_pr_git_commit_action_count = 0;
-  ma_pr_git_push_action_count = 0;
-  ma_pr_create_action_count = 0;
   ma_proactive_previews_rev = [];
   ma_last_handoff = None;
   ma_last_compaction = None;
@@ -122,6 +98,7 @@ let compute_metrics_window
     ~(primary_model_norm : string)
     ~(primary_model : string)
   : Yojson.Safe.t list * Yojson.Safe.t * Yojson.Safe.t option * Yojson.Safe.t option =
+  let _primary_model = primary_model in
   let open Yojson.Safe.Util in
   let work_kind_counts : (string, int) Hashtbl.t = Hashtbl.create 16 in
   let model_counts_window : (string, int) Hashtbl.t = Hashtbl.create 16 in
@@ -141,7 +118,6 @@ let compute_metrics_window
         let channel = Safe_ops.json_string ~default:"turn" "channel" j in
         let is_turn = channel = "turn" in
         let is_heartbeat = channel = "heartbeat" in
-        let is_tool_event = channel = "tool_event" in
         let is_scheduled_autonomous = channel = "scheduled_autonomous" || channel = "proactive" in
         let is_interaction = is_turn || is_scheduled_autonomous in
         let compacted = Safe_ops.json_bool ~default:false "compacted" j in
@@ -157,7 +133,6 @@ let compute_metrics_window
         in
         let handoff_obj = j |> member "handoff" in
         let handoff_performed = Safe_ops.json_bool ~default:false "performed" handoff_obj in
-        let handoff_to_model = Safe_ops.json_string_opt "to_model" handoff_obj in
         let handoff_prev_trace_id = Safe_ops.json_string_opt "prev_trace_id" handoff_obj in
         let handoff_new_trace_id = Safe_ops.json_string_opt "new_trace_id" handoff_obj in
         let handoff_new_generation =
@@ -174,7 +149,10 @@ let compute_metrics_window
         let model_used = Safe_ops.json_string ~default:"" "model_used" j in
         let message_count = Safe_ops.json_int ~default:0 "message_count" j in
         let model_used_norm = normalize_model_name model_used in
-        let model_bucket = if model_used_norm <> "" then model_used_norm else model_used in
+        let model_bucket =
+          if String.trim model_used <> "" || model_used_norm <> "" then "runtime"
+          else ""
+        in
         let work_kind_raw =
           Keeper_unified_metrics.work_kind_of_json j
           |> Option.value ~default:""
@@ -230,22 +208,6 @@ let compute_metrics_window
         in
         let tool_call_count_now = Safe_ops.json_int ~default:(List.length tools_used) "tool_call_count" j in
         let metric_event = Safe_ops.json_string ~default:"" "metric_event" j in
-        let pr_review_action_now =
-          Safe_ops.json_string_opt "pr_review_action" j
-          |> Option.map (fun value -> value |> String.trim |> String.uppercase_ascii)
-          |> function Some value when value <> "" -> Some value | _ -> None
-        in
-        let pr_review_action_success_now =
-          Safe_ops.json_bool ~default:false "pr_review_action_success" j
-        in
-        let pr_work_action_now =
-          Safe_ops.json_string_opt "pr_work_action" j
-          |> Option.map (fun value -> value |> String.trim |> String.uppercase_ascii)
-          |> function Some value when value <> "" -> Some value | _ -> None
-        in
-        let pr_work_action_success_now =
-          Safe_ops.json_bool ~default:false "pr_work_action_success" j
-        in
         let memory_is_weather = match memory_expected_topic with Some "weather" -> true | _ -> false in
         let work_kind =
           if work_kind_raw <> "" then work_kind_raw
@@ -267,7 +229,7 @@ let compute_metrics_window
                 ("ts_unix", `Float ts_unix);
                 ("trace_id", `String trace_id);
                 ("generation", `Int gen);
-                ("to_model", Json_util.string_opt_to_json (match handoff_to_model with Some s when s <> "" -> Some s | _ -> None));
+                ("to_model", `Null);
                 ("prev_trace_id", Json_util.string_opt_to_json (match handoff_prev_trace_id with Some s when s <> "" -> Some s | _ -> None));
                 ("new_trace_id", Json_util.string_opt_to_json (match handoff_new_trace_id with Some s when s <> "" -> Some s | _ -> None));
                 ("new_generation", Json_util.int_opt_to_json handoff_new_generation);
@@ -348,7 +310,7 @@ let compute_metrics_window
               end else acc
             in
             count_table_incr work_kind_counts work_kind;
-            count_table_incr model_counts_window model_bucket;
+            if model_bucket <> "" then count_table_incr model_counts_window model_bucket;
             List.iter (count_table_incr tool_counts_window) tools_used;
             let acc = { acc with
               ma_tool_call_count = acc.ma_tool_call_count + tool_call_count_now;
@@ -414,101 +376,11 @@ let compute_metrics_window
             gen_stats.memory_notes <- gen_stats.memory_notes + memory_notes_added_now;
             if gen_stats.first_ts <= 0.0 || ts_unix < gen_stats.first_ts then gen_stats.first_ts <- ts_unix;
             if ts_unix > gen_stats.last_ts then gen_stats.last_ts <- ts_unix;
-            count_table_incr gen_stats.models model_bucket;
+            if model_bucket <> "" then count_table_incr gen_stats.models model_bucket;
             List.iter (count_table_incr gen_stats.tools) tools_used;
 
             acc
           end else acc
-        in
-        let acc =
-          if (is_interaction || is_tool_event)
-             && metric_event = "keeper_pr_review_action"
-          then
-            match pr_review_action_now with
-            | None -> acc
-            | Some action ->
-                let acc =
-                  { acc with
-                    ma_pr_review_action_attempt_count =
-                      acc.ma_pr_review_action_attempt_count + 1;
-                  }
-                in
-                if not pr_review_action_success_now then acc
-                else
-                  let acc =
-                    { acc with
-                      ma_pr_review_action_success_count =
-                        acc.ma_pr_review_action_success_count + 1;
-                    }
-                  in
-                  (match action with
-                   | "COMMENT" ->
-                       { acc with
-                         ma_pr_review_comment_action_count =
-                           acc.ma_pr_review_comment_action_count + 1;
-                       }
-                   | "APPROVE" ->
-                       { acc with
-                         ma_pr_review_approve_action_count =
-                           acc.ma_pr_review_approve_action_count + 1;
-                       }
-                   | "REQUEST_CHANGES" ->
-                       { acc with
-                         ma_pr_review_request_changes_action_count =
-                           acc.ma_pr_review_request_changes_action_count + 1;
-                       }
-                   | "REPLY" ->
-                       { acc with
-                         ma_pr_review_reply_action_count =
-                           acc.ma_pr_review_reply_action_count + 1;
-                       }
-                   | _ -> acc)
-          else acc
-        in
-        let acc =
-          if (is_interaction || is_tool_event)
-             && metric_event = "keeper_pr_work_action"
-          then
-            match pr_work_action_now with
-            | None -> acc
-            | Some action ->
-                let acc =
-                  { acc with
-                    ma_pr_work_action_attempt_count =
-                      acc.ma_pr_work_action_attempt_count + 1;
-                  }
-                in
-                if not pr_work_action_success_now then acc
-                else
-                  let acc =
-                    { acc with
-                      ma_pr_work_action_success_count =
-                        acc.ma_pr_work_action_success_count + 1;
-                    }
-                  in
-                  (match action with
-                   | "GIT_ADD" ->
-                       { acc with
-                         ma_pr_git_add_action_count =
-                           acc.ma_pr_git_add_action_count + 1;
-                       }
-                   | "GIT_COMMIT" ->
-                       { acc with
-                         ma_pr_git_commit_action_count =
-                           acc.ma_pr_git_commit_action_count + 1;
-                       }
-                   | "GIT_PUSH" ->
-                       { acc with
-                         ma_pr_git_push_action_count =
-                           acc.ma_pr_git_push_action_count + 1;
-                       }
-                   | "PR_CREATE" ->
-                       { acc with
-                         ma_pr_create_action_count =
-                           acc.ma_pr_create_action_count + 1;
-                       }
-                   | _ -> acc)
-          else acc
         in
         let acc = if is_heartbeat then { acc with ma_heartbeat_points = acc.ma_heartbeat_points + 1 } else acc in
 
@@ -529,14 +401,14 @@ let compute_metrics_window
                 if handoff_performed then
                   `Assoc [
                     ("performed", `Bool true);
-                    ("to_model", match handoff_to_model with Some s when s <> "" -> `String s | _ -> `Null);
+                    ("to_model", `Null);
                     ("prev_trace_id", match handoff_prev_trace_id with Some s when s <> "" -> `String s | _ -> `Null);
                     ("new_trace_id", match handoff_new_trace_id with Some s when s <> "" -> `String s | _ -> `Null);
                     ("new_generation", match handoff_new_generation with Some g -> `Int g | None -> `Null);
                     ("to_generation", match handoff_new_generation with Some g -> `Int g | None -> `Null);
                   ]
                 else `Null);
-              ("handoff_to_model", Json_util.string_opt_to_json (match handoff_to_model with Some s when s <> "" -> Some s | _ -> None));
+              ("handoff_to_model", `Null);
               ("handoff_prev_trace_id", Json_util.string_opt_to_json (match handoff_prev_trace_id with Some s when s <> "" -> Some s | _ -> None));
               ("handoff_new_trace_id", Json_util.string_opt_to_json (match handoff_new_trace_id with Some s when s <> "" -> Some s | _ -> None));
               ("handoff_new_generation", Json_util.int_opt_to_json handoff_new_generation);
@@ -546,7 +418,7 @@ let compute_metrics_window
               ("total_tokens", Json_util.int_opt_to_json total_tokens);
               ("latency_ms", `Int latency_ms);
               ("cost_usd", Json_util.float_opt_to_json cost_usd);
-              ("model_used", `String model_used);
+              ("model_used", `Null);
               ("prompt_fingerprint", j |> member "prompt_fingerprint");
               ("prompt", j |> member "prompt");
               ("compaction_before_tokens", `Int before_tokens);
@@ -555,10 +427,6 @@ let compute_metrics_window
               ("compaction_trigger", Json_util.string_opt_to_json compaction_trigger_now);
               ("work_kind", `String work_kind);
               ("metric_event", `String metric_event);
-              ("pr_review_action", Json_util.string_opt_to_json pr_review_action_now);
-              ("pr_review_action_success", `Bool pr_review_action_success_now);
-              ("pr_work_action", Json_util.string_opt_to_json pr_work_action_now);
-              ("pr_work_action_success", `Bool pr_work_action_success_now);
               ("tool_call_count", `Int tool_call_count_now);
               ("tools_used", `List (List.map (fun s -> `String s) tools_used));
               ("proactive_fallback_applied", `Bool proactive_fallback_applied_now);
@@ -590,9 +458,13 @@ let compute_metrics_window
 	              ("memory_compaction_dropped_notes", `Int memory_compaction_dropped_notes_now);
 	              ("memory_compaction_invalid_dropped", `Int memory_compaction_invalid_dropped_now);
 	              ("memory_expected_topic", Json_util.string_opt_to_json memory_expected_topic);
-	              ("timeout_budget", j |> member "timeout_budget");
-	              ("inference_telemetry", j |> member "inference_telemetry");
-	            ])
+              ( "provider_timeout_plan",
+                j |> member "provider_timeout_plan" );
+              ( "inference_telemetry",
+                j
+                |> member "inference_telemetry"
+                |> Keeper_hooks_oas.redact_inference_telemetry_json );
+            ])
         in
         match output_item with
         | Some i -> (acc, i :: items)
@@ -717,27 +589,6 @@ let compute_metrics_window
   let top_tools =
     top_counts_json ~limit:5 ~name_key:"tool" tool_counts_window
   in
-  let tool_count name = Option.value ~default:0 (Hashtbl.find_opt tool_counts_window name) in
-  let pr_review_read_tool_call_count = tool_count "keeper_pr_review_read" in
-  let pr_review_mutation_tool_call_count =
-    tool_count "keeper_pr_review_comment" + tool_count "keeper_pr_review_reply"
-  in
-  let pr_review_tool_call_count =
-    pr_review_read_tool_call_count + pr_review_mutation_tool_call_count
-  in
-  let pr_work_git_tool_call_count =
-    tool_count "keeper_preflight_check"
-    + tool_count "masc_worktree_create"
-    + tool_count "masc_code_git"
-  in
-  let pr_work_tool_call_count =
-    pr_review_tool_call_count + pr_work_git_tool_call_count
-  in
-  let pr_review_action_signal_count = acc.ma_pr_review_action_success_count in
-  let pr_work_total_signal_count =
-    pr_work_tool_call_count + pr_review_action_signal_count
-    + acc.ma_pr_work_action_success_count
-  in
   let top_memory_kinds =
     top_counts_json ~limit:5 ~name_key:"kind" memory_kind_counts_window
   in
@@ -799,7 +650,7 @@ let compute_metrics_window
     ("window_turns", `Int turn_points_int);
     ("window_series_max_lines", `Int series_points);
     ("window_series_max_bytes", `Int metrics_window_max_bytes);
-    ("primary_model", `String primary_model);
+    ("primary_model", `Null);
     ("handoff_count", `Int acc.ma_handoff_count);
     ("compaction_events", `Int acc.ma_compaction_events);
     ("compaction_before_tokens", `Int acc.ma_compaction_before_tokens);
@@ -844,51 +695,6 @@ let compute_metrics_window
     ("proactive_preview_similarity_method", `String "jaccard_adjacent_preview");
     ("proactive_preview_similarity_window", `Int proactive_similarity_window);
     ("tool_call_count", `Int acc.ma_tool_call_count);
-    ("pr_review_read_tool_call_count", `Int pr_review_read_tool_call_count);
-    ( "pr_review_mutation_tool_call_count",
-      `Int pr_review_mutation_tool_call_count );
-    ("pr_review_tool_call_count", `Int pr_review_tool_call_count);
-    ("pr_review_action_attempt_count", `Int acc.ma_pr_review_action_attempt_count);
-    ("pr_review_action_success_count", `Int acc.ma_pr_review_action_success_count);
-    ("pr_review_comment_action_count", `Int acc.ma_pr_review_comment_action_count);
-    ("pr_review_approve_action_count", `Int acc.ma_pr_review_approve_action_count);
-    ("pr_review_request_changes_action_count", `Int acc.ma_pr_review_request_changes_action_count);
-    ("pr_review_reply_action_count", `Int acc.ma_pr_review_reply_action_count);
-    ("pr_work_action_attempt_count", `Int acc.ma_pr_work_action_attempt_count);
-    ("pr_work_action_success_count", `Int acc.ma_pr_work_action_success_count);
-    ("pr_git_add_action_count", `Int acc.ma_pr_git_add_action_count);
-    ("pr_git_commit_action_count", `Int acc.ma_pr_git_commit_action_count);
-    ("pr_git_push_action_count", `Int acc.ma_pr_git_push_action_count);
-    ("pr_create_action_count", `Int acc.ma_pr_create_action_count);
-    ("pr_work_git_tool_call_count", `Int pr_work_git_tool_call_count);
-    ("pr_work_tool_call_count", `Int pr_work_tool_call_count);
-    ("pr_work_signal_count", `Int pr_work_total_signal_count);
-    ("observed_pr_review_tool_calls", `Bool (pr_review_tool_call_count > 0));
-    ( "observed_pr_mutation_tool_calls",
-      `Bool (pr_review_mutation_tool_call_count > 0) );
-    ("observed_git_tool_calls", `Bool (pr_work_git_tool_call_count > 0));
-    ("observed_pr_work_tool_calls", `Bool (pr_work_tool_call_count > 0));
-    ( "observed_pr_review_work",
-      `Bool
-        (pr_review_tool_call_count > 0
-         || acc.ma_pr_review_action_success_count > 0) );
-    ( "observed_pr_mutation_work",
-      `Bool
-        (pr_review_mutation_tool_call_count > 0
-         || acc.ma_pr_review_action_success_count > 0) );
-    ("observed_pr_approve_work", `Bool (acc.ma_pr_review_approve_action_count > 0));
-    ("observed_pr_request_changes_work", `Bool (acc.ma_pr_review_request_changes_action_count > 0));
-    ("observed_pr_reply_work", `Bool (acc.ma_pr_review_reply_action_count > 0));
-    ("observed_pr_create_work", `Bool (acc.ma_pr_create_action_count > 0));
-    ("observed_pr_push_work", `Bool (acc.ma_pr_git_push_action_count > 0));
-    ("observed_pr_commit_work", `Bool (acc.ma_pr_git_commit_action_count > 0));
-    ( "observed_git_work",
-      `Bool
-        (pr_work_git_tool_call_count > 0
-         || acc.ma_pr_git_add_action_count > 0
-         || acc.ma_pr_git_commit_action_count > 0
-         || acc.ma_pr_git_push_action_count > 0) );
-    ("observed_pr_work", `Bool (pr_work_total_signal_count > 0));
     ("memory_checks", `Int acc.ma_memory_checks);
     ("memory_passed", `Int acc.ma_memory_passed);
     ("memory_failed", `Int memory_failed);

@@ -209,7 +209,7 @@ let test_agent_tool_called_scope_promoted_for_filters () =
                     ("tool_name", `String "masc_claim_next");
                     ("success", `Bool true);
                     ("duration_ms", `Int 42);
-                    ("agent_id", `String "codex-mcp-client");
+                    ("agent_id", `String "agent_code-mcp-client");
                     ("session_id", `String "mcp-session-1");
                     ("operation_id", `String "op-1");
                     ("worker_run_id", `String "worker-1");
@@ -615,7 +615,7 @@ let test_summary_tool_metric_surface_points_to_raw_metrics () =
   Fs_compat.mkdir_p metrics_dir;
   write_jsonl metrics_dir
     [ `Assoc [ ("timestamp", `Float (Unix.gettimeofday ()));
-               ("tool_name", `String "keeper_fs_read");
+               ("tool_name", `String "tool_read_file");
                ("duration_ms", `Float 12.0);
                ("success", `Bool true) ] ];
   let json = Telemetry_unified.summary_json ~base_path:dir ~masc_root:(masc_root dir) () in
@@ -641,7 +641,7 @@ let test_summary_includes_trajectory_and_execution_receipt_sources () =
             ("ts_iso", `String (Masc_domain.iso8601_of_unix_seconds now));
             ("turn", `Int 1);
             ("round", `Int 1);
-            ("tool_name", `String "keeper_bash");
+            ("tool_name", `String "tool_execute");
             ("args", `Assoc []);
             ("gate", `Assoc [ ("status", `String "pass") ]);
             ("result", `String "ok");
@@ -651,7 +651,7 @@ let test_summary_includes_trajectory_and_execution_receipt_sources () =
             ( "runtime_contract",
               `Assoc [ ("keeper_name", `String "alice") ] );
             ( "action_radius",
-              `Assoc [ ("tool_name", `String "keeper_bash") ] );
+              `Assoc [ ("tool_name", `String "tool_execute") ] );
           ])
      ^ "\n");
   let receipt_dir = Filename.concat root "keepers/alice/execution-receipts" in
@@ -703,7 +703,7 @@ let test_read_unified_reads_trajectory_and_execution_receipts () =
             ("ts_iso", `String "1970-01-01T00:33:20Z");
             ("turn", `Int 1);
             ("round", `Int 1);
-            ("tool_name", `String "keeper_bash");
+            ("tool_name", `String "tool_execute");
             ("args", `Assoc []);
             ("gate", `Assoc [ ("status", `String "pass") ]);
             ("result", `String "ok");
@@ -713,7 +713,7 @@ let test_read_unified_reads_trajectory_and_execution_receipts () =
             ( "runtime_contract",
               `Assoc [ ("keeper_name", `String "alice") ] );
             ( "action_radius",
-              `Assoc [ ("tool_name", `String "keeper_bash") ] );
+              `Assoc [ ("tool_name", `String "tool_execute") ] );
           ])
      ^ "\n");
   let receipt_dir = Filename.concat root "keepers/alice/execution-receipts" in
@@ -766,7 +766,7 @@ let test_scope_filter_matches_runtime_contract_fields () =
             ("ts_iso", `String "1970-01-01T00:50:00Z");
             ("turn", `Int 1);
             ("round", `Int 1);
-            ("tool_name", `String "keeper_bash");
+            ("tool_name", `String "tool_execute");
             ("args", `Assoc []);
             ("gate", `Assoc [ ("status", `String "pass") ]);
             ("result", `String "ok");
@@ -782,7 +782,7 @@ let test_scope_filter_matches_runtime_contract_fields () =
                   ("trace_id", `String "run-nested");
                 ] );
             ( "action_radius",
-              `Assoc [ ("tool_name", `String "keeper_bash") ] );
+              `Assoc [ ("tool_name", `String "tool_execute") ] );
           ])
      ^ "\n");
   let result =
@@ -802,7 +802,7 @@ let test_scope_filter_matches_runtime_contract_fields () =
   | [ entry ] ->
     Alcotest.(check string) "source" "trajectory_tool_call"
       (json_string_field "source" entry);
-    Alcotest.(check string) "tool" "keeper_bash"
+    Alcotest.(check string) "tool" "tool_execute"
       (json_string_field "tool_name" entry)
   | _ -> Alcotest.fail "expected one scoped trajectory row"
 
@@ -964,7 +964,7 @@ let test_trajectory_parse_errors_are_aggregated_per_file () =
            (`Assoc
               [
                 ("ts", `Float 2000.0);
-                ("tool_name", `String "keeper_bash");
+                ("tool_name", `String "tool_execute");
               ]);
          "{still-not-json";
          "";
@@ -1084,6 +1084,50 @@ let test_summary_counts_all_entries_beyond_recent_cap () =
     Alcotest.(check int) "counts all rows, not read_recent cap" 10_050 total
   | _ -> Alcotest.fail "expected Assoc"
 
+let test_replay_retention_lists_selected_sources () =
+  let dir = tmpdir "telem_replay_retention" in
+  let root = masc_root dir in
+  let json =
+    Telemetry_unified.replay_retention_json ~base_path:dir ~masc_root:root
+      ~sources:[ Telemetry_unified.Oas_event; Telemetry_unified.Tool_metric ]
+  in
+  match json with
+  | `Assoc fields ->
+    Alcotest.(check string) "scope" "dashboard_telemetry_replay"
+      (json_string_field "scope" json);
+    Alcotest.(check string) "coordination root" root
+      (json_string_field "coordination_root" json);
+    let selected_sources =
+      match List.assoc_opt "selected_sources" fields with
+      | Some (`List values) ->
+        List.map
+          (function `String value -> value | _ -> Alcotest.fail "bad source")
+          values
+      | _ -> Alcotest.fail "expected selected_sources"
+    in
+    Alcotest.(check (list string)) "selected sources"
+      [ "oas_event"; "tool_metric" ]
+      selected_sources;
+    let durable_stores =
+      match List.assoc_opt "durable_stores" fields with
+      | Some (`List values) -> values
+      | _ -> Alcotest.fail "expected durable_stores"
+    in
+    Alcotest.(check int) "durable store count" 2 (List.length durable_stores);
+    let oas_store =
+      List.find
+        (fun value ->
+          String.equal "oas_event" (json_string_field "source" value))
+        durable_stores
+    in
+    Alcotest.(check string) "oas durable store"
+      (Filename.concat root "oas-events")
+      (json_string_field "durable_store" oas_store);
+    Alcotest.(check string) "oas dashboard surface"
+      "/api/v1/dashboard/telemetry"
+      (json_string_field "dashboard_surface" oas_store)
+  | _ -> Alcotest.fail "expected Assoc"
+
 (* ── Cluster-aware path ─────────────────────────── *)
 
 let test_cluster_aware_read () =
@@ -1195,6 +1239,8 @@ let () =
             test_summary_bad_trajectory_root_observed_once;
           Alcotest.test_case "counts all rows beyond recent cap" `Quick
             test_summary_counts_all_entries_beyond_recent_cap;
+          Alcotest.test_case "replay retention selected sources" `Quick
+            test_replay_retention_lists_selected_sources;
         ] );
       ( "cluster",
         [

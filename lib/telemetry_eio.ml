@@ -44,6 +44,16 @@ type event =
       error_message: string option [@default None];
       exit_code: int option [@default None];
       stderr_excerpt: string option [@default None];
+      (* Typed failure classification preserved alongside [success].
+         [success = false] without a [failure_class] is now an
+         observable gap — downstream consumers (telemetry_unified
+         dedupe, dashboard attribution) can stop reconstructing the
+         class from [error_message] substrings.  RFC-0088 §1 root-fix
+         seam for the "Tool_called row carries no typed failure_class"
+         finding (PR-6).  Producer migration that actually populates
+         this field for every error path is tracked separately so this
+         introduction PR keeps the record-shape change surgical. *)
+      failure_class: Tool_result.tool_failure_class option [@default None];
     }
   | Tool_assigned of {
       agent_id: string;
@@ -119,13 +129,39 @@ let telemetry_file config =
 let telemetry_store_cache : (string, Dated_jsonl.t) Hashtbl.t = Hashtbl.create 4
 let telemetry_store_cache_mu = Eio.Mutex.create ()
 
+let telemetry_retention_days_env = "MASC_TELEMETRY_RETENTION_DAYS"
+let telemetry_max_bytes_env = "MASC_TELEMETRY_MAX_BYTES"
+let default_telemetry_retention_days = 30
+let default_telemetry_max_bytes = 52_428_800
+
+let positive_int_env_with_default key ~default =
+  match Sys.getenv_opt key with
+  | None -> Some default
+  | Some raw ->
+    (match int_of_string_opt (String.trim raw) with
+     | Some value when value > 0 -> Some value
+     | Some _ -> None
+     | None -> Some default)
+
+let telemetry_retention_days () =
+  positive_int_env_with_default telemetry_retention_days_env
+    ~default:default_telemetry_retention_days
+
+let telemetry_max_bytes () =
+  positive_int_env_with_default telemetry_max_bytes_env
+    ~default:default_telemetry_max_bytes
+
 let get_telemetry_store config : Dated_jsonl.t =
   let base = Filename.concat (Coord_utils.masc_dir config) "telemetry" in
   Eio_guard.with_mutex telemetry_store_cache_mu (fun () ->
     match Hashtbl.find_opt telemetry_store_cache base with
     | Some store -> store
     | None ->
-      let store = Dated_jsonl.create ~base_dir:base () in
+      let retention_days = telemetry_retention_days () in
+      let max_bytes = telemetry_max_bytes () in
+      let store =
+        Dated_jsonl.create ~base_dir:base ?retention_days ?max_bytes ()
+      in
       Hashtbl.replace telemetry_store_cache base store;
       store)
 
@@ -169,8 +205,9 @@ let read_all_events_from_path (file : string) : event_record list =
                    ~path:file ~detail:msg;
                  None
            with Yojson.Json_error msg ->
-             report_telemetry_drop ~reason:"json_syntax_error" ~path:file
-               ~detail:msg;
+             report_telemetry_drop
+               ~reason:Safe_ops.persistence_read_drop_reason_json_syntax_error
+               ~path:file ~detail:msg;
              None)
 
 let event_to_json event =
@@ -302,46 +339,50 @@ let read_events_since ?fs config ~since : event_record list =
   List.filter (fun r -> r.timestamp >= since) all
 
 (** Metrics calculation functions (pure) *)
+
+(* [count_active_agents] = joined \ left,
+   [count_tasks_in_progress] = started \ completed.
+   Kernel lives in [Set_util.count_difference] (lib/core/set_util.ml). *)
 let count_active_agents events =
-  let joined = List.filter_map (fun r ->
-    match r.event with
-    | Agent_joined { agent_id; _ } -> Some agent_id
-    | _ -> None
-  ) events in
-  let left = List.filter_map (fun r ->
-    match r.event with
-    | Agent_left { agent_id; _ } -> Some agent_id
-    | _ -> None
-  ) events in
-  let active = List.filter (fun id -> not (List.mem id left)) joined in
-  List.length (List.sort_uniq String.compare active)
+  Set_util.count_difference events
+    ~present:(fun r ->
+      match r.event with
+      | Agent_joined { agent_id; _ } -> Some agent_id
+      | Agent_left _ | Task_started _ | Task_completed _ | Handoff_triggered _
+      | Error_occurred _ | Tool_called _ | Tool_assigned _ -> None)
+    ~absent:(fun r ->
+      match r.event with
+      | Agent_left { agent_id; _ } -> Some agent_id
+      | Agent_joined _ | Task_started _ | Task_completed _ | Handoff_triggered _
+      | Error_occurred _ | Tool_called _ | Tool_assigned _ -> None)
 
 let count_tasks_in_progress events =
-  let started = List.filter_map (fun r ->
-    match r.event with
-    | Task_started { task_id; _ } -> Some task_id
-    | _ -> None
-  ) events in
-  let completed = List.filter_map (fun r ->
-    match r.event with
-    | Task_completed { task_id; _ } -> Some task_id
-    | _ -> None
-  ) events in
-  let in_progress = List.filter (fun id -> not (List.mem id completed)) started in
-  List.length (List.sort_uniq String.compare in_progress)
+  Set_util.count_difference events
+    ~present:(fun r ->
+      match r.event with
+      | Task_started { task_id; _ } -> Some task_id
+      | Agent_joined _ | Agent_left _ | Task_completed _ | Handoff_triggered _
+      | Error_occurred _ | Tool_called _ | Tool_assigned _ -> None)
+    ~absent:(fun r ->
+      match r.event with
+      | Task_completed { task_id; _ } -> Some task_id
+      | Agent_joined _ | Agent_left _ | Task_started _ | Handoff_triggered _
+      | Error_occurred _ | Tool_called _ | Tool_assigned _ -> None)
 
 let count_completed_tasks events =
   List_util.count_if (fun r ->
     match r.event with
     | Task_completed _ -> true
-    | _ -> false
+    | Agent_joined _ | Agent_left _ | Task_started _ | Handoff_triggered _
+    | Error_occurred _ | Tool_called _ | Tool_assigned _ -> false
   ) events
 
 let avg_duration events =
   let durations = List.filter_map (fun r ->
     match r.event with
     | Task_completed { duration_ms; _ } -> Some (float_of_int duration_ms)
-    | _ -> None
+    | Agent_joined _ | Agent_left _ | Task_started _ | Handoff_triggered _
+    | Error_occurred _ | Tool_called _ | Tool_assigned _ -> None
   ) events in
   match durations with
   | [] -> 0.0
@@ -353,12 +394,14 @@ let calculate_handoff_rate events =
   let handoffs = List_util.count_if (fun r ->
     match r.event with
     | Handoff_triggered _ -> true
-    | _ -> false
+    | Agent_joined _ | Agent_left _ | Task_started _ | Task_completed _
+    | Error_occurred _ | Tool_called _ | Tool_assigned _ -> false
   ) events in
   let task_events = List_util.count_if (fun r ->
     match r.event with
     | Task_started _ | Task_completed _ -> true
-    | _ -> false
+    | Agent_joined _ | Agent_left _ | Handoff_triggered _ | Error_occurred _
+    | Tool_called _ | Tool_assigned _ -> false
   ) events in
   if task_events = 0 then 0.0
   else float_of_int handoffs /. float_of_int task_events
@@ -367,7 +410,8 @@ let calculate_error_rate events =
   let errors = List_util.count_if (fun r ->
     match r.event with
     | Error_occurred _ -> true
-    | _ -> false
+    | Agent_joined _ | Agent_left _ | Task_started _ | Task_completed _
+    | Handoff_triggered _ | Tool_called _ | Tool_assigned _ -> false
   ) events in
   let total = List.length events in
   if total = 0 then 0.0
@@ -404,7 +448,7 @@ let track_task_completed ?fs config ~task_id ~duration_ms ~success =
    audit (2026-05-05). masc-mcp has no cascade-routing handoff
    concept; the [Handoff_triggered] event variant is retained for
    wire-schema compatibility and exhaustive-match coverage in
-   [coordination_product_snapshot] / [dashboard_http_monitoring],
+   [dashboard_http_monitoring],
    but the public emitter is dropped to prevent new code from
    reintroducing unused telemetry. Tests construct the variant
    directly to validate the wire schema. *)
@@ -430,8 +474,9 @@ let nonempty_error_kind_opt value =
   | None -> None
 
 let track_tool_called ?fs config ~tool_name ~success ~duration_ms ?agent_id
-    ?source ?session_id ?operation_id ?worker_run_id ?error_kind
+    ?source ?session_id ?operation_id ?worker_run_id ?failure_class ?error_kind
     ?error_message ?exit_code ?stderr_excerpt () =
+  let failure_class = if success then None else failure_class in
   let error_kind =
     if success then None else nonempty_error_kind_opt error_kind
   in
@@ -455,6 +500,7 @@ let track_tool_called ?fs config ~tool_name ~success ~duration_ms ?agent_id
          error_message;
          exit_code;
          stderr_excerpt;
+         failure_class;
        });
   if not success then
     match error_kind with

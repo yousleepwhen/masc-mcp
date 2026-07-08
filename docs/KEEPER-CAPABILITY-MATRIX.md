@@ -10,12 +10,11 @@ code_refs:
 
 Keepers do not receive the full public MCP surface.
 They get keeper-native tools plus `masc_*` tools that are executable without
-MCP runtime/session context.
+MCP runtime/session context. This matrix names internal handler IDs for
+implementation/audit purposes; model-facing prompts and recovery hints must use
+the exact active schema names, such as the public `Execute` alias when it is
+listed.
 Triage and trigger detection run on each heartbeat using the proactive idle/cooldown settings.
-
-Autoresearch/research tools are enabled through keeper tool-surface configuration
-such as preset selection, shard assignment, and tool access, not through a
-`soul_profile` value.
 
 ## Tool Shards
 
@@ -23,24 +22,21 @@ such as preset selection, shard assignment, and tool access, not through a
 |-------|-------|-------|-----------|
 | **base** | `keeper_stay_silent`, `keeper_time_now`, `keeper_context_status`, `keeper_memory_search`, `keeper_tools_list` | 5 | No |
 | **board** | `keeper_board_{get,post,list,comment,vote,stats,search}` | 7 | Yes |
-| **filesystem** | `keeper_fs_{read,edit}` | 2 | Yes |
-| **shell** | `keeper_shell` | 1 | Yes |
+| **filesystem** | `tool_read_file`, `tool_edit_file`, `tool_write_file` | 3 | Yes |
+| **search_files** | `tool_search_files` | 1 | Yes |
 | **library** | `keeper_library_{search,read}` | 2 | Yes |
 | **taskboard** | `keeper_tasks_{list,audit}`, `keeper_task_{force_release,force_done,claim,done,submit_for_verification,create}`, `keeper_broadcast` | 9 | Yes |
 | **voice** | `keeper_voice_{speak,listen,agent,sessions,session_start,session_end}` | 6 | Yes |
-| **coding** | `keeper_bash{,_output,_kill}`, `keeper_preflight_check`, `keeper_pr_{list,status,create,review_read,review_comment,review_reply}`, `masc_{worktree_create,worktree_list,code_search,code_symbols,code_read}` | 15 | Yes |
-| **autoresearch** | `masc_autoresearch_{start,status,stop,inject,cycle,record_finding,search_findings}` | 7 | Yes |
 
 Notes:
 - The `voice` shard still exists, but it is no longer part of the default keeper surface. The historical weather shard is retired from `Tool_shard`.
 - The old governance petition/case tools were retired from the callable tool surface. Governance-style participation now uses board discussion/vote paths plus dashboard governance/audit read models.
-- Write-capable tools such as `keeper_fs_edit` and code mutation tools are present in the keeper surface; preset/policy and eval gates decide whether a keeper may execute the mutation.
-- `keeper_shell` is structured-only (`pwd`, `ls`, `cat`, `rg`, `find`, `head`, `tail`, `wc`, `tree`, `git_status`, `git_log`, `git_diff`, `git_worktree`, `git_clone`, `gh`). Raw command execution lives in `Bash`/`keeper_bash`.
-- Code mutation uses `masc_code_{write,edit,delete,shell,git}` in addition to the `coding` shard above.
+- Write-capable tools such as `tool_edit_file` and `tool_write_file` are present in the keeper surface; preset/policy and eval gates decide whether a keeper may execute the mutation.
+- `tool_search_files` is structured-only (`pwd`, `ls`, `cat`, `rg`, `find`, `head`, `tail`, `wc`, `tree`, `git_status`, `git_log`, `git_diff`). Typed command execution is model-facing as `Execute`, backed by the `tool_execute` descriptor route.
 
 ## Tool Surface
 
-All keepers receive: base + board + fs + shell + library + taskboard + coding shards.
+All keepers receive: base + board + fs + search_files + library + taskboard shards plus unsharded default `tool_execute`.
 Voice tools are added when `policy_voice_enabled = true`.
 `write_done = true` returns empty tool list (session terminated).
 
@@ -90,27 +86,22 @@ BoardActivity, IdleTimeout, MetricsAnomaly, StrategicReview.
 | Workflow | Primary tools |
 |----------|---------------|
 | 의견 내기 / 토론 참여 | `keeper_board_post`, `keeper_board_comment` |
-| 최신 정보 / 외부 자료 확인 | `masc_web_search` (also exposed to model clients as `WebSearch`) |
+| 최신 정보 / 외부 자료 확인 | `SearchWeb` -> `FetchWeb` |
 | 찬성 / 반대 신호 | `keeper_board_vote` |
 | 거버넌스 의견 제출 | retired as keeper tools; use board discussion/vote paths and governance dashboard read models |
-| 목표 / 계획 lifecycle | `masc_goal_list`, `masc_goal_upsert`, `masc_goal_transition`, `masc_goal_verify`, `masc_coordination_fsm_snapshot`; `masc_goal_review` is legacy compatibility, not feature-proof evidence |
-| 코드 작성 / 수정 | `masc_worktree_create` -> `masc_code_write` / `masc_code_edit` / `masc_code_git` |
-| 테스트 실행 | `masc_code_shell` (worktree `cwd` required) |
-| GitHub PR / 이슈 작업 | `keeper_preflight_check`, `keeper_pr_list`, `keeper_pr_status`, `keeper_pr_create` (draft-only), plus `keeper_shell op=gh` when repo context is bound |
+| 목표 / 계획 lifecycle | `masc_goal_list`, `masc_goal_upsert`, `masc_goal_transition`, `masc_goal_verify` |
+| 코드 작성 / 수정 | `ReadFile` / `SearchFiles` -> `EditFile` / `WriteFile`, then `Execute` with typed `git` argv |
+| 테스트 실행 | `Execute` with typed argv from the worktree `cwd` |
+| GitHub PR / 이슈 작업 | `Execute` with `executable="gh"` and typed `argv` from a bound repo context for PR reads and reversible PR mutations such as `pr create` / `pr edit`. |
 
 The goal lifecycle surface is configured as the `masc.goal` policy group and is
-routed to `dispatch`, `coding`, `research`, and `delivery` presets. Social and
+routed to `dispatch`, `research`, and `delivery` presets. Social and
 messaging keepers keep board/task coordination without goal mutation access.
 
 ## Research Profile Additions
 
-When the `autoresearch` shard is allocated, these tools are added (any policy mode):
-
-| Source | Tools | Note |
-|--------|-------|------|
-| `Tool_shard.autoresearch_keeper_tools` | `masc_autoresearch_{start,status,stop,inject,cycle,record_finding,search_findings}` | Autoresearch suite |
-
-These overlap with `Tool_permissions.admin_tools` for `masc_autoresearch_start` and `masc_autoresearch_stop`. Keepers access them via shard allocation, not through the dispatch permission hook.
+Research-profile keepers use the active web, board, task, code, and goal
+surfaces.
 
 ## Safety Gates (applied to all keepers)
 
@@ -122,4 +113,4 @@ These overlap with `Tool_permissions.admin_tools` for `masc_autoresearch_start` 
 | Destructive | Pattern-match on bash/edit commands | 19 patterns, substring match |
 | Allowlist/Denylist | Explicit tool filtering | `allowed_tools`, `denied_tools` |
 
-Source: `lib/eval_gate.ml`, `lib/keeper/keeper_exec_tools.ml`, `lib/tool_shard.ml`
+Source: `lib/eval_gate.ml`, `lib/keeper/agent_tool_dispatch_runtime.ml`, `lib/tool_shard.ml`

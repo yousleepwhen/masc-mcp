@@ -24,10 +24,8 @@ if command -v opam >/dev/null 2>&1; then
     eval "$(opam env 2>/dev/null)" >/dev/null 2>/dev/null || true
 fi
 
-# Storage backend: filesystem only. Clear retired PG selectors so inherited
-# shells cannot steer runtime startup onto a PostgreSQL lane.
+# Storage backend: filesystem only.
 export MASC_STORAGE_TYPE="filesystem"
-unset MASC_POSTGRES_URL DATABASE_URL SUPABASE_DB_URL SB_PG_URL
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
@@ -39,7 +37,7 @@ DUNE_JOBS="${MASC_DUNE_JOBS:-8}"
 # mkdir-based build mutex (atomic on POSIX, works on macOS without flock).
 # Prevents multiple start-masc-mcp.sh instances from building concurrently.
 # Stores owner PID to detect and recover from stale locks left by crashed processes.
-MASC_BUILD_LOCK="/tmp/masc-mcp-build.lock"
+MASC_BUILD_LOCK="${MASC_BUILD_LOCK_PATH:-/tmp/masc-mcp-build.lock}"
 _MASC_LOCK_HELD=""
 _masc_cleanup_lock() {
     if [ -n "$_MASC_LOCK_HELD" ] && [ -d "$MASC_BUILD_LOCK" ]; then
@@ -75,6 +73,117 @@ release_build_lock() {
     _masc_cleanup_lock
 }
 
+make_startup_temp_log() {
+    local temp_root="${TMPDIR:-/tmp}"
+    temp_root="${temp_root%/}"
+    if [ ! -d "$temp_root" ] || [ ! -w "$temp_root" ]; then
+        temp_root="/tmp"
+    fi
+    mktemp "$temp_root/masc-dune-build.XXXXXX"
+}
+
+is_stale_dune_artifact_log() {
+    local log_file="$1"
+    grep -Eiq \
+        'make inconsistent assumptions|inconsistent assumptions over (implementation|interface)' \
+        "$log_file"
+}
+
+is_dune_cache_temp_log() {
+    local log_file="$1"
+    grep -Eiq \
+        'rmdir\(.*[.]cache/dune/db/temp/.*\): Directory not empty|[.]cache/dune/db/temp/.*Directory not empty' \
+        "$log_file"
+}
+
+run_dune_local() {
+    local wrapper="$SCRIPT_DIR/scripts/dune-local.sh"
+    if [ ! -x "$wrapper" ]; then
+        echo "Error: local Dune wrapper missing or not executable: $wrapper" >&2
+        echo "Run builds through scripts/dune-local.sh so local agents share the machine-wide Dune lock." >&2
+        return 127
+    fi
+    env DUNE_LOCAL_JOBS="$DUNE_JOBS" DUNE_JOBS="$DUNE_JOBS" "$wrapper" "$@"
+}
+
+dune_build_with_stale_retry() {
+    local target="$1"
+    local label="$2"
+    local log_file=""
+
+    if ! log_file="$(make_startup_temp_log 2>/dev/null)"; then
+        run_dune_local build "$target" 1>&2
+        return $?
+    fi
+
+    local first_status=0
+    if run_dune_local build "$target" >"$log_file" 2>&1; then
+        cat "$log_file" >&2
+        rm -f "$log_file"
+        return 0
+    else
+        first_status=$?
+    fi
+
+    if is_dune_cache_temp_log "$log_file"; then
+        cat "$log_file" >&2
+        echo "[startup] Dune cache temp cleanup failed while building $label; retrying once with DUNE_CACHE=disabled." >&2
+        if DUNE_CACHE=disabled run_dune_local build "$target" >"$log_file" 2>&1; then
+            cat "$log_file" >&2
+            rm -f "$log_file"
+            return 0
+        fi
+        cat "$log_file" >&2
+        echo "[startup] Retry build failed after disabling Dune cache; preserved Dune output above." >&2
+        rm -f "$log_file"
+        return 1
+    fi
+
+    if ! is_stale_dune_artifact_log "$log_file"; then
+        cat "$log_file" >&2
+        rm -f "$log_file"
+        return "$first_status"
+    fi
+
+    cat "$log_file" >&2
+    echo "[startup] Stale Dune artifacts detected while building $label; running dune clean and retrying once." >&2
+    if ! run_dune_local clean 1>&2; then
+        echo "[startup] Dune clean failed after stale artifact detection; run: dune clean --root $SCRIPT_DIR" >&2
+        rm -f "$log_file"
+        return "$first_status"
+    fi
+
+    if run_dune_local build "$target" >"$log_file" 2>&1; then
+        cat "$log_file" >&2
+        rm -f "$log_file"
+        return 0
+    fi
+
+    cat "$log_file" >&2
+    echo "[startup] Retry build failed after stale Dune cleanup; preserved Dune output above." >&2
+    rm -f "$log_file"
+    return 1
+}
+
+build_dune_target_with_lock() {
+    local target="$1"
+    local label="$2"
+    if ! acquire_build_lock; then
+        if is_truthy "${MASC_ALLOW_STALE_EXE_ON_BUILD_LOCK:-0}"; then
+            echo "Warning: proceeding without rebuilding $label because MASC_ALLOW_STALE_EXE_ON_BUILD_LOCK=1." >&2
+            return 0
+        fi
+        echo "Error: unable to acquire build lock for $label; refusing to continue with a stale or missing executable." >&2
+        return 1
+    fi
+    if ! dune_build_with_stale_retry "$target" "$label"; then
+        release_build_lock
+        return 1
+    fi
+    release_build_lock
+    return 0
+}
+
 is_truthy() {
     case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
         1|true|yes|y|on) return 0 ;;
@@ -87,6 +196,10 @@ is_absolute_path() {
         /*) return 0 ;;
         *) return 1 ;;
     esac
+}
+
+default_base_path() {
+    printf ''
 }
 
 # Resolve a path to its git-root equivalent (worktree-aware).
@@ -442,11 +555,9 @@ do
     restore_env_override "$env_name"
 done
 
-# ~/.zshenv and repo-local env files may reintroduce retired PostgreSQL selectors
-# after the initial top-of-script scrub. Re-assert filesystem-only startup here
-# so the launched server process never sees the deprecated vars.
+# ~/.zshenv and repo-local env files may change boot-time environment after the
+# initial top-of-script setup. Re-assert filesystem-only startup here.
 export MASC_STORAGE_TYPE="filesystem"
-unset MASC_POSTGRES_URL DATABASE_URL SUPABASE_DB_URL SB_PG_URL
 
 # Did caller provide --base-path explicitly on CLI?
 BASE_PATH_EXPLICIT=0
@@ -522,13 +633,21 @@ if [ -z "${MASC_SYNC_CODEX_MCP_CONFIG+x}" ]; then
     export MASC_SYNC_CODEX_MCP_CONFIG=1
 fi
 
+# macOS Docker Desktop hotspot detection is visibility-first by default.
+# Export the safe default from the launcher too, so a stale OCaml executable
+# compiled with an older nonzero default cannot re-enable false blocking.
+if [ -z "${MASC_KEEPER_HOST_FD_HOTSPOT_HEADROOM+x}" ]; then
+    export MASC_KEEPER_HOST_FD_HOTSPOT_HEADROOM=0
+fi
+
 # Default arguments
 PORT="${MASC_MCP_PORT:-8935}"
 PORT_EXPLICIT=0
 PRINT_PORT_ONLY=0
 WORKTREE_PORT_HINT=""
 HTTP_MODE="${MASC_MCP_HTTP:-true}"
-BASE_PATH="${MASC_BASE_PATH:-${HOME:-$SCRIPT_DIR}}"
+DEFAULT_BASE_PATH="$(default_base_path)"
+BASE_PATH="${MASC_BASE_PATH:-$DEFAULT_BASE_PATH}"
 SIDECAR_ROOT="${MASC_SIDECAR_ROOT:-}"
 HOST="${MASC_HOST:-127.0.0.1}"
 # NOTE: Eio is now the default runtime (Lwt deprecated since 2026-01)
@@ -595,8 +714,12 @@ if [ "$BASE_PATH_EXPLICIT" = "1" ]; then
     BASE_PATH_RESOLUTION_SOURCE="explicit_cli"
 elif [ "$MASC_BASE_PATH_WAS_SET" = "1" ] && is_absolute_path "$BASE_PATH"; then
     BASE_PATH_RESOLUTION_SOURCE="explicit_env"
-elif [ -z "${MASC_BASE_PATH:-}" ] && [ -n "${HOME:-}" ] && [ "$BASE_PATH" = "$HOME" ]; then
-    BASE_PATH_RESOLUTION_SOURCE="implicit_home"
+fi
+
+if [ -z "$BASE_PATH" ]; then
+    echo "Error: MASC base path is required; pass --base-path PATH or set MASC_BASE_PATH." >&2
+    echo "Refusing to infer a runtime root from HOME; runtime data must live under <base-path>/.masc." >&2
+    exit 2
 fi
 
 if [ "$PORT_EXPLICIT" != "1" ]; then
@@ -712,9 +835,9 @@ if [ "$HTTP_MODE" = "true" ] && [ -z "$MASC_EIO_EXE" ]; then
         echo "Error: dune not found. Install dune first." >&2
         exit 1
     fi
-    if acquire_build_lock; then
-        dune build -j "$DUNE_JOBS" --root "$SCRIPT_DIR" bin/main_eio.exe 1>&2
-        release_build_lock
+    if ! build_dune_target_with_lock "bin/main_eio.exe" "main_eio.exe"; then
+        echo "Error: build failed." >&2
+        exit 1
     fi
     if [ -x "$LOCAL_EIO_EXE" ]; then
         MASC_EIO_EXE="$LOCAL_EIO_EXE"
@@ -730,9 +853,9 @@ if [ "$HTTP_MODE" = "false" ] && [ -z "$MASC_STDIO_EIO_EXE" ]; then
         echo "Error: dune not found. Cannot build stdio server." >&2
         exit 1
     fi
-    if acquire_build_lock; then
-        dune build -j "$DUNE_JOBS" --root "$SCRIPT_DIR" bin/main_stdio_eio.exe 1>&2
-        release_build_lock
+    if ! build_dune_target_with_lock "bin/main_stdio_eio.exe" "main_stdio_eio.exe"; then
+        echo "Error: failed to build stdio server." >&2
+        exit 1
     fi
     if [ -x "$LOCAL_STDIO_EIO_EXE" ]; then
         MASC_STDIO_EIO_EXE="$LOCAL_STDIO_EIO_EXE"
@@ -750,10 +873,10 @@ if [ "$HTTP_MODE" = "true" ] && [ -n "$MASC_EIO_EXE" ] && command -v dune >/dev/
     if find "$SCRIPT_DIR/bin" "$SCRIPT_DIR/lib" \
         -type f \( -name '*.ml' -o -name '*.mli' -o -name 'dune' \) \
         -newer "$MASC_EIO_EXE" 2>/dev/null | head -n 1 | grep -q .; then
-        if acquire_build_lock; then
-            echo "Rebuilding MASC MCP server (stale executable detected)..." >&2
-            dune build -j "$DUNE_JOBS" --root "$SCRIPT_DIR" bin/main_eio.exe 1>&2
-            release_build_lock
+        echo "Rebuilding MASC MCP server (stale executable detected)..." >&2
+        if ! build_dune_target_with_lock "bin/main_eio.exe" "main_eio.exe"; then
+            echo "Error: rebuild failed." >&2
+            exit 1
         fi
 
         if [ -x "$LOCAL_EIO_EXE" ]; then
@@ -829,9 +952,9 @@ if [ "$EIO_MODE" = "true" ]; then
             echo "Error: dune not found. Cannot build Eio server." >&2
             exit 1
         fi
-        if acquire_build_lock; then
-            dune build -j "$DUNE_JOBS" --root "$SCRIPT_DIR" bin/main_eio.exe 1>&2
-            release_build_lock
+        if ! build_dune_target_with_lock "bin/main_eio.exe" "main_eio.exe"; then
+            echo "Error: Failed to build Eio server (main_eio.exe)." >&2
+            exit 1
         fi
         if [ -x "$WORKSPACE_EIO_EXE" ]; then
             MASC_EIO_EXE="$WORKSPACE_EIO_EXE"
@@ -888,6 +1011,7 @@ if [ "$EIO_MODE" = "true" ] && [ "$HTTP_MODE" = "true" ]; then
     if [ -n "${MASC_SIDECAR_ROOT:-}" ]; then
         echo "  Sidecar root: $MASC_SIDECAR_ROOT" >&2
     fi
+    echo "  Executable: $SELECTED_EXE" >&2
     echo "  MASC dir: $RESOLVED_BASE_PATH/.masc" >&2
     if [ -n "${MASC_HTTP_BASE_URL:-}" ]; then
         echo "  MCP endpoint: ${MASC_HTTP_BASE_URL%/}/mcp" >&2
@@ -895,7 +1019,6 @@ if [ "$EIO_MODE" = "true" ] && [ "$HTTP_MODE" = "true" ]; then
         echo "  MCP endpoint: /mcp (set MASC_HTTP_BASE_URL for an absolute origin)" >&2
     fi
     echo "  MCP Accept: application/json, text/event-stream" >&2
-    echo "  Legacy Accept fallback: MASC_ALLOW_LEGACY_ACCEPT=1" >&2
     launch_from_base_path "$SELECTED_EXE" --host="$HOST" --port="$PORT" --base-path="$RESOLVED_BASE_PATH"
 elif [ "$HTTP_MODE" = "true" ]; then
     echo "Starting MASC MCP server (HTTP mode, $RUNTIME_NAME)..." >&2
@@ -908,6 +1031,7 @@ elif [ "$HTTP_MODE" = "true" ]; then
     if [ -n "${MASC_SIDECAR_ROOT:-}" ]; then
         echo "  Sidecar root: $MASC_SIDECAR_ROOT" >&2
     fi
+    echo "  Executable: $SELECTED_EXE" >&2
     echo "  MASC dir: $RESOLVED_BASE_PATH/.masc" >&2
     if [ -n "${MASC_HTTP_BASE_URL:-}" ]; then
         echo "  MCP endpoint: ${MASC_HTTP_BASE_URL%/}/mcp" >&2
@@ -915,7 +1039,6 @@ elif [ "$HTTP_MODE" = "true" ]; then
         echo "  MCP endpoint: /mcp (set MASC_HTTP_BASE_URL for an absolute origin)" >&2
     fi
     echo "  MCP Accept: application/json, text/event-stream" >&2
-    echo "  Legacy Accept fallback: MASC_ALLOW_LEGACY_ACCEPT=1" >&2
     launch_from_base_path "$SELECTED_EXE" --http --port "$PORT" --path "$RESOLVED_BASE_PATH"
 else
     echo "Starting MASC MCP server (stdio mode, $RUNTIME_NAME)..." >&2
@@ -926,6 +1049,7 @@ else
     if [ -n "${MASC_SIDECAR_ROOT:-}" ]; then
         echo "  Sidecar root: $MASC_SIDECAR_ROOT" >&2
     fi
+    echo "  Executable: $SELECTED_EXE" >&2
     echo "  MASC dir: $RESOLVED_BASE_PATH/.masc" >&2
     if [ "$EIO_MODE" = "true" ]; then
         launch_from_base_path "$SELECTED_EXE" --base-path "$RESOLVED_BASE_PATH"

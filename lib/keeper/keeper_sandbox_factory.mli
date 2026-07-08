@@ -2,24 +2,23 @@
 
     A single keeper turn may dispatch tool calls from different cwds,
     each implying a different [in_playground] state.  The factory
-    centralizes the {!Keeper_shell_docker.effective_sandbox_profile}
-    invariant, evaluates [in_playground] from the call-site [cwd], and
-    memoizes one runtime per [(in_playground, network_mode)] so a Docker
-    container is created at most once per compatible dispatch context
-    within a turn.  The runtime can still execute from different cwd
+    centralizes the {!Keeper_sandbox_runner.effective_sandbox_profile}
+    invariant, evaluates [in_playground] from the call-site [cwd] only for
+    runtime workspace reuse, and memoizes one runtime per
+    [(in_playground, network_mode)]
+    so a Docker container is created at most once per compatible dispatch
+    context within a turn.  The runtime can still execute from different cwd
     values via [Keeper_turn_sandbox_runtime.container_cwd_of_host].
 
     Background: pre-PR-3b, [keeper_tools_oas.make_tool_bundle] inspected
-    [meta.sandbox_profile] eagerly at turn-start and produced [None]
-    for [Local], silently bypassing the [DockerPlayground.enabled +
-    in_playground=true → Docker upgrade] path that PR-3 (#11610) wired
-    into [effective_sandbox_profile].  With the factory the invariant
-    is evaluated per call site, never at turn-start, and the memo
-    prevents the cold-start-every-call pattern that lingered after
-    PR-3.
+    [meta.sandbox_profile] eagerly at turn-start.  With the factory the
+    runtime decision is evaluated per call site, never at turn-start, and
+    the memo prevents the cold-start-every-call pattern that lingered after
+    PR-3.  The declared sandbox profile remains the execution contract:
+    [Local] resolves to [None] even when DockerPlayground is enabled.
 
-    The dependency on {!Keeper_shell_docker} stays acyclic:
-    [keeper_shell_docker] only consumes [Keeper_turn_sandbox_runtime.t]
+    The dependency on {!Keeper_sandbox_docker} stays acyclic:
+    [keeper_sandbox_docker] only consumes [Keeper_turn_sandbox_runtime.t]
     as a parameter and never constructs one itself. *)
 
 type t
@@ -28,6 +27,7 @@ val create :
   ?default_network_override:Keeper_types.network_mode ->
   config:Coord.config ->
   meta:Keeper_types.keeper_meta ->
+  ?turn_id:int ->
   unit ->
   t
 (** Create an empty factory.  [default_network_override], when supplied,
@@ -38,9 +38,9 @@ val resolve :
   t ->
   cwd:string ->
   Keeper_turn_sandbox_runtime.t option
-(** Returns [Some runtime] when {!Keeper_shell_docker.effective_sandbox_profile}
-    yields [Docker] (with [in_playground] derived from [cwd] vs the
-    keeper's playground root); [None] when [Local].  Memoizes per
+(** Returns [Some runtime] when {!Keeper_sandbox_runner.effective_sandbox_profile}
+    yields [Docker]. [in_playground] is derived from [cwd] vs the
+    keeper's playground root for runtime workspace reuse only. Memoizes per
     [(in_playground, network_mode)] so subsequent calls reuse the same
     container. *)
 

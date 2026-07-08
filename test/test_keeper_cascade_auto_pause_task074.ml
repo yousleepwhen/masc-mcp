@@ -26,12 +26,12 @@
 
 open Alcotest
 module EC = Masc_mcp.Keeper_error_classify
-module Owne = Masc_mcp.Oas_worker_named
+module Owne = Masc_mcp.Keeper_turn_driver
 module KT = Masc_mcp.Keeper_types
 module Regime = Masc_mcp.Keeper_behavioral_regime
 module UT = Masc_mcp.Keeper_unified_turn
 
-let cascade_name raw = Owne.cascade_name_of_string raw
+let cascade_name raw = Cascade_name.of_string_exn raw
 
 (* --- 1. is_cascade_exhausted_error covers the variants auto-pause cares about --- *)
 
@@ -77,11 +77,14 @@ let test_pause_fires_on_cascade_exhausted_variants () =
 
 let mk_oas_timeout_budget () =
   Owne.sdk_error_of_masc_internal_error
-    (Owne.Oas_timeout_budget
+    (Owne.Provider_timeout
        { budget_sec = 30.0;
          keeper_turn_timeout_sec = 60.0;
          estimated_input_tokens = 1000;
-         source = "test" })
+         source = "test";
+         remaining_turn_budget_sec = Some 10.0;
+         min_required_sec = 15.0;
+         phase = "test_phase" })
 
 let mk_turn_timeout () =
   Owne.sdk_error_of_masc_internal_error
@@ -101,10 +104,11 @@ let mk_required_tool_contract_violation () =
          contract = Agent_sdk.Completion_contract_id.Require_tool_use;
          reason =
            "required tool contract unsatisfied: tool_choice requested tool use, but the model returned no ToolUse block";
+         violation_detail = None;
        })
 
 let test_pause_does_not_fire_on_transient () =
-  check bool "Oas_timeout_budget -> no pause" false
+  check bool "Provider_timeout -> no pause" false
     (EC.is_cascade_exhausted_error (mk_oas_timeout_budget ()));
   check bool "Turn_timeout -> no pause" false
     (EC.is_cascade_exhausted_error (mk_turn_timeout ()));

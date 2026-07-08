@@ -5,18 +5,19 @@ import { html } from 'htm/preact'
 import { signal } from '@preact/signals'
 import { useEffect } from 'preact/hooks'
 import { createAsyncResource } from '../lib/async-state'
-import { Card } from './common/card'
+import { SectionCard } from './common/card'
 import { StatusBadge } from './common/status-badge'
 import { TimeAgo } from './common/time-ago'
 import { showToast } from './common/toast'
 import { keeperIdentityHint } from './common/keeper-identity'
-import { EmptyState } from './common/empty-state'
+import { EmptyState } from './common/feedback-state'
 import { ActionButton } from './common/button'
 import { TextInput } from './common/input'
 import { StatGrid } from './common/stat-tile'
+import { DashboardFeedSourceStrip } from './common/dashboard-feed-source-strip'
 import { formatTokens } from '../lib/format-number'
 import { findKeeper } from '../lib/keeper-utils'
-import { autonomyHint } from './keeper-detail-panels'
+import { autonomyHint } from './keeper-detail-ctx-utils'
 import { AgentAvatar } from './overview/agent-avatar'
 import {
   agents,
@@ -37,9 +38,9 @@ import {
 } from '../api'
 import { missionSnapshot } from '../mission-store'
 import { navigate } from '../router'
-import { formatDuration } from './mission-utils'
+import { formatDuration } from '../lib/format-time'
 import { trimText } from '../lib/truncate'
-import { keeperActivityDisplay, keeperDisplayModel } from '../lib/keeper-runtime-display'
+import { keeperActivityDisplay } from '../lib/keeper-runtime-display'
 import type {
   Agent,
   DashboardExecutionContinuityBrief,
@@ -221,7 +222,6 @@ function CharacterPlate({ name }: { name: string }) {
   const ctxRatio = keeper?.context_ratio
   const ctxPct = ctxRatio != null ? Math.round(ctxRatio * 100) : null
   const generation = keeper?.generation
-  const model = keeper ? keeperDisplayModel(keeper)?.value ?? agent?.model ?? null : agent?.model ?? null
   const keeperIdent = keeperIdentityHint(keeper?.name, keeper?.agent_name)
   const signalTruth = brief?.signal_truth
   const continuitySummary =
@@ -263,7 +263,6 @@ function CharacterPlate({ name }: { name: string }) {
 
         <div class="flex items-center gap-1.5 flex-wrap">
           <${StatusBadge} status=${headerStatus} />
-          ${model ? html`<span class="font-[family-name:'IBM_Plex_Mono',monospace] text-2xs text-[var(--color-fg-muted)] bg-[var(--accent-8)] border border-[var(--accent-10)] px-[5px] py-px rounded-[var(--r-1)]">${model}</span>` : null}
         </div>
 
         ${ctxPct != null ? html`
@@ -309,17 +308,17 @@ function CharacterPlate({ name }: { name: string }) {
       <div class="w-full mt-2">
         ${isKeeper ? html`
           <${StatGrid} cols=${4} items=${[
-            { label: 'CTX', value: ctxPct != null ? `${ctxPct}%` : 'N/A', hint: keeper.context_tokens != null && keeper.context_max != null ? `${formatTokens(keeper.context_tokens)} / ${formatTokens(keeper.context_max)}` : undefined, variant: 'gold' },
-            { label: '세대', value: generation ?? 0, variant: 'gold' },
-            { label: '턴', value: keeper.turn_count ?? 0, variant: 'gold' },
-            { label: '자율 턴', value: keeper.autonomous_turn_count ?? 0, hint: autonomyHint(keeper.autonomous_turn_count, keeper.proactive_enabled), variant: 'gold' },
+            { label: 'CTX', value: ctxPct != null ? `${ctxPct}%` : 'N/A', delta: keeper.context_tokens != null && keeper.context_max != null ? { direction: 'flat' as const, text: `${formatTokens(keeper.context_tokens)} / ${formatTokens(keeper.context_max)}` } : undefined },
+            { label: '세대', value: generation ?? 0 },
+            { label: '턴', value: keeper.turn_count ?? 0 },
+            { label: '자율 턴', value: keeper.autonomous_turn_count ?? 0, delta: autonomyHint(keeper.autonomous_turn_count, keeper.proactive_enabled) ? { direction: 'flat' as const, text: autonomyHint(keeper.autonomous_turn_count, keeper.proactive_enabled) } : undefined },
           ]} />
         ` : html`
           <${StatGrid} cols=${4} items=${[
-            { label: '완료', value: summary ? summary.tasks_completed : 'N/A', variant: 'gold' },
-            { label: '수임', value: summary ? summary.tasks_claimed : 'N/A', variant: 'gold' },
-            { label: '메시지', value: summary ? summary.messages_sent : 'N/A', variant: 'gold' },
-            { label: '활동', value: summary && summary.active_duration_minutes > 0 ? `${Math.round(summary.active_duration_minutes)}m` : summary ? '0m' : 'N/A', variant: 'gold' },
+            { label: '완료', value: summary ? summary.tasks_completed : 'N/A' },
+            { label: '수임', value: summary ? summary.tasks_claimed : 'N/A' },
+            { label: '메시지', value: summary ? summary.messages_sent : 'N/A' },
+            { label: '활동', value: summary && summary.active_duration_minutes > 0 ? `${Math.round(summary.active_duration_minutes)}m` : summary ? '0m' : 'N/A' },
           ]} />
         `}
       </div>
@@ -367,7 +366,7 @@ export function AgentProfile({ name }: { name: string }) {
 
       <div class="grid grid-cols-2 gap-4 mb-4">
         ${!isKeeper ? html`
-        <${Card} title="태스크 (${owned.length})" class="ff-card rounded-[var(--r-1)]">
+        <${SectionCard} label="태스크 (${owned.length})" class="ff-card rounded-[var(--r-1)]">
           ${owned.length === 0
             ? html`<${EmptyState} message="할당된 태스크 없음" compact />`
             : html`<div class="flex flex-col gap-2">${owned.map(t => html`
@@ -386,9 +385,10 @@ export function AgentProfile({ name }: { name: string }) {
           const collabs = rel.collaborators ?? []
           const interests = rel.interests ?? []
           const hasData = collabs.length > 0 || interests.length > 0
-          if (!hasData) return null
           return html`
-            <${Card} title="관계 (${collabs.length})" class="ff-card rounded-[var(--r-1)]">
+            <${SectionCard} label="관계 (${collabs.length})" class="ff-card rounded-[var(--r-1)]">
+              <${DashboardFeedSourceStrip} meta=${rel} className="mb-2" />
+              ${!hasData ? html`<${EmptyState} message="관계 데이터 없음" compact />` : null}
               ${collabs.length > 0 ? html`
                 <div class="flex flex-col gap-1">
                   ${collabs.map(c => html`
@@ -420,7 +420,8 @@ export function AgentProfile({ name }: { name: string }) {
           `
         })()}
 
-        <${Card} title="타임라인" class="ff-card rounded-[var(--r-1)]">
+        <${SectionCard} label="타임라인" class="ff-card rounded-[var(--r-1)]">
+          <${DashboardFeedSourceStrip} meta=${timeline} className="mb-2" />
           ${!timeline || (timeline.events ?? []).length === 0
             ? html`<${EmptyState} message="이벤트 없음" compact />`
             : html`<div class="flex flex-col gap-0.5 max-h-75 overflow-y-auto">${(timeline.events ?? []).map((evt: AgentTimelineEvent, idx: number) => {
@@ -436,11 +437,11 @@ export function AgentProfile({ name }: { name: string }) {
               })}</div>`}
         <//>
 
-        <${Card} title="실시간" class="ff-card rounded-[var(--r-1)]">
+        <${SectionCard} label="실시간" class="ff-card rounded-[var(--r-1)]">
           <${AgentLiveTimeline} name=${name} />
         <//>
 
-        <${Card} title="프로젝트 활동" class="ff-card rounded-[var(--r-1)]">
+        <${SectionCard} label="프로젝트 활동" class="ff-card rounded-[var(--r-1)]">
           ${lines.length === 0
             ? html`<${EmptyState} message="관련 활동 없음" compact />`
             : (() => {
@@ -466,7 +467,7 @@ export function AgentProfile({ name }: { name: string }) {
         <//>
 
         ${(profileData?.taskHistories ?? []).length > 0 ? html`
-          <${Card} title="태스크 이력" class="ff-card rounded-[var(--r-1)] col-span-full">
+          <${SectionCard} label="태스크 이력" class="ff-card rounded-[var(--r-1)] col-span-full">
             <div class="agent-history-list">${(profileData?.taskHistories ?? []).map((row: TaskHistoryRow) => html`
               <div class="border border-[var(--color-border-default)] rounded-[var(--radius-lg)] bg-[var(--color-bg-surface)] p-2.5" key=${row.taskId}>
                 <div class="mb-2"><span class="text-3xs py-0.5 px-2 border border-solid border-[var(--accent-36)] bg-[var(--accent-12)] text-[var(--color-accent-fg)] whitespace-nowrap rounded-[var(--r-0)]">${row.taskId}</span></div>

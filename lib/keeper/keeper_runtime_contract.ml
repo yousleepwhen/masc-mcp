@@ -34,7 +34,10 @@ let active_goal_ids_are_auto_keeper_goals config ~(meta : keeper_meta) goal_ids 
   && List.for_all
        (fun goal_id ->
          match Goal_store.get_goal config ~goal_id with
-         | Some goal -> goal_title_matches_keeper_purpose ~meta goal
+         | Some goal ->
+           (match goal.Goal_store.phase with
+           | Goal_phase.Paused -> false
+           | _ -> goal_title_matches_keeper_purpose ~meta goal)
          | None -> false)
        goal_ids
 
@@ -76,50 +79,68 @@ let resolve_claim_goal_scope ?agent_tool_names
         fallback_reason = None;
       }
   | goal_ids ->
-      let scoped_filter task = task_is_linked_to_keeper_goals goal_ids task in
-      if
-        not
-          (active_goal_ids_have_eligible_claim_task
-             ?agent_tool_names
-             config
-             goal_ids)
-      then
-        if allow_empty_goal_scope_fallback then
-          let is_auto_goal =
-            active_goal_ids_are_auto_keeper_goals config ~meta goal_ids
-          in
-          {
-            task_filter = (fun (_task : Masc_domain.task) -> true);
-            mode =
-              (if is_auto_goal then "auto_goal_fallback_all_tasks"
-               else "empty_goal_scope_fallback_all_tasks");
-            effective_goal_ids = [];
-            fallback_reason =
-              Some
-                (if is_auto_goal then
-                   "auto keeper goal has no claimable linked tasks; falling back to all claimable tasks"
-                 else
-                   "active goal scope has no claimable linked tasks; falling back to all claimable tasks");
-          }
-        else
-          {
-            task_filter = scoped_filter;
-            mode = "active_goal_ids";
-            effective_goal_ids = goal_ids;
-            fallback_reason = None;
-          }
+      let has_scoped_tasks =
+        active_goal_ids_have_eligible_claim_task
+          ?agent_tool_names
+          config
+          goal_ids
+      in
+      let is_auto_goal =
+        active_goal_ids_are_auto_keeper_goals config ~meta goal_ids
+      in
+      (* Advisory mode: active_goal_ids is a preference, not a hard gate.
+         Tasks outside the goal scope are claimable but the keeper receives
+         a warning in its context so it prefers goal-linked tasks. *)
+      if has_scoped_tasks then
+        {
+          task_filter = (fun (_task : Masc_domain.task) -> true);
+          mode = "active_goal_ids_advisory";
+          effective_goal_ids = goal_ids;
+          fallback_reason = None;
+        }
+      else if allow_empty_goal_scope_fallback || is_auto_goal then
+        {
+          task_filter = (fun (_task : Masc_domain.task) -> true);
+          mode =
+            (if is_auto_goal then "auto_goal_fallback_all_tasks"
+             else "empty_goal_scope_fallback_all_tasks");
+          effective_goal_ids = goal_ids;
+          fallback_reason =
+            Some
+              (if is_auto_goal then
+                 "auto keeper goal has no claimable linked tasks; preferring goal-linked but allowing all claimable tasks"
+               else
+                 "active goal scope has no claimable linked tasks; preferring goal-linked but allowing all claimable tasks");
+        }
       else
         {
-          task_filter = scoped_filter;
-          mode = "active_goal_ids";
+          task_filter = (fun (_task : Masc_domain.task) -> true);
+          mode = "active_goal_ids_advisory";
           effective_goal_ids = goal_ids;
           fallback_reason = None;
         }
 
+let resolve_observation_claim_goal_scope ?agent_tool_names ~(config : Coord.config)
+    ~(meta : keeper_meta) () =
+  let allow_empty_goal_scope_fallback =
+    active_goal_ids_are_auto_keeper_goals config ~meta meta.active_goal_ids
+  in
+  resolve_claim_goal_scope ?agent_tool_names ~allow_empty_goal_scope_fallback
+    ~config ~meta ()
+
 let task_is_blocked (task : Masc_domain.task) =
+  (* Enumerate every [task_status] variant so the compiler flags any new
+     constructor here. The old [_ -> false] silently extended "not blocked"
+     to any future status (e.g. a hypothetical [BlockedOnReview]) which
+     would be exactly the wrong default for a blocked-task detector. *)
   match task.task_status with
   | Masc_domain.AwaitingVerification _ -> true
-  | _ -> false
+  | Masc_domain.Todo
+  | Masc_domain.Claimed _
+  | Masc_domain.InProgress _
+  | Masc_domain.Done _
+  | Masc_domain.Cancelled _ ->
+    false
 
 let goal_progress_json ?config (meta : keeper_meta) =
   match config with
@@ -187,33 +208,15 @@ let int_opt_json = function
   | Some value -> `Int value
   | None -> `Null
 
-let string_list_json values =
-  `List (List.map (fun value -> `String value) values)
-
 let nonempty_list = function
   | Some values -> values
   | None -> []
 
-let provider_of_model = function
-  | None -> None
-  | Some model -> (
-      let model = String.trim model in
-      if model = "" then None
-      else
-        match String.index_opt model ':' with
-        | Some idx when idx > 0 -> Some (String.sub model 0 idx)
-        | _ -> None)
-
 let runtime_contract_json_from_fields ~keeper_name ?agent_name ?trace_id
     ?session_id ?generation ?keeper_turn_id ?task_id ?goal_ids
     ?sandbox_profile ?sandbox_root ?allowed_paths ?network_mode ?approval_mode ?tool_surface_class
-    ?visible_tool_count ?required_tools ?missing_required_tools ?provider ?model
+    ?visible_tool_count ?required_tools ?required_tool_candidates ?missing_required_tools
     ?cascade_profile () : Yojson.Safe.t =
-  let provider =
-    match provider with
-    | Some _ -> provider
-    | None -> provider_of_model model
-  in
   `Assoc
     [
       ("keeper_name", `String keeper_name);
@@ -223,26 +226,26 @@ let runtime_contract_json_from_fields ~keeper_name ?agent_name ?trace_id
       ("generation", int_opt_json generation);
       ("keeper_turn_id", int_opt_json keeper_turn_id);
       ("task_id", string_opt_json task_id);
-      ("goal_ids", string_list_json (nonempty_list goal_ids));
+      ("goal_ids", Json_util.json_string_list (nonempty_list goal_ids));
       ("sandbox_profile", string_opt_json sandbox_profile);
       ("sandbox_root", string_opt_json sandbox_root);
-      ("allowed_paths", string_list_json (nonempty_list allowed_paths));
+      ("allowed_paths", Json_util.json_string_list (nonempty_list allowed_paths));
       ("network_mode", string_opt_json network_mode);
       ("approval_mode", string_opt_json approval_mode);
       ("tool_surface_class", string_opt_json tool_surface_class);
       ("visible_tool_count", int_opt_json visible_tool_count);
-      ("required_tools", string_list_json (nonempty_list required_tools));
+      ("required_tools", Json_util.json_string_list (nonempty_list required_tools));
+      ( "required_tool_candidates",
+        Json_util.json_string_list (nonempty_list required_tool_candidates) );
       ( "missing_required_tools",
-        string_list_json (nonempty_list missing_required_tools) );
-      ("provider", string_opt_json provider);
-      ("model", string_opt_json model);
+        Json_util.json_string_list (nonempty_list missing_required_tools) );
       ("cascade_profile", string_opt_json cascade_profile);
     ]
 
-let contains_substring haystack needle =
-  String_util.contains_substring haystack needle
 
-let json_string_field name json = Json_util.get_string_nonempty json name
+let json_string_field name = function
+  | `Assoc _ as json -> Json_util.get_string_nonempty json name
+  | _ -> None
 
 let first_string_field names json =
   List.find_map (fun name -> json_string_field name json) names
@@ -250,7 +253,7 @@ let first_string_field names json =
 let path_like_key key =
   let key = String.lowercase_ascii key in
   key = "cwd" || key = "dir" || key = "directory" || key = "file"
-  || contains_substring key "path"
+  || String_util.contains_substring key "path"
 
 let collect_observed_paths json =
   let rec loop acc = function
@@ -304,7 +307,7 @@ let action_radius_json ~tool_name ~input ~success ~duration_ms ?error
       ("target_kind", `String (target_kind_of_input input target_path));
       ("target_path", string_opt_json target_path);
       ("sandbox_target", string_opt_json sandbox_target);
-      ("observed_paths", string_list_json (collect_observed_paths input));
+      ("observed_paths", Json_util.json_string_list (collect_observed_paths input));
       ("success", `Bool success);
       ("duration_ms", `Float duration_ms);
       ("error", string_opt_json error);

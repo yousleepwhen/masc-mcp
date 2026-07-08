@@ -23,7 +23,7 @@ module Keeper_stream = Server_routes_http_keeper_stream
            ("tempo_interval_s", `Float status.tempo_interval_s);
            ("paused", `Bool status.paused);
          ] in
-         Http.Response.json (Yojson.Safe.to_string json) reqd
+         Http.Response.json_value json reqd
        ) request reqd)
   |> Http.Router.get "/api/v1/tasks" (fun request reqd ->
        with_read_auth (fun state req reqd ->
@@ -69,7 +69,7 @@ module Keeper_stream = Server_routes_http_keeper_stream
            ("offset", `Int offset);
            ("total", `Int total);
          ] in
-         Http.Response.json (Yojson.Safe.to_string json) reqd
+         Http.Response.json_value json reqd
        ) request reqd)
   |> Http.Router.get "/api/v1/agents" (fun request reqd ->
        with_read_auth (fun state req reqd ->
@@ -93,7 +93,7 @@ module Keeper_stream = Server_routes_http_keeper_stream
              ("current_task", Json_util.string_opt_to_json a.current_task);
              ("emoji", `String profile.emoji);
              ("koreanName", `String profile.korean_name);
-             ("model", Json_util.string_opt_to_json profile.model);
+             ("model", `Null);
              ("traits", `List (List.map (fun t -> `String t) profile.traits));
              ("interests", `List (List.map (fun i -> `String i) profile.interests));
            ]
@@ -104,7 +104,7 @@ module Keeper_stream = Server_routes_http_keeper_stream
            ("offset", `Int offset);
            ("total", `Int total);
          ] in
-         Http.Response.json (Yojson.Safe.to_string json) reqd
+         Http.Response.json_value json reqd
        ) request reqd)
   |> Http.Router.get "/api/v1/messages" (fun request reqd ->
        with_read_auth (fun state req reqd ->
@@ -118,12 +118,17 @@ module Keeper_stream = Server_routes_http_keeper_stream
          let total = List.length filtered in
          let page = filtered |> List.filteri (fun idx _ -> idx < limit) in
          let msgs_json = List.map (fun (m : Masc_domain.message) ->
-           `Assoc [
-             ("from", `String m.from_agent);
-             ("content", `String m.content);
-             ("timestamp", `String m.timestamp);
-             ("seq", `Int m.seq);
-           ]
+             `Assoc [
+               ("from", `String m.from_agent);
+               ("type", `String m.msg_type);
+               ("content", `String m.content);
+               ("mention", Json_util.string_opt_to_json m.mention);
+               ("timestamp", `String m.timestamp);
+               ("trace_context", Json_util.string_opt_to_json m.trace_context);
+               ("expires_at", Json_util.float_opt_to_json m.expires_at);
+               ("relevance", `String m.relevance);
+               ("seq", `Int m.seq);
+             ]
          ) page in
          let json = `Assoc [
            ("messages", `List msgs_json);
@@ -131,5 +136,5 @@ module Keeper_stream = Server_routes_http_keeper_stream
            ("since_seq", `Int since_seq);
            ("total", `Int total);
          ] in
-         Http.Response.json (Yojson.Safe.to_string json) reqd
+         Http.Response.json_value json reqd
        ) request reqd)

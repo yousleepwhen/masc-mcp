@@ -9,12 +9,13 @@ import {
   type DashboardPromptItem,
   type PromptSource,
 } from '../../api'
-import { Card } from '../common/card'
+import { SectionCard } from '../common/card'
 import { ErrorState } from '../common/feedback-state'
 import { ActionButton } from '../common/button'
 import { TextArea, TextInput } from '../common/input'
 import { FilterChips } from '../common/filter-chips'
 import { StatusChip } from '../common/status-chip'
+import { errorToString } from '../../lib/format-string'
 
 type PromptSourceFilter = 'all' | PromptSource
 
@@ -111,7 +112,7 @@ export function PromptRegistryPanel() {
       const nextPrompt = nextPrompts.find(prompt => prompt.key === nextSelectedKey) ?? nextPrompts[0] ?? null
       setDraft(normalizeDraft(nextPrompt))
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(errorToString(err))
     } finally {
       setLoading(false)
     }
@@ -139,7 +140,7 @@ export function PromptRegistryPanel() {
       setStatus(response.message ?? 'override 설정됨')
       await loadPrompts(selectedPrompt.key)
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(errorToString(err))
     } finally {
       setSaving(false)
     }
@@ -158,14 +159,14 @@ export function PromptRegistryPanel() {
       setStatus(response.message ?? 'override cleared')
       await loadPrompts(selectedPrompt.key)
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(errorToString(err))
     } finally {
       setSaving(false)
     }
   }
 
   return html`
-    <${Card} title="프롬프트 레지스트리" class="section mb-4">
+    <${SectionCard} label="프롬프트 레지스트리" class="section mb-4">
       <div class="mb-4 text-xs text-[var(--color-fg-muted)] leading-relaxed">
         <div>기준 원문은 resolved config root의 <code>prompts/*.md</code>입니다. 경로는 설정 경로 상세 패널에서 확인할 수 있습니다.</div>
         <div>이 화면에서는 현재 effective 값 확인과 runtime override 적용/해제만 합니다.</div>

@@ -20,7 +20,17 @@ SUMMARY_FILE="$RUN_DIR/summary.json"
 AUDIT_FILE="$RUN_DIR/audit-product-design.json"
 AUDIT_STATUS_RESULT=0
 
-BASE_PATH="${BASE_PATH:-${MASC_BASE_PATH:-$HOME/me}}"
+default_base_path() {
+  if [ -n "${BASE_PATH:-}" ]; then
+    printf '%s\n' "$BASE_PATH"
+  elif [ -n "${MASC_BASE_PATH:-}" ]; then
+    printf '%s\n' "$MASC_BASE_PATH"
+  else
+    printf '%s\n' "$REPO_ROOT"
+  fi
+}
+
+BASE_PATH="$(default_base_path)"
 EXPECTED_KEEPERS="${EXPECTED_KEEPERS:-14}"
 KEEPER_NAMES="${KEEPER_NAMES:-}"
 MAX_KEEPERS="${MAX_KEEPERS:-0}"
@@ -523,7 +533,7 @@ write_summary() {
     --arg run_id "$RUN_ID" \
     --arg run_dir "$RUN_DIR" \
     --arg base_path "$BASE_PATH" \
-    --arg forbid_github_identities "$FORBID_GITHUB_IDENTITIES" \
+    --arg forbid_repo_cli_identities "$FORBID_GITHUB_IDENTITIES" \
     --argjson mutate "$MUTATE" \
     --argjson keeper_count "$keeper_count" \
     --argjson request_count "$request_count" \
@@ -532,7 +542,7 @@ write_summary() {
     --argjson poll_error_count "$poll_error_count" \
     --argjson audit_status "$audit_status" \
     --arg audit_file "$AUDIT_FILE" \
-    '{run_id:$run_id,run_dir:$run_dir,base_path:$base_path,forbid_github_identities:$forbid_github_identities,mutate:$mutate,keeper_count:$keeper_count,request_count:$request_count,result_count:$result_count,timeout_count:$timeout_count,poll_error_count:$poll_error_count,audit_status:$audit_status,audit_file:$audit_file}' \
+    '{run_id:$run_id,run_dir:$run_dir,base_path:$base_path,forbid_repo_cli_identities:$forbid_repo_cli_identities,mutate:$mutate,keeper_count:$keeper_count,request_count:$request_count,result_count:$result_count,timeout_count:$timeout_count,poll_error_count:$poll_error_count,audit_status:$audit_status,audit_file:$audit_file}' \
     >"$SUMMARY_FILE"
 }
 

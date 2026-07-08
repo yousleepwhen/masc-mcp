@@ -3,11 +3,11 @@
     {!Cascade_strategy.order_candidates} currently logs cycle-level
     filtering through {!Log.Misc.info}.  That is useful for tail -f
     but invisible to the dashboard; operators cannot answer
-    "how often did Phase B Sticky reuse the same provider?" or
-    "how long were Circuit_breaker_cycling retries in the last hour?".
+    "how often did priority_tier filter to empty?" or
+    "how long did cascade backoff take in the last hour?".
 
     This module captures the decision outcome of every cycle iteration
-    of {!Oas_worker_named.try_cascade} as a ring event, so the dashboard
+    of {!Keeper_turn_driver.try_cascade} as a ring event, so the dashboard
     can surface recent runtime behaviour alongside the TLA+-verified
     strategy kind.
 
@@ -29,7 +29,7 @@
     - [Ordered]: strategy returned a non-empty candidate list; the caller
       proceeded with the FSM.
     - [Filtered_empty]: strategy filtered every candidate (e.g. every
-      provider in cooldown or slot-full); caller will backoff + retry.
+      provider in cooldown or capacity backpressure); caller will backoff + retry.
     - [Exhausted]: [Filtered_empty] on the last cycle, so the cascade
       gave up and returned the exhaustion error. *)
 type event_kind = Ordered | Filtered_empty | Exhausted
@@ -37,7 +37,7 @@ type event_kind = Ordered | Filtered_empty | Exhausted
 (** One decision event.
 
     [ts] is a Unix timestamp (seconds).
-    [cascade_name] is the cascade.json profile name carried as a typed
+    [cascade_name] is the cascade.toml profile name carried as a typed
     runtime cascade identifier.
     [strategy] is {!Cascade_strategy.kind_to_string} of the active kind.
     [cycle] is 0-based, matching the [n] in [oas_worker_named.cycle_loop].
@@ -48,7 +48,7 @@ type event_kind = Ordered | Filtered_empty | Exhausted
     [0] for [Ordered] and [Exhausted]. *)
 type event = {
   ts : float;
-  cascade_name : Keeper_cascade_profile.runtime_name;
+  cascade_name : Cascade_name.t;
   strategy : string;
   cycle : int;
   candidates_in : int;

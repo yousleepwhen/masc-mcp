@@ -2,6 +2,7 @@
 open Alcotest
 
 module Keeper_types = Masc_mcp.Keeper_types
+module Keeper_types_support = Masc_mcp.Keeper_types_support
 
 let tmpdir () =
   let dir = Filename.concat (Filename.get_temp_dir_name ())
@@ -28,7 +29,7 @@ let test_no_rotation_under_threshold () =
   Fun.protect ~finally:(fun () -> cleanup dir) (fun () ->
     let path = Filename.concat dir "test.metrics.jsonl" in
     write_bytes path 100;
-    Keeper_types.maybe_rotate_file path;
+    Keeper_types_support.maybe_rotate_file path;
     check bool "original exists" true (Sys.file_exists path);
     check bool "no .1 file" false (Sys.file_exists (path ^ ".1")))
 
@@ -38,7 +39,7 @@ let test_rotation_at_threshold () =
     let path = Filename.concat dir "test.metrics.jsonl" in
     (* Write just at the default 10MB threshold *)
     write_bytes path 10_485_760;
-    Keeper_types.maybe_rotate_file path;
+    Keeper_types_support.maybe_rotate_file path;
     check bool "original removed (renamed)" false (Sys.file_exists path);
     check bool ".1 exists" true (Sys.file_exists (path ^ ".1"));
     check int ".1 has original size" 10_485_760 (file_size (path ^ ".1")))
@@ -51,7 +52,7 @@ let test_rotation_shifts_existing () =
     write_bytes (path ^ ".1") 50;
     (* Write large current file *)
     write_bytes path 10_485_760;
-    Keeper_types.maybe_rotate_file path;
+    Keeper_types_support.maybe_rotate_file path;
     check bool ".1 is the new rotation" true (Sys.file_exists (path ^ ".1"));
     check int ".1 is the big file" 10_485_760 (file_size (path ^ ".1")))
 
@@ -60,7 +61,7 @@ let test_nonexistent_file () =
   Fun.protect ~finally:(fun () -> cleanup dir) (fun () ->
     let path = Filename.concat dir "nonexistent.jsonl" in
     (* Should not raise *)
-    Keeper_types.maybe_rotate_file path;
+    Keeper_types_support.maybe_rotate_file path;
     check bool "no file created" false (Sys.file_exists path))
 
 let test_append_with_rotation () =
@@ -70,7 +71,7 @@ let test_append_with_rotation () =
     (* Write exactly at threshold so rotation triggers on append *)
     write_bytes path 10_485_760;
     (* Append should trigger rotation then write to fresh file *)
-    Keeper_types.append_jsonl_line path (`Assoc [("test", `Bool true)]);
+    Keeper_types_support.append_jsonl_line path (`Assoc [("test", `Bool true)]);
     check bool "new current file exists" true (Sys.file_exists path);
     check bool ".1 (rotated) exists" true (Sys.file_exists (path ^ ".1"));
     (* New file should be small (just the appended line) *)

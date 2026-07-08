@@ -25,7 +25,7 @@
     that the table still holds its [cond].  This prevents an evicted
     fiber from clobbering a replacement slot. *)
 
-module SMap = Map.Make(String)
+module SMap = Set_util.StringMap
 
 let rec atomic_update atomic f =
   let old_val = Atomic.get atomic in
@@ -49,11 +49,25 @@ type slot =
 let table : slot SMap.t Atomic.t = Atomic.make SMap.empty
 
 (** Maximum cache entries before eviction kicks in.
-    Evicts expired entries first, then oldest stale entries. *)
+    Evicts expired entries first, then oldest stale entries.
+
+    The previous default (64) is too small for the live dashboard
+    surface.  On a running server we observed 41/64 entries (65%)
+    occupied by a single [operator:keeper-runtime-trust:compact:...]
+    prefix whose key embeds an ISO timestamp — every refresh creates
+    a fresh entry and LRU eviction repeatedly purges genuinely hot
+    keys like [dashboard.branches], [dashboard.rooms], [board:memory]
+    before they can be reused.  Result: hit_ratio ~31% on a workload
+    that should be cache-bound.
+
+    Raising the default to 256 keeps the timestamp-keyed entries from
+    crowding out the steady-state hot keys.  The env override remains
+    available (clamped to [16, 512]) for environments that want to
+    tune up or down. *)
 let max_entries =
   match Sys.getenv_opt "MASC_DASHBOARD_CACHE_MAX_ENTRIES" with
-  | Some s -> (match int_of_string_opt (String.trim s) with Some v -> max 16 (min 512 v) | None -> 64)
-  | None -> 64
+  | Some s -> (match int_of_string_opt (String.trim s) with Some v -> max 16 (min 512 v) | None -> 256)
+  | None -> 256
 
 (** Evict one expired or stale entry when table exceeds max_entries.
     Must be called inside the mutex-guarded section. *)
@@ -154,6 +168,11 @@ let bg_revalidate_backoff_factor = 2.0
 
 exception Compute_timeout of string * bool
 
+let is_compute_timeout exn =
+  match exn with
+  | Compute_timeout _ -> true
+  | _ -> false
+
 let is_internal_race_cancel exn =
   match exn with
   | Eio.Cancel.Cancelled _ ->
@@ -180,23 +199,51 @@ let timeout_json ~key ~timeout_sec ~timeout_kind =
 (** Maximum seconds a waiter will poll for a [Computing] slot before evicting
     it and recomputing.
 
-    This must stay at or above the largest caller wait budget used with
-    [get_or_compute_with_timeout]; otherwise concurrent waiters can evict an
-    active [Computing { stale = None }] slot before their own wait budget is
-    exhausted, causing early failures and duplicate recomputation.  Keep this
-    above the current 120s caller budget. *)
-let max_wait_sec = 130.0
+    Derived from the configured caller timeout budgets so the watchdog
+    invariant "watchdog >= largest caller budget" holds by construction.
+    Previously hardcoded to 130.0, which silently drifted from caller
+    config when env overrides were introduced.  Multiplier N = 8 gives
+    headroom so the watchdog is a *floor* protection — under normal
+    operation the structural cleanup ([release_on_cancel]) keeps slots
+    from ever reaching this ceiling.  An SLO alert on
+    [masc_cache_stuck_evictions_total] pages operators if it does fire,
+    because that signals [release_on_cancel] is not firing. *)
+let max_wait_safety_factor = 8.0
+
+let max_wait_sec () =
+  let open Env_config_runtime.Dashboard in
+  let longest_caller_budget =
+    List.fold_left Float.max 1.0
+      [
+        execution_timeout_sec;
+        execution_trust_timeout_sec;
+        mission_timeout_sec;
+        shell_timeout_sec;
+        shell_light_timeout_sec;
+        shell_prewarm_inner_timeout_sec;
+      ]
+  in
+  longest_caller_budget *. max_wait_safety_factor
+
 let wait_poll_interval_sec = 0.25
 
 (** PR-0.2.A: dashboard cache hit/miss observation labels.  Pure
     instrumentation — never branches on these counters. *)
 let cache_metric_label = [("cache", "dashboard")]
 
+(* Local hit/miss counters in addition to Prometheus, because Prometheus has
+   no read-back API in this codebase and we want to surface live ratios via
+   [stats ()] without forcing operators to scrape /metrics. *)
+let cache_hits_total = Atomic.make 0
+let cache_misses_total = Atomic.make 0
+
 let inc_cache_hit () =
+  Atomic.incr cache_hits_total;
   Prometheus.inc_counter Prometheus.metric_cache_hits_total
     ~labels:cache_metric_label ()
 
 let inc_cache_miss () =
+  Atomic.incr cache_misses_total;
   Prometheus.inc_counter Prometheus.metric_cache_misses_total
     ~labels:cache_metric_label ()
 
@@ -211,7 +258,11 @@ let inc_cache_miss () =
     When no stale data is available (case 3 or [Computing { stale = None }]),
     waiters use bounded poll-retry instead of [Condition.await] to avoid
     the cancellation-immune deadlock.  If a [Computing] slot is stuck beyond
-    [max_wait_sec], waiters evict it and recompute.
+    [max_wait_sec ()], waiters evict it and recompute — but the primary
+    cleanup path is [release_on_cancel] inside the compute fiber's
+    [Eio.Cancel.Cancelled] handler, which releases the slot the moment
+    the caller's switch is cancelled.  The watchdog is a floor protection
+    that emits [masc_cache_stuck_evictions_total] when it fires.
 
     Waiter budget is reset when the watched [Computing] slot is replaced
     (detected via [cond] physical identity change), preventing cascading
@@ -241,11 +292,12 @@ let get_or_compute_eio ?wait_timeout_sec key ~ttl compute =
           | Some timeout_sec -> waited >= timeout_sec
           | None -> false
         in
+        let watchdog_ceiling = max_wait_sec () in
         if timed_out_waiter then
           (`Timed_out, map)
-        else if elapsed > max_wait_sec || waited > max_wait_sec then begin
+        else if elapsed > watchdog_ceiling || waited > watchdog_ceiling then begin
           Log.Dashboard.warn "cache: evicting stale Computing slot for %s (%.1fs elapsed)" key elapsed;
-          (`Retry, SMap.remove key map)
+          (`Retry_stuck (elapsed, watchdog_ceiling), SMap.remove key map)
         end else
           (`Wait token, map)
       | Some (Ready entry) ->
@@ -332,28 +384,47 @@ let get_or_compute_eio ?wait_timeout_sec key ~ttl compute =
       (* PR-0.2.A: cache miss observation (this fiber must compute). *)
       inc_cache_miss ();
       let result_ref = ref None in
+      (* release_on_cancel: when the caller's switch is cancelled (HTTP
+         client disconnect, [Eio.Time.with_timeout] tripping the caller
+         budget), tear down the [Computing] slot this fiber installed so
+         new waiters do not poll an orphan until the watchdog evicts it.
+
+         Scoped to the current fiber's [token]: if a later fiber has
+         already replaced the slot, we leave its work alone.  When the
+         slot carried a stale fallback, demote it back to [Ready stale]
+         so subsequent reads can serve cached data instead of blocking;
+         when [stale = None], remove the slot entirely so the next
+         lookup observes a cache miss and recomputes. *)
+      let release_on_cancel () =
+        let ts = now () in
+        let backoff_grace = stale_grace *. bg_revalidate_backoff_factor in
+        atomic_update table (fun map ->
+          match SMap.find_opt key map with
+          | Some (Computing { token = c; stale = Some s; _ }) when c = token ->
+              ((), SMap.add key
+                (Ready { value = s; expires_at = ts; stale_until = ts +. backoff_grace })
+                map)
+          | Some (Computing { token = c; stale = None; _ }) when c = token ->
+              ((), SMap.remove key map)
+          | _ -> ((), map))
+      in
       let run_compute () =
         try result_ref := Some (Ok (compute ()))
         with
-        | Eio.Cancel.Cancelled _ as e -> raise e
+        | Eio.Cancel.Cancelled _ as e ->
+            release_on_cancel ();
+            raise e
         | exn -> result_ref := Some (Error exn)
       in
-      (match Eio_context.get_clock_opt () with
-       | Some clock ->
-           let compute_done = ref false in
-           Eio.Fiber.first
-             (fun () ->
-                run_compute ();
-                compute_done := true)
-             (fun () ->
-                Eio.Time.sleep clock max_wait_sec;
-                if not !compute_done then
-                  Log.Dashboard.warn "cache compute timeout: %s (%.0fs)" key max_wait_sec)
-       | None ->
-           (* Some read-model tests enable Eio without seeding the global
-              Eio_context clock. In that harness, run inline without the
-              watchdog rather than hard-failing. *)
-           run_compute ());
+      (* The caller already wraps [compute] in [Eio.Time.with_timeout]
+         (see [get_or_compute_with_timeout] below), so running a second
+         [Eio.Fiber.first] watchdog here just creates two cancellation
+         surfaces racing each other.  Trust the caller's budget and run
+         inline.  The poll-loop watchdog [max_wait_sec] above still
+         exists as a floor protection if [release_on_cancel] ever
+         regresses, and an SLO alert on the stuck-evictions counter
+         catches that regression. *)
+      run_compute ();
       let ts = now () in
       (match !result_ref with
        | Some (Ok value) ->
@@ -368,7 +439,7 @@ let get_or_compute_eio ?wait_timeout_sec key ~ttl compute =
            value
        | Some (Error exn) ->
            let fallback_val = ref None in
-           if not (is_internal_race_cancel exn) then
+           if not (is_internal_race_cancel exn || is_compute_timeout exn) then
              Log.Dashboard.error "cache revalidation failed: %s" (Printexc.to_string exn);
            atomic_update table (fun map ->
              match SMap.find_opt key map with
@@ -400,7 +471,8 @@ let get_or_compute_eio ?wait_timeout_sec key ~ttl compute =
                       ((), SMap.add key (Ready cooldown) map)
                   | None ->
                       let err_json =
-                        timeout_json ~key ~timeout_sec:max_wait_sec ~timeout_kind:"compute"
+                        timeout_json ~key ~timeout_sec:(max_wait_sec ())
+                          ~timeout_kind:"compute"
                       in
                       fallback_val := Some err_json;
                       let cooldown = { value = err_json; expires_at = ts +. 5.0; stale_until = ts +. 5.0 } in
@@ -410,7 +482,16 @@ let get_or_compute_eio ?wait_timeout_sec key ~ttl compute =
            (match !fallback_val with
             | Some v -> v
             | None -> `Assoc [("error", `String "Compute timeout")]))
-    | `Retry -> try_get ~waited ~watching_token
+    | `Retry_stuck (elapsed, _ceiling) ->
+      (* Pair the watchdog with an SLO-actionable signal: if this counter
+         climbs sustainedly, [release_on_cancel] is not firing and the
+         structural fix has regressed.  Telemetry-as-fix is forbidden by
+         the workaround rejection bar; this is telemetry-on-fix-failure. *)
+      Prometheus.inc_counter Prometheus.metric_cache_stuck_evictions_total
+        ~labels:cache_metric_label ();
+      Prometheus.observe_histogram Prometheus.metric_cache_stuck_elapsed_seconds
+        ~labels:cache_metric_label elapsed;
+      try_get ~waited ~watching_token
   in
   try_get ~waited:0.0 ~watching_token:None
 
@@ -553,6 +634,28 @@ let invalidate_all () =
   Atomic.set table SMap.empty;
   clear_timeout_circuit_all ()
 
+(* Slot kind string used in [stats ()] entry list and tests.  Kept as a
+   total function rather than a string buried in [stats ()] so callers can
+   pattern-match it (e.g. dashboard UI filters by kind). *)
+type slot_kind = Fresh | Stale | Expired | Computing_slot
+
+let slot_kind_to_string = function
+  | Fresh -> "fresh"
+  | Stale -> "stale"
+  | Expired -> "expired"
+  | Computing_slot -> "computing"
+;;
+
+let slot_kind ~now_ts = function
+  | Ready e ->
+    if now_ts <= e.expires_at then Fresh
+    else if now_ts <= e.stale_until then Stale
+    else Expired
+  | Computing _ -> Computing_slot
+;;
+
+let max_entries_in_stats = 50
+
 let stats () =
   let map = Atomic.get table in
   let now_ts = Time_compat.now () in
@@ -560,17 +663,68 @@ let stats () =
   let ready_stale = ref 0 in
   let ready_expired = ref 0 in
   let computing = ref 0 in
-  SMap.iter (fun _ v ->
-    match v with
-    | Ready e ->
-        if now_ts <= e.expires_at then
-          incr ready_fresh
-        else if now_ts <= e.stale_until then
-          incr ready_stale
-        else
-          incr ready_expired
-    | Computing _ -> incr computing
+  let entries_acc = ref [] in
+  SMap.iter (fun k v ->
+    let kind = slot_kind ~now_ts v in
+    (match kind with
+     | Fresh -> incr ready_fresh
+     | Stale -> incr ready_stale
+     | Expired -> incr ready_expired
+     | Computing_slot -> incr computing);
+    let entry_json =
+      match v with
+      | Ready e ->
+        `Assoc [
+          ("key", `String k);
+          ("kind", `String (slot_kind_to_string kind));
+          ("ttl_remaining_ms", `Int (int_of_float ((e.expires_at -. now_ts) *. 1000.0)));
+          ("stale_remaining_ms",
+           `Int (int_of_float ((e.stale_until -. now_ts) *. 1000.0)));
+        ]
+      | Computing { started_at; stale; _ } ->
+        `Assoc [
+          ("key", `String k);
+          ("kind", `String "computing");
+          ("computing_for_ms", `Int (int_of_float ((now_ts -. started_at) *. 1000.0)));
+          ("has_stale_fallback", `Bool (Option.is_some stale));
+        ]
+    in
+    entries_acc := entry_json :: !entries_acc
   ) map;
+  (* Truncate per-entry list to bound payload size — operators looking for
+     specific keys can read [/metrics] for the full prometheus surface. *)
+  let entries_list =
+    let all = List.rev !entries_acc in
+    if List.length all <= max_entries_in_stats
+    then all
+    else (
+      (* Keep the [max_entries_in_stats] entries closest to expiry (most
+         actionable) — sort by ttl_remaining_ms ascending and take first N. *)
+      let key_of = function
+        | `Assoc fields ->
+          (match List.assoc_opt "ttl_remaining_ms" fields with
+           | Some (`Int n) -> n
+           | _ ->
+             (match List.assoc_opt "computing_for_ms" fields with
+              | Some (`Int n) -> -n  (* computing slots first *)
+              | _ -> max_int))
+        | _ -> max_int
+      in
+      List.sort (fun a b -> compare (key_of a) (key_of b)) all
+      |> List.filteri (fun i _ -> i < max_entries_in_stats))
+  in
+  let hits = Atomic.get cache_hits_total in
+  let misses = Atomic.get cache_misses_total in
+  let total = hits + misses in
+  let hit_ratio =
+    if total = 0 then 0.0 else float_of_int hits /. float_of_int total
+  in
+  let timeout_circuit_map = Atomic.get timeout_circuit_table in
+  let circuit_open_count =
+    SMap.fold (fun _ c acc ->
+      if c.opened_until > now_ts then acc + 1 else acc
+    ) timeout_circuit_map 0
+  in
   `Assoc [
     ("entries", `Int (SMap.cardinal map));
     ("fresh", `Int !ready_fresh);
@@ -580,4 +734,11 @@ let stats () =
     ("ready_stale", `Int !ready_stale);
     ("computing", `Int !computing);
     ("max_entries", `Int max_entries);
+    ("hits_total", `Int hits);
+    ("misses_total", `Int misses);
+    ("hit_ratio", `Float hit_ratio);
+    ("timeout_circuit_open", `Int circuit_open_count);
+    ("timeout_circuit_tracked", `Int (SMap.cardinal timeout_circuit_map));
+    ("entries_truncated_to", `Int max_entries_in_stats);
+    ("entry_details", `List entries_list);
   ]

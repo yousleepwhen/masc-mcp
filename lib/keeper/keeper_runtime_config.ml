@@ -52,7 +52,7 @@ let key_to_env =
     "turn.llm_rerank_cascade",          "MASC_KEEPER_LLM_RERANK_CASCADE";
     "turn.temperature",                 "MASC_KEEPER_UNIFIED_TEMP";
     "turn.max_output_tokens",           "MASC_KEEPER_UNIFIED_MAX_TOKENS";
-    "turn.llama_slots",                 "MASC_KEEPER_LLAMA_SLOTS";
+    "turn.slot_pool_size",              "MASC_KEEPER_SLOT_POOL_SIZE";
     "turn.enable_thinking",             "MASC_KEEPER_ENABLE_THINKING";
     "turn.adaptive_thinking",           "MASC_KEEPER_ADAPTIVE_THINKING";
     "turn.adaptive_thinking_mode",      "MASC_KEEPER_ADAPTIVE_THINKING_MODE";
@@ -86,6 +86,7 @@ let key_to_env =
     "memory.max_length",                "MASC_KEEPER_MEMORY_MAX_LENGTH";
     "memory.placeholders",              "MASC_KEEPER_MEMORY_PLACEHOLDERS";
     "memory.consensus_pattern",         "MASC_KEEPER_MEMORY_CONSENSUS_PATTERN";
+    "memory.llm_summary",               "MASC_KEEPER_MEMORY_LLM_SUMMARY";
     (* [alert] *)
     "alert.enabled",                    "MASC_KEEPER_ALERT_ENABLED";
     "alert.min_score",                  "MASC_KEEPER_ALERT_MIN_SCORE";
@@ -108,15 +109,8 @@ let key_to_env =
     "debug.enabled",                    "MASC_KEEPER_DEBUG";
   ]
 
-let preempting_env_names env_name =
-  match env_name with
-  | "MASC_KEEPER_AUTOBOOT_MAX" ->
-      [ "MASC_KEEPER_AUTOBOOT_MAX"; "MASC_KEEPER_AUTOBOT_MAX" ]
-  | _ -> [ env_name ]
-
 let env_is_set env_lookup env_name =
-  preempting_env_names env_name
-  |> List.exists (fun name -> Option.is_some (env_lookup name))
+  Option.is_some (env_lookup env_name)
 
 let resolved_config_root ~base_path =
   let inputs = Config_dir_resolver.inputs_from_env () in
@@ -132,7 +126,9 @@ let toml_path ~base_path =
     Config_dir_resolver.keeper_runtime_toml_filename
 
 let read_file path =
-  try Ok (In_channel.with_open_text path In_channel.input_all)
+  (* Eio-native read (Fs_compat.load_file) so the keeper-runtime TOML
+     read does not block the whole domain on each refresh. *)
+  try Ok (Fs_compat.load_file path)
   with Sys_error msg -> Error msg
 
 (** Format a TOML scalar back to a string suitable for the boot override store.
@@ -197,20 +193,69 @@ let resolve_overrides
   in
   (count, List.rev !applied)
 
+(* Domain-owned Prometheus metric (RFC-0043 Phase 0): the bootstrap
+   caller (server_runtime_bootstrap.ml:284) already logs
+   Log.Server.warn on Error, so failures are not silent — but they
+   were not aggregated by Prometheus, forcing operators to scrape logs
+   to detect a degraded keeper config.  The counter below mirrors the
+   WARN event into a typed two-reason vocabulary so monitoring can
+   alert independently.  file_not_found is the [Ok 0] path (no
+   overrides applied) and is intentionally outside the counter.
+
+   Defined here (next to the bumper) rather than in lib/prometheus.ml
+   to keep that file under the godfile-size-regression cap. *)
+let metric_keeper_runtime_config_load_failures =
+  "masc_keeper_runtime_config_load_failures_total"
+
+let () =
+  Prometheus.register_counter
+    ~name:metric_keeper_runtime_config_load_failures
+    ~help:
+      "Total Keeper_runtime_config.load_and_apply failures. Bootstrap \
+       already logs WARN; this counter exposes the same event to monitoring \
+       aggregation. Labels: reason in {read_error | parse_error}."
+    ()
+
+let observe_load_failure reason =
+  Prometheus.inc_counter
+    metric_keeper_runtime_config_load_failures
+    ~labels:[ ("reason", reason) ]
+    ()
+
+(* Shadow registry: stores every TOML value keyed by env name, even when
+   the env var is already set.  This lets operator surfaces compare the
+   effective env override against the operator's TOML intent (issue #17192). *)
+let toml_shadow : (string, string) Hashtbl.t = Hashtbl.create 16
+
+let toml_value_opt env_name = Hashtbl.find_opt toml_shadow env_name
+
 let load_and_apply ~base_path =
   let path = toml_path ~base_path in
   if not (Sys.file_exists path) then
     Ok 0
   else
     match read_file path with
-    | Error msg -> Error (Printf.sprintf "read %s: %s" path msg)
+    | Error msg ->
+      observe_load_failure "read_error";
+      Error (Printf.sprintf "read %s: %s" path msg)
     | Ok content ->
       match Keeper_toml_loader.parse_toml content with
-      | Error msg -> Error (Printf.sprintf "parse %s: %s" path msg)
+      | Error msg ->
+        observe_load_failure "parse_error";
+        Error (Printf.sprintf "parse %s: %s" path msg)
       | Ok doc ->
         let count =
           List.fold_left
-            (fun acc kv -> if apply_one doc kv then acc + 1 else acc)
+            (fun acc (toml_key, env_name) ->
+               (* Populate shadow registry for every known key that has a
+                  TOML value, regardless of whether env preempts it. *)
+               (match List.assoc_opt toml_key doc with
+                | None -> ()
+                | Some v ->
+                  match value_to_string v with
+                  | None -> ()
+                  | Some s -> Hashtbl.replace toml_shadow env_name s);
+               if apply_one doc (toml_key, env_name) then acc + 1 else acc)
             0
             key_to_env
         in

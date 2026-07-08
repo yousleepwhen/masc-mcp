@@ -41,10 +41,6 @@ MASC MCP의 검증 전략을 정의한다. 테스트는 3개 계층(Hermetic Req
 
 ```
 MASC_STORAGE_TYPE=filesystem     (파일시스템 백엔드 강제)
-MASC_POSTGRES_URL=""             (PG 자동 감지 차단)
-DATABASE_URL=""                  (PG cascade 차단)
-SUPABASE_DB_URL=""               (Supabase 차단)
-SB_PG_URL=""                     (SB PostgreSQL 차단)
 GRAPHQL_API_KEY=""               (GraphQL API 비활성화)
 ZAI_API_KEY=""                   (ZAI API 비활성화)
 ```
@@ -87,7 +83,7 @@ Correctness gate가 아닌 orchestration/benchmark/behavior 실험. Runbook과 �
 
 | 실험 | 스크립트 | 참조 문서 |
 |------|---------|----------|
-| Agent swarm proof | `scripts/harness_agent_swarm_live.sh` | `docs/BENCHMARK-RUNBOOK.md` |
+| Keeper fleet proof | `scripts/harness/workload/agent_swarm_live.sh` | `docs/BENCHMARK-RUNBOOK.md` |
 | Supervised delivery | - | `docs/SUPERVISOR-MODE.md` |
 | TRPG smoke | `scripts/run_trpg_grimland_smoke.sh` | - |
 | Local runtime capacity | `scripts/llama-runtime-pool.sh` | `docs/PERFORMANCE-SLO.md` |
@@ -258,7 +254,6 @@ scripts/dune-local.sh build ./test/test_sse_storm_e2e.exe
 | Contract | 파일 | 검증 대상 |
 |----------|------|----------|
 | Streamable HTTP | `streamable_http_contract.sh` | MCP Streamable HTTP transport 프로토콜 |
-| Team Session | `team_session_contract.sh` | Team session start/step/finalize 계약 |
 | Golden Path | `golden_path_1_contract.sh` | Room join -> task add -> claim -> transition 기본 경로 |
 
 Contract harness는 hermetic bootstrap으로 실행된다. 사전 서버 실행을 요구하지 않는다.
@@ -267,12 +262,17 @@ Contract harness는 hermetic bootstrap으로 실행된다. 사전 서버 실행�
 
 ## 7. Coverage
 
+100% coverage closeout uses the checklist in
+`docs/qa/BISECT-COVERAGE-CLOSEOUT-RUNBOOK.md`. Do not close a coverage goal from
+stale `_coverage` files or from the existence of `*_coverage.ml` supplement
+tests alone.
+
 ### 7.1 bisect_ppx
 
 OCaml 코드 커버리지 도구. `BISECT_FILE` 환경변수로 출력 경로를 지정한다.
 
 ```bash
-BISECT_FILE=$(pwd)/_coverage dune test --instrument-with bisect_ppx
+scripts/coverage_percent.sh --fail-under 100
 bisect-ppx-report html --coverage-path _coverage
 ```
 
@@ -299,7 +299,7 @@ bisect-ppx-report html --coverage-path _coverage
 
 ## 9. 불변식
 
-- **INV-T1**: Hermetic Required 계층의 모든 테스트는 `MASC_POSTGRES_URL=""`, `GRAPHQL_API_KEY=""` 상태에서 통과해야 한다.
+- **INV-T1**: Hermetic Required 계층의 모든 테스트는 외부 GraphQL/ZAI credentials 없이 통과해야 한다.
 - **INV-T2**: Env-gated 테스트는 필수 환경변수 부재 시 skip 또는 not run으로 처리한다. 실패가 아니다.
 - **INV-T3**: `eval_gate`의 각 검사 레이어는 독립적이다. 한 레이어의 통과가 다른 레이어의 실패를 가릴 수 없다 (Swiss Cheese).
 - **INV-T4**: `trajectory.tool_call_entry`의 `gate_decision`이 `Reject`이면 `result`는 반드시 `None`이다.

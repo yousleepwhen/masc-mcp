@@ -104,7 +104,7 @@ code_refs:
 
 ### 06-Command Plane (RETIRED)
 
-전체 Command Plane 서브시스템(`lib/command_plane/`, `cp_lifecycle.ml`, `cp_search_fabric.ml`, `cp_snapshot_core.ml`, `cp_cleanup.ml`, `command_plane_orchestra.ml`, `cp_lifecycle_policy.ml`, `cp_types.ml`, `command_plane_v2.ml`)와 HTTP compatibility lane은 retired surface다. 역사적 맥락은 `docs/spec/06-command-plane.md`의 "Historical Reference" status와 `docs/spec/00-glossary.md`의 Command Plane 항목을 참고한다. 현재 coordination truth는 `board_posts` + keeper FSM으로 대체됐다.
+전체 Command Plane 서브시스템(`lib/command_plane/`, `cp_lifecycle.ml`, `cp_search_fabric.ml`, `cp_snapshot_core.ml`, `cp_cleanup.ml`, `command_plane_orchestra.ml`, `cp_lifecycle_policy.ml`, `cp_types.ml`, `command_plane_v2.ml`)와 HTTP paths는 retired surface다. 역사적 맥락은 `docs/spec/06-command-plane.md`의 "Retired Historical Reference" status와 `docs/spec/00-glossary.md`의 Command Plane 항목을 참고한다. 현재 coordination truth는 `board_posts` + keeper FSM으로 대체됐다.
 
 ### 07-Team Session (RETIRED)
 
@@ -125,7 +125,7 @@ code_refs:
 | Transport | Status | Evidence |
 |-----------|--------|----------|
 | HTTP/1.1 (httpun-eio) | **IMPL** | Canonical, 매일 사용 |
-| stdio (Claude Code) | **IMPL** | Claude Code MCP 통합 |
+| stdio (CLI-Tool-A) | **IMPL** | CLI-Tool-A MCP 통합 |
 | MCP JSON-RPC | **IMPL** | 전체 프로토콜 준수 |
 | SSE Event Streaming | **IMPL** | 매일 브로드캐스트 |
 | Auth/RBAC | **IMPL** | Bearer token + 3 role |

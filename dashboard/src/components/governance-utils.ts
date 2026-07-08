@@ -1,4 +1,5 @@
 import type { GovernanceDecisionItem } from '../types'
+import { SECONDS_PER_HOUR, SECONDS_PER_DAY, SECONDS_PER_MINUTE } from '../lib/format-time'
 
 export type GovernanceFilter = 'open' | 'pending_ruling' | 'needs_human_gate' | 'executed' | 'blocked'
 
@@ -35,7 +36,20 @@ export function filteredItemsByFilter(filter: GovernanceFilter, items: Governanc
   }
 }
 
-export function kindLabel(value: string): string {
+/**
+ * Governance-domain kind → 표시용 라벨.
+ *
+ * Distinct from `kindLabel(kind: string)` in `board/board-state.ts`:
+ *   - Governance enum: `'case' | 'petition'` → 영어 capitalize (`'Case'`/`'Petition'`)
+ *   - Board enum: `'direct' | 'automation' | 'system'` → 한국어 (`'직접'` 등)
+ *
+ * 같은 함수명에 *완전히 다른 enum + 다른 출력 언어* 가 매핑되어 있어
+ * import 사이트에서 잘못된 변형을 부르면 governance UI 가 한국어 board
+ * 라벨로 회귀 (또는 그 반대). Renamed from `kindLabel` to
+ * `governanceKindLabel` on 2026-05-27 — 이름에 도메인을 박아 SSOT
+ * collision 폐쇄.
+ */
+export function governanceKindLabel(value: string): string {
   switch (value) {
     case 'case':
       return 'Case'
@@ -48,7 +62,7 @@ export function kindLabel(value: string): string {
 
 export function formatAgeSummary(seconds: number | null | undefined): string | null {
   if (seconds == null) return null
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`
-  return `${Math.floor(seconds / 86400)}d`
+  if (seconds < SECONDS_PER_HOUR) return `${Math.floor(seconds / SECONDS_PER_MINUTE)}m`
+  if (seconds < SECONDS_PER_DAY) return `${Math.floor(seconds / SECONDS_PER_HOUR)}h`
+  return `${Math.floor(seconds / SECONDS_PER_DAY)}d`
 }

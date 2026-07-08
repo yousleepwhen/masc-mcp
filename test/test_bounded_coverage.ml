@@ -47,12 +47,6 @@ let test_default_constraints_max_time () =
   | Some f -> check (float 0.01) "max_time" 300.0 f
   | None -> fail "expected Some"
 
-let test_default_constraints_buffer () =
-  (* RFC-0028: token_buffer is deprecated.  Default is now 0 — the
-     predictor uses Usage_history.predict_p95 instead. *)
-  check int "token_buffer (RFC-0028 deprecated)" 0
-    Bounded.default_constraints.token_buffer
-
 let test_default_constraints_hard_max () =
   check int "hard_max_iterations" 100 Bounded.default_constraints.hard_max_iterations
 
@@ -123,7 +117,7 @@ let test_retryable_429 () =
 let test_not_retryable_hard_quota_429 () =
   check bool "hard quota 429" false
     (Bounded.is_retryable_error
-       "claude exited with code 1: {\"api_error_status\":429,\"result\":\"You've hit your limit resets Apr 24 at 4am\"}")
+       "agent_llm_a exited with code 1: {\"api_error_status\":429,\"result\":\"You've hit your limit resets Apr 24 at 4am\"}")
 
 let test_not_retryable_quota_exhausted () =
   check bool "quota exhausted" false
@@ -232,7 +226,6 @@ let () =
       test_case "max_tokens" `Quick test_default_constraints_max_tokens;
       test_case "max_cost" `Quick test_default_constraints_max_cost;
       test_case "max_time" `Quick test_default_constraints_max_time;
-      test_case "buffer" `Quick test_default_constraints_buffer;
       test_case "hard_max" `Quick test_default_constraints_hard_max;
     ];
     "calc_backoff_delay", [

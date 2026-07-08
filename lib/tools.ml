@@ -6,15 +6,17 @@
 
 open Masc_domain
 
-let retired_front_door_schema_names =
-  [
-  ]
+module StringSet = Set_util.StringSet
 
-let filter_retired_front_door_schemas (schemas : tool_schema list) =
-  List.filter
-    (fun (schema : tool_schema) ->
-      not (List.mem schema.name retired_front_door_schema_names))
-    schemas
+let dedupe_schemas_by_name (schemas : tool_schema list) =
+  let unique, _ =
+    List.fold_left
+      (fun (acc, seen) (schema : tool_schema) ->
+        if StringSet.mem schema.name seen then (acc, seen)
+        else (schema :: acc, StringSet.add schema.name seen))
+      ([], StringSet.empty) schemas
+  in
+  List.rev unique
 
 (** Tool schemas from modules that do NOT depend on Config
     (avoids Tools -> Config -> Tools cycle) *)
@@ -22,27 +24,22 @@ let raw_schemas : tool_schema list =
   Tool_schemas_coord_core.schemas
   @ Tool_schemas_coord_extra.schemas
   @ Tool_schemas_inline.schemas
-  @ Tool_schemas_plan.schemas
+  (* Tool_schemas_plan.schemas moved into Tool_descriptors_gen
+     (Tool_schemas_misc.schemas chain) via RFC-0057 PR-2 *)
   @ Tool_schemas_agent.schemas
-  @ Tool_schemas_worktree.schemas
   @ Tool_run.schemas
   @ Tool_task.schemas
-  @ Tool_suspend.schemas
-  @ Tool_code.schemas
-  @ Tool_code_write.schemas
   @ Tool_library.schemas
 
 let all_schemas : tool_schema list = raw_schemas
 
 (** All schemas including config-dependent module schemas *)
 let all_schemas_extended =
-  filter_retired_front_door_schemas
-    (all_schemas
-    @ Tool_schemas_control.schemas
-    @ Tool_schemas_misc.schemas
-    @ Keeper_types.schemas
-    @ Tool_local_runtime.schemas @ Tool_shard.schemas
-    @ Tool_autoresearch.schemas)
+  (all_schemas
+   @ Tool_schemas_misc.schemas
+   @ Keeper_types.schemas
+   @ Tool_local_runtime.schemas @ Tool_shard.schemas)
+  |> dedupe_schemas_by_name
 
 (** Get tool by name *)
 let find_tool name =

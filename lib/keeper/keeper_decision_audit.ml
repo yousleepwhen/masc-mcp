@@ -48,7 +48,7 @@ type decision_record = {
   keeper_name : string;
   generation : int;
   snapshot : Keeper_measurement.measurement_snapshot option;
-  heartbeat_verdict : Heartbeat_smart.decision;
+  heartbeat_verdict : Keeper_heartbeat_smart.decision;
   turn_verdict : Keeper_world_observation.turn_verdict;
   wall_clock : float;
   tool_diversity_entropy : float option;
@@ -66,12 +66,12 @@ let make ~cycle_id ~keeper_name ~generation ?snapshot
 (* ================================================================ *)
 
 (* Simplified tags for JSONL audit keys — intentionally differs from
-   Heartbeat_smart.decision_to_string which uses colon-separated format
+   Keeper_heartbeat_smart.decision_to_string which uses colon-separated format
    with timing data ("skip:busy", "skip:idle(next in 3.2s)"). *)
 let heartbeat_verdict_to_string = function
-  | Heartbeat_smart.Emit -> "emit"
-  | Heartbeat_smart.Skip_busy -> "skip_busy"
-  | Heartbeat_smart.Skip_idle _ -> "skip_idle"
+  | Keeper_heartbeat_smart.Emit -> "emit"
+  | Keeper_heartbeat_smart.Skip_busy -> "skip_busy"
+  | Keeper_heartbeat_smart.Skip_idle _ -> "skip_idle"
 
 let to_json (r : decision_record) : Yojson.Safe.t =
   `Assoc [
@@ -132,11 +132,37 @@ let get_or_create_ring name =
     Hashtbl.replace rings name r;
     r
 
+(* Observability for ring overflow.  When [ring.unflushed = cap] at
+   append time, the slot we are about to write into already holds an
+   unflushed decision_record — the flush loop has not kept up with
+   the append rate and a forensic record is being silently dropped.
+   Without this counter, ring overflow was invisible: [unflushed]
+   stayed pegged at [cap] and no Prometheus signal fired.  Closes
+   the silent data-loss gap noted in
+   .tmp/memory-compacting-analysis.html (decision_audit ring
+   overflow). *)
+let () =
+  Prometheus.register_counter
+    ~name:Keeper_metrics.(to_string DecisionAuditRingOverflows)
+    ~help:
+      "Total [Keeper_decision_audit.append] events where the ring \
+       buffer slot being overwritten still held an unflushed \
+       record.  Each increment is one lost decision_record.  \
+       Non-zero counts mean flush_batch_size / flush_interval_sec \
+       is below the decision-emission rate."
+    ()
+;;
+
 let append ~keeper_name (rec_ : decision_record) =
   if not (audit_enabled ()) then ()
   else begin
     let ring = get_or_create_ring keeper_name in
     let cap = Array.length ring.buf in
+    if ring.unflushed >= cap then
+      Prometheus.inc_counter
+        Keeper_metrics.(to_string DecisionAuditRingOverflows)
+        ~labels:[("keeper", keeper_name)]
+        ();
     ring.buf.(ring.pos mod cap) <- Some rec_;
     ring.pos <- (ring.pos + 1) mod cap;
     ring.count <- min (ring.count + 1) cap;
@@ -205,7 +231,7 @@ let flush_if_needed ~base_path ~keeper_name =
         with Eio.Cancel.Cancelled _ as e -> raise e
            | e ->
              Prometheus.inc_counter
-               Prometheus.metric_keeper_decision_audit_flush_failures
+               Keeper_metrics.(to_string DecisionAuditFlushFailures)
                ~labels:[("keeper", keeper_name)]
                ();
              Log.Keeper.warn "decision_audit flush failed: %s" (Printexc.to_string e));

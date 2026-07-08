@@ -146,7 +146,7 @@ let broadcast_tool_skipped ~keeper_name ~tool_name ~reason_code =
   | Eio.Cancel.Cancelled _ as e -> raise e
   | exn ->
       Prometheus.inc_counter
-        Prometheus.metric_keeper_guards_failures
+        Keeper_metrics.(to_string GuardsFailures)
         ~labels:[("keeper", keeper_name); ("site", "sse_broadcast")]
         ();
       Log.Keeper.warn
@@ -186,8 +186,84 @@ let gate_decision_is_rejection = function
   | Gate_override | Gate_approval_required -> true
   | Gate_continue -> false
 
+type gate_rejection_log_severity =
+  | Gate_rejection_first_warn
+  | Gate_rejection_repeat_info of int
+  | Gate_rejection_repeat_debug of int
+
+let gate_rejection_log_severity_to_string = function
+  | Gate_rejection_first_warn -> "warn"
+  | Gate_rejection_repeat_info _ -> "info"
+  | Gate_rejection_repeat_debug _ -> "debug"
+
+let gate_rejection_log_counts : (string * string * string * string, int) Hashtbl.t =
+  Hashtbl.create 64
+
+let gate_rejection_log_counts_mu = Mutex.create ()
+
+let reset_gate_rejection_log_counts () =
+  Mutex.protect gate_rejection_log_counts_mu (fun () ->
+    Hashtbl.clear gate_rejection_log_counts)
+
+let record_gate_rejection_log_severity ?reason_key
+    ~keeper_name ~stage ~tool_name ~reason_code () =
+  let reason_key = Option.value ~default:reason_code reason_key in
+  let key = (keeper_name, stage, tool_name, reason_key) in
+  Mutex.protect gate_rejection_log_counts_mu (fun () ->
+    let count =
+      match Hashtbl.find_opt gate_rejection_log_counts key with
+      | Some n -> n + 1
+      | None -> 1
+    in
+    Hashtbl.replace gate_rejection_log_counts key count;
+    match count with
+    | 1 -> Gate_rejection_first_warn
+    | 2 -> Gate_rejection_repeat_info count
+    | _ -> Gate_rejection_repeat_debug count)
+
+let planner_alternative_for_gate ~stage ~tool_name =
+  match stage with
+  | "streak_gate" ->
+    Printf.sprintf
+      "planner_alternative=\"stop retrying %s; choose a different tool, batch remaining work, or call keeper_stay_silent\""
+      tool_name
+  | "keeper_deny" ->
+    "planner_alternative=\"choose an allowed replacement tool, change plan, or request operator approval\""
+  | "cost_gate" ->
+    "planner_alternative=\"stop tool use, summarize progress, or request a budget increase before retrying\""
+  | "destructive_guard" ->
+    "planner_alternative=\"use a safe read-only command, narrow the path, or request operator approval\""
+  | _ ->
+    "planner_alternative=\"change plan, choose a different tool, or call keeper_stay_silent\""
+
+let log_gate_rejection ?reason_key ~keeper_name ~stage ~tool_name ~reason_code fmt =
+  Printf.ksprintf
+    (fun message ->
+       match
+         record_gate_rejection_log_severity ?reason_key
+           ~keeper_name ~stage ~tool_name ~reason_code ()
+       with
+       | Gate_rejection_first_warn -> Log.Keeper.warn "%s" message
+       | Gate_rejection_repeat_info count ->
+         Log.Keeper.info "%s repeat_count=%d %s"
+           message count (planner_alternative_for_gate ~stage ~tool_name)
+       | Gate_rejection_repeat_debug count ->
+         Log.Keeper.debug "%s repeat_count=%d %s"
+           message count (planner_alternative_for_gate ~stage ~tool_name))
+    fmt
+
+module For_testing = struct
+  let reset_gate_rejection_log_counts = reset_gate_rejection_log_counts
+
+  let record_gate_rejection_log_severity =
+    record_gate_rejection_log_severity
+
+  let planner_alternative_for_gate = planner_alternative_for_gate
+end
+
 type gate_decision_event = {
   stage : string;
+  keeper_name : string;
   decision : gate_decision;
   reason_code : string;
   reason_text : string;
@@ -208,12 +284,12 @@ let notify_gate_decision on_gate_decision (event : gate_decision_event) =
   | Eio.Cancel.Cancelled _ as e -> raise e
   | exn ->
       Prometheus.inc_counter
-        Prometheus.metric_keeper_guards_failures
-        ~labels:[("keeper", "aggregate"); ("site", "gate_observer")]
+        Keeper_metrics.(to_string GuardsFailures)
+        ~labels:[("keeper", event.keeper_name); ("site", "gate_observer")]
         ();
       Log.Keeper.warn
-        "keeper_guards: gate observer failed stage=%s tool=%s err=%s"
-        event.stage event.tool_name (Printexc.to_string exn)
+        "keeper_guards: gate observer failed keeper=%s stage=%s tool=%s err=%s"
+        event.keeper_name event.stage event.tool_name (Printexc.to_string exn)
 
 (** Emit a [masc:keeper_gate] Event_bus Custom event.
 
@@ -253,7 +329,7 @@ let notify_gate_decision on_gate_decision (event : gate_decision_event) =
     - [reason]   ∈ guard reason_code strings (finite, defined by guards)
     - [decision] ∈ {override, approval_required} *)
 let gate_rejected_terminal_metric =
-  Prometheus.metric_keeper_turn_gate_rejected_terminal
+  Keeper_metrics.(to_string TurnGateRejectedTerminal)
 
 let () =
   Prometheus.register_counter
@@ -311,14 +387,14 @@ let emit_gate_event
        (match source_line with Some line -> `Int line | None -> `Null));
     ] in
     (try
-      Oas_bus_instrument.publish bus
+      Agent_sdk_metrics_bridge.publish bus
         (Agent_sdk.Event_bus.mk_event
            (Agent_sdk.Event_bus.Custom ("masc.keeper_gate", payload)))
     with
     | Eio.Cancel.Cancelled _ as e -> raise e
     | exn ->
       Prometheus.inc_counter
-        Prometheus.metric_keeper_guards_failures
+        Keeper_metrics.(to_string GuardsFailures)
         ~labels:[("keeper", agent_name); ("site", "event_emit")]
         ();
       Log.Keeper.warn
@@ -334,7 +410,7 @@ let report_gate_decision on_gate_decision
     ~agent_name:keeper_name ~turn ~accumulated_cost_usd
     ~stage_latency_ms ~reason_text;
   notify_gate_decision on_gate_decision
-    { stage; decision; reason_code; reason_text; tool_name; input; turn;
+    { stage; keeper_name; decision; reason_code; reason_text; tool_name; input; turn;
       accumulated_cost_usd; stage_latency_ms; source_path; source_line }
 
 (* -------------------------------------------------------------- *)
@@ -452,10 +528,12 @@ let streak_guard
         in
         let latency_ms = (Time_compat.now () -. t0) *. 1000.0 in
         Prometheus.inc_counter
-          Prometheus.metric_keeper_guards_failures
+          Keeper_metrics.(to_string GuardsFailures)
           ~labels:[("keeper", keeper_name); ("site", "streak_gate")]
           ();
-        Log.Keeper.warn
+        log_gate_rejection
+          ~keeper_name ~stage:"streak_gate" ~tool_name
+          ~reason_code:"streak_gate"
           "keeper:%s streak_gate: %s called %d times consecutively, blocking"
           keeper_name tool_name new_count;
         broadcast_tool_skipped
@@ -493,10 +571,13 @@ let deny_guard
         let reason_text = "tool is on the keeper deny list" in
         let latency_ms = (Time_compat.now () -. t0) *. 1000.0 in
         Prometheus.inc_counter
-          Prometheus.metric_keeper_guards_failures
+          Keeper_metrics.(to_string GuardsFailures)
           ~labels:[("keeper", keeper_name); ("site", "deny_list")]
           ();
-        Log.Keeper.warn "keeper:%s deny list: blocked %s"
+        log_gate_rejection
+          ~keeper_name ~stage:"keeper_deny" ~tool_name
+          ~reason_code:"keeper_deny"
+          "keeper:%s deny list: blocked %s"
           keeper_name tool_name;
         broadcast_tool_skipped
           ~keeper_name ~tool_name ~reason_code:"keeper_deny";
@@ -538,10 +619,12 @@ let cost_guard
          in
          let latency_ms = (Time_compat.now () -. t0) *. 1000.0 in
          Prometheus.inc_counter
-           Prometheus.metric_keeper_guards_failures
+           Keeper_metrics.(to_string GuardsFailures)
            ~labels:[("keeper", keeper_name); ("site", "cost_gate")]
            ();
-         Log.Keeper.warn
+         log_gate_rejection
+           ~keeper_name ~stage:"cost_gate" ~tool_name
+           ~reason_code:"cost_gate"
            "keeper:%s cost gate: $%.4f >= $%.4f limit, skipping %s"
            keeper_name accumulated_cost_usd limit tool_name;
          broadcast_tool_skipped
@@ -562,8 +645,8 @@ let cost_guard
     | _ -> Agent_sdk.Hooks.Continue)
 
 (** Destructive pattern detection for bash/edit style tools.
-    Only applies when [enabled] is [true] and the tool is flagged by
-    [Tool_dispatch.is_destructive]. *)
+    Only applies when [enabled] is [true] and descriptor/catalog capability
+    lookup flags the observed tool name as destructive. *)
 let destructive_guard
     ~(meta_ref : Keeper_types.keeper_meta ref)
     ~on_gate_decision
@@ -574,7 +657,12 @@ let destructive_guard
     | Agent_sdk.Hooks.PreToolUse
         { tool_name; input; accumulated_cost_usd; turn; _ } ->
       if not enabled then Agent_sdk.Hooks.Continue
-      else if not (Tool_dispatch.is_destructive tool_name) then
+      else if
+        not
+          (Agent_tool_descriptor_resolution.capability_has
+             Tool_capability.Destructive
+             tool_name)
+      then
         Agent_sdk.Hooks.Continue
       else
         let t0 = Time_compat.now () in
@@ -588,10 +676,12 @@ let destructive_guard
            in
            let latency_ms = (Time_compat.now () -. t0) *. 1000.0 in
            Prometheus.inc_counter
-             Prometheus.metric_keeper_guards_failures
+             Keeper_metrics.(to_string GuardsFailures)
              ~labels:[("keeper", keeper_name); ("site", "destructive_guard")]
              ();
-           Log.Keeper.warn
+           log_gate_rejection
+             ~keeper_name ~stage:"destructive_guard" ~tool_name
+             ~reason_code:"destructive_guard" ~reason_key:pattern
              "keeper:%s destructive pattern in %s: '%s' (%s)"
              keeper_name tool_name pattern desc;
            broadcast_tool_skipped

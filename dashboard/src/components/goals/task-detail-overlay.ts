@@ -1,18 +1,19 @@
 // Task detail overlay — opens when clicking a task title in the kanban board
 
 import { html } from 'htm/preact'
+import type { VNode } from 'preact'
 import { useRef } from 'preact/hooks'
 import { Check, X, ArrowRight, Dot, UserPlus } from 'lucide-preact'
 import { DialogOverlay } from '../common/dialog'
 import { StatusBadge } from '../common/status-badge'
-import { EmptyState } from '../common/empty-state'
+import { EmptyState } from '../common/feedback-state'
 import { ErrorState, LoadingState } from '../common/feedback-state'
 import { RichContent } from '../common/rich-content'
 import { TextInput } from '../common/input'
 import { TimeAgo } from '../common/time-ago'
 import { findKeeper } from '../../lib/keeper-utils'
+import { selectedTask } from './task-detail-selection'
 import {
-  selectedTask,
   closeTaskDetail,
   taskEvents,
   taskEventsLoading,
@@ -44,7 +45,7 @@ function SectionTitle({ children }: { children: unknown }) {
 
 // -- Event timeline (inline, NormalizedTaskEvent shape) --------------
 
-function eventBadge(label: string): { icon: any; color: string } {
+function eventBadge(label: string): { icon: VNode; color: string } {
   switch (label) {
     case 'claim':
     case 'claimed': return { icon: html`<${UserPlus} size=${14} />`, color: 'text-accent-fg' }
@@ -310,7 +311,6 @@ function ExecutionLinksSection({ task }: { task: Task }) {
   const items = [
     ['session', links?.session_id],
     ['operation', links?.operation_id],
-    ['autoresearch', links?.autoresearch_loop_id],
   ].filter(([, value]) => Boolean(value))
 
   if (items.length === 0) return null

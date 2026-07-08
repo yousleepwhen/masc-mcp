@@ -2,6 +2,7 @@ module Types = Masc_domain
 
 module Mcp_eio = Masc_mcp.Mcp_server_eio
 module Config = Masc_mcp.Config
+module Goal_store = Masc_mcp.Goal_store
 
 type init_mode =
   | Fresh
@@ -17,6 +18,7 @@ type fixture = {
   base_path : string;
   sid : string;
   agent_name : string;
+  auth_token : string;
   clock : float Eio.Time.clock_ty Eio.Resource.t;
   sw : Eio.Switch.t;
   state : Mcp_eio.server_state;
@@ -25,11 +27,10 @@ type fixture = {
   mutable board_post_id : string option;
   mutable keeper_name : string option;
   mutable verification_id : string option;
-  mutable webrtc_offer_id : string option;
   mutable handover_id : string option;
   mutable library_topic : string option;
-  mutable worktree_task_id : string option;
   mutable code_file_path : string option;
+  mutable goal_id : string option;
 }
 
 type contract_case = {
@@ -79,13 +80,8 @@ let strict_success_names =
     "masc_transition";
     "masc_transport_status";
     "masc_websocket_discovery";
-    "masc_webrtc_answer";
-    "masc_webrtc_offer";
     "masc_who";
     "masc_workflow_guide";
-    "masc_worktree_create";
-    "masc_worktree_list";
-    "masc_worktree_remove";
     (* Removed post-pruning:
        masc_init, masc_auth_*, masc_handover_*, masc_verify_* *)
   ]
@@ -106,17 +102,16 @@ let endpoint_unavailable_guard_names =
 
 let endpoint_unavailable_guard_fragments =
   [
+    "keeper-internal";
+    "unavailable on this MCP endpoint";
     "not available on this MCP endpoint";
   ]
 
 let generic_matrix_excluded_names =
   [
     "masc_keeper_msg";
-    "masc_observe_topology";
     "masc_operator_snapshot";
-    "masc_policy_status";
     "masc_tool_admin_snapshot";
-    "masc_unit_define";
   ]
 
 let string_starts_with ~prefix s =
@@ -229,13 +224,45 @@ let temp_dir prefix =
   Unix.mkdir dir 0o755;
   dir
 
+let tool_matrix_agent_name = "matrix"
+
+let rec waitpid_nointr pid =
+  try Unix.waitpid [] pid with
+  | Unix.Unix_error (Unix.EINTR, _, _) -> waitpid_nointr pid
+;;
+
+let seed_persona_dir base_path agent_name =
+  let personas_dir =
+    Filename.concat
+      (Filename.concat (Filename.concat base_path ".masc") "config")
+      "personas"
+  in
+  mkdir_p (Filename.concat personas_dir agent_name);
+  Unix.putenv "MASC_PERSONAS_DIR" personas_dir;
+  Config_dir_resolver.reset ()
+
 let run_cmd_exn argv =
-  let cmd = String.concat " " (List.map Filename.quote argv) in
-  match Sys.command cmd with
+  let code =
+    match argv with
+    | [] -> invalid_arg "run_cmd_exn: empty argv"
+    | prog :: _ ->
+        let dev_null = Unix.openfile Filename.null [ Unix.O_WRONLY ] 0o600 in
+        Fun.protect
+          ~finally:(fun () -> Unix.close dev_null)
+          (fun () ->
+            let pid =
+              Unix.create_process_env prog (Array.of_list argv)
+                (Unix.environment ()) Unix.stdin dev_null dev_null
+            in
+            match snd (waitpid_nointr pid) with
+            | Unix.WEXITED code -> code
+            | Unix.WSIGNALED _ | Unix.WSTOPPED _ -> 255)
+  in
+  match code with
   | 0 -> ()
   | code ->
       failwith
-        (Printf.sprintf "command failed (%d): %s" code cmd)
+        (Printf.sprintf "command failed (%d): %s" code (String.concat " " argv))
 
 let write_text_file path content =
   Out_channel.with_open_bin path (fun oc -> output_string oc content)
@@ -260,13 +287,13 @@ let setup_git_repo base_path =
 
 let execute_tool fixture ~name ~arguments =
   Mcp_eio.execute_tool_eio ~sw:fixture.sw ~clock:fixture.clock
+    ~auth_token:fixture.auth_token
     ~mcp_session_id:fixture.sid fixture.state ~name ~arguments
 
 let execute_tool_ok fixture ~name ~arguments =
-  match execute_tool fixture ~name ~arguments with
-  | true, body -> body
-  | false, body ->
-      failwith (Printf.sprintf "setup tool failed for %s: %s" name body)
+  let result = execute_tool fixture ~name ~arguments in
+  if (Tool_result.is_success result) then (Tool_result.message result)
+  else failwith (Printf.sprintf "setup tool failed for %s: %s" name ((Tool_result.message result)))
 
 let ensure_initialized fixture =
   (* masc_init pruned from registry. Initialise the room state
@@ -276,17 +303,21 @@ let ensure_initialized fixture =
        ~agent_name:(Some fixture.agent_name))
 
 let ensure_joined fixture =
-  match execute_tool fixture ~name:"masc_join"
-          ~arguments:
-            (`Assoc
-              [
-                ("agent_name", `String fixture.agent_name);
-                ("capabilities", `List [ `String "testing"; `String "tool-matrix" ]);
-              ])
-  with
-  | true, _ -> ()
-  | false, body when contains_substring body "already joined" -> ()
-  | false, body -> failwith ("masc_join failed: " ^ body)
+  let result =
+    execute_tool fixture ~name:"masc_join"
+      ~arguments:
+        (`Assoc
+          [
+            ("agent_name", `String fixture.agent_name);
+            ("capabilities", `List [ `String "testing"; `String "tool-matrix" ]);
+          ])
+  in
+  if (Tool_result.is_success result) then ()
+  else begin
+    let body = (Tool_result.message result) in
+    if contains_substring body "already joined" then ()
+    else failwith ("masc_join failed: " ^ body)
+  end
 
 let make_fixture sw ~proc_mgr ~fs ~net ~mono_clock clock ~base_path init_mode =
   let worktree_dir = setup_git_repo base_path in
@@ -302,11 +333,24 @@ let make_fixture sw ~proc_mgr ~fs ~net ~mono_clock clock ~base_path init_mode =
     Mcp_eio.create_state_eio ~sw ~proc_mgr ~fs ~clock ~mono_clock ~net
       ~base_path
   in
+  seed_persona_dir base_path tool_matrix_agent_name;
+  let auth_token =
+    match
+      Masc_mcp.Auth.create_token base_path ~agent_name:tool_matrix_agent_name
+        ~role:Masc_domain.Admin
+    with
+    | Ok (token, _cred) -> token
+    | Error err ->
+        failwith
+          ("failed to create tool matrix auth token: "
+          ^ Masc_domain.masc_error_to_string err)
+  in
   let fixture =
     {
       base_path;
       sid = "mcp-tool-matrix";
-      agent_name = "codex-tool-matrix";
+      agent_name = tool_matrix_agent_name;
+      auth_token;
       clock;
       sw;
       state;
@@ -315,11 +359,10 @@ let make_fixture sw ~proc_mgr ~fs ~net ~mono_clock clock ~base_path init_mode =
       board_post_id = None;
       keeper_name = None;
       verification_id = None;
-      webrtc_offer_id = None;
       handover_id = None;
       library_topic = None;
-      worktree_task_id = None;
       code_file_path = None;
+      goal_id = None;
     }
   in
   (match init_mode with
@@ -329,6 +372,21 @@ let make_fixture sw ~proc_mgr ~fs ~net ~mono_clock clock ~base_path init_mode =
       ensure_initialized fixture;
       ensure_joined fixture);
   fixture
+
+let ensure_goal fixture =
+  match fixture.goal_id with
+  | Some goal_id -> goal_id
+  | None ->
+      let goal =
+        match
+          Goal_store.upsert_goal fixture.state.room_config
+            ~title:"Tool Matrix Goal" ()
+        with
+        | Ok (goal, _status) -> goal
+        | Error err -> failwith ("failed to seed tool matrix goal: " ^ err)
+      in
+      fixture.goal_id <- Some goal.Goal_store.id;
+      goal.Goal_store.id
 
 let ensure_task fixture =
   match fixture.task_id with
@@ -342,6 +400,7 @@ let ensure_task fixture =
                 ("title", `String "Tool Matrix Task");
                 ("priority", `Int 2);
                 ("description", `String "task fixture");
+                ("goal_id", `String (ensure_goal fixture));
               ])
       in
       let task_id =
@@ -414,27 +473,6 @@ let ensure_verification_request fixture =
       fixture.verification_id <- Some req_id;
       req_id
 
-let ensure_webrtc_offer fixture =
-  match fixture.webrtc_offer_id with
-  | Some offer_id -> offer_id
-  | None ->
-      let body =
-        execute_tool_ok fixture ~name:"masc_webrtc_offer"
-          ~arguments:
-            (`Assoc
-              [
-                ("agent_name", `String fixture.agent_name);
-                ("ice_candidates", `List [ `String "candidate:tool-matrix" ]);
-              ])
-      in
-      let offer_id =
-        match extract_id body ~fields:[ "offer_id"; "id" ] ~prefixes:[ "offer-" ] with
-        | Some value -> value
-        | None -> failwith ("failed to parse offer id from: " ^ body)
-      in
-      fixture.webrtc_offer_id <- Some offer_id;
-      offer_id
-
 let ensure_handover _fixture =
   (* masc_handover_create pruned from registry. Helper retained as a
      stub for any transitional callers; returns a synthetic id. *)
@@ -460,62 +498,6 @@ let ensure_library_topic fixture =
       fixture.library_topic <- Some "tool-matrix-library";
       "tool-matrix-library"
 
-(* Ensure the keeper's playground has a git clone before calling
-   masc_worktree_create. After PRs #6533/#6542 removed the server-root
-   fallback, keepers must clone into
-   .masc/playground/<agent>/repos/<repo>/ first. This helper clones
-   the fixture's local bare remote into the playground repos
-   directory and is idempotent.
-
-   The [agent] parameter overrides [fixture.agent_name] for cases
-   where a different keeper identity is used at runtime (e.g. the
-   keeper tool matrix, whose runtime keeper meta name differs from
-   the generic fixture agent name). *)
-let ensure_playground_clone_for ?agent fixture =
-  let agent_name = match agent with Some n -> n | None -> fixture.agent_name in
-  let playground_repos =
-    Filename.concat fixture.base_path
-      (Printf.sprintf ".masc/playground/%s/repos" agent_name)
-  in
-  let clone_target = Filename.concat playground_repos "tool-matrix" in
-  if not (Sys.file_exists clone_target) then begin
-    mkdir_p playground_repos;
-    let remote_dir = Filename.concat fixture.base_path ".remote.git" in
-    run_cmd_exn [ "git"; "clone"; "-q"; remote_dir; clone_target ];
-    run_cmd_exn
-      [ "git"; "-C"; clone_target; "config"; "user.email"; "tool-matrix@example.test" ];
-    run_cmd_exn
-      [ "git"; "-C"; clone_target; "config"; "user.name"; "Tool Matrix" ]
-  end;
-  clone_target
-
-let ensure_playground_clone fixture = ensure_playground_clone_for fixture
-
-(* Create a worktree for a specific agent name (defaults to
-   [fixture.agent_name]). Takes [?agent] so the keeper tool matrix can
-   create the worktree under the real keeper meta name instead of the
-   generic fixture agent, keeping create and remove paths consistent. *)
-let ensure_worktree_created_for ?agent fixture =
-  let agent_name = match agent with Some n -> n | None -> fixture.agent_name in
-  match fixture.worktree_task_id with
-  | Some task_id -> task_id
-  | None ->
-      let task_id = ensure_task fixture in
-      let _ = ensure_playground_clone_for ?agent fixture in
-      ignore
-        (execute_tool_ok fixture ~name:"masc_worktree_create"
-           ~arguments:
-             (`Assoc
-               [
-                 ("agent_name", `String agent_name);
-                 ("task_id", `String task_id);
-                 ("base_branch", `String "main");
-               ]));
-      fixture.worktree_task_id <- Some task_id;
-      task_id
-
-let ensure_worktree_created fixture = ensure_worktree_created_for fixture
-
 let ensure_code_file fixture =
   match fixture.code_file_path with
   | Some path -> path
@@ -526,16 +508,6 @@ let ensure_code_file fixture =
       fixture.code_file_path <- Some relative_path;
       relative_path
 
-let ensure_lock fixture =
-  ignore
-    (execute_tool_ok fixture ~name:"masc_lock"
-       ~arguments:
-         (`Assoc
-           [
-             ("agent_name", `String fixture.agent_name);
-             ("file", `String "README.md");
-           ]))
-
 let prepare_for_name fixture name =
   if List.mem name [ "masc_claim_next"; "masc_transition"; "masc_plan_set_task" ] then
     ignore (ensure_task fixture);
@@ -544,13 +516,15 @@ let prepare_for_name fixture name =
   if List.mem name [ "masc_board_get"; "masc_board_comment"; "masc_board_vote"; "masc_board_comment_vote"; "masc_board_delete" ] then
     ignore (ensure_board_post fixture);
   (* masc_verify_* tools pruned from registry; no preparation needed. *)
-  if name = "masc_webrtc_answer" then
-    ignore (ensure_webrtc_offer fixture);
-  if List.mem name [ "masc_worktree_create"; "masc_worktree_list" ] then
-    ignore (ensure_playground_clone fixture);
-  if name = "masc_worktree_remove" then
-    ignore (ensure_worktree_created fixture);
-  if List.mem name [ "masc_code_edit"; "masc_code_delete"; "masc_code_git"; "masc_code_shell"; "masc_code_read"; "masc_code_symbols" ] then
+  if
+    List.mem name
+      [
+        "tool_edit_file";
+        "tool_write_file";
+        "tool_read_file";
+        "tool_search_files";
+      ]
+  then
     ignore (ensure_code_file fixture);
   if name = "masc_library_add" then begin
     mkdir_p (Filename.concat fixture.base_path "me/docs/library");
@@ -560,8 +534,7 @@ let prepare_for_name fixture name =
     ignore (ensure_library_topic fixture);
   (* masc_handover_* tools pruned from registry; no preparation needed. *)
   let _ = ensure_handover in
-  if name = "masc_unlock" then
-    ensure_lock fixture
+  ()
 
 let required_fields schema =
   match assoc_field "required" schema.Masc_domain.input_schema with
@@ -591,6 +564,13 @@ let field_type = function
 
 let task_id_for_tool fixture _tool_name = ensure_task fixture
 
+let goal_principal fixture =
+  `Assoc
+    [
+      ("kind", `String "keeper");
+      ("id", `String fixture.agent_name);
+    ]
+
 let field_value fixture ~tool_name field_name schema =
   let enum_choice = enum_first schema in
   match field_name with
@@ -598,19 +578,28 @@ let field_value fixture ~tool_name field_name schema =
       `String fixture.agent_name
   | "path" when tool_name = "masc_set_room" || tool_name = "masc_start" ->
       `String fixture.base_path
-  | "path" when List.mem tool_name [ "masc_code_write"; "masc_code_edit"; "masc_code_delete"; "masc_code_read"; "masc_code_symbols" ] ->
+  | "path"
+    when List.mem tool_name
+           [
+             "tool_write_file";
+             "tool_edit_file";
+             "tool_read_file";
+             "tool_search_files";
+           ] ->
       `String (ensure_code_file fixture)
   | "working_dir"
     when tool_name = "masc_keeper_repair" ->
       `String fixture.worktree_dir
   | "cwd" -> `String fixture.worktree_dir
   | "command" -> `String "git status"
-  | "content" when tool_name = "masc_code_write" -> `String "after\n"
+  | "content" when tool_name = "tool_write_file" -> `String "after\n"
   | "content" -> `String "tool matrix content"
   | "old_string" -> `String "before"
   | "new_string" -> `String "after"
   | "key" -> `String "tool-matrix-cache"
   | "task_id" -> `String (task_id_for_tool fixture tool_name)
+  | "goal_id" -> `String (ensure_goal fixture)
+  | "actor" | "principal" -> goal_principal fixture
   | "task_title" -> `String "Tool Matrix Started Task"
   | "title" -> `String "Tool Matrix Title"
   | "summary" -> `String "tool matrix summary"
@@ -638,6 +627,7 @@ let field_value fixture ~tool_name field_name schema =
               ("title", `String "Tool Matrix Batch Task");
               ("priority", `Int 2);
               ("description", `String "batch");
+              ("goal_id", `String (ensure_goal fixture));
             ];
         ]
   | "post_id" | "parent_id" -> `String (ensure_board_post fixture)
@@ -664,7 +654,6 @@ let field_value fixture ~tool_name field_name schema =
       `Float 1.0
   | "timeout" when tool_name = "masc_listen" -> `Int 1
   | "interval" when tool_name = "masc_heartbeat_start" -> `Int 5
-  | "offer_id" -> `String (ensure_webrtc_offer fixture)
   | "ice_candidates" -> `List [ `String "candidate:tool-matrix" ]
   | "tool_name" -> `String "masc_status"
   | "subscription_id" -> `String "subscription-001"
@@ -682,7 +671,6 @@ let field_value fixture ~tool_name field_name schema =
       match enum_choice with
       | Some value -> `String value
       | None -> `String "manual")
-  | "action" when tool_name = "masc_code_git" -> `String "status"
   | "action" -> (
       match enum_choice with
       | Some value -> `String value
@@ -694,7 +682,6 @@ let field_value fixture ~tool_name field_name schema =
   | "offset" -> `Int 0
   | "since_seq" -> `Int 0
   | "include_hidden" -> `Bool true
-  | "include_deprecated" -> `Bool true
   | "include_usage" -> `Bool true
   | "hearth" -> `String "tool-matrix"
   | "query" -> `String "tool matrix"
@@ -748,7 +735,6 @@ let tool_arguments fixture (schema : Masc_domain.tool_schema) =
     let optional =
       match name with
       | "masc_start" -> [ "path"; "task_title" ]
-      | "masc_worktree_create" -> [ "base_branch" ]
       | "masc_heartbeat_start" -> [ "interval" ]
       | "masc_keeper_repair" ->
           [ "source_text"; "max_attempts"; "working_dir" ]
@@ -826,19 +812,21 @@ let guard_fragments_for_name name =
   if String.equal name "masc_web_search" then
     web_search_guard_fragments
   else if
+    string_starts_with ~prefix:"tool_" name
+  then
+    endpoint_unavailable_guard_fragments @ state_guard_fragments @ git_guard_fragments
+  else if
     List.exists
       (fun prefix -> string_starts_with ~prefix name)
       [
         "masc_a2a_";
-        "masc_autoresearch_";
         "masc_handover_";
         "masc_keeper_";
         "masc_local_runtime_";
         "masc_relay_";
         "masc_repo_synthesis_";
         "masc_runtime_";
-        "masc_spawn";
-
+        (* masc_spawn removed in RFC-0182 *)
         "masc_voice_";
       ]
   then
@@ -846,7 +834,7 @@ let guard_fragments_for_name name =
   else if
     List.exists
       (fun prefix -> string_starts_with ~prefix name)
-      [ "masc_code_"; "masc_worktree_" ]
+      [ "retired_code_surface_"; "retired_worktree_surface_" ]
   then
     git_guard_fragments @ state_guard_fragments
   else
@@ -978,7 +966,8 @@ let call_tool_json fixture (schema : Masc_domain.tool_schema) arguments =
         ])
   in
   Mcp_eio.handle_request ~clock:fixture.clock ~sw:fixture.sw
-    ~mcp_session_id:fixture.sid fixture.state request
+    ~mcp_session_id:fixture.sid ~auth_token:fixture.auth_token fixture.state
+    request
 
 let run_case sw ~proc_mgr ~fs ~net ~mono_clock clock
     (schema : Masc_domain.tool_schema) =
@@ -987,17 +976,10 @@ let run_case sw ~proc_mgr ~fs ~net ~mono_clock clock
     [
       ("MASC_BASE_PATH", Sys.getenv_opt "MASC_BASE_PATH");
       ("MASC_STORAGE_TYPE", Sys.getenv_opt "MASC_STORAGE_TYPE");
-      ("MASC_POSTGRES_URL", Sys.getenv_opt "MASC_POSTGRES_URL");
-      ("DATABASE_URL", Sys.getenv_opt "DATABASE_URL");
-      ("SUPABASE_DB_URL", Sys.getenv_opt "SUPABASE_DB_URL");
-      ("SB_PG_URL", Sys.getenv_opt "SB_PG_URL");
+      ("MASC_PERSONAS_DIR", Sys.getenv_opt "MASC_PERSONAS_DIR");
     ]
   in
   Unix.putenv "MASC_STORAGE_TYPE" "filesystem";
-  Unix.putenv "MASC_POSTGRES_URL" "";
-  Unix.putenv "DATABASE_URL" "";
-  Unix.putenv "SUPABASE_DB_URL" "";
-  Unix.putenv "SB_PG_URL" "";
   let base_path = temp_dir "mcp-tool-matrix-" in
   Unix.putenv "MASC_BASE_PATH" base_path;
   let result =
@@ -1009,6 +991,7 @@ let run_case sw ~proc_mgr ~fs ~net ~mono_clock clock
             | Some raw -> Unix.putenv name raw
             | None -> Unix.putenv name "")
           saved_env;
+        Config_dir_resolver.reset ();
         match saved_home with
         | Some home -> Unix.putenv "HOME" home
         | None -> Unix.putenv "HOME" "")

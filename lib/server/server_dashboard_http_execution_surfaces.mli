@@ -5,16 +5,16 @@
     [include Server_dashboard_http_execution_surfaces];
     [server_dashboard_http_namespace_truth.ml] does
     [module Execution_surfaces = ...] alias and reaches
-    {!_execution_cache} +
-    {!_broadcast_namespace_truth_ref} through it.  Plus
+    {!execution_cache} +
+    {!broadcast_namespace_truth_ref} through it.  Plus
     direct dotted callers and a
     [let module S = ...] inline alias in
     [test/test_types.ml] for the
     lifecycle-event patcher family.
 
-    External surface (17 entries):
-    - {b cache cells} ({!_execution_cache},
-      {!_broadcast_namespace_truth_ref}) reached by
+    External surface (21 entries):
+    - {b cache cells} ({!execution_cache},
+      {!broadcast_namespace_truth_ref}) reached by
       [server_dashboard_http_namespace_truth] for
       readiness gating + truth-broadcast wiring.
     - {b shell prewarm} ({!warm_shell_cache}) — called
@@ -42,24 +42,29 @@
       [test/test_types] inline-aliases this module to
       assert every SSOT keeper-lifecycle event is
       handled (#8396).
+    - {b SSE-event row patchers}
+      ({!patch_keeper_row},
+      {!patch_surface_json_for_running_keepers}) —
+      pinned because [test/test_dashboard_execution]
+      tests their null-agent-shape tolerance directly
+      (test_patch_keeper_row_tolerates_null_agent_shape /
+      test_patch_surface_json_for_running_keepers_tolerates_null_agent).
 
     Internal helpers stay private at this boundary
-    (~15 internal lets — [shell_prewarm_timeout_s],
+    (~13 internal lets — [shell_prewarm_timeout_s],
     [_last_broadcast_hash] /
     [_broadcast_hash_mu] / [broadcast_cached_surface],
     [_transport_health_cache],
-    [keeper_agent_status_opt] / [patched_keeper_status]
-    / [patch_keeper_row] / [patch_keeper_rows]
-    SSE-event row patcher family,
-    [running_keeper_names] /
-    [patch_surface_json_for_running_keepers],
-    [patch_execution_cache_for_keeper] /
+    [keeper_agent_status_opt] / [patched_keeper_status],
+    [patch_keeper_rows] SSE-event row patcher helper,
+    [running_keeper_names],
+    [patchexecution_cache_for_keeper] /
     [patch_operator_snapshot_cache_for_keeper],
     [transport_health_cache_diagnostics]). *)
 
 (** {1 Cache cells} *)
 
-val _execution_cache : Server_dashboard_http_cache.cached_surface
+val execution_cache : Server_dashboard_http_cache.cached_surface
 (** Cached execution surface JSON.  Reached by
     [Server_dashboard_http_namespace_truth] (via the
     [Execution_surfaces] alias) for readiness gating —
@@ -67,7 +72,7 @@ val _execution_cache : Server_dashboard_http_cache.cached_surface
     fetch when this cache is still serving a successful
     snapshot. *)
 
-val _broadcast_namespace_truth_ref :
+val broadcast_namespace_truth_ref :
   (Mcp_server.server_state -> unit) ref
 (** Forward reference for the namespace-truth broadcast.
     [Server_dashboard_http_namespace_truth] sets this at
@@ -97,8 +102,17 @@ val execution_actor_for_request :
 val invalidate_execution_cache : unit -> unit
 (** Drops the cached execution surface so the next
     snapshot read recomputes from upstream.  Swallows
-    [Eio.Cancel.Cancelled] re-raise plus logs other
-    exceptions through [Log.Dashboard.error]. *)
+    [Eio.Cancel.Cancelled] re-raise plus logs and counts other
+    exceptions through
+    {!Keeper_metrics.(to_string LifecycleCallbackFailures)}. *)
+
+val invalidate_execution_cache_with_hooks_for_testing :
+  invalidate_execution_surface:(unit -> unit) ->
+  invalidate_light_cache:(unit -> unit) ->
+  unit ->
+  unit
+(** Test seam for the best-effort invalidation failure path. Production
+    callers should use {!invalidate_execution_cache}. *)
 
 val patch_keeper_dependent_caches :
   keeper_name:string -> event:string -> unit

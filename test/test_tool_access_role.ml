@@ -3,7 +3,7 @@ module Types = Masc_domain
 (** Tests for Tool_access_role — role-based policy equivalence and properties.
 
     The equivalence test is the critical gate: it verifies that the new
-    policy_for_role produces identical allow/deny decisions to the legacy
+    policy_for_role produces identical allow/deny decisions to the closed
     permission_for_tool + has_permission system for every registered tool
     and every role. *)
 
@@ -11,7 +11,7 @@ open Alcotest
 open Masc_mcp
 
 (* ================================================================ *)
-(* Old system simulation (from legacy_permission_for_tool)           *)
+(* Closed permission simulation                                      *)
 (* ================================================================ *)
 
 (** Simulate the old authorization logic:
@@ -19,14 +19,12 @@ open Masc_mcp
     has_permission(role, permission) → bool
 
     Tests at the POLICY level (not authorization level).
-    Strict mode checks happen in authorize_tool_v2, not in the policy.
-    For mapped tools, this matches both strict and non-strict behavior.
-    For unmapped tools (None), the policy allows them (All-based),
-    matching the non-strict fail-open path. Strict mode is an
-    authorization-level overlay tested separately. *)
+    For mapped tools, this matches role-based authorization.
+    For unmapped tools (None), the policy denies them. Authorization-level
+    handling for unmapped internal tool prefixes is tested in Auth. *)
 let old_allows (role : Masc_domain.agent_role) (tool_name : string) : bool =
   match Auth.permission_for_tool tool_name with
-  | None -> true  (* Policy level: fail-open for unmapped tools *)
+  | None -> false
   | Some perm -> Masc_domain.has_permission role perm
 
 let testable_permission =
@@ -132,6 +130,14 @@ let test_portal_tools_require_worker () =
       (Tool_access_policy.allows_name worker_policy tool_name))
     [ "masc_portal_open"; "masc_portal_close"; "masc_portal_send" ]
 
+let test_sidecar_allowed_for_dashboard_worker () =
+  let worker_policy = Tool_access_role.policy_for_role Worker in
+  check bool "Worker (dashboard) allows sidecar tool" true
+    (Tool_access_policy.allows_name worker_policy "sidecar");
+  let admin_policy = Tool_access_role.policy_for_role Admin in
+  check bool "Admin allows sidecar tool" true
+    (Tool_access_policy.allows_name admin_policy "sidecar")
+
 let test_permissions_promoted_to_metadata_ssot () =
   ignore
     (Masc_mcp.Mcp_server_eio.create_state ~test_mode:true
@@ -143,10 +149,6 @@ let test_permissions_promoted_to_metadata_ssot () =
       ("masc_board_list", Masc_domain.CanReadState);
       (* CP purge: masc_operator_action, masc_unit_list and other command-plane
          tool metadata expectations removed with deletion of lib/command_plane/. *)
-      ("masc_worktree_create", Masc_domain.CanCreateWorktree);
-      ("masc_autoresearch_record_finding", Masc_domain.CanAdmin);
-      ("masc_autoresearch_search_findings", Masc_domain.CanReadState);
-      ("masc_autoresearch_status", Masc_domain.CanReadState);
       ("masc_agent_card", Masc_domain.CanReadState);
       ("masc_heartbeat", Masc_domain.CanBroadcast);
       ("masc_config", Masc_domain.CanReadState);
@@ -177,20 +179,20 @@ let test_permissions_promoted_to_metadata_ssot () =
 (* Unregistered tool behavior                                        *)
 (* ================================================================ *)
 
-let test_unregistered_tool_allowed_all_roles () =
+let test_unregistered_tool_denied_all_roles () =
   let unknown = "masc_future_unknown_tool_xyz" in
   List.iter (fun (role_name, role) ->
     let policy = Tool_access_role.policy_for_role role in
     check bool
-      (Printf.sprintf "%s: unregistered tool allowed (fail-open)" role_name)
-      true
+      (Printf.sprintf "%s: unregistered tool denied" role_name)
+      false
       (Tool_access_policy.allows_name policy unknown)
   ) [("Admin", Admin); ("Worker", Worker)]
 
-let test_empty_string_tool_allowed () =
+let test_empty_string_tool_denied () =
   let policy = Tool_access_role.policy_for_role Worker in
-  check bool "empty string tool allowed by All"
-    true
+  check bool "empty string tool denied"
+    false
     (Tool_access_policy.allows_name policy "")
 
 (* ================================================================ *)
@@ -249,15 +251,17 @@ let () =
             test_channel_gate_requires_worker;
           test_case "portal tools require worker" `Quick
             test_portal_tools_require_worker;
+          test_case "sidecar tool allowed for dashboard worker" `Quick
+            test_sidecar_allowed_for_dashboard_worker;
           test_case "permissions promoted to metadata ssot" `Quick
             test_permissions_promoted_to_metadata_ssot;
         ] );
       ( "unregistered",
         [
-          test_case "unregistered allowed (fail-open)" `Quick
-            test_unregistered_tool_allowed_all_roles;
-          test_case "empty string tool" `Quick
-            test_empty_string_tool_allowed;
+          test_case "unregistered denied" `Quick
+            test_unregistered_tool_denied_all_roles;
+          test_case "empty string tool denied" `Quick
+            test_empty_string_tool_denied;
         ] );
       ( "integrity",
         [

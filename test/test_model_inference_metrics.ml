@@ -69,6 +69,21 @@ let write_costs base entries =
 
 let now_unix () = Unix.gettimeofday ()
 
+let runtime_lane_label_for_test model_key =
+  "runtime_lane_" ^ String.sub (Digest.to_hex (Digest.string model_key)) 0 12
+
+let contains_substring haystack needle =
+  let haystack_len = String.length haystack in
+  let needle_len = String.length needle in
+  if needle_len = 0 then true
+  else
+    let rec loop i =
+      if i + needle_len > haystack_len then false
+      else if String.sub haystack i needle_len = needle then true
+      else loop (i + 1)
+    in
+    loop 0
+
 let success_entry ~model ~ts ?(input_tokens=100) ?(output_tokens=50)
     ?(latency_ms=500) ?prompt_per_second ?peak_memory_gb
     ?provider ?provider_kind ?usage_trust ?(usage_anomaly_reasons=[])
@@ -108,6 +123,7 @@ let success_entry ~model ~ts ?(input_tokens=100) ?(output_tokens=50)
     ("tools_used", `List (List.map (fun s -> `String s) tools_used));
     ("telemetry", `Assoc ([
       ("model_used", `String model);
+      ("outcome", `String "success");
       ("tokens_per_second", `Float (Float.of_int output_tokens /. (Float.of_int latency_ms /. 1000.0)));
       ("request_latency_ms", `Int latency_ms);
       ("input_tokens", `Int input_tokens);
@@ -200,6 +216,55 @@ let success_entry_without_usage ~model ~ts ?provider
     ] @ extra_fields @ diag_fields));
   ]
 
+let success_entry_without_model ~cascade_name ~ts ?(tool_count = 1) () =
+  `Assoc [
+    ("ts_unix", `Float ts);
+    ("tool_call_count", `Int tool_count);
+    ("tools_used", `List [ `String "keeper_board_comment" ]);
+    ( "telemetry",
+      `Assoc [
+        ("model_used", `Null);
+        ("selected_model", `Null);
+        ("cascade_name", `String cascade_name);
+        ("outcome", `String "success");
+        ("stop_reason", `String "completed");
+        ("usage_reported", `Bool false);
+        ("telemetry_reported", `Bool false);
+        ("coverage_stage", `String "oas");
+        ("coverage_reason", `String "missing_usage_and_inference");
+        ("fallback_applied", `Bool false);
+      ] );
+  ]
+
+let sparse_provider_context_entry ~outcome ~cascade_name ~ts () =
+  `Assoc [
+    ("ts_unix", `Float ts);
+    ("outcome", `String outcome);
+    ("tool_call_count", `Int 0);
+    ("tools_used", `List []);
+    ( "provider_context",
+      `Assoc [
+        ("cascade_name", `String cascade_name);
+        ("selected_model", `Null);
+        ("candidate_models", `List []);
+      ] );
+    ( "telemetry",
+      `Assoc [
+        ("model_used", `Null);
+        ("selected_model", `Null);
+        ("usage_reported", `Bool false);
+        ("telemetry_reported", `Bool false);
+        ( "coverage_stage",
+          `String (if String.equal outcome "error" then "unknown" else "oas") );
+        ( "coverage_reason",
+          `String
+            (if String.equal outcome "error"
+             then "error_turn"
+             else "missing_usage_and_inference") );
+        ("fallback_applied", `Bool false);
+      ] );
+  ]
+
 (* ── Tests ───────────────────────────────────────── *)
 
 let test_empty_dir () =
@@ -216,21 +281,21 @@ let test_single_model_success () =
     let path = make_keeper_dir base "luna" in
     let ts = now_unix () in
     write_decisions path [
-      success_entry ~model:"claude-sonnet" ~ts:(ts -. 10.0)
+      success_entry ~model:"agent_llm_a-sonnet" ~ts:(ts -. 10.0)
         ~input_tokens:200 ~output_tokens:100 ~latency_ms:1000
-        ~provider:"claude" ~cost_usd:0.005
+        ~provider:"agent_llm_a" ~cost_usd:0.005
         ~tools_used:["shell"; "read"] ();
-      success_entry ~model:"claude-sonnet" ~ts:(ts -. 5.0)
+      success_entry ~model:"agent_llm_a-sonnet" ~ts:(ts -. 5.0)
         ~input_tokens:150 ~output_tokens:80 ~latency_ms:800
-        ~provider:"claude" ~cost_usd:0.003 ~tools_used:["shell"] ();
+        ~provider:"agent_llm_a" ~cost_usd:0.003 ~tools_used:["shell"] ();
     ];
     let agg = M.compute ~base_path:base ~window_minutes:60 in
     check int "total_entries" 2 agg.total_entries;
     check int "total_error_entries" 0 agg.total_error_entries;
     check int "models" 1 (List.length agg.models);
     let s = List.hd agg.models in
-    check string "model_id" "claude-sonnet" s.model_id;
-    check (option string) "provider" (Some "claude") s.provider;
+    check string "model_id" "agent_llm_a-sonnet" s.model_id;
+    check (option string) "provider" None s.provider;
     check int "entry_count" 2 s.entry_count;
     check int "success_count" 2 s.success_count;
     check int "error_count" 0 s.error_count;
@@ -247,32 +312,25 @@ let test_single_model_success () =
     check bool "tok/s > 0" true
       (Option.value ~default:0.0 s.avg_tok_per_sec > 0.0))
 
-let test_provider_kind_classifies_bare_model_provider () =
+let test_provider_kind_is_not_reconstructed_from_legacy_fields () =
   let base = test_dir () in
   Fun.protect ~finally:(fun () -> cleanup_dir base) (fun () ->
     let path = make_keeper_dir base "kinded" in
     let ts = now_unix () in
-    let provider_kind =
-      Llm_provider.Provider_config.string_of_provider_kind
-        Llm_provider.Provider_config.Kimi_cli
-    in
+    let provider_kind = "cli_tool_c" in
     write_decisions path [
-      success_entry ~model:"kimi-k2.5" ~ts:(ts -. 5.0)
+      success_entry ~model:"model-c" ~ts:(ts -. 5.0)
         ~provider_kind ();
     ];
     let agg = M.compute ~base_path:base ~window_minutes:60 in
     check int "total_entries" 1 agg.total_entries;
     let s = List.hd agg.models in
-    check string "model stays bare" "kimi-k2.5" s.model_id;
-    check (option string) "provider from provider_kind"
-      (Some "kimi_cli") s.provider;
+    check string "model stays bare" "model-c" s.model_id;
+    check (option string) "provider not reconstructed" None s.provider;
     let recent = List.hd s.recent_entries in
-    check (option string) "recent provider from provider_kind"
-      (Some "kimi_cli") recent.re_provider;
+    check (option string) "recent provider not reconstructed" None recent.re_provider;
     let rollup = M.provider_rollup agg in
-    check int "provider rollup keeps entry" 1 (List.length rollup);
-    check string "rollup provider" "kimi_cli"
-      (List.hd rollup).M.ps_provider)
+    check int "provider rollup stays empty" 0 (List.length rollup))
 
 let test_untrusted_usage_excluded_from_aggregates () =
   let base = test_dir () in
@@ -315,7 +373,7 @@ let test_error_turns_counted () =
     let path = make_keeper_dir base "dreamer" in
     let ts = now_unix () in
     write_decisions path [
-      success_entry ~model:"qwen-35b" ~ts:(ts -. 20.0) ();
+      success_entry ~model:"provider_h-35b" ~ts:(ts -. 20.0) ();
       error_entry ~cascade_name:"local_only" ~ts:(ts -. 10.0) ();
     ];
     let agg = M.compute ~base_path:base ~window_minutes:60 in
@@ -339,19 +397,19 @@ let test_multi_model () =
     let path = make_keeper_dir base "multi" in
     let ts = now_unix () in
     write_decisions path [
-      success_entry ~model:"claude-sonnet" ~ts:(ts -. 30.0)
+      success_entry ~model:"agent_llm_a-sonnet" ~ts:(ts -. 30.0)
         ~tools_used:["read"; "write"] ();
-      success_entry ~model:"gpt-4o" ~ts:(ts -. 20.0)
+      success_entry ~model:"model-d" ~ts:(ts -. 20.0)
         ~tools_used:["search"] ();
-      success_entry ~model:"claude-sonnet" ~ts:(ts -. 10.0)
+      success_entry ~model:"agent_llm_a-sonnet" ~ts:(ts -. 10.0)
         ~tools_used:["read"] ();
     ];
     let agg = M.compute ~base_path:base ~window_minutes:60 in
     check int "total_entries" 3 agg.total_entries;
     check int "models" 2 (List.length agg.models);
-    (* claude-sonnet has 2 entries, should be first (sorted by entry_count desc) *)
+    (* agent_llm_a-sonnet has 2 entries, should be first (sorted by entry_count desc) *)
     let first = List.hd agg.models in
-    check string "first model" "claude-sonnet" first.model_id;
+    check string "first model" "agent_llm_a-sonnet" first.model_id;
     check int "first entry_count" 2 first.entry_count)
 
 let test_top_tools_per_model () =
@@ -418,7 +476,9 @@ let test_json_roundtrip () =
     let models = json |> member "models" |> to_list in
     check bool "has models" true (List.length models > 0);
     let m = List.hd models in
-    check bool "provider unresolved -> null" true
+    check string "model id redacted" (runtime_lane_label_for_test "test-model")
+      (m |> member "model_id" |> to_string);
+    check bool "provider redacted -> null" true
       (match m |> member "provider" with `Null -> true | _ -> false);
     check int "success_count" 1 (m |> member "success_count" |> to_int);
     check int "usage_sample_count" 1
@@ -482,8 +542,8 @@ let test_missing_usage_serializes_unknowns () =
     let path = make_keeper_dir base "missing_usage" in
     let ts = now_unix () in
     write_decisions path [
-      success_entry_without_usage ~model:"kimi-for-coding" ~ts:(ts -. 5.0)
-        ~provider:"kimi_cli" ();
+      success_entry_without_usage ~model:"model-c-coding" ~ts:(ts -. 5.0)
+        ~provider:"cli_tool_c" ();
     ];
     let agg = M.compute ~base_path:base ~window_minutes:60 in
     let s = List.hd agg.models in
@@ -513,9 +573,9 @@ let test_coverage_diagnostics_survive_aggregation () =
     let path = make_keeper_dir base "coverage_diag" in
     let ts = now_unix () in
     write_decisions path [
-      success_entry_without_usage ~model:"glm-coding-plan:glm-5"
+      success_entry_without_usage ~model:"provider_k-coding:provider_k-5"
         ~ts:(ts -. 5.0)
-        ~provider:"glm-coding"
+        ~provider:"provider_k-coding"
         ~turn_lane:"text_only"
         ~stop_reason:"turn_budget_exhausted(3/3)"
         ();
@@ -576,6 +636,52 @@ let test_coverage_diagnostics_survive_aggregation () =
     check string "recent json stage" "oas"
       (recent_json |> member "coverage_stage" |> to_string))
 
+let test_success_without_model_uses_cascade_attribution () =
+  let base = test_dir () in
+  Fun.protect ~finally:(fun () -> cleanup_dir base) (fun () ->
+    let path = make_keeper_dir base "null_model" in
+    let ts = now_unix () in
+    write_decisions path [
+      success_entry_without_model ~cascade_name:"tier-group.provider_k-coding-with-spark"
+        ~ts:(ts -. 5.0) ();
+    ];
+    let agg = M.compute ~base_path:base ~window_minutes:60 in
+    check int "null-model row retained" 1 agg.total_entries;
+    check int "one attributed bucket" 1 (List.length agg.models);
+    let s = List.hd agg.models in
+    check string "cascade attribution"
+      "tier-group.provider_k-coding-with-spark (cascade)"
+      s.model_id;
+    check int "success count" 1 s.success_count;
+    check int "tool calls preserved" 1 s.total_tool_calls;
+    check (option string) "coverage reason retained"
+      (Some "missing_usage_and_inference")
+      s.primary_coverage_reason)
+
+let test_provider_context_attribution_survives_sparse_telemetry () =
+  let base = test_dir () in
+  Fun.protect ~finally:(fun () -> cleanup_dir base) (fun () ->
+    let path = make_keeper_dir base "provider_context_sparse" in
+    let ts = now_unix () in
+    write_decisions path [
+      sparse_provider_context_entry ~outcome:"success"
+        ~cascade_name:"tier-group.coding_plan"
+        ~ts:(ts -. 5.0) ();
+      sparse_provider_context_entry ~outcome:"error"
+        ~cascade_name:"tier-group.coding_plan"
+        ~ts:(ts -. 10.0) ();
+    ];
+    let agg = M.compute ~base_path:base ~window_minutes:60 in
+    check int "sparse rows retained" 2 agg.total_entries;
+    check int "error row counted" 1 agg.total_error_entries;
+    check int "one attributed bucket" 1 (List.length agg.models);
+    let s = List.hd agg.models in
+    check string "provider_context cascade attribution"
+      "tier-group.coding_plan (cascade)"
+      s.model_id;
+    check int "success count" 1 s.success_count;
+    check int "error count" 1 s.error_count)
+
 let test_costs_jsonl_backfills_wall_tok_per_sec () =
   let base = test_dir () in
   Fun.protect ~finally:(fun () -> cleanup_dir base) (fun () ->
@@ -586,13 +692,71 @@ let test_costs_jsonl_backfills_wall_tok_per_sec () =
     ];
     let agg = M.compute ~base_path:base ~window_minutes:60 in
     let s = List.hd agg.models in
-    check string "cost model"
-      "ollama:qwen3.6:27b-coding-nvfp4" s.model_id;
+    check string "cost model" "ollama:qwen3.6:27b-coding-nvfp4" s.model_id;
     check int "one cost entry" 1 s.entry_count;
     check (option (float 0.001)) "wall tok/sec from cost latency"
       (Some 200.0) s.avg_tok_per_sec;
     check int "usage sample" 1 s.usage_sample_count;
     check int "telemetry sample" 1 s.telemetry_sample_count)
+
+let test_costs_jsonl_disambiguates_matching_model_names_by_provider () =
+  let base = test_dir () in
+  Fun.protect ~finally:(fun () -> cleanup_dir base) (fun () ->
+    let ts = now_unix () in
+    write_costs base [
+      cost_entry ~model:"shared-model" ~provider_kind:"ollama" ~ts
+        ~input_tokens:10 ~output_tokens:5 ();
+      cost_entry ~model:"shared-model" ~provider_kind:"provider_a" ~ts:(ts -. 1.0)
+        ~input_tokens:20 ~output_tokens:10 ();
+    ];
+    let agg = M.compute ~base_path:base ~window_minutes:60 in
+    check int "provider-qualified model buckets" 2 (List.length agg.models);
+    let ids = List.map (fun (s : M.model_stats) -> s.model_id) agg.models |> List.sort compare in
+    check
+      (list string)
+      "private provider keys stay distinct"
+      ["provider_a:shared-model"; "ollama:shared-model"]
+      ids;
+    let token_totals =
+      agg.models
+      |> List.map (fun (s : M.model_stats) ->
+        s.model_id, Option.value ~default:0 s.total_input_tokens)
+      |> List.sort (fun (left, _) (right, _) -> compare left right)
+    in
+    check
+      (list (pair string int))
+      "tokens are not merged across provider lanes"
+      ["provider_a:shared-model", 20; "ollama:shared-model", 10]
+      token_totals)
+
+let test_costs_jsonl_zero_latency_is_missing () =
+  let base = test_dir () in
+  Fun.protect ~finally:(fun () -> cleanup_dir base) (fun () ->
+    let ts = now_unix () in
+    write_costs base [
+      cost_entry ~model:"qwen3.6:27b-coding-nvfp4" ~ts
+        ~input_tokens:100 ~output_tokens:50 ~latency_ms:0 ();
+    ];
+    let agg = M.compute ~base_path:base ~window_minutes:60 in
+    let s = List.hd agg.models in
+    check int "one cost entry" 1 s.entry_count;
+    check (option (float 0.001)) "zero latency not averaged"
+      None s.avg_latency_ms;
+    check (option (float 0.001)) "zero latency not p50"
+      None s.p50_latency_ms;
+    check (option (float 0.001)) "zero latency does not derive tok/sec"
+      None s.avg_tok_per_sec;
+    check int "usage sample preserved" 1 s.usage_sample_count;
+    check int "telemetry sample absent" 0 s.telemetry_sample_count;
+    let recent = List.hd s.recent_entries in
+    check (option (float 0.001)) "recent latency unknown"
+      None recent.re_latency_ms;
+    let bucket_total =
+      List.fold_left
+        (fun acc (bucket : M.latency_bucket) -> acc + bucket.count)
+        0 agg.latency_buckets
+    in
+    check int "zero latency skipped from buckets" 0 bucket_total)
 
 let test_costs_jsonl_dedupes_matching_decision_sample () =
   let base = test_dir () in
@@ -619,15 +783,15 @@ let test_cost_latency_json_composes_axes_and_percentiles () =
     let path = make_keeper_dir base "cost_latency" in
     let ts = now_unix () in
     write_decisions path [
-      success_entry ~model:"claude-sonnet" ~provider:"anthropic"
+      success_entry ~model:"agent_llm_a-sonnet" ~provider:"provider_a"
         ~ts:(ts -. 30.0)
         ~input_tokens:100 ~output_tokens:50 ~latency_ms:100
         ~cost_usd:0.03 ();
-      success_entry ~model:"claude-sonnet" ~provider:"anthropic"
+      success_entry ~model:"agent_llm_a-sonnet" ~provider:"provider_a"
         ~ts:(ts -. 20.0)
         ~input_tokens:10 ~output_tokens:5 ~latency_ms:200
         ~cost_usd:0.02 ();
-      success_entry ~model:"gpt-4o" ~provider:"openai"
+      success_entry ~model:"model-d" ~provider:"provider_d"
         ~ts:(ts -. 10.0)
         ~input_tokens:20 ~output_tokens:10 ~latency_ms:1000
         ~cost_usd:0.01 ();
@@ -637,7 +801,8 @@ let test_cost_latency_json_composes_axes_and_percentiles () =
     let per_agent = json |> member "perAgent" |> to_list in
     check int "perAgent row count" 2 (List.length per_agent);
     let first = List.hd per_agent in
-    check string "highest cost first" "claude-sonnet"
+    check string "highest cost first redacted"
+      (runtime_lane_label_for_test "agent_llm_a-sonnet")
       (first |> member "agent" |> to_string);
     check int "input tokens summed" 110
       (first |> member "in_tok" |> to_int);
@@ -647,17 +812,18 @@ let test_cost_latency_json_composes_axes_and_percentiles () =
       (first |> member "cost" |> to_float);
 
     let matrix = json |> member "matrix" in
-    check (list string) "provider axis sorted"
-      ["anthropic"; "openai"]
+    check (list string) "provider axis redacted"
+      ["runtime"]
       (matrix |> member "providers" |> to_list |> List.map to_string);
-    check (list string) "model axis follows model aggregate order"
-      ["claude-sonnet"; "gpt-4o"]
+    check (list string) "model axis redacted"
+      [
+        runtime_lane_label_for_test "agent_llm_a-sonnet";
+        runtime_lane_label_for_test "model-d";
+      ]
       (matrix |> member "models" |> to_list |> List.map to_string);
     let grid = matrix |> member "grid" |> to_list in
     let row0 = List.nth grid 0 |> to_list |> List.map to_float in
-    let row1 = List.nth grid 1 |> to_list |> List.map to_float in
-    check (list (float 0.001)) "anthropic row costs" [0.05; 0.0] row0;
-    check (list (float 0.001)) "openai row costs" [0.0; 0.01] row1;
+    check (list (float 0.001)) "runtime row costs" [0.05; 0.01] row0;
 
     check (float 0.001) "global p50" 200.0
       (json |> member "p50" |> to_float);
@@ -674,6 +840,42 @@ let test_cost_latency_json_composes_axes_and_percentiles () =
     check int "1s-4s bucket count" 1
       (List.nth buckets 1 |> member "n" |> to_int))
 
+let test_public_runtime_lane_label_is_stable_across_windows () =
+  let base = test_dir () in
+  Fun.protect ~finally:(fun () -> cleanup_dir base) (fun () ->
+    let path = make_keeper_dir base "stable_lane" in
+    let ts = now_unix () in
+    write_decisions path [
+      success_entry ~model:"old-busier-model" ~ts:(ts -. 120.0)
+        ~input_tokens:10 ();
+      success_entry ~model:"old-busier-model" ~ts:(ts -. 130.0)
+        ~input_tokens:10 ();
+      success_entry ~model:"stable-model" ~ts:(ts -. 10.0)
+        ~input_tokens:300 ();
+    ];
+    let label_with_input expected_input json =
+      let open Yojson.Safe.Util in
+      json
+      |> member "models"
+      |> to_list
+      |> List.find_map (fun model_json ->
+        if model_json |> member "total_input_tokens" |> to_int = expected_input then
+          Some (model_json |> member "model_id" |> to_string)
+        else
+          None)
+    in
+    let full =
+      M.compute ~base_path:base ~window_minutes:60 |> M.to_json
+      |> label_with_input 300
+    in
+    let short =
+      M.compute ~base_path:base ~window_minutes:1 |> M.to_json
+      |> label_with_input 300
+    in
+    let expected = Some (runtime_lane_label_for_test "stable-model") in
+    check (option string) "full window label" expected full;
+    check (option string) "short window label" expected short)
+
 let test_cost_latency_json_preserves_missing_latency_as_null () =
   let base = test_dir () in
   Fun.protect ~finally:(fun () -> cleanup_dir base) (fun () ->
@@ -686,6 +888,7 @@ let test_cost_latency_json_preserves_missing_latency_as_null () =
         ("tools_used", `List []);
         ("telemetry", `Assoc [
           ("model_used", `String "unlatenced-model");
+          ("outcome", `String "success");
           ("provider", `String "local");
           ("input_tokens", `Int 100);
           ("output_tokens", `Int 50);
@@ -720,6 +923,7 @@ let success_entry_with_thinking ~model ~ts ~thinking_enabled () =
     ("tools_used", `List []);
     ("telemetry", `Assoc ([
       ("model_used", `String model);
+      ("outcome", `String "success");
       ("tokens_per_second", `Float 10.0);
       ("request_latency_ms", `Int 500);
       ("input_tokens", `Int 100);
@@ -804,6 +1008,7 @@ let success_entry_with_cache ~model ~ts ?(input_tokens=100) ~cache_read () =
     ("tools_used", `List []);
     ("telemetry", `Assoc [
       ("model_used", `String model);
+      ("outcome", `String "success");
       ("tokens_per_second", `Float 10.0);
       ("request_latency_ms", `Int 500);
       ("input_tokens", `Int input_tokens);
@@ -949,7 +1154,7 @@ let test_provider_rollup_empty_aggregate () =
     (List.length (M.provider_rollup agg))
 
 let test_provider_rollup_skips_unknown_provider () =
-  let m1 = zero_model_stats "glm-coding:auto" ~provider:(Some "glm-coding")
+  let m1 = zero_model_stats "provider_k-coding:auto" ~provider:(Some "provider_k-coding")
              ~entry_count:5 in
   let m2 = zero_model_stats "bare-model" ~provider:None ~entry_count:3 in
   let agg : M.aggregate =
@@ -959,7 +1164,7 @@ let test_provider_rollup_skips_unknown_provider () =
   let rollup = M.provider_rollup agg in
   check int "only provider=Some survives" 1 (List.length rollup);
   let stats = List.hd rollup in
-  check string "provider" "glm-coding" stats.ps_provider;
+  check string "provider" "provider_k-coding" stats.ps_provider;
   check int "entry_count" 5 stats.ps_entry_count
 
 let test_provider_rollup_weighted_mean () =
@@ -1023,7 +1228,7 @@ let test_provider_rollup_sort_by_entry_count_desc () =
 
 let test_provider_rollup_json_shape () =
   let m =
-    { (zero_model_stats "kimi_cli:kimi" ~provider:(Some "kimi_cli")
+    { (zero_model_stats "cli_tool_c:provider_c" ~provider:(Some "cli_tool_c")
                          ~entry_count:42)
       with avg_tok_per_sec = Some 25.0
          ; prompt_avg_tok_per_sec = Some 180.0
@@ -1036,9 +1241,12 @@ let test_provider_rollup_json_shape () =
   let json = M.provider_stats_to_json (List.hd (M.provider_rollup agg)) in
   match json with
   | `Assoc fields ->
-    check string "provider"
+    check string "provider redacted"
       (match List.assoc "provider" fields with `String s -> s | _ -> "!")
-      "kimi_cli";
+      "runtime";
+    check int "model_count redacted"
+      0
+      (match List.assoc "model_count" fields with `Int n -> n | _ -> -1);
     check int "request_count surfaces entry_count"
       42
       (match List.assoc "entry_count" fields with `Int n -> n | _ -> -1);
@@ -1047,6 +1255,51 @@ let test_provider_rollup_json_shape () =
      | _ -> fail "avg_prompt_tok_per_sec should be Float 180.0")
   | _ -> fail "provider_stats_to_json should return an Assoc"
 
+let test_prompt_feedback_empty_aggregate () =
+  let agg : M.aggregate =
+    { window_minutes = 60
+    ; bucket_minutes = 0
+    ; models = []
+    ; total_entries = 0
+    ; total_error_entries = 0
+    ; latency_buckets = []
+    }
+  in
+  check string "empty aggregate renders empty prompt block" ""
+    (M.render_keeper_prompt_feedback agg)
+
+let test_prompt_feedback_redacts_provider_model_identity () =
+  let raw_model = "openrouter:secret-model" in
+  let lane = runtime_lane_label_for_test raw_model in
+  let stats =
+    { (zero_model_stats raw_model ~provider:(Some "openrouter") ~entry_count:10)
+      with success_count = 7
+         ; error_count = 3
+         ; p95_latency_ms = Some 130_000.0
+         ; avg_tok_per_sec = Some 12.5
+         ; total_input_tokens = Some 1000
+         ; total_output_tokens = Some 250
+         ; usage_missing_count = 1
+         ; telemetry_missing_count = 1
+         ; coverage_status = "partial"
+    }
+  in
+  let agg : M.aggregate =
+    { window_minutes = 120
+    ; bucket_minutes = 0
+    ; models = [ stats ]
+    ; total_entries = 10
+    ; total_error_entries = 3
+    ; latency_buckets = []
+    }
+  in
+  let text = M.render_keeper_prompt_feedback agg in
+  check bool "contains redacted lane label" true (contains_substring text lane);
+  check bool "contains total turns" true (contains_substring text "total_turns=10");
+  check bool "contains error rate" true (contains_substring text "error_rate=30.0%");
+  check bool "does not expose provider" false (contains_substring text "openrouter");
+  check bool "does not expose raw model" false (contains_substring text "secret-model")
+
 (* ── Runner ──────────────────────────────────────── *)
 
 let () =
@@ -1054,8 +1307,8 @@ let () =
     "basics", [
       test_case "empty dir" `Quick test_empty_dir;
       test_case "single model success" `Quick test_single_model_success;
-      test_case "provider_kind classifies bare model provider" `Quick
-        test_provider_kind_classifies_bare_model_provider;
+      test_case "provider_kind is not reconstructed" `Quick
+        test_provider_kind_is_not_reconstructed_from_legacy_fields;
       test_case "untrusted usage excluded from aggregates" `Quick
         test_untrusted_usage_excluded_from_aggregates;
       test_case "error turns counted" `Quick test_error_turns_counted;
@@ -1068,9 +1321,18 @@ let () =
       test_case "prompt tps and peak memory aggregates" `Quick test_prompt_tps_and_peak_memory_aggregates;
       test_case "missing usage serializes unknowns" `Quick test_missing_usage_serializes_unknowns;
       test_case "coverage diagnostics survive aggregation" `Quick test_coverage_diagnostics_survive_aggregation;
+      test_case "success without model uses cascade attribution" `Quick
+        test_success_without_model_uses_cascade_attribution;
+      test_case "provider_context attribution survives sparse telemetry" `Quick
+        test_provider_context_attribution_survives_sparse_telemetry;
       test_case "costs.jsonl backfills wall tok/sec" `Quick test_costs_jsonl_backfills_wall_tok_per_sec;
+      test_case "costs.jsonl disambiguates matching model names by provider" `Quick
+        test_costs_jsonl_disambiguates_matching_model_names_by_provider;
+      test_case "costs.jsonl zero latency stays missing" `Quick test_costs_jsonl_zero_latency_is_missing;
       test_case "costs.jsonl dedupes matching decision sample" `Quick test_costs_jsonl_dedupes_matching_decision_sample;
       test_case "cost latency json composes axes and percentiles" `Quick test_cost_latency_json_composes_axes_and_percentiles;
+      test_case "public runtime lane label is stable across windows" `Quick
+        test_public_runtime_lane_label_is_stable_across_windows;
       test_case "cost latency json preserves missing latency nulls" `Quick test_cost_latency_json_preserves_missing_latency_as_null;
       test_case "json roundtrip" `Quick test_json_roundtrip;
     ];
@@ -1099,5 +1361,11 @@ let () =
         test_provider_rollup_sort_by_entry_count_desc;
       test_case "provider_stats_to_json shape" `Quick
         test_provider_rollup_json_shape;
+    ];
+    "prompt_feedback", [
+      test_case "empty aggregate renders empty" `Quick
+        test_prompt_feedback_empty_aggregate;
+      test_case "redacts provider and model identity" `Quick
+        test_prompt_feedback_redacts_provider_model_identity;
     ];
   ]

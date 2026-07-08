@@ -18,7 +18,7 @@ let add_agent_api_routes router =
            | Some h -> Option.value ~default:24.0 (float_of_string_opt h)
            | None -> 24.0
          in
-         let since = Time_compat.now () -. (hours *. 3600.0) in
+         let since = Time_compat.now () -. (hours *. Masc_time_constants.hour) in
          let activities =
            Telemetry_eio.summarize_agent_activity state.Mcp_server.room_config ~since
          in
@@ -34,14 +34,14 @@ let add_agent_api_routes router =
                ("last_seen", `Float a.last_seen);
              ]) activities));
          ] in
-         Http.Response.json ~compress:true ~request:req (Yojson.Safe.to_string json) reqd
+         Http.Response.json_value ~compress:true ~request:req json reqd
        ) request reqd)
 
   (* Tool metrics -- unified registry stats for dashboard *)
   |> Http.Router.get "/api/v1/tool-metrics" (fun request reqd ->
        with_public_read (fun _state req reqd ->
          let json = Tool_unified.summary_report () in
-         Http.Response.json ~compress:true ~request:req (Yojson.Safe.to_string json) reqd
+         Http.Response.json_value ~compress:true ~request:req json reqd
        ) request reqd)
 
   (* Agent timeline -- per-agent activity timeline for Observatory detail *)
@@ -55,8 +55,13 @@ let add_agent_api_routes router =
            | None -> ""
          in
          if agent_name = "" then
-           Http.Response.json ~status:`Bad_request
-             {|{"error":"agent_name query parameter is required"}|} reqd
+           Http.Response.json_value ~status:`Bad_request
+             (`Assoc
+                [
+                  ( "error",
+                    `String "agent_name query parameter is required" );
+                ])
+             reqd
          else
            let since_hours =
              match Server_utils.query_param req "since_hours" with
@@ -75,8 +80,7 @@ let add_agent_api_routes router =
                ~include_tasks:true ~include_board:false
                ~include_tool_calls:true
            in
-           Http.Response.json ~compress:true ~request:req
-             (Yojson.Safe.to_string json) reqd
+          Http.Response.json_value ~compress:true ~request:req json reqd
        ) request reqd)
 
   (* Agent relations -- collaboration network + trust edges *)
@@ -90,10 +94,14 @@ let add_agent_api_routes router =
            | None -> ""
          in
          if agent_name = "" then
-           Http.Response.json ~status:`Bad_request
-             {|{"error":"agent_name query parameter is required"}|} reqd
+           Http.Response.json_value ~status:`Bad_request
+             (`Assoc
+                [
+                  ( "error",
+                    `String "agent_name query parameter is required" );
+                ])
+             reqd
          else
            let json = Dashboard_agent_relations.json ~agent_name () in
-           Http.Response.json ~compress:true ~request:req
-             (Yojson.Safe.to_string json) reqd
+          Http.Response.json_value ~compress:true ~request:req json reqd
        ) request reqd)

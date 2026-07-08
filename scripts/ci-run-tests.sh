@@ -44,11 +44,6 @@ ACTIVE_CMD_PGID=""
 ACTIVE_LOG_TAIL_PID=""
 CI_LAST_TIMEOUT_DIAG_DONE=0
 
-if [[ -n "${ME_ROOT:-}" ]]; then
-  export MASC_BASE_PATH="${MASC_BASE_PATH:-${ME_ROOT}}"
-  export MASC_BASE_PATH_INPUT="${MASC_BASE_PATH_INPUT:-${MASC_BASE_PATH}}"
-fi
-
 iso_now() {
   date -u +"%Y-%m-%dT%H:%M:%SZ"
 }
@@ -332,7 +327,7 @@ run_with_timeout() {
   tail -n 0 -f "${TEST_LOG_FILE}" &
   ACTIVE_LOG_TAIL_PID=$!
 
-  bash -lc "${cmd}" >> "${TEST_LOG_FILE}" 2>&1 &
+  bash -l -s <<< "${cmd}" >> "${TEST_LOG_FILE}" 2>&1 &
   ACTIVE_CMD_PID=$!
   ACTIVE_CMD_PGID="$(
     ps -o pgid= -p "${ACTIVE_CMD_PID}" 2>/dev/null \

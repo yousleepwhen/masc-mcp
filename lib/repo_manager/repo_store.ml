@@ -3,25 +3,20 @@ open Repo_manager_types
 let ( let* ) = Result.bind
 
 let repos_toml_path base_path =
-  Filename.concat base_path ".masc/config/repositories.toml"
+  (* RFC-0121: layout SSOT via [Config_dir_resolver]. Byte-equal to the
+     previous direct concat (test_rfc0121_repositories_toml). *)
+  Config_dir_resolver.repositories_toml_path ~base_path
 
 let repositories_toml_exists base_path =
   Sys.file_exists (repos_toml_path base_path)
 
+(* NB: [default_local_path] returns a cwd-relative path because it is the
+   default value for the [local_path] field in repositories.toml; the
+   on-disk TOML representation is cwd/base-path-relative by design.
+   Resolver routing for this default is deferred — see RFC-0121 §6. *)
 let default_local_path id = Filename.concat ".masc/repos" id
 
 let now_unix_seconds () = Int64.of_float (Unix.time ())
-
-let ensure_dir path =
-  let rec loop dir =
-    if dir = "" || dir = "." || Sys.file_exists dir then ()
-    else begin
-      loop (Filename.dirname dir);
-      try Unix.mkdir dir 0o755
-      with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
-    end
-  in
-  loop path
 
 let string_of_status = function
   | Active -> "Active"
@@ -39,29 +34,33 @@ let status_of_string = function
 let repository_of_toml toml id =
   let ( let* ) = Result.bind in
   let path field = ["repository"; id; field] in
+  (* RFC-0141 PR-2: Type_mismatch is propagated as Error instead of being
+     silenced into [Ok default]. Missing fields still fall back to default. *)
   let find_string_default field default =
-    match Otoml.find_result toml Otoml.get_string (path field) with
-    | Ok value -> Ok value
-    | Error _ -> Ok default
+    Field_resolution.resolve_string toml (path field)
+    |> Field_resolution.or_default ~default
   in
   let find_bool_default field default =
-    match Otoml.find_result toml Otoml.get_boolean (path field) with
-    | Ok value -> Ok value
-    | Error _ -> Ok default
+    Field_resolution.resolve_bool toml (path field)
+    |> Field_resolution.or_default ~default
   in
   let find_int64_default field default =
-    match Otoml.Helpers.find_integer_result toml (path field) with
-    | Ok value -> Ok (Int64.of_int value)
-    | Error _ -> Ok default
+    match Field_resolution.resolve_int toml (path field) with
+    | Present v -> Ok (Int64.of_int v)
+    | Missing -> Ok default
+    | Type_mismatch { path; expected; message } ->
+      Error
+        (Printf.sprintf "TOML field %s: expected %s (%s)"
+           (String.concat "." path) expected message)
   in
   let find_string_list_default field default =
-    match Otoml.Helpers.find_strings_result toml (path field) with
-    | Ok value -> Ok value
-    | Error _ -> Ok default
+    Field_resolution.resolve_strings toml (path field)
+    |> Field_resolution.or_default ~default
   in
   let* name = Otoml.find_result toml Otoml.get_string (path "name") in
   let* url = Otoml.find_result toml Otoml.get_string (path "url") in
   let* local_path = find_string_default "local_path" (default_local_path id) in
+  let* aliases = find_string_list_default "aliases" [] in
   let* default_branch = find_string_default "default_branch" "main" in
   let* credential_id = find_string_default "credential_id" "default" in
   let* keepers = find_string_list_default "keepers" [] in
@@ -73,7 +72,7 @@ let repository_of_toml toml id =
         match Otoml.find_result toml Otoml.get_string (path "status_error") with
         | Ok msg -> Error msg
         | Error _ -> Error "")
-    | other -> other
+    | Active | Paused | Cloning -> status
   in
   let* auto_sync = find_bool_default "auto_sync" false in
   let* sync_interval = find_int64_default "sync_interval" (Int64.of_int 300) in
@@ -85,6 +84,7 @@ let repository_of_toml toml id =
       name;
       url;
       local_path;
+      aliases;
       default_branch;
       credential_id;
       keepers;
@@ -101,6 +101,9 @@ let toml_of_repository repo =
       ("name", Otoml.string repo.name);
       ("url", Otoml.string repo.url);
       ("local_path", Otoml.string repo.local_path);
+      ( "aliases",
+        Otoml.TomlArray (List.map (fun s -> Otoml.TomlString s) repo.aliases)
+      );
       ("default_branch", Otoml.string repo.default_branch);
       ("credential_id", Otoml.string repo.credential_id);
       ( "keepers",
@@ -117,7 +120,7 @@ let toml_of_repository repo =
     match repo.status with
     | Error msg when String.trim msg <> "" ->
         ("status_error", Otoml.string msg) :: fields
-    | _ -> fields
+    | Error _ | Active | Paused | Cloning -> fields
   in
   Otoml.TomlTable fields
 
@@ -133,6 +136,7 @@ let load_all ~base_path =
           name = Filename.basename base_path;
           url = "";
           local_path = base_path;
+          aliases = [];
           default_branch = "main";
           credential_id = "default";
           keepers = [];
@@ -152,27 +156,29 @@ let load_all ~base_path =
         | Ok (Otoml.TomlTable fields | Otoml.TomlInlineTable fields) ->
             let rec loop acc = function
               | [] -> Ok (List.rev acc)
-              | (id, value) :: rest -> (
-                  match value with
-                  | Otoml.TomlTable _ | Otoml.TomlInlineTable _ ->
-                      let repo_toml =
-                        Otoml.TomlTable
-                          [("repository", Otoml.TomlTable [(id, value)])]
-                      in
-                      (match repository_of_toml repo_toml id with
-                      | Ok repo -> loop (repo :: acc) rest
-                      | Error msg -> Error msg)
-                  | _ ->
-                      Error
-                        (Printf.sprintf "repository.%s must be a table" id))
+              | (id, value) :: rest ->
+                  if is_toml_table value then
+                    let repo_toml =
+                      Otoml.TomlTable
+                        [("repository", Otoml.TomlTable [(id, value)])]
+                    in
+                    (match repository_of_toml repo_toml id with
+                    | Ok repo -> loop (repo :: acc) rest
+                    | Error msg -> Error msg)
+                  else
+                    Error (Printf.sprintf "repository.%s must be a table" id)
             in
             loop [] fields
-        | Ok _ -> Ok [])
+        | Ok (Otoml.TomlString _ | Otoml.TomlInteger _ | Otoml.TomlFloat _
+             | Otoml.TomlBoolean _ | Otoml.TomlOffsetDateTime _
+             | Otoml.TomlLocalDateTime _ | Otoml.TomlLocalDate _
+             | Otoml.TomlLocalTime _ | Otoml.TomlArray _ | Otoml.TomlTableArray _) ->
+            Ok [])
 
 let save_all ~base_path (repos : repository list) =
   let path = repos_toml_path base_path in
   let config_dir = Filename.dirname path in
-  ensure_dir config_dir;
+  Fs_compat.mkdir_p config_dir;
   let repo_entries =
     List.map (fun (repo : repository) -> (repo.id, toml_of_repository repo)) repos
   in
@@ -304,14 +310,42 @@ let slugify_id s =
       | _ -> '-')
     s
 
-let run_read_line cmd =
-  try
-    let ic = Unix.open_process_in cmd in
-    Fun.protect
-      ~finally:(fun () -> ignore (Unix.close_process_in ic))
-      (fun () ->
-        try Ok (input_line ic) with End_of_file -> Error "no output")
-  with Sys_error msg -> Error msg
+let is_directory path = try Sys.is_directory path with Sys_error _ -> false
+
+let is_symlink path =
+  try (Unix.lstat path).st_kind = Unix.S_LNK
+  with Unix.Unix_error _ | Sys_error _ -> false
+
+let is_real_directory path = is_directory path && not (is_symlink path)
+let is_hidden_name name = String.length name > 0 && Char.equal name.[0] '.'
+
+let discover_git_dirs ~base_path =
+  let max_git_depth = 4 in
+  let rec scan_dir ~depth dir acc =
+    let git_dir = Filename.concat dir ".git" in
+    let acc =
+      if depth + 1 <= max_git_depth && is_real_directory git_dir then git_dir :: acc
+      else acc
+    in
+    if depth >= max_git_depth - 1 then acc
+    else
+      let entries =
+        try Sys.readdir dir with Sys_error _ | Unix.Unix_error _ -> [||]
+      in
+      Array.fold_left
+        (fun acc name ->
+          if String.equal name "." || String.equal name ".." || is_hidden_name name
+          then
+            acc
+          else
+            let child = Filename.concat dir name in
+            if is_real_directory child then scan_dir ~depth:(depth + 1) child acc
+            else acc)
+        acc
+        entries
+  in
+  if is_real_directory base_path then List.rev (scan_dir ~depth:0 base_path [])
+  else []
 
 (* Pure path normalization fallback for environments where the path does
    not exist on disk yet (Unix.realpath would raise) or Unix is
@@ -376,25 +410,7 @@ let discover_repositories ~base_path =
             canonical_path (local_path ~base_path:abs_base_path r))
     | Error _ -> []
   in
-  let git_dirs =
-    try
-      let cmd =
-        Printf.sprintf "find %s -maxdepth 4 -name \".git\" -type d 2>/dev/null"
-          (Filename.quote abs_base_path)
-      in
-      let ic = Unix.open_process_in cmd in
-      Fun.protect
-        ~finally:(fun () -> ignore (Unix.close_process_in ic))
-        (fun () ->
-          let rec read_lines acc =
-            match input_line ic with
-            | line -> read_lines (line :: acc)
-            | exception End_of_file -> List.rev acc
-          in
-          read_lines [])
-    with
-    | Sys_error _ | Unix.Unix_error _ | Failure _ -> []
-  in
+  let git_dirs = discover_git_dirs ~base_path:abs_base_path in
   let has_hidden_segment_under_base path =
     if String.equal path abs_base_path then false
     else
@@ -430,11 +446,7 @@ let discover_repositories ~base_path =
         if has_hidden_segment_under_base abs_repo_dir then None
         else if List.exists (String.equal abs_repo_dir) existing_paths then None
         else
-          let url_cmd =
-            Printf.sprintf "git -C %s remote get-url origin 2>/dev/null"
-              (Filename.quote abs_repo_dir)
-          in
-          match run_read_line url_cmd with
+          match Repo_git.get_origin_url ~local_path:abs_repo_dir with
           | Ok url ->
               let name = Filename.basename abs_repo_dir in
               let id = slugify_id name in
@@ -444,6 +456,7 @@ let discover_repositories ~base_path =
                   name;
                   url;
                   local_path = abs_repo_dir;
+                  aliases = [];
                   default_branch = "main";
                   credential_id = "default";
                   keepers = [];
@@ -481,3 +494,12 @@ let register_discovered ~base_path =
   | registered ->
       let* () = save_all ~base_path (existing @ registered) in
       Ok registered
+
+module Lookup = Repo_store_lookup.Make (struct
+  let load_all = load_all
+  let local_path = local_path
+end)
+
+let find_url_by_id = Lookup.find_url_by_id
+let find_repo_by_path_prefix = Lookup.find_repo_by_path_prefix
+

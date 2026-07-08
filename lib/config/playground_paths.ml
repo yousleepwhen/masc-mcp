@@ -88,23 +88,52 @@ let repos_path (name : string) : string =
 let bundle_paths (name : string) : string list =
   [ bundle_root name; mind_path name; repos_path name ]
 
-(** {1 Worktree Naming}
+(* RFC-0128 §4.5 — parse a sandbox playground absolute file path back
+   into [(repo_id, rel_path)]. Used by the keeper write path so that
+   files keepers edit inside their per-keeper repo clones map to the
+   same canonical-URL bucket as files in the user's working tree.
 
-    Worktree directory names and git branch names for keeper task
-    isolation.  [room_worktree.ml] and [worktree_remove_r] delegate
-    here so the naming convention exists in one place. *)
+   Layout matched (relative to [base_path]):
 
-(** Worktree directory name under [.worktrees/]:
-    ["<agent_name>-<task_id>"].  The caller is responsible for passing
-    either a raw or sanitized agent name — this function formats only.
+     .masc/playground/<keeper>/repos/<repo_id>/<rel>           — Local
+     .masc/playground/docker/<keeper>/repos/<repo_id>/<rel>    — Docker
 
-    Example: [worktree_dir_name "sangsu" "fix-bug"] -> ["sangsu-fix-bug"]. *)
-let worktree_dir_name (agent_name : string) (task_id : string) : string =
-  Printf.sprintf "%s-%s" agent_name task_id
-
-(** Git branch name for a keeper worktree:
-    ["<agent_name>/<task_id>"].
-
-    Example: [worktree_branch_name "sangsu" "fix-bug"] -> ["sangsu/fix-bug"]. *)
-let worktree_branch_name (agent_name : string) (task_id : string) : string =
-  Printf.sprintf "%s/%s" agent_name task_id
+   The function is structural: it only accepts paths anchored at the
+   [.masc/playground/] subtree root. Anything outside that subtree, or
+   paths that stop before the [repos/<id>/<rel>] anchor, return [None]. *)
+let parse_playground_repo_path ~base_path ~abs_path =
+  if Filename.is_relative abs_path then None
+  else
+    let base =
+      let n = String.length base_path in
+      if n > 0 && base_path.[n - 1] = '/'
+      then String.sub base_path 0 (n - 1)
+      else base_path
+    in
+    let base_with_slash = base ^ "/" in
+    if not (String.starts_with ~prefix:base_with_slash abs_path) then None
+    else
+      let rel =
+        String.sub abs_path (String.length base_with_slash)
+          (String.length abs_path - String.length base_with_slash)
+      in
+      let segs = String.split_on_char '/' rel in
+      (* Require the ".masc" + "playground" prefix at the base-relative
+         root, then parse the accepted layouts structurally. Do not scan
+         for a later "repos" segment: keeper names can themselves be
+         "repos", and repository working trees may legitimately contain
+         nested ".masc/playground" directories.
+         Layouts accepted:
+           .masc/playground/<keeper>/repos/<id>/<rel>          (Local)
+           .masc/playground/docker/<keeper>/repos/<id>/<rel>   (Docker) *)
+      match segs with
+      | ".masc" :: "playground" :: rest -> (
+        match rest with
+        | "docker" :: _keeper :: "repos" :: repo :: r
+          when repo <> "" && r <> [] ->
+          Some (repo, String.concat "/" r)
+        | _keeper :: "repos" :: repo :: r when repo <> "" && r <> [] ->
+          Some (repo, String.concat "/" r)
+        | _ -> None)
+      | _ -> None
+;;

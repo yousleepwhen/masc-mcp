@@ -10,21 +10,23 @@ import {
   type DashboardRuntimeProvidersResponse,
 } from '../api/dashboard'
 import { ActionButton } from './common/button'
-import { Card } from './common/card'
-import { EmptyState } from './common/empty-state'
+import { SectionCard } from './common/card'
+import { EmptyState } from './common/feedback-state'
 import { ErrorState, LoadingState } from './common/feedback-state'
 import { Select } from './common/select'
 import { StatTile } from './common/stat-tile'
 import { StatusChip } from './common/status-chip'
 import { TextInput } from './common/input'
+import { Table, type TableColumn } from './common/table'
 import type { ManagedAsyncResource } from '../lib/async-state'
 import { useManagedAsyncResource } from '../lib/use-managed-async-resource'
 import { formatCost, formatNumber, formatPct1 } from '../lib/format-number'
+import { MISSING_DATA_DASH } from '../lib/format-string'
 import { formatTimeHms } from '../lib/format-time'
 
 /**
  * Filters model metrics by case-insensitive substring match against
- * `model_id` and any `top_tools[].tool` name. Empty/whitespace query
+ * visible `top_tools[].tool` names. Empty/whitespace query
  * returns the input reference unchanged (ref-equal). No mutation.
  */
 function filterModelMetrics(
@@ -34,7 +36,6 @@ function filterModelMetrics(
   const trimmed = query.trim().toLowerCase()
   if (trimmed.length === 0) return models
   return models.filter(m => {
-    if (m.model_id.toLowerCase().includes(trimmed)) return true
     const tools = m.top_tools ?? []
     for (const t of tools) {
       if (t.tool.toLowerCase().includes(trimmed)) return true
@@ -48,7 +49,7 @@ function filterModelMetrics(
  * 1. coverage_status urgency (error_only → none → partial → full)
  * 2. error_count desc
  * 3. entry_count desc
- * 4. model_id asc
+ * 4. stable internal id asc
  * Returns a new array; does not mutate the input.
  */
 function sortModelMetricsByUrgency(
@@ -132,6 +133,16 @@ function runtimeProviderTone(provider: DashboardRuntimeProviderSnapshot): string
   return 'warn'
 }
 
+function runtimeStatusLabel(provider: DashboardRuntimeProviderSnapshot): string {
+  const advertised = provider.status?.trim().toLowerCase()
+  if (advertised === 'missing_auth') return 'missing auth'
+  if (advertised === 'unsupported') return 'unsupported'
+  if (advertised === 'offline') return 'offline'
+  if (provider.available === true) return 'available'
+  if (provider.available === false) return 'unavailable'
+  return provider.discovery?.healthy === false ? 'degraded' : 'unknown'
+}
+
 function modelMetricTone(metric: DashboardRuntimeModelMetric): string {
   if ((metric.entry_count ?? 0) <= 0) return 'warn'
   const success = metric.success_count ?? metric.entry_count ?? 0
@@ -151,7 +162,7 @@ function fmtSuccessRate(metric: DashboardRuntimeModelMetric): string {
   const success = metric.success_count ?? metric.entry_count ?? 0
   const errors = metric.error_count ?? 0
   const total = success + errors
-  if (total === 0) return '--'
+  if (total === 0) return MISSING_DATA_DASH
   const pct = (success / total) * 100
   return `${pct.toFixed(1)}%`
 }
@@ -216,7 +227,7 @@ function metricMissingLabel(metric: DashboardRuntimeModelMetric): string {
   if (metric.primary_coverage_reason === 'text_only_unmetered') return 'n/a'
   if (metric.coverage_status === 'none') return 'missing'
   if (metric.coverage_status === 'partial') return 'partial'
-  return '--'
+  return MISSING_DATA_DASH
 }
 
 function fmtCoverageAwareNumber(
@@ -225,12 +236,12 @@ function fmtCoverageAwareNumber(
   digits = 0,
 ): string {
   const formatted = formatNumber(value, digits)
-  return formatted !== '--' ? formatted : metricMissingLabel(metric)
+  return formatted !== MISSING_DATA_DASH ? formatted : metricMissingLabel(metric)
 }
 
 function fmtCoverageAwareCost(metric: DashboardRuntimeModelMetric, value?: number | null): string {
   const formatted = formatCost(value)
-  return formatted !== '--' ? formatted : metricMissingLabel(metric)
+  return formatted !== MISSING_DATA_DASH ? formatted : metricMissingLabel(metric)
 }
 
 function recentEntryMissingLabel(
@@ -259,7 +270,7 @@ function fmtRecentEntryNumber(
   digits = 0,
 ): string {
   const formatted = formatNumber(value, digits)
-  return formatted !== '--' ? formatted : recentEntryMissingLabel(entry)
+  return formatted !== MISSING_DATA_DASH ? formatted : recentEntryMissingLabel(entry)
 }
 
 function fmtRecentEntryCost(
@@ -267,7 +278,7 @@ function fmtRecentEntryCost(
   value?: number | null,
 ): string {
   const formatted = formatCost(value)
-  return formatted !== '--' ? formatted : recentEntryMissingLabel(entry)
+  return formatted !== MISSING_DATA_DASH ? formatted : recentEntryMissingLabel(entry)
 }
 
 function recentEntryDetail(
@@ -288,6 +299,34 @@ function recentEntryDetail(
   ].filter((value): value is string => Boolean(value))
   return parts.length > 0 ? parts.join(' · ') : null
 }
+
+type RecentEntry = NonNullable<DashboardRuntimeModelMetric['recent_entries']>[number]
+
+const recentEntryColumns: TableColumn<RecentEntry>[] = [
+  {
+    key: 'time',
+    header: 'time',
+    render: (re) => {
+      const detail = recentEntryDetail(re)
+      return html`
+        <div>
+          <div>${re.ts_unix > 0 ? formatTimeHms(re.ts_unix) : MISSING_DATA_DASH}</div>
+          ${detail ? html`<div class="text-3xs text-[var(--color-fg-muted)] mt-0.5">${detail}</div>` : null}
+        </div>
+      `
+    },
+  },
+  { key: 'input_tokens', header: 'in tok', render: (re) => fmtRecentEntryNumber(re, re.input_tokens) },
+  { key: 'output_tokens', header: 'out tok', render: (re) => fmtRecentEntryNumber(re, re.output_tokens) },
+  {
+    key: 'latency_ms',
+    header: 'latency',
+    render: (re) => re.latency_ms == null ? recentEntryMissingLabel(re) : `${formatNumber(re.latency_ms, 0)}ms`,
+  },
+  { key: 'prompt_tok_per_sec', header: 'prefill tok/s', render: (re) => fmtRecentEntryNumber(re, re.prompt_tok_per_sec, 1) },
+  { key: 'cost_usd', header: 'cost', render: (re) => fmtRecentEntryCost(re, re.cost_usd) },
+  { key: 'tools_count', header: 'tools', render: (re) => String(re.tools_count) },
+]
 
 function metricCoverageText(metric: DashboardRuntimeModelMetric): string | null {
   if (metric.coverage_status === 'full' && metric.primary_coverage_reason == null) return null
@@ -362,15 +401,15 @@ export function RuntimeMonitor() {
         ? html`<${LoadingState}>runtime snapshot 불러오는 중...<//>`
         : null}
 
-      <${Card} title="프로바이더 런타임">
+      <${SectionCard} label="런타임 상태">
         <div class="grid grid-cols-2 gap-3 mb-4">
           <${StatTile}
-            label="프로바이더"
+            label="런타임"
             value=${String(providers?.summary?.providers ?? providers?.providers.length ?? 0)}
             delta=${{ direction: 'flat', text: providers?.updated_at ?? 'updated_at 없음' }}
           />
           <${StatTile}
-            label="로컬 모델"
+            label="로컬 런타임"
             value=${String(providers?.summary?.local_models ?? 0)}
             delta=${{ direction: 'flat', text: `Cloud ${providers?.summary?.cloud_models ?? 0} · CLI ${providers?.summary?.cli_models ?? 0}` }}
           />
@@ -382,35 +421,31 @@ export function RuntimeMonitor() {
                   <div class="flex justify-between gap-3 items-start flex-wrap">
                     <div class="grid gap-1">
                       <strong class="text-sm text-text-strong">${provider.provider}</strong>
-                      <span class="text-xs text-text-muted">${provider.runtime_kind ?? 'runtime'} · ${provider.auth_kind ?? 'auth'} · ${provider.source ?? 'source unknown'}</span>
+                      <span class="text-xs text-text-muted">${provider.runtime_kind ?? '(unknown runtime_kind)'}</span>
                     </div>
                     <${StatusChip}
-                      label=${provider.status ?? (provider.available ? 'available' : 'unknown')}
+                      label=${runtimeStatusLabel(provider)}
                       tone=${runtimeProviderTone(provider)}
                     />
                   </div>
                   <div class="grid grid-cols-2 gap-3 text-xs text-text-body">
-                    <div>default model · ${provider.default_model ?? '없음'}</div>
-                    <div>catalog · ${provider.models.join(', ') || '없음'}</div>
+                    <div>catalog entries · ${formatNumber(provider.model_count ?? provider.models.length)}</div>
                     <div>single-run · ${provider.supports_single_agent_run ? 'yes' : 'no'}</div>
-                    <div>endpoint · ${provider.endpoint_url ?? '없음'}</div>
                   </div>
                   ${provider.discovery
                     ? html`<div class="grid grid-cols-2 gap-3 text-xs text-text-body pt-2 border-t border-card-border/50">
                         <div>discovery · ${provider.discovery.healthy ? 'healthy' : 'degraded'}</div>
                         <div>ctx · ${formatNumber(provider.discovery.ctx_size)}</div>
                         <div>slots · ${formatNumber(provider.discovery.busy_slots)}/${formatNumber(provider.discovery.total_slots)}</div>
-                        <div>model · ${provider.discovery.discovered_model ?? '없음'}</div>
                       </div>`
                     : null}
-                  ${provider.note ? html`<div class="text-xs text-text-muted">${provider.note}</div>` : null}
                 </article>
               `)
-            : html`<${EmptyState} message="provider runtime snapshot이 없습니다." compact />`}
+            : html`<${EmptyState} message="runtime snapshot이 없습니다." compact />`}
         </div>
       <//>
 
-      <${Card} title="모델 메트릭">
+      <${SectionCard} label="런타임 메트릭">
         <div class="grid grid-cols-3 gap-3 mb-4">
           <${StatTile}
             label="텔레메트리 윈도우"
@@ -418,7 +453,7 @@ export function RuntimeMonitor() {
             delta=${{ direction: 'flat', text: `항목 ${formatNumber(metrics?.total_entries ?? 0)}` }}
           />
           <${StatTile}
-            label="추적 중인 모델"
+            label="추적 중인 런타임"
             value=${String(metrics?.models.length ?? 0)}
             delta=${{ direction: 'flat', text: `오류 ${formatNumber(metrics?.total_error_entries ?? 0)}` }}
           />
@@ -431,8 +466,8 @@ export function RuntimeMonitor() {
         <div class="flex items-center justify-end mb-2">
           <${TextInput}
             type="search"
-            ariaLabel="모델 ID 검색"
-            placeholder="model_id 또는 도구 이름"
+            ariaLabel="런타임 도구 검색"
+            placeholder="도구 이름"
             class="min-w-55 flex-1 !py-1 !text-2xs"
             value=${modelSearch.value}
             onInput=${(e: Event) => { modelSearch.value = (e.target as HTMLInputElement).value }}
@@ -455,8 +490,9 @@ export function RuntimeMonitor() {
                 } else if (hasCoverageGap) {
                   articleClass = 'p-4 rounded-[var(--r-1)] border border-[var(--status-warn)] bg-[var(--status-warn)]/5 backdrop-blur-sm shadow-[var(--shadow-1)] flex flex-col gap-2'
                 }
+                const runtimeLabel = metric.model_id
                 const ariaLabel = isFailing
-                  ? `Provider failing: ${metric.model_id}, ${metric.error_count ?? 0} errors out of ${metric.entry_count ?? 0}`
+                  ? `Runtime failing: ${runtimeLabel}, ${metric.error_count ?? 0} errors out of ${metric.entry_count ?? 0}`
                   : undefined
                 return html`
                 <article
@@ -467,7 +503,7 @@ export function RuntimeMonitor() {
                 >
                   <div class="flex justify-between gap-3 items-start flex-wrap">
                     <div class="grid gap-1">
-                      <strong class="text-sm text-text-strong">${metric.model_id}</strong>
+                      <strong class="text-sm text-text-strong">${runtimeLabel}</strong>
                       <span class="text-xs text-text-muted">entries ${formatNumber(metric.entry_count)} · fallback ${formatNumber(metric.fallback_count)}</span>
                       ${metricCoverageText(metric)
                         ? html`<span class="text-2xs ${hasCoverageGap ? 'text-[var(--status-warn)]' : 'text-[var(--color-fg-muted)]'}">${metricCoverageText(metric)}</span>`
@@ -579,28 +615,11 @@ export function RuntimeMonitor() {
                       </button>
                       ${expandedModel.value === metric.model_id
                         ? html`<div class="mt-1 border-t border-card-border/50 pt-2">
-                            <div class="grid grid-cols-7 gap-1 text-3xs text-[var(--color-fg-muted)] font-medium mb-1">
-                              <div>time</div><div>in tok</div><div>out tok</div><div>latency</div><div>prefill tok/s</div><div>cost</div><div>tools</div>
-                            </div>
-                            ${metric.recent_entries?.map(re => {
-                              const detail = recentEntryDetail(re)
-                              return html`
-                                <div class="mb-1">
-                                  <div class="grid grid-cols-7 gap-1 text-2xs text-[var(--color-fg-primary)]">
-                                    <div>${re.ts_unix > 0 ? formatTimeHms(re.ts_unix) : '--'}</div>
-                                    <div>${fmtRecentEntryNumber(re, re.input_tokens)}</div>
-                                    <div>${fmtRecentEntryNumber(re, re.output_tokens)}</div>
-                                    <div>${re.latency_ms == null ? recentEntryMissingLabel(re) : `${formatNumber(re.latency_ms, 0)}ms`}</div>
-                                    <div>${fmtRecentEntryNumber(re, re.prompt_tok_per_sec, 1)}</div>
-                                    <div>${fmtRecentEntryCost(re, re.cost_usd)}</div>
-                                    <div>${re.tools_count}</div>
-                                  </div>
-                                  ${detail
-                                    ? html`<div class="text-3xs text-[var(--color-fg-muted)]">${detail}</div>`
-                                    : null}
-                                </div>
-                              `
-                            })}
+                            <${Table}
+                              columns=${recentEntryColumns}
+                              rows=${metric.recent_entries ?? []}
+                              getRowId=${(re: RecentEntry) => `${metric.model_id}-${re.ts_unix}`}
+                            />
                           </div>`
                         : null}
                     `
@@ -608,7 +627,7 @@ export function RuntimeMonitor() {
                 </article>
               `
               })
-            : html`<${EmptyState} message="최근 model inference metrics가 없습니다." compact />`}
+            : html`<${EmptyState} message="최근 runtime inference metrics가 없습니다." compact />`}
         </div>
       <//>
     </div>

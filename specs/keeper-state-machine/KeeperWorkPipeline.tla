@@ -1,19 +1,34 @@
 ---- MODULE KeeperWorkPipeline ----
 \* ── STATUS: ASPIRATIONAL DESIGN INVARIANT (not wired to current runtime) ──
-\* This spec describes a future workspace/PR/commit pipeline. As of
-\* 2026-04-20:
-\*   - lib/keeper/keeper_exec_github.ml does NOT exist
-\*     (`find lib -name "*github*"` returns 0 hits in lib/keeper/)
+\* This spec describes a future workspace/PR/commit pipeline. Re-verified
+\* 2026-05-12 (iter 88 — banner anti-staleness check):
+\*   - The legacy autonomous GitHub exec runtime this spec once named is
+\*     still absent.  NOTE: the 2026-04-20 probe `find lib -name
+\*     "*github*"` is no longer the right signal — GitHub credentials and
+\*     metrics helpers can exist without implying an autonomous
+\*     work-pipeline runtime.  The durable signal is the primitive set
+\*     below.
 \*   - The primitives this spec models — `force_push_attempted`,
 \*     `workspace_init`, `workspace_cleaned`, `commit_identity`,
-\*     `submit_count` — have 0 hits in lib/keeper/
-\*   - This spec is NOT in scripts/tla-check.sh (TLC does not run it)
-\* The actual keeper exec surface is keeper_exec_board / _context / _fs /
-\* _masc / _memory + keeper_tool_pr_review, with a different state shape.
+\*     `submit_count` — STILL have 0 hits in lib/keeper/ (this is the
+\*     anti-staleness probe to use: `rg 'force_push_attempted|workspace_init'
+\*     lib/keeper/` → 0).
+\*   - Runner status (was "NOT in scripts/tla-check.sh"): this spec IS in
+\*     the corpus (specs/Makefile, scripts/ci/check-tla-harness-coverage.sh)
+\*     and has a bug-model partner (specs/bug-models/KeeperWorkPipelineBug.tla),
+\*     but it is listed in specs/Makefile's KNOWN_FAILURES — "clean spec
+\*     violates invariant (exit 13) — model needs fix, not path issue" — so
+\*     `make -C specs check-clean` skipped it until 2026-05-25.  The clean
+\*     model now verifies after adding weak fairness to the intra-pipeline
+\*     progress actions below; the runtime-not-wired situation is still
+\*     separate and should remain visible in this banner.
+\* The actual keeper tool runtime surface is descriptor-routed agent_tool_*_runtime
+\* modules with a different state shape.
 \* See issue #9044 for the retire / re-target / banner trichotomy.
 \* This banner takes the "banner" option to make the aspirational nature
 \* explicit; treat the safety properties below as forward-looking design
-\* documentation, not runtime invariants.
+\* documentation, not runtime invariants — and note that one of them is
+\* currently violated by the model itself (KNOWN_FAILURES, above).
 \* ──────────────────────────────────────────────────────────────────────
 \*
 \* Keeper Autonomous Work Pipeline — TLA+ Formal Specification (DESIGN)
@@ -32,9 +47,7 @@
 \*   - Review before submit (at least one review before PR creation)
 \*   - No orphan workspaces (initialized workspaces always cleaned up)
 \*
-\* Mirrors (TARGET, not current):
-\*   lib/keeper/keeper_exec_github.ml — DOES NOT EXIST AS OF 2026-04-20
-\*   lib/tool_code_write.ml          — exists, partially relevant
+\* Mirrors a target work-pipeline runtime, not current production code.
 
 EXTENDS Naturals, FiniteSets
 
@@ -344,10 +357,17 @@ Next ==
 
 Fairness ==
     /\ WF_vars(WorkspaceReady)
+    /\ WF_vars(WriteFile)
+    /\ WF_vars(StartTesting)
     /\ WF_vars(TestSucceeds)
+    /\ WF_vars(SelfReview)
     /\ WF_vars(ReviewComplete)
+    /\ WF_vars(CommitChanges)
+    /\ WF_vars(PushChanges)
     /\ WF_vars(CreatePR)
     /\ WF_vars(PRApproved)
+    /\ WF_vars(PRChangesRequested)
+    /\ WF_vars(AddressFeedback)
     /\ WF_vars(CleanupWorkspace)
     /\ WF_vars(PreserveWorkspace)
     /\ SF_vars(BudgetExhausted)

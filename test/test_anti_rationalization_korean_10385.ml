@@ -10,7 +10,7 @@
 
     The keeper fleet runs Korean LLM output as the dominant
     surface (Kidsnote, Korean commit messages, Korean broadcast).
-    [~/me/.masc/institution_episodes.jsonl] holds entries with
+    [<base-path>/.masc/institution_episodes.jsonl] holds entries with
     "나중에", "범위 밖", "재현 안됨" that the pre-fix detector
     silently ignored — 0% recall on Korean rationalization while
     the dashboard counter showed nominal English hits.
@@ -25,8 +25,8 @@ open Alcotest
 
 module A = Masc_mcp.Anti_rationalization
 
-(* Isolate the loader from the real user's
-   [~/.masc/config/excuse_patterns.json], but still reproduce the
+(* Isolate the loader from the real user's active config root
+   [excuse_patterns.json], but still reproduce the
    important deployment case: an older persisted default config
    exists and contains only the English patterns.  Without the
    runtime migration in [load_excuse_patterns], Korean detection
@@ -59,7 +59,7 @@ let () =
 ]|};
   close_out oc;
   Unix.putenv "MASC_CONFIG_DIR" isolated;
-  Masc_mcp.Config_dir_resolver.reset ()
+  Config_dir_resolver.reset ()
 
 let assert_match ~msg ~text ~expected_pattern =
   match A.find_excuse_pattern text with

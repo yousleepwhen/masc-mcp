@@ -41,11 +41,8 @@ import { html } from 'htm/preact'
 import { App } from './app'
 import { performanceMonitor } from './lib/performance-monitor'
 import { startWebVitalsCapture } from './utils/performance-metrics'
-
-const THEME_STORAGE_KEYS = ['dashboardTheme', 'masc-theme-v2'] as const
-const THEME_SEARCH_PARAM = 'theme'
-
-type ThemeId = 'paper' | null
+import { startNavTelemetry } from './lib/nav-telemetry'
+import { THEME_STORAGE_KEYS, THEME_SEARCH_PARAM, type ThemeId } from './lib/theme'
 
 function normalizeTheme(raw: string | null): ThemeId {
   if (raw === 'paper' || raw === 'light') {
@@ -109,3 +106,7 @@ performanceMonitor.start()
 // Begin capturing synthetic web-vitals (TTFB, FCP, LCP, CLS, FID).
 // Snapshot available on window.__MASC_WEB_VITALS__ for test/playwright inspection.
 startWebVitalsCapture()
+
+// RFC-0049 — surface/section open counters to /api/v1/dashboard/nav-event.
+// Aggregate only, no PII. Drives RFC-0048 IA decisions.
+startNavTelemetry()

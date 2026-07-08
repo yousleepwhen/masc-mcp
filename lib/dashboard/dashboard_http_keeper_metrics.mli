@@ -14,15 +14,15 @@
     [jaccard_similarity_text], [take_last]),
     [type keeper_24h_bucket_stats] + builder, the 24h JSON
     helpers ([keeper_metrics_24h_json],
-    [keeper_history_summary_json]), and [get_agent_identity]. *)
+    [keeper_history_summary_json]). *)
 
 (** {1 Model name normalization (cascade-visible)} *)
 
 val normalize_model_name : string -> string
 (** [normalize_model_name s] trims whitespace and strips the
     [":latest"] suffix when present.  Used by the keeper-detail
-    aggregator to dedupe model labels (e.g. ["claude-sonnet"] vs
-    ["claude-sonnet:latest"]). *)
+    aggregator to dedupe model labels (e.g. ["agent_llm_a-sonnet"] vs
+    ["agent_llm_a-sonnet:latest"]). *)
 
 (** {1 Per-keeper window statistics (cascade-visible)} *)
 
@@ -129,15 +129,6 @@ val keeper_history_summary_json :
        compaction_count, handoff_count)].  The 6-tuple shape is
     operator-visible in the dashboard and pinned at the contract
     seam. *)
-
-val get_agent_identity : string -> string * string
-(** [get_agent_identity name] is a thin re-export of
-    {!Dashboard_execution_helpers.get_agent_identity}.  Returns
-    [(emoji, label)] for the named agent — used by the
-    keeper-detail builder to attach an emoji + display label to
-    each row.  Kept here so the cascade consumer can call it
-    bare via include without opening
-    [Dashboard_execution_helpers] separately. *)
 
 (** {1 Test-visible helpers}
     Pinned for behaviour-tests under {!test/test_dashboard_keeper_metrics_10286}. *)

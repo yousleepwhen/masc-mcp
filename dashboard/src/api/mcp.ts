@@ -17,6 +17,7 @@ import {
 } from '../config/constants'
 import { reportToolHostFailure } from './tool-host-failure'
 import { showActionToast } from '../components/common/toast'
+import { errorToString } from '../lib/format-string'
 
 // --- MCP Session Management ---
 
@@ -26,8 +27,6 @@ const MCP_SESSION_BLOCKED = '__blocked__'
 let mcpSessionId: string | null = null
 let initPromise: Promise<void> | null = null
 let initCooldownTimer: ReturnType<typeof setTimeout> | null = null
-
-export { ensureDevToken }
 
 async function bestEffortReportToolHostFailure(payload: {
   toolName: string
@@ -269,7 +268,7 @@ async function callMcpToolInternal(
     const parsed = parseMcpHttpResponse(text)
     return extractMcpText(parsed)
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
+    const message = errorToString(err)
     if (shouldReportToolHostFailure(message)) {
       await bestEffortReportToolHostFailure({
         toolName,

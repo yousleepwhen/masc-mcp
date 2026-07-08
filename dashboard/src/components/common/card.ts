@@ -3,6 +3,7 @@
 
 import { html } from 'htm/preact'
 import type { ComponentChildren } from 'preact'
+import { isNonBlankString } from '../../lib/format-string'
 import { SectionHead } from '../section-head'
 import { statusBadgeTone, statusDotColor } from './status-badge'
 
@@ -15,7 +16,7 @@ const CARD_COMPACT = `${CARD_BASE} !p-3.5 !shadow-[var(--shadow-1)]`
 export type CardVariant = 'standard' | 'light' | 'compact'
 export type CardToneSource = 'none' | 'tone-class'
 export type CardContentState = 'empty' | 'text' | 'node'
-export type SectionCardLabelSource = 'label' | 'title' | 'empty'
+export type SectionCardLabelSource = 'label' | 'empty'
 export type SectionCardTailSource = 'right' | 'status-eyebrow' | 'none'
 export type CardStatusDotTone = 'ok' | 'warn' | 'bad' | 'info' | 'neutral'
 
@@ -27,6 +28,8 @@ export interface SurfaceCardSummary {
   readonly toneLength: number
   readonly hasCustomClass: boolean
   readonly classNameLength: number
+  readonly hasStyle: boolean
+  readonly styleLength: number
   readonly hasTestId: boolean
   readonly testIdLength: number
   readonly contentState: CardContentState
@@ -63,10 +66,6 @@ const VARIANT_CLASSES: Record<CardVariant, string> = {
   compact: CARD_COMPACT,
 }
 
-function hasNonEmptyString(value: string | undefined): boolean {
-  return value !== undefined && value.trim() !== ''
-}
-
 function trimmedTextLength(value: string | undefined): number {
   return value?.trim().length ?? 0
 }
@@ -92,7 +91,7 @@ function normalizeStatus(status: string | undefined): string {
   return status?.trim().toLowerCase() ?? ''
 }
 
-function surfaceCardClassName({
+export function surfaceCardClassName({
   variant,
   tone,
   className,
@@ -124,26 +123,31 @@ export interface SurfaceCardProps {
   class?: string
   /** Tone class: 'ok' | 'warn' | 'bad' */
   tone?: string
+  style?: string
   testId?: string
   children: ComponentChildren
+  [key: string]: unknown
 }
 
 export function summarizeSurfaceCard({
   variant = 'standard',
   class: cx,
   tone,
+  style,
   testId,
   children,
 }: SurfaceCardProps): SurfaceCardSummary {
   return {
     variant,
     tone: tone ?? '',
-    toneSource: hasNonEmptyString(tone) ? 'tone-class' : 'none',
-    hasTone: hasNonEmptyString(tone),
+    toneSource: isNonBlankString(tone) ? 'tone-class' : 'none',
+    hasTone: isNonBlankString(tone),
     toneLength: trimmedTextLength(tone),
-    hasCustomClass: hasNonEmptyString(cx),
+    hasCustomClass: isNonBlankString(cx),
     classNameLength: trimmedTextLength(cx),
-    hasTestId: hasNonEmptyString(testId),
+    hasStyle: isNonBlankString(style),
+    styleLength: trimmedTextLength(style),
+    hasTestId: isNonBlankString(testId),
     testIdLength: trimmedTextLength(testId),
     contentState: contentState(children),
   }
@@ -153,19 +157,23 @@ export function SurfaceCard({
   variant = 'standard',
   class: cx,
   tone,
+  style,
   testId,
   children,
+  ...rest
 }: SurfaceCardProps) {
   const summary = summarizeSurfaceCard({
     variant,
     class: cx,
     tone,
+    style,
     testId,
     children,
   })
   const cls = surfaceCardClassName({ variant, tone, className: cx })
   return html`<div
     class=${cls}
+    style=${style}
     data-surface-card
     data-surface-card-variant=${summary.variant}
     data-surface-card-tone=${summary.tone}
@@ -174,17 +182,19 @@ export function SurfaceCard({
     data-surface-card-tone-length=${summary.toneLength}
     data-surface-card-has-custom-class=${summary.hasCustomClass}
     data-surface-card-class-length=${summary.classNameLength}
+    data-surface-card-has-style=${summary.hasStyle}
+    data-surface-card-style-length=${summary.styleLength}
     data-surface-card-has-test-id=${summary.hasTestId}
     data-surface-card-test-id-length=${summary.testIdLength}
     data-surface-card-content-state=${summary.contentState}
     data-testid=${testId}
+    ...${rest}
   >${children}</div>`
 }
 
 // ── Section card with label header ──
 export interface SectionCardProps {
   label?: ComponentChildren
-  title?: ComponentChildren
   right?: ComponentChildren
   eyebrow?: ComponentChildren
   status?: string
@@ -194,6 +204,7 @@ export interface SectionCardProps {
   testId?: string
   'data-testid'?: string
   children: ComponentChildren
+  [key: string]: unknown
 }
 
 function statusDotClass(status?: string): string {
@@ -202,7 +213,6 @@ function statusDotClass(status?: string): string {
 
 export function summarizeSectionCard({
   label,
-  title,
   right,
   eyebrow,
   status,
@@ -213,13 +223,10 @@ export function summarizeSectionCard({
   'data-testid': dataTestId,
   children,
 }: SectionCardProps): SectionCardSummary {
-  const sectionLabel = label ?? title
+  const sectionLabel = label
   const normalizedStatus = normalizeStatus(status)
   const hasStatus = normalizedStatus !== ''
-  const labelSource =
-    label != null ? 'label' :
-      title != null ? 'title' :
-        'empty'
+  const labelSource = label != null ? 'label' : 'empty'
   const tailSource =
     right != null ? 'right' :
       eyebrow != null || hasStatus ? 'status-eyebrow' :
@@ -242,11 +249,11 @@ export function summarizeSectionCard({
     eyebrowState: contentState(eyebrow),
     eyebrowTextLength: textLength(eyebrow),
     hasRightSlot: right != null,
-    hasTone: hasNonEmptyString(tone),
+    hasTone: isNonBlankString(tone),
     toneLength: trimmedTextLength(tone),
-    hasCustomClass: hasNonEmptyString(cx),
+    hasCustomClass: isNonBlankString(cx),
     classNameLength: trimmedTextLength(cx),
-    hasTestId: hasNonEmptyString(effectiveTestId),
+    hasTestId: isNonBlankString(effectiveTestId),
     testIdLength: trimmedTextLength(effectiveTestId),
     contentState: contentState(children),
   }
@@ -254,7 +261,6 @@ export function summarizeSectionCard({
 
 export function SectionCard({
   label,
-  title,
   right,
   eyebrow,
   status,
@@ -264,6 +270,7 @@ export function SectionCard({
   testId,
   'data-testid': dataTestId,
   children,
+  ...rest
 }: SectionCardProps) {
   // SPEC `.section-head` upgrade — SectionHead atom replaces the
   // legacy SectionHeader. The strip wants to sit flush against the
@@ -276,7 +283,6 @@ export function SectionCard({
   // path; the new wrapper uses p-3.5 to preserve that visual.
   const summary = summarizeSectionCard({
     label,
-    title,
     right,
     eyebrow,
     status,
@@ -288,7 +294,7 @@ export function SectionCard({
     children,
   })
   const bodyPadding = summary.bodyPadding
-  const sectionLabel = label ?? title ?? ''
+  const sectionLabel = label ?? ''
   const tail = right ?? (
     eyebrow != null || summary.hasStatus
       ? html`
@@ -342,30 +348,10 @@ export function SectionCard({
       data-section-card-test-id-length=${summary.testIdLength}
       data-section-card-content-state=${summary.contentState}
       data-testid=${effectiveTestId}
+      ...${rest}
     >
       <${SectionHead} tail=${tail}>${sectionLabel}<//>
       <div class="${bodyPadding} flex flex-col gap-4">${children}</div>
     </div>
   `
-}
-
-
-// ── Legacy Card (backward compat — accepts title prop) ──
-export interface CardProps {
-  title?: ComponentChildren
-  class?: string
-  variant?: CardVariant
-  testId?: string
-  children: ComponentChildren
-}
-
-export function Card({ title, class: cx, variant = 'standard', testId, children }: CardProps) {
-  if (title) {
-    return html`
-      <${SectionCard} label=${title} class=${cx ?? ''} variant=${variant}>
-        ${children}
-      <//>
-    `
-  }
-  return html`<${SurfaceCard} variant=${variant} class=${cx} testId=${testId}>${children}<//>`
 }

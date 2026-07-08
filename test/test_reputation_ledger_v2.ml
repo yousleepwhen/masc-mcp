@@ -34,15 +34,8 @@ let with_room f =
   Eio_main.run @@ fun env ->
   Fs_compat.set_fs (Eio.Stdenv.fs env);
   let dir = temp_dir () in
-  let saved_pg = Sys.getenv_opt "MASC_POSTGRES_URL" in
-  let saved_sb = Sys.getenv_opt "SB_PG_URL" in
-  Unix.putenv "MASC_POSTGRES_URL" "";
-  Unix.putenv "SB_PG_URL" "";
   Fun.protect
-    ~finally:(fun () ->
-      restore_env "MASC_POSTGRES_URL" saved_pg;
-      restore_env "SB_PG_URL" saved_sb;
-      cleanup_dir dir)
+    ~finally:(fun () -> cleanup_dir dir)
     (fun () ->
       let config = Coord.default_config dir in
       ignore (Coord.init config ~agent_name:(Some "test-agent"));
@@ -54,7 +47,7 @@ let test_emit_and_read_tool_outcome () =
   with_room (fun config ->
     Reputation_ledger_v2.emit_tool_outcome config
       ~agent_id:"agent-alpha"
-      ~tool_name:"keeper_bash"
+      ~tool_name:"tool_execute"
       ~success:true
       ();
     Reputation_ledger_v2.emit_tool_outcome config

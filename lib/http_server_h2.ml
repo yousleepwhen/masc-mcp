@@ -40,6 +40,13 @@ let request_of_reqd reqd =
 
 (** Simple response helpers - H2 streaming API *)
 module Response = struct
+  let maybe_compress ?(compress = true) reqd body =
+    let request = H2.Reqd.request reqd in
+    Http_response_payload.compress_body
+      ~compress
+      ~accept_encoding:(H2.Headers.get request.headers "accept-encoding")
+      body
+
   (** Send a complete response body *)
   let send_body reqd response body =
     (* H2 API: respond_with_streaming returns Body.Writer.t directly
@@ -48,32 +55,37 @@ module Response = struct
     H2.Body.Writer.write_string writer body;
     H2.Body.Writer.close writer
 
-  let text ?(status = `OK) body reqd =
-    let headers = H2.Headers.of_list ([
-      ("content-type", "text/plain; charset=utf-8");
-      ("content-length", string_of_int (String.length body));
-    ]) in
+  let send_typed_body
+      ?(status = `OK)
+      ?(headers = [])
+      ?(compress = true)
+      ~content_type
+      body
+      reqd =
+    let final_body, compression_headers = maybe_compress ~compress reqd body in
+    let headers =
+      H2.Headers.of_list
+        ([
+           ("content-type", content_type);
+           ("content-length", string_of_int (String.length final_body));
+         ]
+        @ compression_headers
+        @ headers)
+    in
     let response = H2.Response.create ~headers status in
-    send_body reqd response body
+    send_body reqd response final_body
+
+  let text ?(status = `OK) body reqd =
+    send_typed_body ~status ~content_type:"text/plain; charset=utf-8" body reqd
 
   let html ?(status = `OK) ?(headers = []) body reqd =
-    let base_headers = [
-      ("content-type", "text/html; charset=utf-8");
-      ("content-length", string_of_int (String.length body));
-    ] in
-    let response = H2.Response.create
-      ~headers:(H2.Headers.of_list (base_headers @ headers))
-      status
-    in
-    send_body reqd response body
+    send_typed_body ~status ~headers ~content_type:"text/html; charset=utf-8" body reqd
 
   let json ?(status = `OK) body reqd =
-    let headers = H2.Headers.of_list ([
-      ("content-type", "application/json; charset=utf-8");
-      ("content-length", string_of_int (String.length body));
-    ]) in
-    let response = H2.Response.create ~headers status in
-    send_body reqd response body
+    send_typed_body ~status ~content_type:"application/json; charset=utf-8" body reqd
+
+  let json_value ?status value reqd =
+    json ?status (Yojson.Safe.to_string value) reqd
 
   let not_found reqd =
     text ~status:`Not_found "404 Not Found" reqd
@@ -97,15 +109,7 @@ module Response = struct
     H2.Reqd.respond_with_streaming ~flush_headers_immediately:true reqd response
 
   let bytes ?(status = `OK) ?(headers = []) ~content_type body reqd =
-    let base_headers = [
-      ("content-type", content_type);
-      ("content-length", string_of_int (String.length body));
-    ] in
-    let response = H2.Response.create
-      ~headers:(H2.Headers.of_list (base_headers @ headers))
-      status
-    in
-    send_body reqd response body
+    send_typed_body ~status ~headers ~compress:false ~content_type body reqd
 
   let internal_error msg reqd =
     text ~status:`Internal_server_error ("500 Internal Server Error: " ^ msg) reqd
@@ -172,15 +176,14 @@ end
 (** Read request body - H2 uses async body reading with callback *)
 let read_body_async reqd callback =
   let body = H2.Reqd.request_body reqd in
-  let buf = Buffer.create 4096 in
+  let buf = Http_body_buffer.create 4096 in
   let rec read_loop () =
     H2.Body.Reader.schedule_read body
       ~on_eof:(fun () ->
-        let body_str = Buffer.contents buf in
+        let body_str = Http_body_buffer.contents buf in
         callback body_str)
       ~on_read:(fun bigstring ~off ~len ->
-        let bytes = Bigstringaf.substring bigstring ~off ~len in
-        Buffer.add_string buf bytes;
+        Http_body_buffer.add_bigstring buf bigstring ~off ~len;
         read_loop ())
   in
   read_loop ()
@@ -267,6 +270,15 @@ let run ~sw ~net ~clock config request_handler =
   Printf.printf "MASC MCP Server (HTTP/2) listening on http://%s:%d\n" config.host config.port;
   Printf.printf "   HTTP/2 multiplexing: unlimited SSE streams per connection\n%!";
 
+  (* Stable listener identity. Embedded in every error log below so
+     operators can tell which listener emitted the line when the
+     process runs multiple HTTP servers (HTTP/2 here vs HTTP/1.1 in
+     http_server_eio.ml vs admin/health sub-servers). Mirrors the
+     "h1" listener_tag pattern in http_server_eio.ml. *)
+  let listener_tag =
+    Printf.sprintf "h2 %s:%d" config.host config.port
+  in
+
   let initial_backoff_s = 0.05 in
   let max_backoff_s = 1.0 in
   let backoff_s = ref initial_backoff_s in
@@ -289,7 +301,8 @@ let run ~sw ~net ~clock config request_handler =
               try Eio.Flow.close flow with
               | Eio.Cancel.Cancelled _ as e -> raise e
               | exn ->
-                Log.Misc.error "[h2] flow close failed: %s" (Printexc.to_string exn)
+                Log.Misc.error "[%s] flow close failed: %s"
+                  listener_tag (Printexc.to_string exn)
             );
             try
               H2_eio.Server.create_connection_handler
@@ -301,14 +314,15 @@ let run ~sw ~net ~clock config request_handler =
             with
             | Eio.Cancel.Cancelled _ as e -> raise e
             | exn ->
-              Log.Http.error "Connection error: %s" (Printexc.to_string exn)
+              Log.Http.error "[%s] connection error: %s"
+                listener_tag (Printexc.to_string exn)
           )
         )
       with Eio.Cancel.Cancelled _ as e -> raise e | exn ->
         if is_cancelled exn then raise exn;
         let delay = !backoff_s in
-        Log.Http.error "Accept error: %s (backoff %.2fs)"
-          (Printexc.to_string exn) delay;
+        Log.Http.error "[%s] accept error: %s (backoff %.2fs)"
+          listener_tag (Printexc.to_string exn) delay;
         Eio.Time.sleep clock delay;
         bump_backoff ());
       accept_loop ()
@@ -316,8 +330,8 @@ let run ~sw ~net ~clock config request_handler =
       if is_cancelled exn then ()
       else begin
         let delay = !backoff_s in
-        Log.Http.error "Accept loop error: %s (backoff %.2fs)"
-          (Printexc.to_string exn) delay;
+        Log.Http.error "[%s] accept loop error: %s (backoff %.2fs)"
+          listener_tag (Printexc.to_string exn) delay;
         Eio.Time.sleep clock delay;
         bump_backoff ();
         accept_loop ()

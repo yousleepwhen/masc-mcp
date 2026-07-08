@@ -1,8 +1,36 @@
 import { html } from 'htm/preact'
-import { cleanup, render, screen } from '@testing-library/preact'
-import { afterEach, describe, expect, it } from 'vitest'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/preact'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { GoalLoopPanel } from './goal-loop-panel'
 import { normalizeGoalLoopStatus } from '../goal-loop-status'
+
+const mocks = vi.hoisted(() => ({
+  callMcpTool: vi.fn(),
+  fetchGoalLoopStatus: vi.fn(),
+  fetchDashboardGoalsTree: vi.fn(),
+  hydrateGoalTreeSnapshot: vi.fn(),
+  navigate: vi.fn(),
+}))
+
+vi.mock('../api/mcp', () => ({
+  callMcpTool: mocks.callMcpTool,
+}))
+
+vi.mock('../api/goal-loop', () => ({
+  fetchGoalLoopStatus: mocks.fetchGoalLoopStatus,
+}))
+
+vi.mock('../api/dashboard', () => ({
+  fetchDashboardGoalsTree: mocks.fetchDashboardGoalsTree,
+}))
+
+vi.mock('../goal-tree-state', () => ({
+  hydrateGoalTreeSnapshot: mocks.hydrateGoalTreeSnapshot,
+}))
+
+vi.mock('../router', () => ({
+  navigate: mocks.navigate,
+}))
 
 function blockedStatus() {
   return normalizeGoalLoopStatus({
@@ -64,14 +92,18 @@ function blockedStatus() {
 describe('GoalLoopPanel', () => {
   afterEach(() => {
     cleanup()
+    mocks.callMcpTool.mockReset()
+    mocks.fetchGoalLoopStatus.mockReset()
+    mocks.fetchDashboardGoalsTree.mockReset()
+    mocks.hydrateGoalTreeSnapshot.mockReset()
+    mocks.navigate.mockReset()
   })
 
-  it('renders phase status, next action, and the strict corpus blocker', () => {
+  it('renders phase table, audit, next action, and the strict corpus blocker', () => {
     render(html`<${GoalLoopPanel} initialStatus=${blockedStatus()} />`)
 
     expect(screen.getByTestId('goal-loop-panel')).toBeTruthy()
-    expect(screen.getByTestId('goal-loop-phase-observe').textContent).toContain('critical')
-    expect(screen.getByTestId('goal-loop-phase-verify').textContent).toContain('FAIL')
+    expect(screen.getByRole('grid', { name: /goal loop phases/i })).toBeTruthy()
     expect(screen.getByTestId('goal-loop-audit-catalog').textContent).toContain('INCOMPLETE')
     expect(screen.getByTestId('goal-loop-corpus-missing').textContent).toContain('187')
     expect(screen.getByTestId('goal-loop-next-action').textContent).toContain('D-EMERGENCY-2')
@@ -130,5 +162,75 @@ describe('GoalLoopPanel', () => {
 
     expect(screen.getByTestId('goal-loop-verify-evidence').textContent).toContain('Post-ACT live Verify evidence')
     expect(screen.getByTestId('goal-loop-verify-evidence').textContent).toContain('/tmp/goal-loop-post-act.log')
+  })
+
+  it('creates a goal through the goal store tool and refreshes the loop status', async () => {
+    mocks.callMcpTool.mockResolvedValue('{"ok":true}')
+    mocks.fetchGoalLoopStatus.mockResolvedValue(blockedStatus())
+    mocks.fetchDashboardGoalsTree.mockResolvedValue({ tree: [], summary: {} })
+
+    render(html`<${GoalLoopPanel} initialStatus=${blockedStatus()} />`)
+
+    fireEvent.input(screen.getByLabelText('Goal title'), {
+      target: { value: 'Stabilize runtime truth' },
+    })
+    fireEvent.change(screen.getByLabelText('Horizon'), {
+      target: { value: 'mid' },
+    })
+    fireEvent.change(screen.getByLabelText('Priority'), {
+      target: { value: '2' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Create goal' }))
+
+    await waitFor(() => {
+      expect(mocks.callMcpTool).toHaveBeenCalledWith('masc_goal_upsert', {
+        title: 'Stabilize runtime truth',
+        horizon: 'mid',
+        priority: 2,
+      })
+    })
+    await waitFor(() => {
+      expect(mocks.fetchGoalLoopStatus).toHaveBeenCalledTimes(1)
+    })
+    expect(screen.getByTestId('goal-loop-create-goal').textContent)
+      .toContain('created Stabilize runtime truth')
+  })
+
+  it('surfaces the created goal id, refreshes the goal tree cache, and routes to goal manager', async () => {
+    const treePayload = { tree: [], summary: {} }
+    mocks.callMcpTool.mockResolvedValue(JSON.stringify({
+      ok: true,
+      goal_id: 'goal-runtime-truth',
+      task_link_field: 'goal_id',
+    }))
+    mocks.fetchGoalLoopStatus.mockResolvedValue(blockedStatus())
+    mocks.fetchDashboardGoalsTree.mockResolvedValue(treePayload)
+
+    render(html`<${GoalLoopPanel} initialStatus=${blockedStatus()} />`)
+
+    fireEvent.input(screen.getByLabelText('Goal title'), {
+      target: { value: 'Stabilize runtime truth' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Create goal' }))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('goal-loop-created-goal-id').textContent)
+        .toContain('goal goal-runtime-truth')
+    })
+    expect(screen.getByTestId('goal-loop-created-goal-id').textContent)
+      .toContain('task link goal_id')
+    await waitFor(() => {
+      expect(mocks.fetchDashboardGoalsTree).toHaveBeenCalledTimes(1)
+    })
+    expect(mocks.hydrateGoalTreeSnapshot).toHaveBeenCalledWith(treePayload)
+
+    fireEvent.click(screen.getByRole('button', {
+      name: 'Open Stabilize runtime truth in Goal Manager',
+    }))
+
+    expect(mocks.navigate).toHaveBeenCalledWith('workspace', {
+      section: 'planning',
+      goal: 'goal-runtime-truth',
+    })
   })
 })

@@ -1,19 +1,18 @@
 ---
 status: runbook
-last_verified: 2026-04-23
+last_verified: 2026-05-15
 code_refs:
-  - scripts/harness_keeper_campaign.sh
-  - scripts/harness_agent_swarm_live.sh
+  - scripts/harness/workload/agent_swarm_live.sh
   - test/
 ---
 
 # Benchmark Runbook
 
-이 문서는 `single-agent baseline`과 managed-operation swarm lane을 같은 workload에 걸어 비교할 때 쓰는 운영 레시피다.
+이 문서는 `single-agent baseline`과 keeper-fleet managed-operation proof lane을 같은 workload에 걸어 비교할 때 쓰는 운영 레시피다.
 
 merged 기준 상위 진입점은 [INTEGRATED-BENCHMARK-RUNBOOK.md](./INTEGRATED-BENCHMARK-RUNBOOK.md)를 본다.
 
-Search-aware routing 실험은 [SEARCH-FABRIC-V1.md](./SEARCH-FABRIC-V1.md)를 같이 본다.
+Command Plane search-fabric benchmark는 제거되었다. `best_first_v1` synthetic comparison을 새 runbook이나 harness에서 참조하지 않는다.
 
 대상 workload 예:
 
@@ -26,7 +25,7 @@ Search-aware routing 실험은 [SEARCH-FABRIC-V1.md](./SEARCH-FABRIC-V1.md)를 �
 
 - 기본 delivery path는 supervised execution + Supervisor이고, 이 문서의 managed-operation lane은 benchmark/compatibility용이다
 - 기본 workload는 `coding_task`, `research_pipeline`은 explicit profile이다
-- 기본 routing은 `best_first_v1`, `legacy`는 explicit opt-out이다
+- removed Command Plane search strategy harness는 benchmark 경로에 포함되지 않음
 - removed `masc_swarm_*` public tools는 benchmark 경로에 포함되지 않음
 - supervisor/session runtime은 별도 모드
 - 사실 메타데이터 truth는 source metadata + rules
@@ -63,7 +62,7 @@ Search-aware routing 실험은 [SEARCH-FABRIC-V1.md](./SEARCH-FABRIC-V1.md)를 �
 
 - 한 에이전트가 fetch 이후 normalize/verify/curate/rank/audit를 순차 실행
 
-### Swarm
+### Keeper Fleet
 
 - company
   - benchmark 전체 총괄
@@ -79,7 +78,7 @@ Search-aware routing 실험은 [SEARCH-FABRIC-V1.md](./SEARCH-FABRIC-V1.md)를 �
 Phase 1 corpus는 `masc-mcp` 단일 repo다.
 
 - front door:
-  - `masc_autoresearch_cycle` (repo-synthesis is dispatched internally via the cycle system)
+  - none; benchmark inputs are read from command-plane truth surfaces and artifacts
 - fairness:
   - same model
   - same time budget
@@ -95,8 +94,8 @@ Phase 1 corpus는 `masc-mcp` 단일 repo다.
 ./scripts/harness_repo_synthesis_benchmark.sh
 ```
 
-question set은 `benchmark/repo_synthesis_question_set.json`에 있고,
-baseline/swarm fixture answers는 `test/fixtures/repo_synthesis_benchmark/`에 있다.
+question set은 `benchmarks/data/repo_synthesis_question_set.json`에 있고,
+baseline/fleet fixture answers는 `test/fixtures/repo_synthesis_benchmark/`에 있다.
 
 ## 준비 순서
 
@@ -105,198 +104,65 @@ baseline/swarm fixture answers는 `test/fixtures/repo_synthesis_benchmark/`에 �
    - `masc_transition(action="claim")` 또는 `masc_claim_next`
    - 필요 시 `masc_plan_set_task`
    - `masc_heartbeat`
-2. unit hierarchy 생성
-   - `masc_unit_define`
-3. benchmark operation 시작
-   - `masc_operation_start`
-4. scheduler reconcile
-   - `masc_dispatch_tick`
+2. benchmark 준비
+   - keeper fleet readiness 확인
 
-## 첫 smoke는 12-worker live harness로 한다
+## 첫 smoke는 18+ keeper fleet evidence로 한다
 
-실제 외부 소스를 긁기 전에 deterministic fixture로 orchestration부터 증명한다.
+`team-session`/public `swarm` read surface와 old entrypoint는 retired 되었다.
+Canonical gate는 read-only keeper fleet readiness만 실행한다.
 
 ```bash
-LLAMA_PRESET=qwen35-hot ~/me/scripts/llama-server.sh restart
-scripts/harness_agent_swarm_live.sh
+scripts/harness/workload/agent_swarm_live.sh
 ```
 
-전제:
+기본 전제:
 
-- `qwen35-hot`는 `ctx=262144`를 유지한다.
-- `hot-swarm` track은 ctx 축소 fallback을 허용하지 않는다.
-- `provider smoke + slot contract + live harness`가 모두 지나야 성공으로 본다.
+- `EXPECTED_KEEPERS=18`
+- latest terminal turns sampled per keeper = 3
+- keeper별 terminal turns >= 3
+- keeper별 successful provider turns >= 3
+- receipt/checkpoint/provider-closure/memory/tool-log coverage = 100%
 
 이 harness는:
 
-- worker 12명 이상이 실제로 join/claim/current_task/heartbeat/done/final marker를 남기는지 확인한다
-- managed-operation swarm read model과 dashboard가 그 사실을 올바르게 표현하는지 함께 검증한다
-- 외부 네트워크 fetch 없이 synthetic fixture만 사용한다
-
-기대 체크리스트:
-
-- peak hot slots >= 10
-- detachment materialized
-- joined workers = expected workers
-- current task bound = expected workers
-- fresh heartbeats = expected workers
-- completed workers = expected workers
-- final markers seen = expected workers
-- provider reachable = true
-- actual slots >= expected slots
-- actual ctx = expected ctx = 262144
+- 18명 이상 keeper의 runtime manifest evidence가 있는지 확인한다
+- 각 keeper가 provider-dispatched successful turn을 충분히 남겼는지 확인한다
+- `.masc/keepers/<keeper>/runtime-manifests`, execution receipts,
+  checkpoints, memory injection rows, tool-call log links가 서로 이어지는지
+  확인한다
+- 결과를 `logs/keeper_fleet_readiness/<run-id>/summary.json`에 남긴다
 
 주의:
 
-- `masc_transition(action="claim")`만으로는 planning `current_task`가 안 잡힌다. 이 경로를 쓰면 각 worker는 `masc_plan_set_task`를 호출해야 한다.
-- `masc_claim_next`는 current builds에서 planning `current_task`를 auto-bind 한다.
-- `masc_dispatch_tick`을 안 돌리면 detachment가 생기지 않는다.
-- `hot 10+`는 orchestration proof와 별개다. `llama.cpp /slots` 샘플이 없으면 pass로 보지 않는다.
-- worker가 완료 후 leave해도 completed task ownership과 final marker가 있으면 swarm read model은 복원 가능해야 한다.
-- 실패 시 `provider_unreachable`, `provider_model_mismatch`, `slot_count_insufficient`, `ctx_mismatch` 같은 runtime blocker를 artifact와 dashboard에서 바로 읽을 수 있어야 한다.
+- 이 경로는 read-only proof다. keepers를 시작하거나 LLM 호출을 새로 만들지 않는다.
+- live mutation/probe가 필요하면 keeper lifecycle reprobe harness를 별도로 실행한
+  뒤 이 gate로 runtime truth를 닫는다.
+- 누락 데이터는 fail이다. "not run" 또는 stale evidence를 green으로 취급하지 않는다.
 
 ## session runtime local64 compat lane
 
 Removed. Team-session compat harnesses and the command-plane HTTP lane are both retired; use board_posts + keeper FSM read models for coordination truth and the canonical dashboard projections (`/api/v1/dashboard/mission`, `/api/v1/dashboard/execution`, `/api/v1/dashboard/board`) for live proof.
 
-## 최소 unit 예시
-
-```json
-{
-  "tool": "masc_unit_define",
-  "arguments": {
-    "unit_id": "company-radar",
-    "kind": "company",
-    "label": "AI Research Radar Company",
-    "leader_id": "codex"
-  }
-}
-```
-
-```json
-{
-  "tool": "masc_unit_define",
-  "arguments": {
-    "unit_id": "platoon-research",
-    "kind": "platoon",
-    "label": "Research Platoon",
-    "parent_unit_id": "company-radar",
-    "leader_id": "codex",
-    "policy": {
-      "autonomy_level": "L4_Autonomous"
-    }
-  }
-}
-```
-
-```json
-{
-  "tool": "masc_unit_define",
-  "arguments": {
-    "unit_id": "squad-verify",
-    "kind": "squad",
-    "label": "Verify Squad",
-    "parent_unit_id": "platoon-research",
-    "leader_id": "local-worker-1",
-    "roster": ["local-worker-1", "local-worker-2"]
-  }
-}
-```
-
-## operation 예시
-
-```json
-{
-  "method": "POST",
-  "path": "/api/v1/command-plane/operations",
-  "headers": {
-    "x-masc-agent-name": "codex"
-  },
-  "body": {
-    "assigned_unit_id": "squad-verify",
-    "objective": "Verify and quarantine new research items",
-    "autonomy_level": "L4_Autonomous",
-    "policy_class": "guarded",
-    "budget_class": "standard"
-  }
-}
-```
-
-예상 확인 포인트:
-
-- `masc_observe_operations`에 operation이 보임
-- `trace_id`가 발급됨
-- actor header를 생략하면 operation `created_by`가 `dashboard`로 떨어질 수 있음
+Operation/unit/detachment tool variants were removed (no implementation existed).
 
 ## detachment materialization
 
-```json
-{
-  "tool": "masc_dispatch_tick",
-  "arguments": {
-    "operation_id": "op-..."
-  }
-}
-```
-
-바로 이어서:
-
-- `masc_detachment_list`
-- `masc_detachment_status`
-- `masc_observe_alerts`
-- `masc_observe_traces`
+Operation/unit/detachment tool variants were removed (no implementation existed).
+Benchmark workflows use live tools only.
 
 ## approval / rebalance
 
 cross-platoon rebalance나 strict action은 바로 적용되지 않을 수 있다.
-
-```json
-{
-  "tool": "masc_dispatch_rebalance",
-  "arguments": {
-    "operation_id": "op-...",
-    "target_unit_id": "squad-verify-alt"
-  }
-}
-```
-
-이때 가능한 응답:
-
-```json
-{
-  "status": "pending_approval",
-  "decision_id": "decision-..."
-}
 ```
 
 그 다음 순서:
 
-1. `masc_policy_status`
-2. `masc_policy_approve` 또는 `masc_policy_deny`
-3. `masc_dispatch_tick`
+1. `masc_operator_snapshot` 후 `masc_operator_confirm`
 
 ## 체크포인트와 종료
 
-```json
-{
-  "tool": "masc_operation_checkpoint",
-  "arguments": {
-    "operation_id": "op-...",
-    "checkpoint_ref": "bench-run-2026-03-07T13:00Z",
-    "note": "normalized 48 items, 3 quarantined"
-  }
-}
-```
-
-```json
-{
-  "tool": "masc_operation_finalize",
-  "arguments": {
-    "operation_id": "op-...",
-    "note": "benchmark run completed"
-  }
-}
-```
+Operation/unit/detachment tools were removed. Checkpoint/finalize workflows use live tools.
 
 ## 무엇을 비교하나
 
@@ -330,13 +196,9 @@ cross-platoon rebalance나 strict action은 바로 적용되지 않을 수 있�
   - pending approval
   - freeze / kill-switch
 
-## Search Fabric V1
+## Removed Search Fabric V1
 
-`best_first_v1`는 기존 managed-operation 표면 위에 붙는 opt-in strategy다.
-
-- `masc_operation_start`에 `workload_profile="research_pipeline"`와 `search_strategy="best_first_v1"`를 넘긴다.
-- downstream stage는 `depends_on_operation_ids`로 연결한다.
-- benchmark comparison은 `./scripts/harness_cp_search_fabric.sh`로 synthetic workload를 두 전략(`legacy`, `best_first_v1`)에 각각 실행한다.
+The old Command Plane search-fabric synthetic benchmark was removed with the CP purge. Do not restore the deleted search-fabric doc, wrapper scripts, or `test_cp_search_fabric_benchmark` target without a new current RFC and runnable test target.
 
 ## Integrated Entry Point
 
@@ -349,24 +211,19 @@ merged 아키텍처 전체를 한 번에 읽고 싶으면 wrapper를 쓴다.
 빠른 smoke:
 
 ```bash
-INTEGRATED_BENCH_PHASES=search ./scripts/harness_integrated_benchmark.sh
+INTEGRATED_BENCH_PHASES=control ./scripts/harness_integrated_benchmark.sh
 ```
 
 full substrate:
 
 ```bash
-INTEGRATED_BENCH_PHASES=control,search \
+INTEGRATED_BENCH_PHASES=control \
 LLAMA_SWARM_MODEL=<exact-model-id> \
 ./scripts/harness_integrated_benchmark.sh
 ```
 
 ## 실패 패턴
 
-- operation만 있고 detachment가 없음
-  - `masc_dispatch_tick`
-- detachment heartbeat_deadline이 만료됨
-  - `masc_dispatch_tick`
-  - 필요 시 `masc_policy_status`
 - task를 claim했는데 logs가 current task를 못 찾음
   - `masc_plan_set_task`
 - agent가 사라진 것처럼 보임
@@ -420,3 +277,53 @@ dune runtest test/test_reward_advice_artifact.ml
 dune runtest test/test_post_verifier.ml
 dune runtest test/test_tool_call_quality_benchmark.ml
 ```
+
+## OAS Descriptor Dispatch (Phase B baseline)
+
+`~/me/planning/claude-plans/wise-nibbling-lerdorf.md` Phase B 의 evidence
+수집 절차. 두 hot path (`make_tool_bundle` @ `lib/keeper/keeper_tools_oas.ml:852`,
+`params_of_json_schema` @ `lib/tool_bridge.ml:176`) 가 keeper turn 예산에서
+차지하는 비중을 측정해 Phase C 진행 여부를 결정한다.
+
+### Histograms
+
+- `masc_oas_params_of_schema_sec` — sum/count, 매 OAS conversion 마다
+  observation 1 회.
+- `masc_oas_make_tool_bundle_sec` — sum/count, 매 keeper turn 1 회.
+
+masc-mcp 의 `Prometheus.observe_histogram` 은 sum + `_count` 만 저장하므로
+*평균(avg = sum/count)* 까지가 in-tree 측정 한계다. p50/p95/p99 quantile 이
+필요하면 외부 Prometheus scraper + `histogram_quantile()` 또는 별도 raw-sample
+경로가 필요하다 (현재 Phase B 범위 밖).
+
+### Smoke run
+
+```bash
+# 1. 워크로드 구동 (운영자 재량). 기본 권장: tool-call-quality --live.
+BENCH_ITERATIONS=50 BENCH_WARMUP_ITERATIONS=1 \
+  ./scripts/harness_tool_call_quality.sh --live --keepers bench-analyst \
+    --models <provider:model>
+
+# 2. /metrics 스크레이프 + CSV 저장.
+./scripts/harness_oas_dispatch.sh scrape --label baseline
+
+# 3. 비교 (e.g. memoization 적용 전후, 또는 hist on/off).
+./scripts/harness_oas_dispatch.sh diff \
+  benchmarks/results/oas-baseline-<base>.csv \
+  benchmarks/results/oas-baseline-<current>.csv
+```
+
+### Histogram-overhead control
+
+`MASC_DISABLE_HOTPATH_HIST=1` 로 서버를 기동하면 두 hot path 의 observation 이
+no-op 으로 빠진다. 동일 워크로드를 hist-on / hist-off 로 두 번 돌려 차이가
+없으면 histogram 자체 비용이 무시 가능 (Phase B 결과의 신뢰도 확인용).
+
+### Decision gate (Phase B → Phase C)
+
+```
+(avg make_tool_bundle + avg params_of_json_schema × tools_per_turn) / avg total_turn >= 0.02
+```
+
+위 식이 참이면 Phase C (`params_of_json_schema` memoization) 진행. 거짓이면
+Phase C/D 미진행 — evidence finding 만 follow-up 으로 남기고 plan 종료.

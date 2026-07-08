@@ -28,6 +28,12 @@ val is_required_tool_contract_violation : Agent_sdk.Error.sdk_error -> bool
     failure counting, even if same-turn retry is still disabled. *)
 val is_auto_recoverable_turn_error : Agent_sdk.Error.sdk_error -> bool
 
+(** [true] when the turn runner should record the immediate
+    ["keeper cycle FAILED"] line as WARN instead of ERROR because the
+    heartbeat policy layer will handle the failure as a provider/OAS budget
+    strike with cooldown or work-level pause. *)
+val should_warn_keeper_cycle_failed : Agent_sdk.Error.sdk_error -> bool
+
 (** Reclassify any post-commit turn error as a persistent integrity error when
     mutating tool calls already committed in the same turn. *)
 val reclassify_error_after_side_effect :
@@ -45,6 +51,19 @@ val is_ambiguous_side_effect_error : Agent_sdk.Error.sdk_error -> bool
 (** [true] when a structured error indicates context overflow. *)
 val is_context_overflow : Agent_sdk.Error.sdk_error -> bool
 
+(** [true] when the error is an OAS [InputRequired] — the agent paused
+    to request human input.  Not a failure; a special stop condition. *)
+val is_input_required_error : Agent_sdk.Error.sdk_error -> bool
+
+(** Extract the [InputRequired] payload from an [sdk_error], if any.
+    Typed companion to {!is_input_required_error} — callers that need
+    the [input_required] record (request_id, question, …) avoid a
+    separate pattern match plus [assert false] when the predicate
+    has already filtered for the constructor. *)
+val extract_input_required
+  :  Agent_sdk.Error.sdk_error
+  -> Agent_sdk.Error.input_required option
+
 (** [true] when an error represents terminal cascade exhaustion or a
     final accept-rejected result from the MASC OAS boundary. *)
 val is_cascade_exhausted_error : Agent_sdk.Error.sdk_error -> bool
@@ -60,14 +79,40 @@ val should_cap_rotation_for_contract_violation :
   Agent_sdk.Error.sdk_error ->
   bool
 
+(** Classification of why a degraded retry is being attempted. Closed
+    set; producer-side is [keeper_error_classify]. Wire form is the
+    lowercase string via [degraded_retry_reason_to_string]. *)
+type degraded_retry_reason =
+  | Hard_quota
+  | Max_turns
+  | Resumable_cli_session
+  | Admission_queue_timeout
+  | Provider_timeout
+  | Turn_timeout
+  | Cascade_candidates_filtered
+  | Required_tool_contract_violation
+  | Cascade_exhausted
+  | Capacity_backpressure
+  | Rate_limit
+  | Server_error
+  | Auth_error
+
+val degraded_retry_reason_to_string : degraded_retry_reason -> string
+
+val normalized_cascade_name : catalog_names:string list -> string -> string
+(** Normalize a cascade name for rotation matching. When the input is a bare
+    catalog name (stripped of [tier.]/[tier-group.] prefix), requalifies it
+    with the canonical prefix so downstream [Cascade_name.of_string_exn] does
+    not crash. *)
+
 type degraded_retry =
   { next_cascade : string
-  ; fallback_reason : string
+  ; fallback_reason : degraded_retry_reason
   }
 
 (** Opportunistically fail open to a broader cascade when the current
     effective cascade is temporarily unavailable (for example cooldown /
-    local-only bootstrap fallback). *)
+    phase-buffer bootstrap fallback). *)
 val fallback_cascade_for_unavailable_profile :
   base_cascade:string ->
   effective_cascade:string ->
@@ -81,6 +126,7 @@ val fallback_cascade_for_unavailable_profile :
     Status-code-aware rotation: raw API errors that are not wrapped in a MASC
     internal error are also classified when a different cascade may succeed:
     - [RateLimited] (non-hard-quota) → ["rate_limit"]
+    - [Overloaded] and Cloudflare 524 → ["capacity_backpressure"]
     - [ServerError] with status >= 500 → ["server_error"]
     - [AuthError] → ["auth_error"]
 
@@ -88,7 +134,7 @@ val fallback_cascade_for_unavailable_profile :
     [degraded_retry_after_recoverable_error] or
     [degraded_rotation_after_recoverable_error]. *)
 val recoverable_cascade_failure_reason :
-  Agent_sdk.Error.sdk_error -> string option
+  Agent_sdk.Error.sdk_error -> degraded_retry_reason option
 
 (** Returns the one-shot degraded retry lane for recoverable whole-cascade
     failures. Required-tool turns stay terminal, and already-degraded lanes
@@ -102,9 +148,10 @@ val degraded_retry_after_recoverable_error :
 (** Returns the next untried cascade in the same-turn recovery group for a
     whole-cascade failure. [rotation_cascades], when provided, is the
     runtime/catalog-owned candidate order and is used as-is; otherwise the
-    legacy base/default/local_recovery group is used. Required-tool turns keep
-    the tool requirement and leave concrete provider filtering to the cascade
-    resolver.
+    legacy base/tool_required group is used for required-tool turns and the
+    base/default/phase-recovery group is used for optional/text turns.
+    Required-tool turns keep the tool requirement and leave concrete provider
+    filtering to the cascade resolver.
 
     [fallback_hint], when provided, is prepended to the candidate list so
     that single-provider profiles can declare an immediate escalation
@@ -140,3 +187,14 @@ val summarize_post_commit_failure :
   kind:Keeper_registry.ambiguous_partial_commit_kind ->
   Agent_sdk.Error.sdk_error ->
   string
+
+val is_provider_timeout_error : Agent_sdk.Error.sdk_error -> bool
+(** True when [err] is a provider-timeout class failure (deadline,
+    cascade timeout, budget retry). Live caller:
+    [keeper_unified_turn.ml] degraded-retry classification. *)
+
+val is_receipt_lost_error : Agent_sdk.Error.sdk_error -> bool
+(** True when [err] indicates a receipt-lost failure (the provider
+    confirmed completion but the response payload was lost in transit).
+    Live caller: [keeper_unified_turn.ml] failure-reason classification
+    via the [EC] alias. *)

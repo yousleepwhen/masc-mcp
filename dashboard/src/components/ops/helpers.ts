@@ -1,7 +1,6 @@
 // Ops helpers — shared view helpers built on top of the canonical ops state.
 
 import { showToast } from '../common/toast'
-import { prettyJson, displayStatus } from '../../lib/status-label'
 import type { OperatorKeeperSnapshot } from '../../types'
 import { dispatchOperatorAction } from '../../operator-store'
 import { workflowActionLabel, type DashboardWorkflowContext } from '../../workflow-context'
@@ -31,12 +30,6 @@ export {
   persistActorName,
 }
 
-export { prettyJson, displayStatus }
-
-export function normalizeStatus(value: unknown): string {
-  return typeof value === 'string' ? value.trim().toLowerCase() : ''
-}
-
 function canonicalizeActionType(value?: string | null): string | null {
   if (!value) return null
   const normalized = value.trim()
@@ -59,8 +52,6 @@ export function targetTypeLabel(value?: string | null): string {
       return 'Namespace'
     case 'keeper':
       return 'Keeper'
-    case 'swarm_run':
-      return 'Swarm Run'
     default:
       return value?.trim() || 'Target'
   }

@@ -26,51 +26,6 @@ let contains_casefold haystack needle =
   String.length needle = 0
   || String_util.contains_substring_ci haystack needle
 
-type tool_failure_class =
-  | Workflow_rejection
-  | Policy_rejection
-  | Runtime_failure
-
-let tool_failure_class_to_string = function
-  | Workflow_rejection -> "workflow_rejection"
-  | Policy_rejection -> "policy_rejection"
-  | Runtime_failure -> "runtime_failure"
-
-(* #10975: tool-call failure severity classification.
-
-   Without this, every [success=false] result downstream is logged
-   at [Log.Error], including normal policy/workflow rejections like
-   [awaiting_approval] (governance critical-risk pending),
-   [Join required] (keeper called masc_transition before masc_join),
-   [egress_blocked] (network policy denial), and [path_outside_sandbox]
-   (sandbox boundary).  Single 24h window: 41 such events at ERROR, polluting
-   alert ROC, supervisor escape-valve heuristics (#10887 SP cohort
-   detection counts ERROR rate), and the dashboard red counter that
-   operators use to triage genuine system errors.
-
-   Classify the current untyped message boundary into a stable semantic
-   class first, then map class -> severity and telemetry. Anything unknown
-   stays [Runtime_failure] / ERROR. *)
-let classify_tool_failure_class error_detail =
-  let detail = Option.value ~default:"" error_detail in
-  if contains_casefold detail "awaiting_approval"
-     || contains_casefold detail "join required"
-  then Workflow_rejection
-  else if
-    contains_casefold detail "egress_blocked"
-    || contains_casefold detail "path_outside_sandbox"
-  then Policy_rejection
-  else Runtime_failure
-
-let log_level_of_tool_failure_class = function
-  | Workflow_rejection | Policy_rejection -> Log.Warn
-  | Runtime_failure -> Log.Error
-
-let classify_tool_failure_severity error_detail : Log.level =
-  error_detail
-  |> classify_tool_failure_class
-  |> log_level_of_tool_failure_class
-
 let parse_status_from_message ~success ~message =
   if not success then
     if
@@ -115,6 +70,64 @@ let quality_from_result ~success ~message ~attempts =
       ("passed", `Bool false);
       ("issues", `List [issue]);
     ]
+
+let activity_preview_string value =
+  value
+  |> Safe_ops.sanitize_text_utf8
+  |> Observability_redact.redact_preview
+  |> Safe_ops.sanitize_text_utf8
+
+let activity_plain_string value = Safe_ops.sanitize_text_utf8 value
+
+let activity_tool_called_payload ~tool_name ~success ~duration_ms ~source
+    ?error_detail ?tool_args_preview arguments =
+  let activity_string_field key =
+    match Safe_ops.json_string_opt key arguments with
+    | Some value ->
+        let preview = activity_preview_string value in
+        if String.trim preview <> "" then Some (key, `String preview) else None
+    | None -> None
+  in
+  let activity_int_field key =
+    match Safe_ops.json_int_opt key arguments with
+    | Some value -> Some (key, `Int value)
+    | None -> None
+  in
+  `Assoc
+    ([
+       ("tool_name", `String (activity_plain_string tool_name));
+       ("success", `Bool success);
+       ("duration_ms", `Int duration_ms);
+       ("source", `String (activity_plain_string source));
+       ( "error",
+         match error_detail with
+         | Some e -> `String (activity_plain_string e)
+         | None -> `Null );
+       ( "tool_args_preview",
+         match tool_args_preview with
+         | Some preview -> `String (activity_plain_string preview)
+         | None -> `Null );
+     ]
+     @ List.filter_map activity_string_field
+         [
+           "cmd";
+           "task_id";
+           "repo";
+           "path";
+           "message";
+           "branch";
+           "branch_name";
+           "title";
+           "session_id";
+           "operation_id";
+           "verification_id";
+         ]
+     @ List.filter_map activity_int_field [ "pr_number"; "issue_number" ])
+  |> Safe_ops.sanitize_json_utf8
+
+module For_testing = struct
+  let activity_tool_called_payload = activity_tool_called_payload
+end
 
 let nonempty_string_opt = function
   | Some value ->
@@ -185,11 +198,7 @@ let runtime_mcp_keeper_log_context_of_entry
   let trace_id =
     Keeper_id.Trace_id.to_string entry.meta.runtime.trace_id
   in
-  let model =
-    let last_model_used = String.trim entry.meta.runtime.usage.last_model_used in
-    if last_model_used <> "" then last_model_used
-    else String.trim entry.meta.cascade_name
-  in
+  let model = "runtime" in
   let session_id =
     match json_nonempty_string_opt "session_id" arguments with
     | Some _ as session_id -> session_id
@@ -251,7 +260,7 @@ let runtime_mcp_keeper_log_context_of_entry
     visible_tool_count = Some (List.length allowed_tool_names);
     required_tools = Some required_tools;
     missing_required_tools = Some missing_required_tools;
-    cascade_profile = Some entry.meta.cascade_name;
+    cascade_profile = Some (Keeper_types.cascade_name_of_meta entry.meta);
   }
 
 let runtime_mcp_keeper_error_preview message =
@@ -265,6 +274,7 @@ let runtime_mcp_keeper_tool_call_sse_payload
     ~(tool_name : string)
     ~(duration_ms : int)
     ~(success : bool)
+    ~(arguments : Yojson.Safe.t)
     ~(message : string) : Yojson.Safe.t =
   let base_fields =
     [
@@ -280,7 +290,14 @@ let runtime_mcp_keeper_tool_call_sse_payload
     if success then []
     else [ ("error_text", `String (runtime_mcp_keeper_error_preview message)) ]
   in
-  `Assoc (base_fields @ error_fields)
+  let io_fields =
+    Keeper_tools_oas_handler_telemetry.tool_io_preview_fields
+      ~tool_name
+      ~input:arguments
+      ~output:message
+      ()
+  in
+  `Assoc (base_fields @ error_fields @ io_fields)
 
 let runtime_mcp_masc_root ~base_path =
   match Keeper_tool_call_log.configured_masc_root () with
@@ -305,7 +322,7 @@ let record_runtime_mcp_trajectory_coverage_gap
       ~stale_reason
       ~keeper_name
       ~trace_id
-      ~error:(Printexc.to_string exn)
+      ~exn
       ()
   with
   | Eio.Cancel.Cancelled _ as e -> raise e
@@ -372,7 +389,6 @@ let record_runtime_mcp_keeper_trajectory
       ?visible_tool_count:ctx.visible_tool_count
       ?required_tools:ctx.required_tools
       ?missing_required_tools:ctx.missing_required_tools
-      ?model:(Some ctx.model)
       ?cascade_profile:ctx.cascade_profile
       ()
   in
@@ -478,25 +494,11 @@ let record_runtime_mcp_keeper_tool_trace
        ~tool_name
        ~duration_ms
        ~success
+       ~arguments
        ~message)
 
 let read_only_retry_limit () =
   Env_config.Tools.readonly_retry_limit
-
-let is_retryable_message message =
-  (* Tool-level timeouts must not be retried — retrying a 30s timeout
-     causes 60-90s total wait time, amplifying the original issue. *)
-  if contains_casefold message "Tool timed out" then false
-  else
-  contains_casefold message "timeout" ||
-  contains_casefold message "temporary" ||
-  contains_casefold message "temporarily" ||
-  contains_casefold message "econn" ||
-  contains_casefold message "connection" ||
-  contains_casefold message "unavailable" ||
-  contains_casefold message "rate limit" ||
-  contains_casefold message "502" ||
-  contains_casefold message "503"
 
 let read_only_retry_wait ~attempt =
   let attempt = float_of_int attempt in
@@ -509,113 +511,30 @@ let call_tool_with_readonly_retry
     () =
   let max_attempts = read_only_retry_limit () in
   let rec loop attempt =
-    let (success, message) =
-      run_tool ()
-    in
+    let result = run_tool () in
+    let success = Tool_result.is_success result in
     if
       success
       || attempt >= max_attempts
       || not is_read_only
-      || not (is_retryable_message message)
+      || (match Tool_result.failure_class result with
+          | Some cls -> not (Tool_result.is_retryable cls)
+          | None -> false)
     then
-      (success, message, attempt)
+      (result, attempt)
     else (
       Eio.Time.sleep clock (read_only_retry_wait ~attempt);
       loop (attempt + 1))
   in
   loop 1
 
-let coerce_tool_timeout_sec (raw_timeout_sec : float option) : float option =
-  match raw_timeout_sec with
-  | None -> None
-  | Some raw when raw <= 0.0 -> None
-  | Some raw ->
-      let raw_sec = int_of_float (Float.ceil raw) in
-      Some (float_of_int (max 5 (min 300 raw_sec)))
+type resolved_tool_timeout = Mcp_server_eio_tool_timeout.resolved_tool_timeout =
+  { timeout_sec : float
+  ; source_env : string option
+  }
 
-type resolved_tool_timeout = {
-  timeout_sec : float;
-  source_env : string option;
-}
-
-let tool_timeout_default_env = "MASC_TOOL_TIMEOUT_DEFAULT_SEC"
-let tool_timeout_board_env = "MASC_TOOL_TIMEOUT_BOARD_SEC"
-let tool_timeout_persona_generate_source =
-  "internal:masc_persona_generate_oas_budget"
-
-let default_tool_timeout_sec () =
-  Env_config_runtime.Tools.timeout_default_sec ()
-
-let board_write_tool_timeout_sec () =
-  Env_config_runtime.Tools.board_write_timeout_sec ()
-
-(* SSOT for which board tools mutate state lives in [Tool_board]'s
-   [tool_required_permission]: CanBroadcast (post/comment/vote/comment_vote/
-   reaction/curation_submit) and CanAdmin (delete/cleanup) are all writes.
-   Reads (list/get/stats/search/profile/hearths/curation_read) keep the global
-   default timeout. Keep this list in sync when new mutating board tools are
-   added. *)
-let is_board_write_tool_name = function
-  | "keeper_board_post"
-  | "keeper_board_comment"
-  | "keeper_board_vote"
-  | "keeper_board_comment_vote"
-  | "keeper_board_curation_submit"
-  | "keeper_board_delete"
-  | "keeper_board_cleanup"
-  | "masc_board_post"
-  | "masc_board_comment"
-  | "masc_board_vote"
-  | "masc_board_comment_vote"
-  | "masc_board_delete"
-  | "masc_board_cleanup"
-  | "masc_board_reaction"
-  | "masc_board_curation_submit" -> true
-  | _ -> false
-
-let tool_timeout ~(tool_name : string) ~(_arguments : Yojson.Safe.t) :
-    resolved_tool_timeout option =
-  match tool_name with
-  | "masc_keeper_msg" ->
-      (* No fixed timeout for keeper_msg. Keeper has its own internal limits
-         (max_turns, max_cost_usd, max_tokens) that control call duration.
-         A fixed external timeout conflicts with multi-turn tool-use loops. *)
-      None
-  | "masc_transition" ->
-      (* Transition can trigger anti-rationalization review on completion
-         paths. A fixed timeout can report a false error while the state
-         mutation continues in the background, leaving caller-visible status
-         out of sync with persisted task state. *)
-      None
-  | "masc_persona_generate" ->
-      (* Persona generation runs an OAS worker with its own 120s budget. Keep
-         the outer MCP tools/call timeout above that budget so callers see the
-         generation result or the OAS error instead of a premature MCP timeout. *)
-      Some
-        {
-          timeout_sec = 150.0;
-          source_env = Some tool_timeout_persona_generate_source;
-        }
-  | name when is_board_write_tool_name name ->
-      (* #10569: board writes can queue behind the JSONL persist mutex. Keep
-         them bounded, but avoid forcing them through the generic 60s budget
-         while persist-lock histograms identify queueing vs disk stall. *)
-      Some
-        {
-          timeout_sec = board_write_tool_timeout_sec ();
-          source_env = Some tool_timeout_board_env;
-        }
-  | _ ->
-      Some
-        {
-          timeout_sec = default_tool_timeout_sec ();
-          source_env = Some tool_timeout_default_env;
-        }
-
-(** Optional per-tool timeout to prevent long calls from starving the request loop. *)
-let tool_timeout_sec_opt ~(tool_name : string) ~(_arguments : Yojson.Safe.t) : float option =
-  tool_timeout ~tool_name ~_arguments
-  |> Option.map (fun timeout -> timeout.timeout_sec)
+let tool_timeout = Mcp_server_eio_tool_timeout.tool_timeout
+let tool_timeout_sec_opt = Mcp_server_eio_tool_timeout.tool_timeout_sec_opt
 
 (** Resolve managed agent tool call to canonical operation *)
 let resolve_managed_agent_call ?mcp_session_id params =
@@ -647,14 +566,16 @@ let handle_call_tool_eio ~execute_tool_eio ~maybe_emit_resource_notifications
     | Full | Operator_remote ->
         (params |> U.member "name" |> U.to_string, params |> U.member "arguments")
   in
-  let is_read_only = Tool_dispatch.is_read_only name in
+  let is_read_only =
+    Agent_tool_descriptor_resolution.capability_has Tool_capability.Read_only name
+  in
 
   (* Measure execution time for telemetry *)
   let start_time = Eio.Time.now clock in
   let timeout_hit = ref false in
   let execute_with_timeout () =
     let local_timeout_hit = ref false in
-    let result =
+    let execute_core () =
       try
         match tool_timeout ~tool_name:name ~_arguments:arguments with
         | None ->
@@ -680,29 +601,59 @@ let handle_call_tool_eio ~execute_tool_eio ~maybe_emit_resource_notifications
              with Eio.Time.Timeout ->
                local_timeout_hit := true;
                Log.Mcp.error "tools/call timeout: %s after %.0fs" name timeout_sec;
-               (false,
-                let source =
-                  match source_env with
-                  | Some source -> Printf.sprintf " (timeout source: %s)" source
-                  | None -> ""
-                in
-                Printf.sprintf "Tool timed out after %.0fs: %s%s"
-                  timeout_sec name source))
-     with Eio.Cancel.Cancelled _ as e -> raise e | exn ->
+               let source =
+                 match source_env with
+                 | Some source -> Printf.sprintf " (timeout source: %s)" source
+                 | None -> ""
+               in
+               (* RFC-0189: timeout = retry-friendly transient
+                  failure.  Caller can retry with a longer
+                  [timeout_sec] or wait for the slow upstream to
+                  finish. *)
+               Tool_result.error
+                 ~failure_class:(Some Tool_result.Transient_error)
+                 ~tool_name:name ~start_time
+                 (Printf.sprintf "Tool timed out after %.0fs: %s%s"
+                    timeout_sec name source))
+     with
+     | Eio.Cancel.Cancelled _ as e -> raise e
+     | Coord.Not_initialized ->
+       (* RFC-0189: server bootstrap incomplete — Masc_domain
+          System NotInitialized.  [Runtime_failure] (caller
+          cannot fix; the operator must initialise MASC). *)
+       Tool_result.error
+         ~failure_class:(Some Tool_result.Runtime_failure)
+         ~tool_name:name ~start_time
+         (Masc_domain.masc_error_to_string (Masc_domain.System Masc_domain.System_error.NotInitialized))
+     | exn ->
        (* Never let a tool exception crash the MCP server. *)
        let err = Printexc.to_string exn in
        let trace = Printexc.get_backtrace () in
        let err_detail = if String.length trace > 0 then err ^ "\n" ^ trace else err in
-       if contains_casefold err "Invalid_argument(\"MASC not initialized" then
-         (false, Masc_domain.masc_error_to_string (Masc_domain.System Masc_domain.System_error.NotInitialized))
-       else
-         (Log.Mcp.error "tools/call crashed: %s" err_detail;
-          false, Printf.sprintf "Internal error: %s" err_detail)
+       (Log.Mcp.error "tools/call crashed: %s" err_detail;
+          (* RFC-0189: catch-all for unexpected exceptions —
+             [Runtime_failure].  Could become more specific via
+             [of_exn] once the exception variants are typed; for
+             now blanket Runtime preserves operator-visible
+             severity (the existing log line stays ERROR). *)
+          Tool_result.error
+            ~failure_class:(Some Tool_result.Runtime_failure)
+            ~tool_name:name ~start_time
+            (Printf.sprintf "Internal error: %s" err_detail))
+    in
+    let result =
+      Tool_resource_gate.with_permit
+        ~clock
+        ~tool_name:name
+        ~arguments
+        ~is_read_only
+        ~start_time
+        execute_core
     in
     if !local_timeout_hit then timeout_hit := true;
     result
   in
-  let (success, message, attempts) =
+  let (result, attempts) =
     if is_read_only then
       call_tool_with_readonly_retry
         ~clock
@@ -710,8 +661,10 @@ let handle_call_tool_eio ~execute_tool_eio ~maybe_emit_resource_notifications
         ~is_read_only
         ()
     else
-      let (success, message) = execute_with_timeout () in
-      (success, message, 1)
+      (execute_with_timeout (), 1)
+  in
+  let success = Tool_result.is_success result
+  and message = Tool_result.message result
   in
   let end_time = Eio.Time.now clock in
   let duration_ms = int_of_float ((end_time -. start_time) *. 1000.0) in
@@ -729,17 +682,13 @@ let handle_call_tool_eio ~execute_tool_eio ~maybe_emit_resource_notifications
     | None -> `Null
   in
 
-  (* Resolve agent_name for telemetry.  HTTP auth injects [_agent_name] as
-     the canonical caller; legacy [agent_name] may be a tool-domain target. *)
+  (* Resolve caller identity for telemetry.  HTTP auth injects [_agent_name];
+     tool-domain [agent_name] is not a caller identity. *)
   let agent_name =
     let from_transport =
       Safe_ops.json_string ~default:"" "_agent_name" arguments
     in
-    let from_legacy =
-      Safe_ops.json_string ~default:"" "agent_name" arguments
-    in
     if from_transport <> "" then from_transport
-    else if from_legacy <> "" then from_legacy
     else
       let identity =
         Agent_registry_eio.get_or_create_identity ?mcp_session_id arguments
@@ -769,14 +718,18 @@ let handle_call_tool_eio ~execute_tool_eio ~maybe_emit_resource_notifications
     ~agent_id:agent_name ~tool_name:name ~success ~error_msg:error_detail
     ?trace_id:otel_trace_id ();
   if not success then (
-    let failure_class = classify_tool_failure_class error_detail in
-    Log.Mcp.emit (log_level_of_tool_failure_class failure_class)
+    let failure_class =
+      match Tool_result.failure_class result with
+      | Some cls -> cls
+      | None -> Tool_result.Runtime_failure
+    in
+    Log.Mcp.emit (Tool_result.log_level_of_failure_class failure_class)
       ~details:
         (`Assoc
           [
             ("event_family", `String "tool_call_failure");
             ( "failure_class",
-              `String (tool_failure_class_to_string failure_class) );
+              `String (Tool_result.tool_failure_class_to_string failure_class) );
             ("tool_name", `String name);
             ("phase", `String "failure");
             ("request_id", `String jsonrpc_id_str);
@@ -797,7 +750,7 @@ let handle_call_tool_eio ~execute_tool_eio ~maybe_emit_resource_notifications
      missing identity falls through to External_mcp.  Issue #8915. *)
   let keeper_entry =
     if String.length agent_name = 0 then None
-    else Keeper_registry.find_by_agent_name agent_name
+    else Keeper_registry_lookup.find_by_agent_name agent_name
   in
   let source : Tool_registry.call_source =
     match keeper_entry with
@@ -808,7 +761,7 @@ let handle_call_tool_eio ~execute_tool_eio ~maybe_emit_resource_notifications
    | Some entry ->
        Keeper_registry.record_tool_use
          ~base_path:entry.base_path entry.name ~tool_name:name ~success;
-       Keeper_registry.flush_tool_usage ~base_path:entry.base_path entry.name
+       Keeper_registry_tool_usage_persistence.flush ~base_path:entry.base_path entry.name
    | None -> ());
 
   (* #10358: classify failure mode at the dispatch boundary so
@@ -823,6 +776,9 @@ let handle_call_tool_eio ~execute_tool_eio ~maybe_emit_resource_notifications
            (if !timeout_hit then "timeout" else "tool_failure"))
     else None
   in
+  let telemetry_failure_class =
+    if success then None else Tool_result.failure_class result
+  in
   (* Track tool call in telemetry (controlled by MASC_TELEMETRY_ENABLED) *)
   let telemetry_enabled = Env_config_core.telemetry_enabled () in
   if telemetry_enabled then
@@ -834,6 +790,7 @@ let handle_call_tool_eio ~execute_tool_eio ~maybe_emit_resource_notifications
                 ?session_id:telemetry_session_id
                 ?operation_id:telemetry_operation_id
                 ?worker_run_id:telemetry_worker_run_id
+                ?failure_class:telemetry_failure_class
                 ?error_kind:telemetry_error_kind
                 ?error_message:error_detail
                 ()
@@ -887,48 +844,18 @@ let handle_call_tool_eio ~execute_tool_eio ~maybe_emit_resource_notifications
   Tool_registry.record_call_if_known ~source ?assignment_id:called_assignment_id_opt
     ~tool_name:name ~success ~duration_ms ();
 
-  let tool_args_preview =
-    Observability_redact.redact_tool_input ~tool_name:name arguments
-  in
-  let activity_string_field key =
-    match Safe_ops.json_string_opt key arguments with
-    | Some value when String.trim value <> "" ->
-        Some (key, `String (Observability_redact.redact_preview value))
-    | _ -> None
-  in
-  let activity_int_field key =
-    match Safe_ops.json_int_opt key arguments with
-    | Some value -> Some (key, `Int value)
-    | None -> None
-  in
   let activity_payload =
-    `Assoc
-      ([
-         ("tool_name", `String name);
-         ("success", `Bool success);
-         ("duration_ms", `Int duration_ms);
-         ("source", `String (Tool_registry.string_of_source source));
-         ("error", match error_detail with Some e -> `String e | None -> `Null);
-         ( "tool_args_preview",
-           match tool_args_preview with
-           | Some preview -> `String preview
-           | None -> `Null );
-       ]
-       @ List.filter_map activity_string_field
-           [
-             "cmd";
-             "task_id";
-             "repo";
-             "path";
-             "message";
-             "branch";
-             "branch_name";
-             "title";
-             "session_id";
-             "operation_id";
-             "verification_id";
-           ]
-       @ List.filter_map activity_int_field [ "pr_number"; "issue_number" ])
+    let tool_args_preview =
+      Observability_redact.redact_tool_input ~tool_name:name arguments
+    in
+    activity_tool_called_payload
+      ~tool_name:name
+      ~success
+      ~duration_ms
+      ~source:(Tool_registry.string_of_source source)
+      ?error_detail
+      ?tool_args_preview
+      arguments
   in
 
   (* Emit activity graph event for tool call — enables real-time dashboard tracking *)
@@ -973,10 +900,6 @@ let handle_call_tool_eio ~execute_tool_eio ~maybe_emit_resource_notifications
    | None -> ());
   let (status, required_follow_up) = parse_status_from_message ~success ~message in
   let quality = quality_from_result ~success ~message ~attempts in
-  let workflow_guidance =
-    Workflow_guide.guidance_to_json
-      (Workflow_guide.next_steps_for_call ~tool_name:name ~args:arguments ~success)
-  in
   let envelope =
     `Assoc [
       ("kind", `String "tool_call");
@@ -989,7 +912,6 @@ let handle_call_tool_eio ~execute_tool_eio ~maybe_emit_resource_notifications
         | Some value -> `String value));
       ("trace_id", `String trace_id);
       ("quality", quality);
-      ("workflow_guidance", workflow_guidance);
     ]
   in
   let content_items =

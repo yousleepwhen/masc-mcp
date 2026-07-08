@@ -66,20 +66,13 @@ let all_flags : flag list = [
     lifecycle = Active; since = "2.50.0" };
 
   (* ── Tool Surface ─────────────────────────────────────────── *)
-  { env_name = "MASC_DISPATCH_V2";
-    description = "O(1) Hashtbl dispatch vs legacy sequential match";
-    default = true; category = "tool";
-    lifecycle = Active; since = "2.102.0" };
+  (* RFC-0084 host-config-cleanup-J — MASC_DISPATCH_V2 entry removed.
+     The Hashtbl dispatch path is the only path. *)
 
   { env_name = "MASC_FULL_SURFACE";
     description = "Include hidden/developer tools in tool list";
     default = false; category = "tool";
     lifecycle = Active; since = "2.90.0" };
-
-  { env_name = Env_config_core.tool_auth_strict_env_key;
-    description = "Unknown masc_* tools require worker-level permission";
-    default = true; category = "tool";
-    lifecycle = Active; since = "2.100.0" };
 
   { env_name = Env_config_core.parse_warn_env_key;
     description = "Log JSON parse warnings";
@@ -87,6 +80,11 @@ let all_flags : flag list = [
     lifecycle = Active; since = "2.60.0" };
 
   (* ── Keeper ───────────────────────────────────────────────── *)
+  { env_name = "MASC_KEEPER_DOMAIN_POOL_ENABLED";
+    description = "Historical keeper DomainPool pilot flag. Supervisor keepalive fibers now stay on the owning Eio domain because they use switches, clocks, and provider streams.";
+    default = false; category = "keeper";
+    lifecycle = Experimental; since = "2.170.0" };
+
   { env_name = "MASC_KEEPER_BOOTSTRAP_ENABLED";
     description = "Startup keeper auto-bootstrap scan";
     default = true; category = "keeper";
@@ -101,6 +99,16 @@ let all_flags : flag list = [
     description = "Skip heartbeat cycles when busy (task proves liveness) or extend interval when idle";
     default = true; category = "keeper";
     lifecycle = Active; since = "2.163.0" };
+
+  { env_name = "MASC_CASCADE_TIER_ADMISSION_ENABLED";
+    description = "Enforce per-tier cascade inflight admission before provider dispatch";
+    default = true; category = "keeper";
+    lifecycle = Active; since = "2.243.0" };
+
+  { env_name = "MASC_CASCADE_TIER_WAIT_ENABLED";
+    description = "Wait with bounded backoff when per-tier cascade admission is saturated";
+    default = false; category = "keeper";
+    lifecycle = Active; since = "0.19.30" };
 
   { env_name = "MASC_KEEPER_ALERT_ENABLED";
     description = "Master switch for keeper interesting alert detection";
@@ -138,7 +146,7 @@ let all_flags : flag list = [
     lifecycle = Active; since = "2.214.0" };
 
   { env_name = "MASC_KEEPER_DOCKER_PLAYGROUND";
-    description = "Route keeper_bash commands through Docker container";
+    description = "Route Execute commands through Docker container";
     default = false; category = "keeper";
     lifecycle = Active; since = "2.233.0" };
 

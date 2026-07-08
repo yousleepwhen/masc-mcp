@@ -21,8 +21,7 @@
 
 (** {1 Tool result + context} *)
 
-type tool_result = bool * string
-(** [(success, message)] dispatch return shape. *)
+type tool_result = Tool_result.result
 
 type context = {
   config : Coord.config;
@@ -45,7 +44,10 @@ val build_timeline :
   Yojson.Safe.t
 (** [build_timeline config ~agent_name ~since_hours ~limit
       ~include_tasks ~include_board ~include_tool_calls] returns a
-    JSON object with two keys:
+    JSON object with source metadata plus the timeline payload:
+
+    - [dashboard_surface], [source], [retention], [generated_at_iso]
+      — dashboard provenance for the multi-source read model.
 
     - [events] — the truncated, chronologically-sorted event
       list (most recent [limit] events).
@@ -74,7 +76,7 @@ val dispatch :
   context ->
   name:string ->
   args:Yojson.Safe.t ->
-  tool_result option
+  Tool_result.result option
 (** [dispatch ctx ~name ~args] routes by tool name.  Returns
     [None] when [name] is not [masc_agent_timeline] — caller
     treats that as "not my tool". *)

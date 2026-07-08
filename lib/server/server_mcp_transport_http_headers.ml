@@ -45,10 +45,8 @@ let request_force_json_response (request : Httpun.Request.t) =
   | Some value -> header_truthy_value value
   | None -> false
 
-let allow_legacy_accept = env_flag "MASC_ALLOW_LEGACY_ACCEPT"
-
 let classify_mcp_accept (request : Httpun.Request.t) =
-  Http_negotiation.classify_mcp_accept ~allow_legacy:allow_legacy_accept
+  Http_negotiation.classify_mcp_accept
     (Httpun.Headers.get request.headers "accept")
 
 let body_jsonrpc_method body_str =
@@ -61,24 +59,7 @@ let body_jsonrpc_method body_str =
     | _ -> None
   with Yojson.Json_error _ -> None
 
-let is_notification_method method_ =
-  let prefix = "notifications/" in
-  String.starts_with method_ ~prefix
-
 let is_initialize_method method_ = String.equal method_ "initialize"
-
-let request_accepts_json (request : Httpun.Request.t) =
-  Http_negotiation.accepts_json
-    (Httpun.Headers.get request.headers "accept")
-
-let classify_mcp_accept_for_body (request : Httpun.Request.t) body_str =
-  match classify_mcp_accept request with
-  | Http_negotiation.Rejected -> (
-      match body_jsonrpc_method body_str with
-      | Some (method_, false) when is_notification_method method_ ->
-          Http_negotiation.Legacy_accepted
-      | _ -> Http_negotiation.Rejected)
-  | accept_mode -> accept_mode
 
 let should_use_sse_for_body (request : Httpun.Request.t) body_str accept_mode =
   match body_jsonrpc_method body_str with
@@ -87,23 +68,6 @@ let should_use_sse_for_body (request : Httpun.Request.t) body_str accept_mode =
       accept_mode = Http_negotiation.Streamable
       && Http_negotiation.accepts_sse_header
            (Httpun.Headers.get request.headers "accept")
-
-let legacy_accept_warning_headers = function
-  | Http_negotiation.Legacy_accepted ->
-      [
-        ( "warning",
-          "299 - \"Legacy Accept is deprecated; use 'application/json, text/event-stream'\"" );
-        ("x-masc-legacy-accept", "1");
-      ]
-  | Http_negotiation.Streamable | Http_negotiation.Rejected -> []
-
-let legacy_transport_deprecation_headers =
-  [
-    ("deprecation", "true");
-    ( "warning",
-      "299 - \"Legacy SSE endpoints (/sse,/messages) are deprecated; use /mcp\"" );
-    ("link", "</mcp>; rel=\"successor-version\"");
-  ]
 
 let force_json_response =
   env_flag "MASC_FORCE_JSON_RESPONSE" || env_flag "MCP_FORCE_JSON_RESPONSE"

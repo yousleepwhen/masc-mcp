@@ -94,8 +94,6 @@ val get_session_id_any : Httpun.Request.t -> string option
 val get_protocol_version : Httpun.Request.t -> string
 val get_protocol_version_for_session :
   ?session_id:string -> Httpun.Request.t -> string
-val legacy_messages_endpoint_url :
-  Httpun.Request.t -> string -> string
 
 (** {1 Server state} *)
 
@@ -120,15 +118,9 @@ val validate_origin : Httpun.Request.t -> bool
 val accepts_sse : Httpun.Request.t -> bool
 val accepts_streamable_mcp : Httpun.Request.t -> bool
 val request_force_json_response : Httpun.Request.t -> bool
-val allow_legacy_accept : bool
 val classify_mcp_accept :
   Httpun.Request.t ->
   Mcp_transport_protocol.Http_negotiation.accept_mode
-val legacy_accept_warning_headers :
-  Mcp_transport_protocol.Http_negotiation.accept_mode ->
-  (string * string) list
-val legacy_transport_deprecation_headers :
-  (string * string) list
 val force_json_response : bool
 val get_last_event_id : Httpun.Request.t -> int option
 
@@ -142,14 +134,13 @@ val json_headers : string -> string -> string -> (string * string) list
 (** {1 SSE session control} *)
 
 val check_sse_connect_guard :
-  string -> (unit, string * float) result
+  string -> (unit, Sse_reject_reason.t * float) result
 val stop_sse_session : string -> unit
 val close_all_sse_connections : unit -> unit
 
 (** {1 MCP HTTP route handlers} *)
 
 val handle_get_mcp :
-  ?legacy_messages_endpoint:(string -> string) ->
   ?profile:Server_mcp_transport_http.tool_profile ->
   ?sse_kind:Sse.session_kind ->
   Httpun.Request.t ->
@@ -157,9 +148,6 @@ val handle_get_mcp :
   unit
 
 val handle_get_operator_mcp :
-  Httpun.Request.t -> Httpun.Reqd.t -> unit
-
-val handle_post_messages :
   Httpun.Request.t -> Httpun.Reqd.t -> unit
 
 val handle_post_mcp :
@@ -184,8 +172,6 @@ val handle_presence_events :
 
 val mcp_transport_http_deps :
   unit -> Server_mcp_transport_http.deps
-val starts_with : prefix:string -> string -> bool
-val contains_substring : needle:string -> string -> bool
 val host_header_has_forbidden_authority_chars :
   string -> bool
 val parse_host_port :

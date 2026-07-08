@@ -1,8 +1,12 @@
 type actionable_signal =
   | Has_unclaimed_tasks
   | Has_board_activity
-  | Has_discovered_work
   | No_actionable_signal
+
+type actionable_signal_context =
+  | No_actionable_signal_context
+  | Turn_affordance_requires_tool
+  | Keeper_world_signal of actionable_signal
 
 type contract_status =
   | Tool_surface_mismatch of { missing : string list }
@@ -16,8 +20,12 @@ type contract_status =
 let actionable_signal_label = function
   | Has_unclaimed_tasks -> "has_unclaimed_tasks"
   | Has_board_activity -> "has_board_activity"
-  | Has_discovered_work -> "has_discovered_work"
   | No_actionable_signal -> "no_actionable_signal"
+
+let actionable_signal_context_label = function
+  | No_actionable_signal_context -> "no_actionable_signal_context"
+  | Turn_affordance_requires_tool -> "turn_affordance_requires_tool"
+  | Keeper_world_signal signal -> actionable_signal_label signal
 
 let contract_status_label = function
   | Tool_surface_mismatch _ -> "tool_surface_mismatch"
@@ -37,7 +45,6 @@ let pp_contract_status fmt = function
 type world_observation = {
   unclaimed_task_count : int;
   board_activity_count : int;
-  has_discovered_work_section : bool;
 }
 
 let of_keeper_world_observation
@@ -47,42 +54,44 @@ let of_keeper_world_observation
   {
     unclaimed_task_count = observation.claimable_task_count;
     board_activity_count = List.length observation.pending_board_events;
-    has_discovered_work_section =
-      observation.work_discovery_due
-      || Option.is_some observation.worktree_change_summary;
   }
 
 let classify_actionable_signal o =
   if o.unclaimed_task_count > 0 then Has_unclaimed_tasks
   else if o.board_activity_count > 0 then Has_board_activity
-  else if o.has_discovered_work_section then Has_discovered_work
   else No_actionable_signal
 
 let classify_actionable_signal_for_tools ~(allowed_tool_names : string list) o =
-  let has_any_tool names =
-    List.exists (fun name -> List.mem name allowed_tool_names) names
+  let has_tool capability =
+    Keeper_tool_capability_axis.supports_any capability allowed_tool_names
   in
   if
     o.unclaimed_task_count > 0
-    && has_any_tool [ "keeper_task_claim"; "masc_claim_next"; "masc_claim_task" ]
+    && has_tool Keeper_tool_capability_axis.Claim_task
   then Has_unclaimed_tasks
   else if
     o.board_activity_count > 0
-    && has_any_tool
-         [ "keeper_board_post"; "keeper_board_comment"; "masc_broadcast";
-           "masc_keeper_msg" ]
+    && has_tool Keeper_tool_capability_axis.Board_activity
   then Has_board_activity
-  else if
-    o.has_discovered_work_section
-    && has_any_tool
-         [ "keeper_board_post"; "masc_add_task"; "keeper_tasks_audit";
-           "keeper_shell"; "keeper_bash"; "masc_code_git"; "keeper_fs_read" ]
-  then Has_discovered_work
   else No_actionable_signal
 
-let classify_actionable_signal_with_allowed_tools =
-  classify_actionable_signal_for_tools
+let make_actionable_signal_context ~tool_gate_required ~actionable_signal =
+  if tool_gate_required
+  then Turn_affordance_requires_tool
+  else
+    match actionable_signal with
+    | No_actionable_signal -> No_actionable_signal_context
+    | signal -> Keeper_world_signal signal
 
 let is_actionable = function
   | No_actionable_signal -> false
-  | Has_unclaimed_tasks | Has_board_activity | Has_discovered_work -> true
+  | Has_unclaimed_tasks | Has_board_activity -> true
+
+let is_actionable_signal_context = function
+  | No_actionable_signal_context -> false
+  | Turn_affordance_requires_tool | Keeper_world_signal _ -> true
+
+let requires_tool_support_for_allowed_tools ~(allowed_tool_names : string list) o =
+  o
+  |> classify_actionable_signal_for_tools ~allowed_tool_names
+  |> is_actionable

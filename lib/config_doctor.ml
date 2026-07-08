@@ -17,7 +17,6 @@ type inputs = {
   env_config_dir : string option;
   env_personas_dir : string option;
   resolution_source : string option;
-  repo_config_fallback_enabled : bool;
 }
 
 type t = {
@@ -33,7 +32,6 @@ type t = {
   explicit_config_dir : string option;
   explicit_personas_dir : string option;
   repo_config_seed_path : string option;
-  repo_fallback_enabled : bool;
   keeper_runtime_toml_present : bool;
   warnings : string list;
   next_actions : string list;
@@ -64,16 +62,29 @@ let status_to_string = function
   | Warn -> "warn"
   | Error -> "error"
 
-let dedupe_keep_order values =
-  let seen = Hashtbl.create (List.length values) in
-  List.filter
-    (fun value ->
-      if value = "" || Hashtbl.mem seen value then
-        false
-      else (
-        Hashtbl.replace seen value ();
-        true))
-    values
+let string_has_prefix ~prefix value =
+  let prefix_len = String.length prefix in
+  String.length value >= prefix_len && String.sub value 0 prefix_len = prefix
+
+let string_has_suffix ~suffix value =
+  let suffix_len = String.length suffix in
+  let value_len = String.length value in
+  value_len >= suffix_len
+  && String.sub value (value_len - suffix_len) suffix_len = suffix
+
+let warning_is_bootstrap_seed_only warning =
+  string_has_prefix ~prefix:"Repo config seed exists at " warning
+  && string_has_suffix
+       ~suffix:"; it is bootstrap-only, not the active config root."
+       warning
+
+let warning_is_blocking warning = not (warning_is_bootstrap_seed_only warning)
+
+let has_blocking_warning (report : t) =
+  match report.status with
+  | Ok -> false
+  | Error -> true
+  | Warn -> List.exists warning_is_blocking report.warnings
 
 let canonicalize_path ~cwd path =
   let absolute =
@@ -98,7 +109,7 @@ let repo_config_seed_path (inputs : inputs) =
   ]
   |> List.filter_map (fun path_opt ->
          Option.map (canonicalize_path ~cwd:inputs.cwd) path_opt)
-  |> dedupe_keep_order
+  |> List.filter (fun s -> s <> "") |> Json_util.dedupe_keep_order
   |> function
   | first :: _ -> Some first
   | [] -> None
@@ -107,17 +118,41 @@ let option_field name = function
   | Some value -> (name, `String value)
   | None -> (name, `Null)
 
+type cascade_diagnosis = {
+  issues : catalog_issue list;
+  missing_source : bool;
+}
+
 let diagnose_cascade_catalog ~active_config_root =
   let config_path =
-    Filename.concat active_config_root Config_dir_resolver.cascade_json_filename
+    Filename.concat active_config_root Config_dir_resolver.cascade_toml_filename
   in
   if not (Env_config_core.existing_file config_path) then
-    []
+    {
+      missing_source = true;
+      issues =
+        [
+          {
+            profile = None;
+            severity = Catalog_error;
+            message =
+              Printf.sprintf
+                "Cascade catalog source is missing: %s. Runtime cascade \
+                 resolution requires cascade.toml."
+                config_path;
+          };
+        ];
+    }
   else
-    let profiles = Cascade_catalog_validator.discover_profiles ~config_path in
-    let issues = Cascade_catalog_validator.diagnose_catalog ~config_path in
+    let profiles =
+      Cascade_catalog_validator.discover_profiles_for_diagnostics ~config_path
+    in
+    let validator_issues =
+      Cascade_catalog_validator.diagnose_catalog_for_diagnostics ~config_path
+    in
+    let issues = validator_issues in
     if issues = [] then
-      []
+      { issues = []; missing_source = false }
     else
       let error_count =
         issues
@@ -125,7 +160,7 @@ let diagnose_cascade_catalog ~active_config_root =
         |> List.length
       in
       let warn_count = List.length issues - error_count in
-      {
+      let summary = {
         profile = None;
         severity = if error_count > 0 then Catalog_error else Catalog_warn;
         message =
@@ -135,10 +170,10 @@ let diagnose_cascade_catalog ~active_config_root =
             (List.length profiles)
             error_count
             warn_count;
-      }
-      :: issues
+      } in
+      { issues = summary :: issues; missing_source = false }
 
-let cascade_catalog_next_actions ~config_path issues =
+let cascade_catalog_next_actions ~config_path { issues; missing_source } =
   if issues = [] then
     []
   else
@@ -146,7 +181,12 @@ let cascade_catalog_next_actions ~config_path issues =
       List.exists (fun issue -> issue.severity = Catalog_error) issues
     in
     let primary_action =
-      if has_errors then
+      if missing_source then
+        Printf.sprintf
+          "Create or bootstrap cascade.toml at %s before assigning keepers or \
+           starting the server."
+          config_path
+      else if has_errors then
         Printf.sprintf
           "Fix or disable the broken cascade preset entries in %s before \
            assigning keepers to them."
@@ -159,7 +199,7 @@ let cascade_catalog_next_actions ~config_path issues =
     in
     [
       primary_action;
-      "Rerun `masc-mcp doctor config` after editing cascade.json.";
+      "Rerun `masc-mcp doctor config` after editing cascade.toml.";
     ]
 
 let current_inputs ~base_path_input ~default_base_path () =
@@ -185,16 +225,7 @@ let current_inputs ~base_path_input ~default_base_path () =
           if inherited_env_matches then
             "explicit_env"
           else if String.equal normalized_default normalized_base_path then
-            (match Env_config_core.home_dir_opt () with
-             | Some home ->
-                 let normalized_home =
-                   Env_config_core.normalize_masc_base_path_input home
-                 in
-                 if String.equal normalized_home normalized_default then
-                   "implicit_home"
-                 else
-                   "implicit_repo_root"
-             | None -> "implicit_repo_root")
+            "implicit_default"
           else
             "explicit_cli"
         in
@@ -204,11 +235,10 @@ let current_inputs ~base_path_input ~default_base_path () =
     cwd = Sys.getcwd ();
     executable_name = Sys.executable_name;
     base_path_input;
-    env_masc_base_path = Env_config_core.base_path_raw_opt ();
+    env_masc_base_path = (Host_config.from_env ()).base_path_raw;
     env_config_dir = Config_dir_resolver.current_env_config_dir_opt ();
     env_personas_dir = Config_dir_resolver.current_env_personas_dir_opt ();
     resolution_source;
-    repo_config_fallback_enabled = Config_dir_resolver.repo_config_fallback_enabled ();
   }
 
 let analyze_with (inputs : inputs) =
@@ -289,11 +319,12 @@ let analyze_with (inputs : inputs) =
       ~effective_masc_root:runtime_data_root
       ()
   in
-  let cascade_catalog_issues =
+  let cascade_diagnosis =
     diagnose_cascade_catalog ~active_config_root
   in
+  let cascade_catalog_issues = cascade_diagnosis.issues in
   let cascade_config_path =
-    Filename.concat active_config_root Config_dir_resolver.cascade_json_filename
+    Filename.concat active_config_root Config_dir_resolver.cascade_toml_filename
   in
   let warnings =
     [
@@ -339,23 +370,18 @@ let analyze_with (inputs : inputs) =
                 "Repo config seed exists at %s; it is bootstrap-only, not the active config root."
                 path)
        | _ -> None);
-      (if inputs.repo_config_fallback_enabled then
-         Some
-           "MASC_ALLOW_REPO_CONFIG_FALLBACK=true is enabled; low-level resolver fallback remains available."
-       else
-         None);
       path_diag.warning;
     ]
     |> List.filter_map (fun warning -> warning)
     |> fun base_warnings ->
     base_warnings
     @ List.map (fun issue -> issue.message) cascade_catalog_issues
-    |> dedupe_keep_order
+    |> List.filter (fun s -> s <> "") |> Json_util.dedupe_keep_order
   in
   let cascade_actions =
     cascade_catalog_next_actions
       ~config_path:cascade_config_path
-      cascade_catalog_issues
+      cascade_diagnosis
   in
   let next_actions =
     match init_state with
@@ -428,7 +454,7 @@ let analyze_with (inputs : inputs) =
     |> fun base_actions ->
     base_actions
     @ cascade_actions
-    |> dedupe_keep_order
+    |> List.filter (fun s -> s <> "") |> Json_util.dedupe_keep_order
   in
   let has_catalog_errors =
     List.exists
@@ -456,7 +482,6 @@ let analyze_with (inputs : inputs) =
     explicit_config_dir;
     explicit_personas_dir;
     repo_config_seed_path;
-    repo_fallback_enabled = inputs.repo_config_fallback_enabled;
     keeper_runtime_toml_present;
     warnings;
     next_actions;
@@ -504,6 +529,183 @@ let live_catalog_summary = function
               Cascade_catalog_runtime.rejection_to_yojson rejection );
           ] )
 
+let live_catalog_snapshot = function
+  | Stdlib.Ok (Cascade_catalog_runtime.Validated snapshot) -> Some snapshot
+  | Stdlib.Ok
+      (Cascade_catalog_runtime.Validated_with_rejections { snapshot; _ })
+  | Stdlib.Ok
+      (Cascade_catalog_runtime.Serving_last_known_good { snapshot; _ }) ->
+      Some snapshot
+  | Stdlib.Error _ -> None
+
+let find_live_profile (snapshot : Cascade_catalog_runtime.snapshot) name =
+  List.find_opt
+    (fun (profile : Cascade_catalog_runtime.profile_build) ->
+       String.equal profile.name name)
+    snapshot.profiles
+
+let provider_forced_tool_rejection_label provider_cfg =
+  match
+    Provider_tool_support.classify_rejection
+      ~require_tool_choice_support:true
+      ~require_tool_support:true
+      provider_cfg
+  with
+  | Some reason -> Provider_tool_support.rejection_reason_label reason
+  | None -> "passes"
+
+let doctor_keeper_agent_name = Keeper_identity.keeper_agent_name "config-doctor"
+let required_keeper_internal_tool_name = "tool_execute"
+
+let required_keeper_internal_tool : Agent_sdk.Tool.t =
+  Agent_sdk.Tool.create
+    ~name:required_keeper_internal_tool_name
+    ~description:"config doctor required keeper internal tool probe"
+    ~parameters:[]
+    (fun _input -> Ok { content = "ok" })
+
+let provider_required_keeper_internal_tool_issue provider_cfg =
+  let resolved =
+    try
+      Cascade_runner.resolve_tool_lane_for_oas_tools
+        ~agent_name:doctor_keeper_agent_name
+        ~tool_requirement:`Required
+        ~provider_cfg
+        ~tools:[ required_keeper_internal_tool ]
+        ()
+    with
+    | Env_config_core.Config_error detail ->
+        Error
+          (Agent_sdk.Error.Config
+             (Agent_sdk.Error.InvalidConfig
+                { field = "runtime_mcp_policy"; detail }))
+  in
+  match resolved with
+  | Error err -> Some (Agent_sdk.Error.to_string err)
+  | Ok (effective_tools, runtime_mcp_policy) ->
+      let materialized_tool_names =
+        Keeper_turn_driver_helpers.materialized_tool_names_after_lane
+          ~effective_tools
+          ~runtime_mcp_policy
+      in
+      let missing_required_tools =
+        Keeper_turn_driver_helpers.missing_required_tool_names_after_lane_by_name
+          ~required_tool_names:[ required_keeper_internal_tool_name ]
+          ~materialized_tool_names
+      in
+      if missing_required_tools = []
+      then None
+      else
+        Some
+          (Printf.sprintf
+             "missing_required_tools=[%s] materialized_tools=[%s]"
+             (String.concat ", " missing_required_tools)
+             (String.concat ", " materialized_tool_names))
+
+let keeper_internal_tool_route_issue route_key target candidates =
+  let rejections =
+    candidates
+    |> List.filter_map (fun provider_cfg ->
+           provider_required_keeper_internal_tool_issue provider_cfg
+           |> Option.map (fun reason ->
+                  Printf.sprintf
+                    "%s:%s"
+                    (Provider_tool_support.provider_debug_label provider_cfg)
+                    reason))
+  in
+  if List.length rejections <> List.length candidates
+  then None
+  else
+    Some
+      (Printf.sprintf
+         "Tool-required cascade route %s targets %s, but none of its %d \
+          provider candidate(s) materialize required keeper internal tool %s \
+          for a keeper agent. rejected=[%s]. Keeper turns that require %s \
+          will fail with no_tool_capable_provider."
+         route_key
+         target
+         (List.length candidates)
+         required_keeper_internal_tool_name
+         (String.concat ", " rejections)
+         required_keeper_internal_tool_name)
+
+let forced_tool_route_issue
+    (snapshot : Cascade_catalog_runtime.snapshot)
+    (use : Cascade_routes.logical_use)
+  =
+  let route_key = Cascade_routes.logical_use_key use in
+  let target =
+    try
+      Some
+        (Cascade_routes.cascade_name_for_use
+           ~config_path:snapshot.source_path use)
+    with
+    | Failure _ | Sys_error _ | Unix.Unix_error _ -> None
+  in
+  match target with
+  | None ->
+      Some
+        (Printf.sprintf
+           "Tool-required cascade route %s could not be resolved from %s."
+           route_key snapshot.source_path)
+  | Some target -> (
+      match find_live_profile snapshot target with
+      | None ->
+          Some
+            (Printf.sprintf
+               "Tool-required cascade route %s targets %s, but that profile is \
+                absent from the live validated catalog."
+               route_key target)
+      | Some profile ->
+          let candidates =
+            List.map
+              (fun (candidate : Cascade_catalog_runtime.candidate_runtime) ->
+                 candidate.provider_cfg)
+              profile.candidates
+          in
+          if candidates = []
+          then
+            Some
+              (Printf.sprintf
+                 "Tool-required cascade route %s targets %s, but that profile \
+                  has no provider candidates. Keeper turns that require tools \
+                  will fail with no_tool_capable_provider."
+                 route_key target)
+          else if
+            not
+              (List.exists
+                 (Provider_tool_support.supports_required_tool_use
+                    ~require_tool_choice_support:true
+                    ~require_tool_support:true)
+                 candidates)
+          then
+            let rejected =
+              candidates
+              |> List.map (fun provider_cfg ->
+                     Printf.sprintf
+                       "%s:%s"
+                       (Provider_tool_support.provider_debug_label provider_cfg)
+                       (provider_forced_tool_rejection_label provider_cfg))
+              |> String.concat ", "
+            in
+            Some
+              (Printf.sprintf
+                 "Tool-required cascade route %s targets %s, but none of its \
+                  %d provider candidate(s) satisfy forced required-tool use \
+                  (needs inline tool_choice or runtime MCP). rejected=[%s]. \
+                  Keeper turns that require tools will fail with \
+                  no_tool_capable_provider."
+                 route_key target (List.length candidates) rejected)
+          else
+            keeper_internal_tool_route_issue route_key target candidates)
+
+let forced_tool_route_issues live_state_result =
+  match live_catalog_snapshot live_state_result with
+  | None -> []
+  | Some snapshot ->
+      [ Cascade_routes.Keeper_turn; Cascade_routes.Tool_required ]
+      |> List.filter_map (forced_tool_route_issue snapshot)
+
 let analyze_live ~sw ~net ~clock ~fs ~proc_mgr ~base_path_input
     ~default_base_path () =
   let report = analyze ~base_path_input ~default_base_path () in
@@ -525,18 +727,20 @@ let analyze_live ~sw ~net ~clock ~fs ~proc_mgr ~base_path_input
     | Some _ -> (None, [], true)
     | None -> (None, [], true)
   in
+  let live_state_result =
+    Cascade_catalog_runtime.inspect_active ~sw ~net ~clock ()
+  in
   let live_outcome, live_warning, catalog_validation =
-    match
-      Cascade_catalog_runtime.inspect_active ~sw ~net ~clock ()
-      |> live_catalog_summary
-    with
+    match live_catalog_summary live_state_result with
     | outcome, warning, validation -> (outcome, warning, validation)
   in
+  let tool_route_issues = forced_tool_route_issues live_state_result in
   let warnings =
     [ report.warnings;
       (match live_warning with
        | None -> []
        | Some warning -> [ warning ]);
+      tool_route_issues;
       (match sandbox_warning with
        | None -> []
        | Some warning -> [ warning ]) ]
@@ -555,14 +759,23 @@ let analyze_live ~sw ~net ~clock ~fs ~proc_mgr ~base_path_input
       else
         []
     in
-    report.next_actions @ catalog_actions @ sandbox_actions
-    |> dedupe_keep_order
+    let tool_route_actions =
+      if tool_route_issues = [] then
+        []
+      else
+        [
+          "Route keeper_turn/tool_required to at least one provider with inline tool_choice or runtime MCP support, then rerun `masc-mcp doctor config`.";
+        ]
+    in
+    report.next_actions @ catalog_actions @ tool_route_actions @ sandbox_actions
+    |> List.filter (fun s -> s <> "") |> Json_util.dedupe_keep_order
   in
   let status =
     match report.init_state, report.status, live_outcome, sandbox_preflight_ok with
     | (Invalid_env | Missing_init), _, _, _ -> Error
     | _, _, (Live_catalog_serving_last_known_good | Live_catalog_invalid), _ ->
         Error
+    | _, _, _, _ when tool_route_issues <> [] -> Error
     | _, _, Live_catalog_partial, _ -> Warn
     | _, Error, Live_catalog_valid, _ -> Error
     | _, Warn, Live_catalog_valid, _ -> Warn
@@ -593,7 +806,6 @@ let to_yojson (report : t) =
       (option_field "explicit_config_dir" report.explicit_config_dir);
       (option_field "explicit_personas_dir" report.explicit_personas_dir);
       (option_field "repo_config_seed_path" report.repo_config_seed_path);
-      ("repo_fallback_enabled", `Bool report.repo_fallback_enabled);
       ("keeper_runtime_toml_present", `Bool report.keeper_runtime_toml_present);
       ("warnings", `List (List.map (fun value -> `String value) report.warnings));
       ("next_actions", `List (List.map (fun value -> `String value) report.next_actions));
@@ -644,9 +856,6 @@ let render_text (report : t) =
   add_line
     (Printf.sprintf "repo_config_seed_path: %s"
        (Option.value ~default:"(not found)" report.repo_config_seed_path));
-  add_line
-    (Printf.sprintf "repo_fallback_enabled: %s"
-       (if report.repo_fallback_enabled then "yes" else "no"));
   add_line
     (Printf.sprintf "keeper_runtime.toml: %s"
        (if report.keeper_runtime_toml_present then "present" else "missing"));

@@ -5,7 +5,6 @@
 open Masc_domain
 open Coord_utils_backend_setup
 
-val contains_substring : string -> string -> bool
 
 (** {1 Validators (string-error)} *)
 
@@ -31,6 +30,14 @@ val validate_task_id_r : string -> (string, masc_error) result
 val validate_file_path_r : string -> (string, masc_error) result
 
 (** {1 Initialization gates} *)
+
+(** Raised by [ensure_initialized] when the config is not initialized.
+    Replaces the previous [Invalid_argument "MASC not initialized..."]
+    that downstream sites recovered via [Printexc.to_string +
+    substring match] (RFC-0088 §"String/Substring 분류기" cross-module
+    form). The [Printexc] printer is registered so existing log paths
+    that format the exception keep the same human-readable message. *)
+exception Not_initialized
 
 val ensure_initialized : config -> unit
 val ensure_initialized_r : config -> (unit, masc_error) result
@@ -96,6 +103,17 @@ val read_json_opt : config -> string -> Yojson.Safe.t option
     pre-canonical-form) and needs rewriting. *)
 val agent_json_needs_repair : Yojson.Safe.t -> bool
 
+val is_fd_pressure_exn : exn -> bool
+(** [true] for typed OS/resource-pressure exceptions that mean an agent file
+    could not be opened, not that it is malformed. *)
+
+type read_agent_error =
+  | Agent_fd_pressure of exn
+  | Agent_read_error of string
+
+val read_agent_with_repair_result :
+  config -> string -> (agent, read_agent_error) result
+
 (** Read an agent JSON and rewrite it in canonical form when the
     [last_seen] repair predicate fires. *)
 val read_agent_with_repair :
@@ -124,7 +142,9 @@ val with_distributed_lock :
   (unit -> 'a) ->
   'a
 
-(** Result-returning variant of [with_distributed_lock]. *)
+(** Result-returning variant of [with_distributed_lock].  Exhausted
+    acquisition is returned as retryable [System_error.IoError] instead
+    of raising. *)
 val with_distributed_lock_r :
   ?clock:_ Eio.Time.clock ->
   config ->

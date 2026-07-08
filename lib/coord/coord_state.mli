@@ -3,42 +3,11 @@
 open Masc_domain
 open Coord_utils
 
-val default_room_state :
-  Coord_utils_backend_setup.config -> Masc_domain.room_state
-
-val ensure_room_bootstrap : Coord_utils_backend_setup.config -> unit
-val generate_session_id : unit -> string
-val get_hostname : unit -> string option
-val get_tty : unit -> string option
-
-val resolve_agent_name :
-  Coord_utils_backend_setup.config -> string -> string
-
-val task_id_to_int : string -> int option
-
-val read_archive_task_ids : Coord_utils_backend_setup.config -> int list
-
-val append_archive_tasks :
-  Coord_utils_backend_setup.config -> Masc_domain.task list -> unit
-
-val next_task_number :
-  Coord_utils_backend_setup.config -> Masc_domain.backlog -> int
-
-val read_backlog_r :
-  Coord_utils_backend_setup.config ->
-  (Masc_domain.backlog, string) result
-
-val read_backlog : Coord_utils_backend_setup.config -> Masc_domain.backlog
-
-val write_backlog :
-  Coord_utils_backend_setup.config -> Masc_domain.backlog -> unit
-
-val non_empty_string_opt : string option -> string option
 val normalized_string_list : string list -> string list
 
 (** Project a JSON entry of the [active_agents] array to the agent
-    name it identifies, accepting either a bare [`String name] or
-    an object with a [name]/[agent_name] field. *)
+    name it identifies. Current state accepts only bare [`String name]
+    entries; object-shaped historical entries are ignored during repair. *)
 val recover_active_agent_name : Yojson.Safe.t -> string option
 
 val recover_room_state :

@@ -1,4 +1,4 @@
-(** Property-based tests for context overflow detection and recovery.
+(** Property-based tests for context overflow detection and boundary handling.
 
     Verifies structural invariants of the compaction-budget fix:
 
@@ -10,23 +10,25 @@
       is_context_overflow(TokenBudgetExceeded {kind≠"Input"}) = false
       for ALL non-"Input" kind strings.
 
-    Property 3 (Recovery consistency):
-      Every error accepted by is_context_overflow yields a positive
-      limit from the recovery path.
+    Property 3 (Limit attribution):
+      Every error accepted by is_context_overflow has a positive
+      structured or fallback limit for blocker attribution.
 
     Property 4 (Structural absence):
       keeper_agent_run source does NOT contain ~max_input_tokens.
 
     Property 5 (Reducer integration):
-      keeper_agent_run source contains cap_message_tokens in the
-      keeper reducer chain, ordered before repair_dangling_tool_calls.
+      keeper_run_tools source contains cap_message_tokens in the
+      keeper reducer chain, ordered before the local pair repair.
 
     Property 6 (Reducer hardening):
-      keeper_agent_run source contains the keeper-local
-      repair_broken_tool_call_pairs reducer after repair_dangling_tool_calls. *)
+      keeper_run_tools source uses the keeper-local repair path and does
+      not call OAS repair_dangling_tool_calls, which fabricates synthetic
+      ToolResult messages for dangling tool uses. *)
 
 module UT = Masc_mcp.Keeper_unified_turn
 module EC = Masc_mcp.Keeper_error_classify
+module KC = Masc_mcp.Keeper_context_core
 
 (* ── Generators ──────────────────────────────────────────── *)
 
@@ -83,9 +85,9 @@ let prop_non_input_budget_never_detected =
     (QCheck.make gen_non_input_budget_error)
     (fun err -> not (EC.is_context_overflow err))
 
-let prop_recovery_yields_positive_limit =
+let prop_overflow_attribution_yields_positive_limit =
   QCheck.Test.make ~count:200
-    ~name:"every overflow error yields positive limit in recovery"
+    ~name:"every overflow error yields positive limit for attribution"
     (QCheck.make gen_context_overflow_error)
     (fun err ->
       let limit = match err with
@@ -139,7 +141,7 @@ let test_structural_absence () =
   end
 
 let test_cap_message_tokens_integration () =
-  let find_substring haystack needle =
+  let find_substring ?(start = 0) haystack needle =
     let hlen = String.length haystack in
     let nlen = String.length needle in
     let rec loop i =
@@ -147,7 +149,7 @@ let test_cap_message_tokens_integration () =
       else if String.sub haystack i nlen = needle then Some i
       else loop (i + 1)
     in
-    if nlen = 0 then Some 0 else loop 0
+    if nlen = 0 then Some start else loop start
   in
   let has_prompt_root path =
     Sys.file_exists (Filename.concat path "config/prompts/keeper.unified.system.md")
@@ -164,7 +166,7 @@ let test_cap_message_tokens_integration () =
         in
         ascend (Sys.getcwd ())
   in
-  let target = Filename.concat repo_root "lib/keeper/keeper_agent_run.ml" in
+  let target = Filename.concat repo_root "lib/keeper/keeper_run_tools.ml" in
   if not (Sys.file_exists target) then
     ()
   else begin
@@ -181,10 +183,13 @@ let test_cap_message_tokens_integration () =
       find_substring content "Agent_sdk.Context_reducer.cap_message_tokens"
     in
     let repair_pos =
-      find_substring content "Agent_sdk.Context_reducer.repair_dangling_tool_calls"
+      match cap_pos with
+      | Some cap_pos ->
+          find_substring ~start:cap_pos content "repair_broken_tool_call_pairs_observed"
+      | None -> None
     in
     Alcotest.(check bool)
-      "keeper_agent_run.ml must integrate cap_message_tokens before repair_dangling_tool_calls"
+      "keeper_run_tools.ml must integrate cap_message_tokens before local pair repair"
       true
       (match cap_pos, repair_pos with
        | Some cap_pos, Some repair_pos -> cap_pos < repair_pos
@@ -217,7 +222,7 @@ let test_pair_repair_integration () =
         in
         ascend (Sys.getcwd ())
   in
-  let target = Filename.concat repo_root "lib/keeper/keeper_agent_run.ml" in
+  let target = Filename.concat repo_root "lib/keeper/keeper_run_tools.ml" in
   if not (Sys.file_exists target) then
     ()
   else begin
@@ -230,23 +235,93 @@ let test_pair_repair_integration () =
         really_input ic buf 0 len;
         Bytes.to_string buf)
     in
-    let repair_pos =
+    let oas_repair_pos =
       find_substring content "Agent_sdk.Context_reducer.repair_dangling_tool_calls"
     in
     let local_pos =
-      match repair_pos with
-      | Some repair_pos ->
-          find_substring ~start:repair_pos content
-            "Keeper_context_core.repair_broken_tool_call_pairs"
-      | None -> None
+      find_substring content "Keeper_context_core.repair_broken_tool_call_pairs"
     in
     Alcotest.(check bool)
-      "keeper_agent_run.ml must integrate local pair repair after repair_dangling_tool_calls"
+      "keeper_run_tools.ml must not invoke OAS synthetic repair_dangling_tool_calls"
       true
-      (match repair_pos, local_pos with
-       | Some repair_pos, Some local_pos -> repair_pos < local_pos
-       | _ -> false)
+      (Option.is_none oas_repair_pos);
+    Alcotest.(check bool)
+      "keeper_run_tools.ml must integrate local non-fabricating pair repair"
+      true
+      (Option.is_some local_pos)
   end
+
+let user_text text : Agent_sdk.Types.message =
+  { role = Agent_sdk.Types.User
+  ; content = [ Agent_sdk.Types.Text text ]
+  ; name = None
+  ; tool_call_id = None
+  ; metadata = []
+  }
+
+let assistant_tool_use id name : Agent_sdk.Types.message =
+  { role = Agent_sdk.Types.Assistant
+  ; content = [ Agent_sdk.Types.ToolUse { id; name; input = `Null } ]
+  ; name = None
+  ; tool_call_id = None
+  ; metadata = []
+  }
+
+let user_tool_result id content : Agent_sdk.Types.message =
+  { role = Agent_sdk.Types.User
+  ; content =
+      [ Agent_sdk.Types.ToolResult
+          { tool_use_id = id; content; is_error = false; json = None }
+      ]
+  ; name = None
+  ; tool_call_id = None
+  ; metadata = []
+  }
+
+let test_pair_repair_stats_count_downgrades () =
+  let messages =
+    [ user_text "q"
+    ; assistant_tool_use "dangling" "calc"
+    ; user_text "interrupt"
+    ; user_tool_result "orphan" "late"
+    ]
+  in
+  let repaired, stats = KC.repair_broken_tool_call_pairs_with_stats messages in
+  Alcotest.(check bool)
+    "repair stats changed"
+    true
+    (KC.tool_pair_repair_stats_changed stats);
+  Alcotest.(check int) "dangling tool use downgraded" 1 stats.downgraded_tool_uses;
+  Alcotest.(check int) "orphan tool result downgraded" 1 stats.downgraded_tool_results;
+  let repair_metadata =
+    List.filter_map
+      (fun (msg : Agent_sdk.Types.message) ->
+         match
+           ( List.assoc_opt "was_fabricated" msg.metadata
+           , List.assoc_opt KC.pair_repair_metadata_key msg.metadata )
+         with
+         | Some (`Bool true), Some (`Assoc fields) ->
+           (match List.assoc_opt "kind" fields, List.assoc_opt "count" fields with
+            | Some (`String kind), Some (`Int count) -> Some (kind, count)
+            | _ -> None)
+         | _ -> None)
+      repaired
+  in
+  Alcotest.(check (list (pair string int)))
+    "repaired messages carry fabrication metadata"
+    [ "downgraded_tool_use", 1; "downgraded_tool_result", 1 ]
+    repair_metadata;
+  let has_structured_tool_block =
+    List.exists
+      (fun (msg : Agent_sdk.Types.message) ->
+         List.exists
+           (function
+             | Agent_sdk.Types.ToolUse _ | Agent_sdk.Types.ToolResult _ -> true
+             | _ -> false)
+           msg.content)
+      repaired
+  in
+  Alcotest.(check bool) "structured tool blocks removed" false has_structured_tool_block
 
 (* ── Gospel-style specification (documentation) ────────── *)
 (*
@@ -259,15 +334,9 @@ let test_pair_repair_integration () =
          | Agent (TokenBudgetExceeded { kind = "Input"; _ }) -> true
          | _ -> false *)
 
-   val recover_context_overflow_retry :
-     meta:keeper_meta -> base_dir:string ->
-     max_cascade_context:int -> error:Error.sdk_error ->
-     overflow_retry_plan option
-   (*@ plan = recover_context_overflow_retry ~meta ~base_dir ~max_cascade_context ~error
-       requires is_context_overflow error
-       ensures match plan with
-         | Some p -> p.retry_max_context > 0
-         | None -> true *)
+   Keeper turns leave compact+retry to OAS. MASC may classify a structured
+   overflow as a typed blocker, but it must not recover an OAS checkpoint and
+   re-dispatch the same agent turn from the keeper layer.
 *)
 
 (* ── Runner ──────────────────────────────────────────────── *)
@@ -277,7 +346,7 @@ let () =
     List.map QCheck_alcotest.to_alcotest [
       prop_input_budget_always_detected;
       prop_non_input_budget_never_detected;
-      prop_recovery_yields_positive_limit;
+      prop_overflow_attribution_yields_positive_limit;
     ]
   in
   Alcotest.run "pbt_context_overflow" [
@@ -289,5 +358,7 @@ let () =
         test_cap_message_tokens_integration;
       Alcotest.test_case "local pair repair integrated in reducer chain" `Quick
         test_pair_repair_integration;
+      Alcotest.test_case "pair repair stats count downgrades" `Quick
+        test_pair_repair_stats_count_downgrades;
     ]);
   ]

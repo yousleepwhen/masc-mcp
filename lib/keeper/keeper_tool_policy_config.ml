@@ -21,29 +21,10 @@ type preset_def = {
   all_candidates : bool;         (** true = include all candidate tools *)
 }
 
-type gh_cache_config = {
-  cache_ttl_sec : float;
-  fetch_page_size : int;
-  fetch_timeout_sec : float;
-  max_alternatives : int;
-  max_output_bytes : int;
-}
-
-type git_clone_config = {
-  allowed_orgs : string list;
-  denied_repos : string list;
-  default_depth : int;
-  clone_timeout_sec : float;
-  push_timeout_sec : float;
-  pr_create_timeout_sec : float;
-}
-
 type t = {
   groups : (string, group_source) Hashtbl.t;
   masc_groups : (string, string list) Hashtbl.t;
   presets : (string, preset_def) Hashtbl.t;
-  gh_cache : gh_cache_config;
-  git_clone : git_clone_config;
 }
 
 (* ── TOML parsing helpers ─────────────────────────────────────────── *)
@@ -56,9 +37,6 @@ let toml_string_opt_at doc prefix key =
 
 let toml_bool_at doc prefix key =
   Keeper_toml_loader.toml_bool_opt doc (prefix ^ "." ^ key)
-
-let toml_int_at doc prefix key =
-  Keeper_toml_loader.toml_int_opt doc (prefix ^ "." ^ key)
 
 (** Collect all table prefixes matching a dotted prefix pattern.
     E.g., for prefix "groups" in a doc with "groups.base.tools",
@@ -77,6 +55,21 @@ let collect_table_names (doc : Keeper_toml_loader.toml_doc) ~(prefix : string) :
       None)
   |> List.sort_uniq String.compare
 
+let dedupe_tool_names tools =
+  let rec add seen acc = function
+    | [] -> List.rev acc
+    | raw :: rest ->
+        let raw = String.trim raw in
+        if String.equal raw "" then
+          add seen acc rest
+        else
+          if List.mem raw seen then
+            add seen acc rest
+          else
+            add (raw :: seen) (raw :: acc) rest
+  in
+  add [] [] tools
+
 (* ── Loading ──────────────────────────────────────────────────────── *)
 
 let parse_groups (doc : Keeper_toml_loader.toml_doc) : ((string, group_source) Hashtbl.t, string) result =
@@ -94,6 +87,7 @@ let parse_groups (doc : Keeper_toml_loader.toml_doc) : ((string, group_source) H
         Hashtbl.replace tbl name (Shard_ref shard_name);
         None
       | None, _ :: _ ->
+        let tools = dedupe_tool_names tools in
         Hashtbl.replace tbl name (Static tools);
         None
       | None, [] ->
@@ -111,6 +105,7 @@ let parse_masc_groups (doc : Keeper_toml_loader.toml_doc) : (string, string list
   List.iter (fun name ->
     let tools = toml_string_list_at doc "masc" (name ^ ".tools") in
     if tools <> [] then
+      let tools = dedupe_tool_names tools in
       Hashtbl.replace tbl name tools
   ) names;
   tbl
@@ -123,7 +118,10 @@ let parse_presets
   List.iter (fun name ->
     let groups = toml_string_list_at doc "presets" (name ^ ".groups") in
     let masc_groups = toml_string_list_at doc "presets" (name ^ ".masc_groups") in
-    let masc_tools = toml_string_list_at doc "presets" (name ^ ".masc_tools") in
+    let masc_tools =
+      toml_string_list_at doc "presets" (name ^ ".masc_tools")
+      |> dedupe_tool_names
+    in
     let all_candidates =
       Option.value ~default:false
         (toml_bool_at doc "presets" (name ^ ".all_candidates"))
@@ -132,47 +130,12 @@ let parse_presets
   ) names;
   tbl
 
-let parse_gh_cache (doc : Keeper_toml_loader.toml_doc) : gh_cache_config =
-  let cache_ttl_sec =
-    Option.value ~default:120 (toml_int_at doc "gh_cache" "cache_ttl_sec")
-    |> Float.of_int
-  in
-  let fetch_page_size =
-    Option.value ~default:100 (toml_int_at doc "gh_cache" "fetch_page_size")
-  in
-  let fetch_timeout_sec =
-    Option.value ~default:10 (toml_int_at doc "gh_cache" "fetch_timeout_sec")
-    |> Float.of_int
-  in
-  let max_alternatives =
-    Option.value ~default:20 (toml_int_at doc "gh_cache" "max_alternatives")
-  in
-  let max_output_bytes =
-    Option.value ~default:8192 (toml_int_at doc "gh_cache" "max_output_bytes")
-  in
-  { cache_ttl_sec; fetch_page_size; fetch_timeout_sec;
-    max_alternatives; max_output_bytes }
-
-let parse_git_clone (doc : Keeper_toml_loader.toml_doc) : git_clone_config =
-  let allowed_orgs = toml_string_list_at doc "git_clone" "allowed_orgs" in
-  let denied_repos = toml_string_list_at doc "git_clone" "denied_repos" in
-  let default_depth =
-    Option.value ~default:0 (toml_int_at doc "git_clone" "default_depth")
-  in
-  let clone_timeout_sec =
-    Option.value ~default:120 (toml_int_at doc "git_clone" "clone_timeout_sec")
-    |> Float.of_int
-  in
-  let push_timeout_sec =
-    Option.value ~default:60 (toml_int_at doc "git_clone" "push_timeout_sec")
-    |> Float.of_int
-  in
-  let pr_create_timeout_sec =
-    Option.value ~default:30 (toml_int_at doc "git_clone" "pr_create_timeout_sec")
-    |> Float.of_int
-  in
-  { allowed_orgs; denied_repos; default_depth;
-    clone_timeout_sec; push_timeout_sec; pr_create_timeout_sec }
+let unresolved_tool_message ~label ~name =
+  match Keeper_tool_resolution.resolve name with
+  | Keeper_tool_resolution.Resolved _ | Keeper_tool_resolution.Alias_to _ -> None
+  | Keeper_tool_resolution.Unknown { tried; _ } ->
+      Some (Printf.sprintf "%s: tool '%s' unresolved: tried [%s]"
+              label name (Keeper_tool_resolution.string_of_tried tried))
 
 (* Shortcut: if the caller's [base_path] already points at a project root
    that has [base_path/config/tool_policy.toml], prefer that directly.
@@ -180,7 +143,7 @@ let parse_git_clone (doc : Keeper_toml_loader.toml_doc) : git_clone_config =
    [Masc_test_deps.find_project_root ()] in tests or the repo root in
    production. The direct check avoids the executable-relative walk in
    [Config_dir_resolver] which can pick up partial config shards
-   materialised by dune into [_build/default/config/cascade.json] and
+   materialised by dune into [_build/default/config/cascade.toml] and
    resolve the wrong root. Scoped to this loader only — the generic
    resolver (used by dashboard/runtime code that reads per-env state
    from the resolved root) is untouched. *)
@@ -245,11 +208,75 @@ let load ~base_path : (t, string) result =
         (match all_errors with
         | _ :: _ -> Error (Printf.sprintf "in %s: %s" path (String.concat "; " all_errors))
         | [] ->
-          let gh_cache = parse_gh_cache doc in
-          let git_clone = parse_git_clone doc in
-          Log.Keeper.info "tool_policy_config: loaded %d groups, %d masc_groups, %d presets from %s"
-            (Hashtbl.length groups) (Hashtbl.length masc_groups) (Hashtbl.length presets) path;
-          Ok { groups; masc_groups; presets; gh_cache; git_clone })
+          (* Validate tool names against the keeper-facing policy surface.
+             [Static] tools must resolve now; stale names are config errors.
+             [Shard_ref] tools resolve from [Tool_shard] at runtime, but we
+             validate the shard name at load time so stale [Shard_ref]s surface
+             as load-time warnings rather than per-resolution "shard 'X' not
+             found, returning empty" noise (observed ~31k WARN/day from one
+             stale ref). *)
+          let unknown_static_tools =
+            Hashtbl.fold (fun group_name (group : group_source) acc ->
+              match group with
+              | Static tools ->
+                  List.filter_map (fun t ->
+                    unresolved_tool_message ~label:(Printf.sprintf "groups.%s" group_name) ~name:t
+                  ) tools
+                  |> List.rev_append acc
+              | Shard_ref _ -> acc
+            ) groups []
+          in
+          let unknown_shard_refs =
+            Hashtbl.fold (fun group_name (group : group_source) acc ->
+              match group with
+              | Static _ -> acc
+              | Shard_ref shard_name ->
+                (match Tool_shard.get_shard shard_name with
+                 | Some _ -> acc
+                 | None ->
+                   Printf.sprintf
+                     "groups.%s: shard '%s' is not registered in Tool_shard"
+                     group_name shard_name
+                   :: acc)
+            ) groups []
+          in
+          let unknown_masc_tools =
+            Hashtbl.fold (fun group_name tools acc ->
+              List.filter_map (fun t ->
+                unresolved_tool_message ~label:(Printf.sprintf "masc.%s" group_name) ~name:t
+              ) tools
+              |> List.rev_append acc
+            ) masc_groups []
+          in
+          let unknown_preset_tools =
+            Hashtbl.fold (fun preset_name (def : preset_def) acc ->
+              List.filter_map (fun t ->
+                unresolved_tool_message
+                  ~label:(Printf.sprintf "presets.%s.masc_tools" preset_name)
+                  ~name:t
+              ) def.masc_tools
+              |> List.rev_append acc
+            ) presets []
+          in
+          let fatal_tool_errors =
+            unknown_static_tools @ unknown_masc_tools @ unknown_preset_tools
+          in
+          (match unknown_shard_refs with
+          | _ :: _ ->
+              Log.Keeper.warn "tool_policy_config: %d unknown shard refs in %s"
+                (List.length unknown_shard_refs) path;
+              List.iter (fun e -> Log.Keeper.warn "  %s" e) unknown_shard_refs
+          | [] -> ());
+          (match fatal_tool_errors with
+          | _ :: _ ->
+              Error
+                (Printf.sprintf "in %s: %s" path
+                   (String.concat "; " fatal_tool_errors))
+          | [] ->
+              Log.Keeper.info "tool_policy_config: loaded %d groups, %d masc_groups, %d presets from %s"
+                (Hashtbl.length groups) (Hashtbl.length masc_groups) (Hashtbl.length presets) path;
+              Ok { groups; masc_groups; presets })
+        )
 
 (* ── Resolution ───────────────────────────────────────────────────── *)
 
@@ -260,7 +287,11 @@ let resolve_group_source = function
     | Some shard ->
       shard.tools |> List.map (fun (t : Masc_domain.tool_schema) -> t.name)
     | None ->
-      Log.Keeper.warn "tool_policy_config: shard '%s' not found, returning empty" shard_name;
+      (* Missing shards are surfaced once per load by [load_config] via
+         [unknown_shard_refs] (groups.X: shard 'Y' is not registered). The
+         runtime path stays silent — emitting a WARN per resolution
+         produced 31k+/day from a single stale ref and is the textbook
+         Log Dedup workaround (CLAUDE.md §1). *)
       []
 
 let resolve_group (config : t) (name : string) : string list option =
@@ -335,40 +366,3 @@ let preset_can_satisfy (config : t) ~(agent_preset : string) ~(required_preset :
     | _, `Full -> false                    (* required is full, agent isn't *)
     | `Tools agent_tools, `Tools req_tools ->
       List.for_all (fun t -> List.mem t agent_tools) req_tools
-
-(* ── GH cache config accessors ───────────────────────────────────── *)
-
-let gh_cache_ttl_sec (config : t) : float =
-  config.gh_cache.cache_ttl_sec
-
-let gh_cache_fetch_page_size (config : t) : int =
-  config.gh_cache.fetch_page_size
-
-let gh_cache_fetch_timeout_sec (config : t) : float =
-  config.gh_cache.fetch_timeout_sec
-
-let gh_cache_max_alternatives (config : t) : int =
-  config.gh_cache.max_alternatives
-
-let gh_cache_max_output_bytes (config : t) : int =
-  config.gh_cache.max_output_bytes
-
-(* ── Git clone config accessors ──────────────────────────────────── *)
-
-let git_clone_allowed_orgs (config : t) : string list =
-  config.git_clone.allowed_orgs
-
-let git_clone_denied_repos (config : t) : string list =
-  config.git_clone.denied_repos
-
-let clone_depth (config : t) : int =
-  config.git_clone.default_depth
-
-let clone_timeout_sec (config : t) : float =
-  config.git_clone.clone_timeout_sec
-
-let push_timeout_sec (config : t) : float =
-  config.git_clone.push_timeout_sec
-
-let pr_create_timeout_sec (config : t) : float =
-  config.git_clone.pr_create_timeout_sec

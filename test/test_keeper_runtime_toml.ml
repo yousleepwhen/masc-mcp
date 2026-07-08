@@ -23,8 +23,8 @@ let with_base_path f =
   Unix.mkdir dir 0o755;
   Unix.mkdir (Filename.concat dir Common.masc_dirname) 0o755;
   Unix.mkdir (Filename.concat dir ".masc/config") 0o755;
-  let oc = open_out (Filename.concat dir ".masc/config/cascade.json") in
-  output_string oc "{}\n";
+  let oc = open_out (Filename.concat dir ".masc/config/cascade.toml") in
+  output_string oc "";
   close_out oc;
   Fun.protect ~finally:(fun () -> rm_rf dir) (fun () -> f dir)
 
@@ -250,12 +250,13 @@ let test_applies_memory_overrides () =
      compact_trigger_bytes = 234567\n\
      max_length = 2048\n\
      placeholders = \"custom-empty,custom-none\"\n\
-     consensus_pattern = \"CUSTOMBLOCK\"\n"
+     consensus_pattern = \"CUSTOMBLOCK\"\n\
+     llm_summary = true\n"
   in
   let count, overrides =
     Keeper_runtime_config.resolve_overrides ~env_lookup:empty_env doc
   in
-  check int "applied 5" 5 count;
+  check int "applied 6" 6 count;
   check (option string) "memory max notes"
     (Some "321")
     (List.assoc_opt "MASC_KEEPER_MEMORY_MAX_NOTES" overrides);
@@ -270,7 +271,10 @@ let test_applies_memory_overrides () =
     (List.assoc_opt "MASC_KEEPER_MEMORY_PLACEHOLDERS" overrides);
   check (option string) "memory consensus pattern"
     (Some "CUSTOMBLOCK")
-    (List.assoc_opt "MASC_KEEPER_MEMORY_CONSENSUS_PATTERN" overrides)
+    (List.assoc_opt "MASC_KEEPER_MEMORY_CONSENSUS_PATTERN" overrides);
+  check (option string) "memory llm summary"
+    (Some "true")
+    (List.assoc_opt "MASC_KEEPER_MEMORY_LLM_SUMMARY" overrides)
 
 let test_memory_bank_reads_boot_override_knobs () =
   let env_names =
@@ -280,6 +284,7 @@ let test_memory_bank_reads_boot_override_knobs () =
       "MASC_KEEPER_MEMORY_MAX_LENGTH";
       "MASC_KEEPER_MEMORY_PLACEHOLDERS";
       "MASC_KEEPER_MEMORY_CONSENSUS_PATTERN";
+      "MASC_KEEPER_MEMORY_LLM_SUMMARY";
     ]
   in
   if List.exists (fun name -> Sys.getenv_opt name <> None) env_names then
@@ -291,6 +296,7 @@ let test_memory_bank_reads_boot_override_knobs () =
   Config_boot_overrides.set "MASC_KEEPER_MEMORY_MAX_LENGTH" "2048";
   Config_boot_overrides.set "MASC_KEEPER_MEMORY_PLACEHOLDERS" "custom-empty";
   Config_boot_overrides.set "MASC_KEEPER_MEMORY_CONSENSUS_PATTERN" "CUSTOMBLOCK";
+  Config_boot_overrides.set "MASC_KEEPER_MEMORY_LLM_SUMMARY" "true";
   check int "target notes from boot override"
     321
     (Keeper_memory_bank.memory_compaction_target_notes ());
@@ -305,7 +311,10 @@ let test_memory_bank_reads_boot_override_knobs () =
     (List.mem "custom-empty" (Keeper_memory_bank.memory_placeholders ()));
   check string "consensus pattern from boot override"
     "CUSTOMBLOCK"
-    (Keeper_memory_bank.consensus_pattern_key ())
+    (Keeper_memory_bank.consensus_pattern_key ());
+  check bool "llm summary flag from boot override"
+    true
+    (Keeper_memory_bank.memory_llm_summary_enabled ())
 
 let test_caller_env_wins_over_toml () =
   let doc = parse_or_fail "[autonomous]\nmax_turns_per_call = 7\n" in
@@ -319,14 +328,16 @@ let test_caller_env_wins_over_toml () =
   check int "applied 0 (env preempts)" 0 count;
   check int "no overrides" 0 (List.length overrides)
 
-let test_deprecated_autoboot_env_wins_over_toml () =
+let test_deprecated_autoboot_env_does_not_preempt_toml () =
   let doc = parse_or_fail "[bootstrap]\nautoboot_max = 12\n" in
   let fake_env = env_with [("MASC_KEEPER_AUTOBOT_MAX", "2")] in
   let count, overrides =
     Keeper_runtime_config.resolve_overrides ~env_lookup:fake_env doc
   in
-  check int "applied 0 (deprecated env preempts canonical TOML)" 0 count;
-  check int "no overrides" 0 (List.length overrides)
+  check int "applied canonical TOML" 1 count;
+  check (option string) "deprecated typo env ignored"
+    (Some "12")
+    (List.assoc_opt "MASC_KEEPER_AUTOBOOT_MAX" overrides)
 
 let test_unknown_keys_ignored () =
   let doc = parse_or_fail
@@ -547,6 +558,59 @@ let test_resolved_cli_subprocess_idle_from_toml () =
   check (float 0.0001) "cli_subprocess_idle from toml"
     45.0 (Keeper_runtime_resolved.cli_subprocess_idle_sec ())
 
+(* Step 2 (PR #13861 / RFC-0012/0022): the hard ceiling for
+   turn_timeout_sec is lifted from 600 s to 900 s so cascades that
+   legitimately run 27 B local-LLM turns can opt in via env override.
+   The default stays at 600 s so existing remote cascades keep their
+   budget unchanged. *)
+
+let test_resolved_turn_timeout_default_stays_600s () =
+  with_clean_boot_overrides @@ fun () ->
+  Keeper_runtime_resolved.init ();
+  let runtime = Keeper_runtime_resolved.current () in
+  check (float 0.0001) "turn_timeout default 600s post-lift"
+    600.0 runtime.turn_timeout_sec.value
+
+let test_resolved_turn_timeout_accepts_900s_env_override () =
+  with_clean_boot_overrides @@ fun () ->
+  with_env "MASC_KEEPER_TURN_TIMEOUT_SEC" (Some "900") @@ fun () ->
+  Keeper_runtime_resolved.init ();
+  let runtime = Keeper_runtime_resolved.current () in
+  check (float 0.0001) "env override of 900s passes new ceiling"
+    900.0 runtime.turn_timeout_sec.value
+
+let test_resolved_turn_timeout_clamps_above_900s () =
+  with_clean_boot_overrides @@ fun () ->
+  with_env "MASC_KEEPER_TURN_TIMEOUT_SEC" (Some "1800") @@ fun () ->
+  Keeper_runtime_resolved.init ();
+  let runtime = Keeper_runtime_resolved.current () in
+  check (float 0.0001) "1800s env input clamps to new 900s ceiling"
+    900.0 runtime.turn_timeout_sec.value
+
+(* #10388 budget invariant guard: with the lifted 900s ceiling, even
+   the maximum permitted turn timeout must still leave room for an
+   admission wait (default 180s) plus a minimum useful run (30s). The
+   plan-level invariant is
+     [turn_timeout - oas_guard >= admission_wait + min_useful_run]
+   with [oas_guard = 30] (#10388 origin), [admission_wait = 180] and
+   [min_useful_run = 30]. The test fails if a future change shrinks
+   the ceiling below 240s (180 + 30 + 30) or expands the admission
+   wait default past the budget. *)
+let test_budget_invariant_at_minimum_turn_timeout () =
+  with_clean_boot_overrides @@ fun () ->
+  with_env "MASC_KEEPER_TURN_TIMEOUT_SEC" (Some "240") @@ fun () ->
+  Keeper_runtime_resolved.init ();
+  let runtime = Keeper_runtime_resolved.current () in
+  let oas_guard = 30.0 in
+  let min_useful_run = 30.0 in
+  let admission_wait = runtime.admission_wait_timeout_sec.value in
+  let turn_timeout = runtime.turn_timeout_sec.value in
+  let budget_remaining =
+    turn_timeout -. oas_guard -. admission_wait -. min_useful_run
+  in
+  check bool "budget invariant holds at 240s lower bound"
+    true (budget_remaining >= 0.0)
+
 let () =
   run "keeper_runtime_toml"
     [ ( "resolve_overrides"
@@ -561,7 +625,10 @@ let () =
         ; test_case "applies memory overrides" `Quick test_applies_memory_overrides
         ; test_case "memory bank reads boot override knobs" `Quick test_memory_bank_reads_boot_override_knobs
         ; test_case "caller env wins over TOML" `Quick test_caller_env_wins_over_toml
-        ; test_case "deprecated autoboot env wins over TOML" `Quick test_deprecated_autoboot_env_wins_over_toml
+        ; test_case
+            "deprecated autoboot env does not preempt TOML"
+            `Quick
+            test_deprecated_autoboot_env_does_not_preempt_toml
         ; test_case "unknown keys ignored" `Quick test_unknown_keys_ignored
         ; test_case "parse error returns Error" `Quick test_parse_error_returns_error
         ; test_case "load_and_apply records boot override" `Quick test_load_and_apply_records_boot_override
@@ -578,5 +645,9 @@ let () =
         ; test_case "cli subprocess idle from toml" `Quick test_resolved_cli_subprocess_idle_from_toml
         ; test_case "cli subprocess idle clamps to 10s floor" `Quick test_resolved_cli_subprocess_idle_clamps_low
         ; test_case "cli subprocess idle clamps to 600s ceiling" `Quick test_resolved_cli_subprocess_idle_clamps_high
+        ; test_case "turn_timeout default stays 600s post-lift" `Quick test_resolved_turn_timeout_default_stays_600s
+        ; test_case "turn_timeout accepts 900s env override" `Quick test_resolved_turn_timeout_accepts_900s_env_override
+        ; test_case "turn_timeout clamps above 900s ceiling" `Quick test_resolved_turn_timeout_clamps_above_900s
+        ; test_case "#10388 budget invariant holds at 240s minimum" `Quick test_budget_invariant_at_minimum_turn_timeout
         ] )
     ]

@@ -19,7 +19,7 @@ type routing_decision = {
     [~base_cascade] is the keeper's configured cascade name.
 
     Routing rules (TLA+ mirrored, with logical route names resolved through
-    [cascade.json] [routes]):
+    [cascade.toml] [routes]):
     - [Running], [Draining], [Paused] -> [base_cascade]
     - [Failing] -> [routes.phase_recovery]
     - [Compacting], [HandingOff] -> [routes.phase_buffer]
@@ -35,7 +35,7 @@ val select_cascade :
 
 (** Preserve an already-routed cascade while carrying the tool requirement
     forward to provider capability filtering. Tool-required turns must not
-    rewrite profile names such as ["tool_use_strict"]; the cascade resolver
+    rewrite profile names such as ["tool_required"]; the cascade resolver
     and provider capability gate own the concrete candidate set. *)
 val route_effective_cascade_for_tool_requirement :
   effective_cascade:string ->

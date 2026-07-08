@@ -57,7 +57,7 @@ type run_result = {
   session_id : string;
   raw_trace_run : Agent_sdk.Raw_trace.run_ref option;
   api_response : Agent_sdk.Types.api_response option;
-  proof : Agent_sdk.Cdal_proof.t option;
+  proof : Masc_mcp_cdal_runtime.Cdal_proof.t option;
 }
 (** Summary of a finished worker run: aggregated text
     [output], the model id that handled the run,
@@ -91,6 +91,13 @@ type worker_container_meta = {
   checkpoint_path : string;
   turn_log_path : string;
   last_run_at : float option;
+  disclosure_strategy : Keeper_disclosure_strategy.t option;
+      (** RFC-0084 host-config-cleanup-H — typed keeper disclosure
+          strategy (PR-13 surface).  [None] preserves today's
+          [Full_schema] behaviour; [Some s] is propagated through
+          [Worker_oas.build_agent ?disclosure_strategy] via the
+          PR-G OAS bridges.  JSON I/O round-trip is a deferred
+          follow-up cleanup. *)
 }
 (** Per-worker metadata persisted alongside the checkpoint
     file.  [version] is {!worker_container_version} at write
@@ -121,7 +128,6 @@ val local_worker_heartbeat_interval_sec : unit -> int
 
 (** {1 JSON utilities re-exported for callers} *)
 
-val unique_preserve_order : 'a list -> 'a list
 (** Order-preserving deduplication.  Pinned alias of
     {!Json_util.dedupe_keep_order} kept here so callers that
     historically reached it via [Worker_container_types]

@@ -118,6 +118,20 @@ let test_keeper_task_claim_matches () =
        ~input:(`Assoc [ ("task_id", `String "t-1") ])
        ~risk_level:RL.Medium)
 
+let test_keeper_task_create_matches () =
+  Alcotest.(check bool) "keeper_task_create matches"
+    true
+    (RA.matches ~tool_name:"keeper_task_create"
+       ~input:(`Assoc [ ("title", `String "follow-up") ])
+       ~risk_level:RL.Medium)
+
+let test_keeper_task_create_high_does_not_match () =
+  Alcotest.(check bool) "keeper_task_create High exceeds max_risk"
+    false
+    (RA.matches ~tool_name:"keeper_task_create"
+       ~input:(`Assoc [ ("title", `String "follow-up") ])
+       ~risk_level:RL.High)
+
 let test_keeper_task_done_matches () =
   Alcotest.(check bool) "keeper_task_done matches"
     true
@@ -132,65 +146,119 @@ let test_keeper_task_submit_for_verification_matches () =
        ~input:(`Assoc [])
        ~risk_level:RL.Low)
 
-(* ── matches: unrelated tools never match ──────────────────── *)
+(* ── matches: goal store routine surface ───────────────────── *)
 
-let test_keeper_shell_arbitrary_action_does_not_match () =
-  (* The keeper_shell rule is intentionally narrow — only op=git_clone
-     auto-approves.  A bare action="ls" (no op key) must NOT match. *)
-  Alcotest.(check bool) "keeper_shell action=ls is not auto-approved"
-    false
-    (RA.matches ~tool_name:"keeper_shell"
-       ~input:(`Assoc [ ("action", `String "ls") ])
-       ~risk_level:RL.Low)
-
-let test_keeper_shell_git_clone_matches () =
-  (* PR-E (Plan v3 Leak 3): keeper_shell op=git_clone is the canonical
-     keeper bootstrap action and must auto-approve at Medium risk. *)
-  Alcotest.(check bool) "keeper_shell op=git_clone is auto-approved"
+let test_goal_upsert_matches () =
+  Alcotest.(check bool) "masc_goal_upsert matches"
     true
-    (RA.matches ~tool_name:"keeper_shell"
-       ~input:(`Assoc [ ("op", `String "git_clone") ])
+    (RA.matches ~tool_name:"masc_goal_upsert"
+       ~input:(`Assoc [ ("title", `String "stabilize keeper task flow") ])
        ~risk_level:RL.Medium)
 
-let test_keeper_shell_force_op_does_not_match () =
-  (* allowed_actions=[git_clone] — anything else (including dangerous
-     ops like force_push, sh, exec) must still go through operator
-     approval. *)
-  Alcotest.(check bool) "keeper_shell op=force_push is NOT auto-approved"
+let test_goal_upsert_high_does_not_match () =
+  Alcotest.(check bool) "masc_goal_upsert High exceeds max_risk"
     false
-    (RA.matches ~tool_name:"keeper_shell"
-       ~input:(`Assoc [ ("op", `String "force_push") ])
+    (RA.matches ~tool_name:"masc_goal_upsert"
+       ~input:(`Assoc [ ("title", `String "stabilize keeper task flow") ])
+       ~risk_level:RL.High)
+
+let test_goal_transition_request_complete_matches () =
+  Alcotest.(check bool) "masc_goal_transition request_complete matches"
+    true
+    (RA.matches ~tool_name:"masc_goal_transition"
+       ~input:(`Assoc [ ("action", `String "request_complete") ])
        ~risk_level:RL.Medium)
 
-let test_keeper_shell_op_takes_precedence_over_action () =
-  (* Shell semantics come from [op].  A stale or spoofed action field
-     must not hide a dangerous op and accidentally match git_clone. *)
-  Alcotest.(check bool)
-    "keeper_shell op=force_push wins over action=git_clone"
+let test_goal_transition_pause_matches () =
+  Alcotest.(check bool) "masc_goal_transition pause matches"
+    true
+    (RA.matches ~tool_name:"masc_goal_transition"
+       ~input:(`Assoc [ ("action", `String "pause") ])
+       ~risk_level:RL.Medium)
+
+let test_goal_transition_drop_does_not_match () =
+  Alcotest.(check bool) "masc_goal_transition drop stays gated"
     false
-    (RA.matches ~tool_name:"keeper_shell"
+    (RA.matches ~tool_name:"masc_goal_transition"
+       ~input:(`Assoc [ ("action", `String "drop") ])
+       ~risk_level:RL.Medium)
+
+let test_goal_transition_operator_approve_does_not_match () =
+  Alcotest.(check bool) "masc_goal_transition approve_completion stays gated"
+    false
+    (RA.matches ~tool_name:"masc_goal_transition"
+       ~input:(`Assoc [ ("action", `String "approve_completion") ])
+       ~risk_level:RL.Medium)
+
+let test_goal_verify_matches () =
+  Alcotest.(check bool) "masc_goal_verify matches"
+    true
+    (RA.matches ~tool_name:"masc_goal_verify"
        ~input:
          (`Assoc
            [
-             ("action", `String "git_clone");
+             ("goal_id", `String "goal-1");
+             ("decision", `String "approve");
+             ("evidence_refs", `List [ `String "task-1" ]);
+           ])
+       ~risk_level:RL.Medium)
+
+let test_goal_verify_high_does_not_match () =
+  Alcotest.(check bool) "masc_goal_verify High exceeds max_risk"
+    false
+    (RA.matches ~tool_name:"masc_goal_verify"
+       ~input:(`Assoc [ ("decision", `String "approve") ])
+       ~risk_level:RL.High)
+
+(* ── matches: unrelated tools never match ──────────────────── *)
+
+let test_tool_search_files_arbitrary_action_does_not_match () =
+  (* tool_search_files has no routine auto-approval rule. *)
+  Alcotest.(check bool) "tool_search_files action=ls is not auto-approved"
+    false
+    (RA.matches ~tool_name:"tool_search_files"
+       ~input:(`Assoc [ ("action", `String "ls") ])
+       ~risk_level:RL.Low)
+
+let test_tool_search_files_unknown_op_does_not_match () =
+  Alcotest.(check bool) "tool_search_files unknown op is not auto-approved"
+    false
+    (RA.matches ~tool_name:"tool_search_files"
+       ~input:(`Assoc [ ("op", `String "future_repo_op") ])
+       ~risk_level:RL.Medium)
+
+let test_tool_search_files_force_op_does_not_match () =
+  Alcotest.(check bool) "tool_search_files op=force_push is NOT auto-approved"
+    false
+    (RA.matches ~tool_name:"tool_search_files"
+       ~input:(`Assoc [ ("op", `String "force_push") ])
+       ~risk_level:RL.Medium)
+
+let test_tool_search_files_op_takes_precedence_over_action () =
+  Alcotest.(check bool)
+    "tool_search_files op=force_push wins over action"
+    false
+    (RA.matches ~tool_name:"tool_search_files"
+       ~input:
+         (`Assoc
+           [
+             ("action", `String "routine");
              ("op", `String "force_push");
            ])
        ~risk_level:RL.Medium)
 
-let test_keeper_shell_git_clone_above_max_risk_rejected () =
-  (* Critical risk overrides routine — even a normally-allowlisted
-     op must not auto-approve when risk has been escalated. *)
+let test_tool_search_files_unknown_op_critical_rejected () =
   Alcotest.(check bool)
-    "keeper_shell op=git_clone at Critical does NOT auto-approve"
+    "tool_search_files unknown op at Critical does NOT auto-approve"
     false
-    (RA.matches ~tool_name:"keeper_shell"
-       ~input:(`Assoc [ ("op", `String "git_clone") ])
+    (RA.matches ~tool_name:"tool_search_files"
+       ~input:(`Assoc [ ("op", `String "future_repo_op") ])
        ~risk_level:RL.Critical)
 
-let test_keeper_fs_edit_does_not_match () =
-  Alcotest.(check bool) "keeper_fs_edit never auto-approved"
+let test_tool_edit_file_does_not_match () =
+  Alcotest.(check bool) "tool_edit_file never auto-approved"
     false
-    (RA.matches ~tool_name:"keeper_fs_edit"
+    (RA.matches ~tool_name:"tool_edit_file"
        ~input:(`Assoc [])
        ~risk_level:RL.Medium)
 
@@ -219,6 +287,26 @@ let test_rule_label_for_cancel_is_none () =
       ~risk_level:RL.Medium
   in
   Alcotest.(check (option string)) "cancel has no label" None label
+
+let test_rule_label_for_task_create () =
+  let label =
+    RA.rule_label ~tool_name:"keeper_task_create"
+      ~input:(`Assoc [ ("title", `String "follow-up") ])
+      ~risk_level:RL.Medium
+  in
+  Alcotest.(check (option string)) "task create has routine label"
+    (Some "keeper_routine.keeper_task_create")
+    label
+
+let test_rule_label_for_goal_transition () =
+  let label =
+    RA.rule_label ~tool_name:"masc_goal_transition"
+      ~input:(`Assoc [ ("action", `String "request_complete") ])
+      ~risk_level:RL.Medium
+  in
+  Alcotest.(check (option string)) "goal transition has routine label"
+    (Some "keeper_routine.masc_goal_transition")
+    label
 
 (* ── rules_summary: stable JSON shape for dashboard ─────────── *)
 
@@ -297,30 +385,53 @@ let () =
         [
           Alcotest.test_case "keeper_task_claim" `Quick
             test_keeper_task_claim_matches;
+          Alcotest.test_case "keeper_task_create" `Quick
+            test_keeper_task_create_matches;
+          Alcotest.test_case "keeper_task_create high still gated" `Quick
+            test_keeper_task_create_high_does_not_match;
           Alcotest.test_case "keeper_task_done" `Quick
             test_keeper_task_done_matches;
           Alcotest.test_case "keeper_task_submit_for_verification" `Quick
             test_keeper_task_submit_for_verification_matches;
         ] );
+      ( "goal_store_routine",
+        [
+          Alcotest.test_case "masc_goal_upsert" `Quick
+            test_goal_upsert_matches;
+          Alcotest.test_case "masc_goal_upsert high still gated" `Quick
+            test_goal_upsert_high_does_not_match;
+          Alcotest.test_case "goal_transition request_complete" `Quick
+            test_goal_transition_request_complete_matches;
+          Alcotest.test_case "goal_transition pause" `Quick
+            test_goal_transition_pause_matches;
+          Alcotest.test_case "goal_transition drop still gated" `Quick
+            test_goal_transition_drop_does_not_match;
+          Alcotest.test_case "goal_transition operator approve still gated"
+            `Quick test_goal_transition_operator_approve_does_not_match;
+          Alcotest.test_case "masc_goal_verify" `Quick
+            test_goal_verify_matches;
+          Alcotest.test_case "masc_goal_verify high still gated" `Quick
+            test_goal_verify_high_does_not_match;
+        ] );
       ( "non_routine_tools_never_match",
         [
-          Alcotest.test_case "keeper_shell action=ls" `Quick
-            test_keeper_shell_arbitrary_action_does_not_match;
-          Alcotest.test_case "keeper_fs_edit" `Quick
-            test_keeper_fs_edit_does_not_match;
+          Alcotest.test_case "tool_search_files action=ls" `Quick
+            test_tool_search_files_arbitrary_action_does_not_match;
+          Alcotest.test_case "tool_edit_file" `Quick
+            test_tool_edit_file_does_not_match;
           Alcotest.test_case "unknown tool" `Quick
             test_unknown_tool_does_not_match;
         ] );
-      ( "keeper_shell_git_clone_allowlist",
+      ( "tool_search_files_unknown_ops_not_allowlisted",
         [
-          Alcotest.test_case "op=git_clone matches" `Quick
-            test_keeper_shell_git_clone_matches;
+          Alcotest.test_case "unknown op rejected" `Quick
+            test_tool_search_files_unknown_op_does_not_match;
           Alcotest.test_case "op=force_push rejected" `Quick
-            test_keeper_shell_force_op_does_not_match;
+            test_tool_search_files_force_op_does_not_match;
           Alcotest.test_case "op takes precedence over action" `Quick
-            test_keeper_shell_op_takes_precedence_over_action;
+            test_tool_search_files_op_takes_precedence_over_action;
           Alcotest.test_case "Critical risk overrides routine" `Quick
-            test_keeper_shell_git_clone_above_max_risk_rejected;
+            test_tool_search_files_unknown_op_critical_rejected;
         ] );
       ( "rule_label",
         [
@@ -328,6 +439,10 @@ let () =
             test_rule_label_for_claim;
           Alcotest.test_case "cancel has no label" `Quick
             test_rule_label_for_cancel_is_none;
+          Alcotest.test_case "task create has label" `Quick
+            test_rule_label_for_task_create;
+          Alcotest.test_case "goal transition has label" `Quick
+            test_rule_label_for_goal_transition;
         ] );
       ( "rules_summary",
         [

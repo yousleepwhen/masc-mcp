@@ -1,7 +1,7 @@
 // Live Monitor tab — derived signals and filter state
 
 import { signal, computed, type ReadonlySignal } from '@preact/signals'
-import { isOfflineStatus } from './lib/status-utils'
+import { isAgentActive, isAgentOffline, isAgentPresent } from './lib/agent-status'
 import type { JournalEntry } from './types'
 import type { PipelineStage } from './types/core'
 import type { AuditEntry } from './api/dashboard'
@@ -73,7 +73,7 @@ export const agentPulses: ReadonlySignal<AgentPulse[]> = computed(() => {
     const motion = motionMap.get(key) ?? null
 
     let state: PulseState = 'idle'
-    if (agent.status === 'active' || agent.status === 'busy') {
+    if (isAgentActive(agent)) {
       const lastAt = motion?.lastActivityAt
       if (lastAt) {
         const elapsed = now - new Date(lastAt).getTime()
@@ -81,7 +81,7 @@ export const agentPulses: ReadonlySignal<AgentPulse[]> = computed(() => {
       } else {
         state = 'working'
       }
-    } else if (isOfflineStatus(agent.status)) {
+    } else if (isAgentOffline(agent)) {
       state = 'stale'
     }
 
@@ -113,12 +113,7 @@ export const focusAgents: ReadonlySignal<FocusAgent[]> = computed(() => {
   const motionMap = agentMotionMap.value
 
   return agents.value
-    .filter(a =>
-      a.status === 'active'
-      || a.status === 'busy'
-      || a.status === 'listening'
-      || a.status === 'idle',
-    )
+    .filter(a => isAgentPresent(a))
     .map(agent => {
       const key = agent.name.trim().toLowerCase()
       const motion = motionMap.get(key)
@@ -175,7 +170,10 @@ export const keeperHealthSummary: ReadonlySignal<KeeperHealthSummary> = computed
     const ratio = k.context_ratio ?? 0
     if (ratio > thresholds.critical) criticalCount++
     else if (ratio > thresholds.warn || stale.has(k.name)) warningCount++
-    return { name: k.name, ratio, stage: (k.pipeline_stage ?? 'idle') as PipelineStage }
+    // No `as PipelineStage` cast: `k.pipeline_stage` is `PipelineStage | undefined`
+    // post-normalize (toPipelineStage at keeper-store-normalize.ts), so the
+    // `?? 'unknown'` (PipelineStage member) is already correctly typed.
+    return { name: k.name, ratio, stage: k.pipeline_stage ?? 'unknown' }
   }).sort((a, b) => b.ratio - a.ratio)
 
   return {
@@ -219,7 +217,18 @@ export function eventKindTone(entry: JournalEntry): LiveEventKindTone {
   return 'neutral'
 }
 
-export function eventKindLabel(entry: JournalEntry): string {
+/**
+ * Live-journal event kind 짧은 라벨. JournalEntry 의 eventType + kind
+ * 조합을 보고 단일 식별자로 압축한다 (예: `'keeper_heartbeat'` → `'heartbeat'`).
+ *
+ * Distinct from `eventKindLabel(kind: string)` in `activity-graph-groups.ts`,
+ * which is a *generic string → label* mapper for the activity graph. Same
+ * function name but different input shape (JournalEntry object vs raw
+ * string) was an import-site collision hazard. Renamed from `eventKindLabel`
+ * to `journalEventKindLabel` on 2026-05-27 so the live-journal variant
+ * carries its domain at the call site.
+ */
+export function journalEventKindLabel(entry: JournalEntry): string {
   const type = entry.eventType
   if (type === 'broadcast') return 'broadcast'
   if (type === 'agent_joined') return 'joined'

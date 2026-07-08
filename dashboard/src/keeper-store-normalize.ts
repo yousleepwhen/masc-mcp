@@ -8,18 +8,41 @@ import type {
   KeeperTrustTerminalReason,
   PipelineStage,
   PromptTelemetry,
+  ProviderHealth,
 } from './types'
 import { isRecord, asString, asNumber, asBoolean, asStringArray, toIsoTimestamp } from './components/common/normalize'
-import { isOfflineStatus } from './lib/status-utils'
+import { isKeeperOffline } from './lib/keeper-predicates'
 import { keeperDisplayStatus } from './lib/keeper-runtime-display'
+import { asKeeperRuntimeBlockerClass } from './lib/runtime-blocker-class'
+import {
+  asKeeperPauseState,
+  asKeeperRuntimeBlockerState,
+} from './lib/keeper-runtime-state'
+import { normalizeStopCause } from './lib/stop-cause'
 import { contextThresholds } from './config/context-thresholds'
 import { normalizeKeeperDiagnostic } from './keeper-state'
+import type { CascadeRef } from './types'
 
-/** Maps lowercase backend phase strings to PascalCase KeeperPhase values.
- *  Backend (keeper_state_machine.ml) emits lowercase: "offline", "running", "handing_off", etc.
- *  Frontend KeeperPhase type uses PascalCase: "Offline", "Running", "HandingOff", etc.
+/** Normalize a raw cascade_ref JSON object into a typed CascadeRef. */
+function normalizeCascadeRef(raw: unknown): CascadeRef | null {
+  if (!isRecord(raw)) return null
+  const group = asString(raw.group)
+  if (!group) return null
+  const item = asString(raw.item) ?? null
+  return { group, item }
+}
+
+/** Maps lowercase backend phase strings (`keeper_state_machine.ml:phase_to_string`)
+ *  to PascalCase `KeeperPhase` values. The two unions must stay 1:1 — this is
+ *  enforced at compile time by `_BACKEND_PHASE_COVERAGE_CHECK` below.
+ *
+ *  SSOT contract:
+ *    backend variant added → lowercase entry added AND KeeperPhase union extended.
+ *    KeeperPhase union extended → coverage check fails if lowercase entry missing.
+ *  Drift in either direction surfaces as a typecheck failure, not a silent
+ *  string-as-truth fallback.
  */
-const BACKEND_PHASE_MAP: Record<string, KeeperPhase> = {
+const BACKEND_PHASE_LOWERCASE_MAP = {
   offline: 'Offline',
   running: 'Running',
   failing: 'Failing',
@@ -33,7 +56,12 @@ const BACKEND_PHASE_MAP: Record<string, KeeperPhase> = {
   restarting: 'Restarting',
   dead: 'Dead',
   zombie: 'Zombie',
-  // Also accept PascalCase for forward-compat / test fixtures
+} as const satisfies Record<string, KeeperPhase>
+
+/** Forward-compat PascalCase passthrough — accepts already-typed values from
+ *  test fixtures or future backend emit paths. Constrained to `KeeperPhase`
+ *  keys so a typo would fail typecheck. */
+const BACKEND_PHASE_PASCAL_PASSTHROUGH = {
   Offline: 'Offline',
   Running: 'Running',
   Failing: 'Failing',
@@ -47,13 +75,55 @@ const BACKEND_PHASE_MAP: Record<string, KeeperPhase> = {
   Restarting: 'Restarting',
   Dead: 'Dead',
   Zombie: 'Zombie',
-}
+} as const satisfies Record<KeeperPhase, KeeperPhase>
+
+// Compile-time coverage check: every KeeperPhase variant must appear as a
+// *value* in the lowercase map. If KeeperPhase adds a new arm but the
+// lowercase entry is forgotten, this line fails to typecheck.
+//
+//   type _Missing = Exclude<KeeperPhase, typeof MAP[keyof typeof MAP]>
+//
+// resolves to `never` only when the map is exhaustive over KeeperPhase.
+type _LowercaseMapValueUnion = typeof BACKEND_PHASE_LOWERCASE_MAP[keyof typeof BACKEND_PHASE_LOWERCASE_MAP]
+type _MissingLowercaseCoverage = Exclude<KeeperPhase, _LowercaseMapValueUnion>
+// If the lowercase map drifts away from `KeeperPhase`, `_MissingLowercaseCoverage`
+// resolves to the un-mapped variant string and the `true` literal fails to assign.
+const _BACKEND_PHASE_COVERAGE_CHECK: [_MissingLowercaseCoverage] extends [never] ? true : _MissingLowercaseCoverage = true
+void _BACKEND_PHASE_COVERAGE_CHECK
 
 export function toKeeperPhase(raw: string | null | undefined): KeeperPhase | null {
   if (!raw) return null
   const trimmed = raw.trim()
   if (!trimmed) return null
-  return BACKEND_PHASE_MAP[trimmed] ?? null
+  if (trimmed in BACKEND_PHASE_LOWERCASE_MAP) {
+    return BACKEND_PHASE_LOWERCASE_MAP[trimmed as keyof typeof BACKEND_PHASE_LOWERCASE_MAP]
+  }
+  if (trimmed in BACKEND_PHASE_PASCAL_PASSTHROUGH) {
+    return BACKEND_PHASE_PASCAL_PASSTHROUGH[trimmed as keyof typeof BACKEND_PHASE_PASCAL_PASSTHROUGH]
+  }
+  return null
+}
+
+// Closed runtime mirror of the `PipelineStage` type (types/core.ts:709).
+// `keeper-store-normalize.ts:569` previously cast `asString(row.pipeline_stage)`
+// directly with `as PipelineStage`, which trusted whatever the backend
+// emitted. `toPipelineStage` enforces the boundary at the normalizer
+// edge so an unrecognized string returns `null` instead of polluting
+// the typed value. Mirrors `toKeeperPhase` (line 94) and
+// `toKeeperLifecycleState` (iter65, sibling cleanup PR).
+const PIPELINE_STAGES: ReadonlySet<PipelineStage> = new Set<PipelineStage>([
+  'idle', 'compacting', 'handoff', 'offline',
+  'failing', 'overflowed', 'draining', 'paused',
+  'crashed', 'restarting', 'unknown',
+])
+
+export function toPipelineStage(raw: string | null | undefined): PipelineStage | null {
+  if (!raw) return null
+  const trimmed = raw.trim()
+  if (!trimmed) return null
+  return PIPELINE_STAGES.has(trimmed as PipelineStage)
+    ? (trimmed as PipelineStage)
+    : null
 }
 
 function normalizeKeeperAgentStatus(value: unknown): Keeper['status'] {
@@ -65,6 +135,7 @@ function normalizeKeeperAgentStatus(value: unknown): Keeper['status'] {
     || raw === 'idle'
     || raw === 'inactive'
     || raw === 'offline'
+    || raw === 'paused'
     || raw === 'unbooted'
     || raw === 'stopped'
   ) {
@@ -75,9 +146,46 @@ function normalizeKeeperAgentStatus(value: unknown): Keeper['status'] {
   return 'offline'
 }
 
+// Closed set of strings that `keeperDisplayStatus` is allowed to emit
+// when an offline keeper is rendered. The first 8 are dashboard-classified
+// labels; the last 5 are backend FSM phase names that leak through
+// untranslated. Kept as a `const` set so adding a new value at the
+// `KeeperLifecycleState` union type forces a parallel update here
+// (and forces tsc to fail at consumers if drift occurs).
+const KEEPER_LIFECYCLE_STATES: ReadonlySet<KeeperLifecycleState> = new Set<KeeperLifecycleState>([
+  'active', 'compacting', 'preparing', 'handoff-imminent',
+  'idle', 'offline', 'unbooted', 'stopped',
+  'paused', 'crashed', 'dead', 'zombie', 'unknown',
+])
+
+// Typed parse: replaces the `as KeeperLifecycleState` cast that
+// previously trusted whatever `keeperDisplayStatus` returned. Returns
+// `null` on unrecognized input; callers decide the fallback. Mirrors
+// `toKeeperPhase` (line 94 of this file) in shape.
+export function toKeeperLifecycleState(raw: string | null | undefined): KeeperLifecycleState | null {
+  if (!raw) return null
+  const trimmed = raw.trim()
+  if (!trimmed) return null
+  return KEEPER_LIFECYCLE_STATES.has(trimmed as KeeperLifecycleState)
+    ? (trimmed as KeeperLifecycleState)
+    : null
+}
+
 export function deriveLifecycleState(keeper: Keeper): KeeperLifecycleState {
-  const status = keeper.status?.trim().toLowerCase() ?? ''
-  if (isOfflineStatus(status)) return keeperDisplayStatus(keeper) as KeeperLifecycleState
+  // RFC-0139 PR-2: strict-superset migration off `isOfflineStatus`
+  // (status-only). `isKeeperOffline` adds the terminal-FSM-phase axis
+  // (Offline/Stopped/Dead/Crashed/Zombie) so a keeper crashed mid-tick
+  // is caught even when its wire-format status hasn't transitioned yet.
+  if (isKeeperOffline(keeper)) {
+    // Replaces an `as KeeperLifecycleState` cast that lied to the type
+    // system when `keeperDisplayStatus` returned a backend FSM name
+    // (`'paused'` / `'crashed'` / `'dead'` / `'zombie'` / `'unknown'`)
+    // outside the original 8-tag union. The union has now been widened
+    // to include those 5 names; `toKeeperLifecycleState` enforces the
+    // boundary at runtime so a future drift surfaces as `'idle'`
+    // instead of a silent type-system lie.
+    return toKeeperLifecycleState(keeperDisplayStatus(keeper)) ?? 'idle'
+  }
 
   const series = keeper.metrics_series
   if (!series || series.length === 0) {
@@ -220,15 +328,17 @@ export function normalizeKeeperTrust(raw: unknown): Keeper['trust'] {
             asStringArray(executionRaw.missing_required_tools) ?? [],
           requested_tools: asStringArray(executionRaw.requested_tools) ?? [],
           tools_used: asStringArray(executionRaw.tools_used) ?? [],
+          unexpected_tools: asStringArray(executionRaw.unexpected_tools) ?? [],
           requested_tool_count:
             asNumber(executionRaw.requested_tool_count) ?? null,
           tools_used_count: asNumber(executionRaw.tools_used_count) ?? null,
+          unexpected_tool_count:
+            asNumber(executionRaw.unexpected_tool_count) ?? null,
           provider_attempt_count:
             asNumber(executionRaw.provider_attempt_count) ?? null,
           provider_fallback_applied:
             asBoolean(executionRaw.provider_fallback_applied) ?? null,
-          provider_selected_model:
-            asString(executionRaw.provider_selected_model) ?? null,
+          provider_selected_model: asString(executionRaw.provider_selected_model) ?? null,
           cascade_outcome: asString(executionRaw.cascade_outcome) ?? null,
           sandbox_summary: asString(executionRaw.sandbox_summary) ?? null,
           sandbox_root: asString(executionRaw.sandbox_root) ?? null,
@@ -279,10 +389,7 @@ function normalizeMetricsSeries(raw: unknown): KeeperMetricPoint[] {
         handoffObj
           ? (asNumber(handoffObj.new_generation) ?? asNumber(handoffObj.to_generation) ?? null)
           : (asNumber(item.handoff_new_generation) ?? null)
-      const handoffToModel =
-        handoffObj
-          ? (typeof handoffObj.to_model === 'string' ? handoffObj.to_model : null)
-          : (typeof item.handoff_to_model === 'string' ? item.handoff_to_model : null)
+      const handoffToModel = null
       const rawPrompt = isRecord(item.prompt) ? item.prompt : null
       const rawUsage = isRecord(item.usage) ? item.usage : null
       const promptSegments: NonNullable<PromptTelemetry['segments']> =
@@ -299,17 +406,17 @@ function normalizeMetricsSeries(raw: unknown): KeeperMetricPoint[] {
               segments: promptSegments,
             }
           : null
-      const rawTimeoutBudget = isRecord(item.timeout_budget) ? item.timeout_budget : null
-      const timeout_budget =
-        rawTimeoutBudget != null
+      const rawProviderTimeoutPlan = isRecord(item.provider_timeout_plan) ? item.provider_timeout_plan : null
+      const provider_timeout_plan =
+        rawProviderTimeoutPlan != null
           ? {
-              oas_timeout_sec: asNumber(rawTimeoutBudget.oas_timeout_sec) ?? null,
-              adaptive_timeout_sec: asNumber(rawTimeoutBudget.adaptive_timeout_sec) ?? null,
-              keeper_turn_timeout_sec: asNumber(rawTimeoutBudget.keeper_turn_timeout_sec) ?? null,
-              remaining_turn_budget_sec: asNumber(rawTimeoutBudget.remaining_turn_budget_sec) ?? null,
-              estimated_input_tokens: asNumber(rawTimeoutBudget.estimated_input_tokens) ?? null,
-              max_turns: asNumber(rawTimeoutBudget.max_turns) ?? null,
-              source: typeof rawTimeoutBudget.source === 'string' ? rawTimeoutBudget.source : null,
+              oas_timeout_sec: asNumber(rawProviderTimeoutPlan.oas_timeout_sec) ?? null,
+              adaptive_timeout_sec: asNumber(rawProviderTimeoutPlan.adaptive_timeout_sec) ?? null,
+              keeper_turn_timeout_sec: asNumber(rawProviderTimeoutPlan.keeper_turn_timeout_sec) ?? null,
+              remaining_turn_budget_sec: asNumber(rawProviderTimeoutPlan.remaining_turn_budget_sec) ?? null,
+              estimated_input_tokens: asNumber(rawProviderTimeoutPlan.estimated_input_tokens) ?? null,
+              max_turns: asNumber(rawProviderTimeoutPlan.max_turns) ?? null,
+              source: typeof rawProviderTimeoutPlan.source === 'string' ? rawProviderTimeoutPlan.source : null,
             }
           : null
       const rawCtxComposition = isRecord(item.ctx_composition) ? item.ctx_composition : null
@@ -350,6 +457,8 @@ function normalizeMetricsSeries(raw: unknown): KeeperMetricPoint[] {
         reasoning_tokens: asNumber(rawTel.reasoning_tokens) ?? null,
         peak_memory_gb: asNumber(rawTel.peak_memory_gb) ?? null,
         request_latency_ms: asNumber(rawTel.request_latency_ms) ?? null,
+        ttfrc_ms: asNumber(rawTel.ttfrc_ms) ?? null,
+        prefill_ms: asNumber(rawTel.prefill_ms) ?? null,
       } : null
       const cascadeObj = isRecord(item.cascade) ? item.cascade : null
       const fallbackEvents = cascadeObj && Array.isArray(cascadeObj.fallback_events) ? cascadeObj.fallback_events : []
@@ -366,13 +475,13 @@ function normalizeMetricsSeries(raw: unknown): KeeperMetricPoint[] {
         is_compaction: item.compacted === true,
         compaction_saved_tokens: asNumber(item.compaction_saved_tokens) ?? 0,
         compaction_trigger: typeof item.compaction_trigger === 'string' ? item.compaction_trigger : null,
-        model_used: typeof item.model_used === 'string' ? item.model_used : '',
+        model_used: '',
         cost_usd: asNumber(item.cost_usd) ?? Number.NaN,
         handoff_to_model: handoffToModel,
         handoff_new_generation: handoffNewGeneration,
         prompt_fingerprint: promptFingerprint,
         prompt_metrics,
-        timeout_budget,
+        provider_timeout_plan,
         ctx_composition,
         input_tokens: inputTokens,
         output_tokens: outputTokens,
@@ -381,16 +490,13 @@ function normalizeMetricsSeries(raw: unknown): KeeperMetricPoint[] {
         inference_telemetry,
         cascade_name: cascadeObj ? (asString(cascadeObj.cascade_name) ?? asString(cascadeObj.name) ?? null) : null,
         cascade_outcome: cascadeObj ? (asString(cascadeObj.outcome) ?? null) : null,
-        cascade_selected_model:
-          cascadeObj
-            ? (asString(cascadeObj.selected_model) ?? asString(cascadeObj.selected_model_id) ?? null)
-            : null,
+        cascade_selected_model: null,
         cascade_attempt_count: cascadeObj ? (asNumber(cascadeObj.attempt_count) ?? null) : null,
         cascade_strategy: cascadeObj && typeof cascadeObj.strategy === 'string' ? cascadeObj.strategy : null,
         fallback_applied: cascadeObj ? cascadeObj.fallback_applied === true : false,
         fallback_hops: cascadeObj ? (asNumber(cascadeObj.fallback_hops) ?? 0) : 0,
-        fallback_from: firstFallback && typeof firstFallback.from_model_id === 'string' ? firstFallback.from_model_id : null,
-        fallback_to: firstFallback && typeof firstFallback.to_model_id === 'string' ? firstFallback.to_model_id : null,
+        fallback_from: null,
+        fallback_to: null,
         fallback_reason: firstFallback && typeof firstFallback.reason === 'string' ? firstFallback.reason : null,
       }
     })
@@ -463,7 +569,7 @@ export function normalizeKeepers(raw: unknown): Keeper[] {
 
       const contextRatio = asNumber(row.context_ratio) ?? asNumber(contextRaw?.context_ratio)
       const statusRaw = asString(row.status) ?? asString(agentRaw?.status) ?? 'offline'
-      const model = asString(row.model) ?? asString(row.active_model) ?? asString(row.primary_model)
+      const model = undefined
       const skillSecondary = asStringArray(row.skill_secondary)
       const metricsSeries = normalizeMetricsSeries(row.metrics_series)
 
@@ -496,10 +602,34 @@ export function normalizeKeepers(raw: unknown): Keeper[] {
             }
           : undefined
 
+      const providerHealth: ProviderHealth | null = null
+      const runtimeBlockerClass = asKeeperRuntimeBlockerClass(row.runtime_blocker_class)
+      const runtimeBlockerSummary = asString(row.runtime_blocker_summary) ?? null
+      const trust = normalizeKeeperTrust(row.runtime_trust ?? row.trust)
+      const terminalReason = trust?.latest_terminal_reason ?? null
+      const nextHumanAction = asString(row.next_human_action) ?? null
+      const stopCause = normalizeStopCause({
+        stop_cause: row.stop_cause,
+        runtime_blocker_class: runtimeBlockerClass,
+        runtime_blocker_summary: runtimeBlockerSummary,
+        terminal_reason_code: terminalReason?.code ?? null,
+        terminal_reason_summary: terminalReason?.summary ?? null,
+        terminal_reason_severity: terminalReason?.severity ?? null,
+        terminal_reason_next_action: terminalReason?.next_action ?? null,
+        attention_reason: asString(row.attention_reason) ?? trust?.attention_reason ?? null,
+        next_action: nextHumanAction ?? trust?.next_human_action ?? trust?.latest_next_action ?? null,
+      })
+
       return {
         name,
         runtime_class: 'keeper' as const,
-        pipeline_stage: (asString(row.pipeline_stage) ?? 'idle') as PipelineStage,
+        // Typed parse replaces an `as PipelineStage` cast that trusted
+        // whatever string `row.pipeline_stage` carried (it's `string | null`
+        // upstream — see api/dashboard.ts:265). Unrecognized values fall
+        // back to `'unknown'` (a valid PipelineStage tag) so consumers
+        // can render the keeper as "stage not known yet" rather than
+        // routing an arbitrary backend string through a lying type.
+        pipeline_stage: toPipelineStage(asString(row.pipeline_stage)) ?? 'unknown',
         phase: toKeeperPhase(asString(row.phase)),
         paused: asBoolean(row.paused),
         registered:
@@ -511,13 +641,14 @@ export function normalizeKeepers(raw: unknown): Keeper[] {
         agent_name: asString(row.agent_name),
         trace_id: asString(row.trace_id),
         model,
-        primary_model: asString(row.primary_model),
-        active_model: asString(row.active_model),
-        active_model_label: asString(row.active_model_label) ?? null,
-        last_model_used: asString(row.last_model_used),
-        last_model_used_label: asString(row.last_model_used_label) ?? null,
-        next_model_hint: asString(row.next_model_hint) ?? null,
+        primary_model: undefined,
+        active_model: undefined,
+        active_model_label: null,
+        last_model_used: undefined,
+        last_model_used_label: null,
+        next_model_hint: null,
         cascade_name: asString(row.cascade_name) ?? null,
+        cascade_ref: normalizeCascadeRef(row.cascade_ref),
         cascade_canonical: asString(row.cascade_canonical) ?? asString(row.selected_cascade_canonical) ?? null,
         selected_cascade_canonical: asString(row.selected_cascade_canonical) ?? null,
         status: normalizeKeeperAgentStatus(statusRaw),
@@ -530,18 +661,20 @@ export function normalizeKeepers(raw: unknown): Keeper[] {
           typeof row.proactive_enabled === 'boolean' ? row.proactive_enabled : undefined,
         proactive_idle_sec: asNumber(row.proactive_idle_sec),
         proactive_cooldown_sec: asNumber(row.proactive_cooldown_sec),
-        runtime_blocker_class:
-          (asString(row.runtime_blocker_class) as Keeper['runtime_blocker_class']) ?? null,
-        runtime_blocker_summary: asString(row.runtime_blocker_summary) ?? null,
+        pause_state: asKeeperPauseState(row.pause_state),
+        runtime_blocker_state: asKeeperRuntimeBlockerState(row.runtime_blocker_state),
+        runtime_blocker_class: runtimeBlockerClass,
+        runtime_blocker_summary: runtimeBlockerSummary,
         runtime_blocker_continue_gate:
           typeof row.runtime_blocker_continue_gate === 'boolean'
             ? row.runtime_blocker_continue_gate
             : null,
+        stop_cause: stopCause,
         needs_attention:
           typeof row.needs_attention === 'boolean' ? row.needs_attention : null,
         attention_reason: asString(row.attention_reason) ?? null,
-        next_human_action: asString(row.next_human_action) ?? null,
-        trust: normalizeKeeperTrust(row.runtime_trust ?? row.trust),
+        next_human_action: nextHumanAction,
+        trust,
         active_goal_ids: asStringArray(row.active_goal_ids) ?? [],
         goal: asString(row.goal) ?? null,
         short_goal: asString(row.short_goal) ?? null,
@@ -600,10 +733,10 @@ export function normalizeKeepers(raw: unknown): Keeper[] {
         last_proactive_reason: asString(row.last_proactive_reason) ?? null,
         last_activity_ago_s: asNumber(row.last_activity_ago_s),
         last_proactive_preview: asString(row.last_proactive_preview) ?? null,
-        social_model: asString(row.social_model) ?? null,
-        configured_social_model: asString(row.configured_social_model) ?? null,
+        social_model: null,
+        configured_social_model: null,
         social_model_recognized: asBoolean(row.social_model_recognized) ?? null,
-        social_model_fallback: asString(row.social_model_fallback) ?? null,
+        social_model_fallback: null,
         last_speech_act: asString(row.last_speech_act) ?? null,
         last_blocker: asString(row.last_blocker) ?? null,
         last_need: asString(row.last_need) ?? null,
@@ -638,6 +771,7 @@ export function normalizeKeepers(raw: unknown): Keeper[] {
         metrics_series: metricsSeries.length > 0 ? metricsSeries : undefined,
         metrics_window: metricsWindow,
         agent: normalizedAgent,
+        provider_health: providerHealth,
       }
     })
     .filter((row): row is Keeper => row !== null)

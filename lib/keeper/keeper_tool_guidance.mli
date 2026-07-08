@@ -11,18 +11,14 @@ type hint =
   ; description : string
   }
 
-(** Curated affordance hints (name + call template + description) for
-    every keeper-preferred tool. Filtered at render time by the
-    keeper's active tool-name allowlist. *)
-val hints : hint list
-
 (** Build a hashtable lookup of allowed tool names. Used internally
     by [allowed_hints] but exposed for callers that want to reuse the
     same allowed set. *)
 val allowed_lookup : string list -> (string, unit) Hashtbl.t
 
-(** Filter [hints] down to those whose [name] is in
-    [allowed_tool_names]. *)
+(** Filter the curated hint inventory down to those whose [name] is
+    in [allowed_tool_names]. The inventory is loaded from
+    [config/prompts/keeper.tool_hints.toml] on first use. *)
 val allowed_hints : allowed_tool_names:string list -> hint list
 
 (** Render a single [hint] as a bullet line for prompt embedding. *)
@@ -32,14 +28,6 @@ val line_of_hint : hint -> string
     a runtime-only schema notice when no hints match. *)
 val render_preferred_tools :
   allowed_tool_names:string list -> string
-
-(** Membership test on the allowed-tool-names list. *)
-val has : string list -> string -> bool
-
-(** Render an optional GitHub/code workflow guidance paragraph,
-    chosen by which keeper tools are present in the allowlist. *)
-val render_gh_workflow :
-  allowed_tool_names:string list -> string option
 
 (** Render the unknown-tool guard paragraph (always-on, no policy
     dependency). Reminds the model not to call masc_*/lifecycle tools

@@ -46,6 +46,8 @@ val discover_repositories : base_path:string -> (repository list, string) result
 (** [discover_repositories ~base_path] scans [base_path] for git repositories
     (directories containing [.git] up to depth 4) and returns a list of
     candidate {!repository} records inferred from their [origin] remote URL.
+    Discovery walks the filesystem directly and resolves remotes through the
+    repository git runner, avoiding shell [find] fan-out.
 
     Directories under [.masc/] and repositories already registered in
     [repositories.toml] are excluded. This function is read-only and is
@@ -62,3 +64,17 @@ val register_discovered : base_path:string -> (repository list, string) result
     This is the Week 8 migration helper: existing users with git
     repositories under their base path can call this once to populate
     [repositories.toml] without manual registration. *)
+
+val find_url_by_id : base_path:string -> repository_id -> string option
+(** RFC-0128 §4.5. [find_url_by_id ~base_path id] returns the raw [url]
+    field for the given repository, or [None] when the repository is
+    not registered or has an empty URL. *)
+
+val find_repo_by_path_prefix
+  :  base_path:string
+  -> string
+  -> (repository * string) option
+(** RFC-0128 §4.5. [find_repo_by_path_prefix ~base_path abs_path]
+    returns the repository whose resolved {!local_path} is a directory
+    ancestor of [abs_path], along with the repo-relative remainder. *)
+

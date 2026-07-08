@@ -1,5 +1,5 @@
-// CascadeConfigPanel — renders cascade.json profiles + health tracker state
-// side-by-side so operators can see *why* a given provider is picked first.
+// CascadeConfigPanel — renders cascade.toml profiles + health tracker state
+// side-by-side so operators can inspect routing order and candidate labels.
 //
 // Consumes:
 //   GET /api/v1/cascade/config  — profiles + per-candidate weight/health
@@ -11,6 +11,7 @@ import { html } from 'htm/preact'
 import { useEffect } from 'preact/hooks'
 import { useSignal } from '@preact/signals'
 import { fetchGateKeepers, type GateKeeperInfo } from '../api/gate'
+import { formatTimeAgo } from '../lib/format-time'
 import {
   fetchCascadeClientCapacity,
   fetchCascadeClientCapacityHistory,
@@ -43,8 +44,8 @@ import {
   type CascadeValidationStatus,
 } from '../api/dashboard'
 import { Btn } from './btn'
-import { Card } from './common/card'
-import { EmptyState } from './common/empty-state'
+import { SectionCard } from './common/card'
+import { EmptyState } from './common/feedback-state'
 import { ErrorState, LoadingState } from './common/feedback-state'
 import { TextInput } from './common/input'
 import { StatCell } from './common/stat-cell'
@@ -52,6 +53,7 @@ import { StatusChip } from './common/status-chip'
 import type { ManagedAsyncResource } from '../lib/async-state'
 import { useManagedAsyncResource } from '../lib/use-managed-async-resource'
 import { formatPct1 } from '../lib/format-number'
+import { errorToString } from '../lib/format-string'
 
 interface CascadeData {
   config: CascadeConfigResponse | null
@@ -63,6 +65,8 @@ interface CascadeData {
   trace: CascadeStrategyTraceResponse | null
   slo: CascadeSloResponse | null
 }
+
+type CascadeRawConfigAssist = NonNullable<CascadeRawConfigResponse['assist']>
 
 async function loadCascadeData(resource: ManagedAsyncResource<CascadeData>) {
   await resource.load(async (signal) => {
@@ -114,13 +118,8 @@ function sourceTone(source: CascadeProfile['source']): string {
 }
 
 function catalogSourceSummary(config: CascadeConfigResponse): string {
-  if (config.source_kind === 'toml') {
-    const sourcePath = config.source_path ?? 'cascade.toml'
-    const jsonPath = config.config_path ?? 'cascade.json'
-    return `SSOT: ${sourcePath} → generated ${jsonPath}`
-  }
-  const path = config.source_path ?? config.config_path ?? 'config 없음'
-  return `SSOT: ${path} (direct runtime edit)`
+  const sourcePath = config.source_path ?? 'cascade.toml'
+  return `SSOT: ${sourcePath}`
 }
 
 interface RawConfigModeSummary {
@@ -128,38 +127,27 @@ interface RawConfigModeSummary {
   primary: string
   secondary: string
   saveLabel: string
-  previewTitle: string | null
 }
 
 function rawConfigModeSummary(
   raw: Pick<
     CascadeRawConfigResponse,
-    'source_kind' | 'source_path' | 'config_path'
+    'source_editable' | 'source_path'
   > | null,
 ): RawConfigModeSummary {
-  const sourcePath = raw?.source_path ?? raw?.config_path ?? 'unresolved'
-  const jsonPath = raw?.config_path ?? 'unresolved'
-  if (raw?.source_kind !== 'toml') {
-    return {
-      title: 'Active Cascade Source Editor',
-      primary:
-        `dashboard에서 직접 ${sourcePath} 를 수정합니다. 저장 경로는 ${jsonPath} 이고, ` +
-        '저장 후 current cascade snapshot 을 다시 읽습니다.',
-      secondary:
-        'semantics invalid profile 도 저장은 허용됩니다. 저장 후 위의 validation banner 에서 invalid/last-known-good 상태를 바로 확인하면 됩니다.',
-      saveLabel: 'Save cascade.json',
-      previewTitle: null,
-    }
-  }
+  const sourcePath = raw?.source_path ?? 'cascade.toml'
+  const editable = raw !== null && raw.source_editable !== false
   return {
-    title: 'Active Cascade Source Editor (TOML SSOT)',
+    title: 'Active Cascade Source',
     primary:
-      `현재 active source는 ${sourcePath} 이고, 이 editor에서 직접 cascade.toml SSOT 를 수정합니다. ` +
-      '저장 시 TOML parse 검증 뒤 generated runtime JSON을 다시 materialize 합니다.',
+      editable
+        ? `현재 active source는 ${sourcePath} 입니다.`
+        : `현재 active source는 ${sourcePath} 이지만 읽기 전용 상태입니다.`,
     secondary:
-      `아래 preview는 ${jsonPath} 에 기록되는 generated cascade.json runtime artifact 입니다.`,
-    saveLabel: 'cascade.toml 저장',
-    previewTitle: '생성된 cascade.json 미리보기',
+      editable
+        ? '수정 후 저장하면 서버가 TOML을 검증하고 cascade snapshot을 다시 불러옵니다.'
+        : '소스 파일을 읽을 수 없어 프로필, 후보 label, weight, health, validation 상태만 노출됩니다.',
+    saveLabel: editable ? '저장' : '저장 비활성',
   }
 }
 
@@ -205,12 +193,60 @@ function availableKeeperAssignments(
 }
 
 function validateSourceConfigText(
-  raw: Pick<CascadeRawConfigResponse, 'source_kind'> | null,
-  sourceText: string,
+  _raw: unknown,
+  _sourceText: string,
 ): string | null {
-  if (!raw) return null
-  if (raw?.source_kind === 'toml') return null
-  return validateJsonText(sourceText)
+  return null
+}
+
+function positiveIntOrDefault(value: string, fallback: number): number {
+  const parsed = Number.parseInt(value, 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
+}
+
+function normalizeTomlBlock(source: string, snippet: string): string {
+  const base = source.trimEnd()
+  const block = snippet.trim()
+  if (block === '') return source
+  return `${base}${base === '' ? '' : '\n\n'}${block}\n`
+}
+
+export function buildCascadeBindingSnippet(
+  provider: string,
+  model: string,
+  maxConcurrent: number,
+): string {
+  return [
+    `[${provider}.${model}]`,
+    'is-default = false',
+    `max-concurrent = ${Math.max(1, maxConcurrent)}`,
+  ].join('\n')
+}
+
+export function buildCascadeThinkingAliasSnippet(
+  provider: string,
+  model: string,
+  budget: number,
+): string {
+  return [
+    `[${provider}.${model}.thinking]`,
+    'temperature = 0.2',
+    'thinking-enabled = true',
+    `thinking-budget = ${Math.max(1, budget)}`,
+  ].join('\n')
+}
+
+export function buildCascadeTierSnippet(
+  tier: string,
+  member: string,
+  maxConcurrent: number,
+): string {
+  return [
+    `[tier.${tier}]`,
+    `members = ["${member}"]`,
+    'strategy = "failover"',
+    `max-concurrent = ${Math.max(1, maxConcurrent)}`,
+  ].join('\n')
 }
 
 function validationTone(status: CascadeValidationStatus): 'ok' | 'warn' | 'bad' {
@@ -236,21 +272,43 @@ function validationDescription(status: CascadeValidationStatus): string {
     case 'validated':
       return '현재 cascade catalog 이 정상 검증되었습니다.'
     case 'serving_valid_subset':
-      return '현재 cascade.json 일부 profile 이 검증에 실패해 invalid profile 은 제외하고 유효한 subset 만 계속 서빙 중입니다.'
+      return '현재 cascade.toml 일부 profile 이 검증에 실패해 invalid profile 은 제외하고 유효한 subset 만 계속 서빙 중입니다.'
     case 'serving_last_known_good':
-      return '새 cascade.json 업데이트가 검증에 실패해 마지막 검증 성공 snapshot 을 계속 서빙 중입니다.'
+      return '새 cascade.toml 업데이트가 검증에 실패해 마지막 검증 성공 snapshot 을 계속 서빙 중입니다.'
     case 'invalid':
-      return '현재 cascade.json 검증에 실패했습니다. 서버와 dashboard 는 degraded 로 계속 동작하지만 유효하지 않은 profile 은 라우팅에서 제외될 수 있습니다.'
+      return '현재 cascade.toml 검증에 실패했습니다. 서버와 dashboard 는 degraded 로 계속 동작하지만 유효하지 않은 profile 은 라우팅에서 제외될 수 있습니다.'
   }
 }
 
 function runtimeKindLabel(kind: string | null | undefined): string | null {
   switch (kind) {
-    case 'cli_agent': return 'CLI(non-interactive)'
-    case 'direct_api': return 'Direct API'
-    case 'local': return '로컬'
+    case 'cli_agent': return 'cli-agent'
+    case 'direct_api': return 'direct-api'
+    case 'local': return 'local'
     default: return null
   }
+}
+
+function candidateWeightLabel(c: CascadeCandidate): string {
+  return c.effective_weight === c.config_weight
+    ? String(c.config_weight)
+    : `${c.config_weight} -> ${c.effective_weight}`
+}
+
+function uniqueNonEmpty(values: readonly string[]): string[] {
+  return Array.from(new Set(values.map(value => value.trim()).filter(Boolean)))
+}
+
+function candidateExpandedSummary(
+  c: CascadeCandidate,
+  displayModel: string,
+): string | null {
+  const expandedModels = uniqueNonEmpty(c.expanded_models ?? [])
+  if (expandedModels.length === 0) return null
+  if (expandedModels.length === 1 && expandedModels[0] === displayModel) return null
+  const visible = expandedModels.slice(0, 3).join(', ')
+  const hidden = expandedModels.length - 3
+  return hidden > 0 ? `${visible} +${hidden}` : visible
 }
 
 function fmtCooldownExpiry(expiresAt: number | null): string {
@@ -364,14 +422,14 @@ function ProfileCard({
       await onAssignKeeper(selectedKeeper.value, profile.name)
       assignmentMessage.value = `${selectedKeeper.value} → ${profile.name}`
     } catch (error) {
-      assignmentMessage.value = `Failed to assign: ${errorMessage(error)}`
+      assignmentMessage.value = `Failed to assign: ${errorToString(error)}`
     } finally {
       assigning.value = false
     }
   }
 
   return html`
-    <article class="rounded-[var(--r-1)] border border-[var(--color-border-default)] bg-[var(--color-bg-page)] p-3">
+    <article class="min-w-0 rounded-[var(--r-1)] border border-[var(--color-border-default)] bg-[var(--color-bg-page)] p-3">
       <header class="flex items-center gap-2 mb-2 flex-wrap">
         <span class="font-semibold text-[var(--color-fg-primary)]">${profile.name}</span>
         <${StatusChip} tone=${sourceTone(profile.source)}>
@@ -405,9 +463,6 @@ function ProfileCard({
           >
             <div class="flex items-center gap-2 flex-wrap mb-2">
               <span class="text-xs font-medium text-[var(--color-fg-primary)]">키퍼 할당</span>
-              <span class="text-xs text-[var(--color-fg-muted)]">
-                current profile로 keeper를 이동합니다.
-              </span>
             </div>
             ${availableKeepers.length > 0
               ? html`
@@ -459,44 +514,56 @@ function ProfileCard({
       ${profile.candidates.length === 0
         ? html`<div class="text-xs text-[var(--color-fg-muted)]">no candidates resolved</div>`
         : html`
-          <ol class="flex flex-col gap-1 text-xs">
+          <ol class="min-w-0 flex flex-col gap-1 text-xs">
             ${profile.candidates.map((c, idx) => {
-              const expanded = c.expanded_models ?? []
               const displayModel = c.display_model ?? c.model
-              const displayProvider = c.display_provider_name ?? c.provider_name ?? null
+              const providerLabel = c.display_provider_name ?? c.provider_name
               const runtimeLabel = runtimeKindLabel(c.runtime_kind)
+              const expandedSummary = candidateExpandedSummary(c, displayModel)
               return html`
-              <li class="flex items-start gap-2 py-1 border-b border-[var(--color-border-default)] last:border-b-0">
-                <span class="tabular-nums text-[var(--color-fg-muted)] w-5">${idx + 1}.</span>
-                <${StatusChip} tone=${candidateTone(c)}>
-                  ${c.in_cooldown ? 'cooldown' : formatPct1(c.success_rate)}
-                <//>
-                <div class="flex-1 min-w-0">
-                  <div class="flex items-center gap-2 flex-wrap">
-                    <code class="text-[var(--color-fg-primary)]">${displayModel}</code>
-                    ${displayProvider
-                      ? html`<span class="text-[var(--color-fg-muted)]">${displayProvider}</span>`
+              <li class="grid grid-cols-1 gap-x-2 gap-y-1 py-2 border-b border-[var(--color-border-default)] last:border-b-0 sm:grid-cols-[auto_minmax(0,1fr)_auto]">
+                <div class="flex items-center gap-1.5 self-start">
+                  <span class="tabular-nums text-[var(--color-fg-muted)] w-5">${idx + 1}.</span>
+                  <${StatusChip} tone=${candidateTone(c)} class="shrink-0">
+                    ${c.in_cooldown ? 'cooldown' : formatPct1(c.success_rate)}
+                  <//>
+                </div>
+                <div class="min-w-0 grid gap-1">
+                  <div class="flex min-w-0 items-baseline gap-1.5 flex-wrap">
+                    <span class="text-3xs uppercase tracking-wider text-[var(--color-fg-muted)]">model</span>
+                    <code class="min-w-0 max-w-full break-all text-[var(--color-fg-primary)]">${displayModel}</code>
+                  </div>
+                  <div class="flex min-w-0 gap-x-3 gap-y-1 flex-wrap text-[var(--color-fg-muted)]">
+                    ${providerLabel
+                      ? html`
+                        <span class="min-w-0">
+                          <span class="text-3xs uppercase tracking-wider">provider</span>
+                          <code class="ml-1 break-all text-[var(--color-fg-primary)]">${providerLabel}</code>
+                        </span>
+                      `
                       : null}
                     ${runtimeLabel
-                      ? html`<span class="text-[var(--color-fg-muted)]">${runtimeLabel}</span>`
+                      ? html`
+                        <span>
+                          <span class="text-3xs uppercase tracking-wider">runtime</span>
+                          <code class="ml-1 text-[var(--color-fg-primary)]">${runtimeLabel}</code>
+                        </span>
+                      `
+                      : null}
+                    ${expandedSummary
+                      ? html`
+                        <span class="min-w-0">
+                          <span class="text-3xs uppercase tracking-wider">expanded</span>
+                          <code class="ml-1 break-all text-[var(--color-fg-primary)]">${expandedSummary}</code>
+                        </span>
+                      `
                       : null}
                   </div>
-                  ${c.model !== displayModel
-                    ? html`<div class="text-[length:var(--fs-11)] text-[var(--color-fg-muted)] mt-0.5">config: <code>${c.model}</code></div>`
-                    : null}
-                  ${expanded.length > 1
-                    ? html`
-                      <ol class="mt-1 flex flex-col gap-0.5 text-[length:var(--fs-11)] text-[var(--color-fg-muted)]">
-                        ${expanded.map((model, expandedIdx) => html`
-                          <li><span class="tabular-nums">${expandedIdx + 1}.</span> <code>${model}</code></li>
-                        `)}
-                      </ol>
-                    `
-                    : null}
                 </div>
-                <span class="tabular-nums text-[var(--color-fg-muted)]">
-                  w ${c.config_weight}${c.effective_weight === c.config_weight ? '' : ` → ${c.effective_weight}`}
-                </span>
+                <div class="flex items-baseline gap-1.5 text-[var(--color-fg-muted)] sm:justify-end sm:text-right">
+                  <span class="text-3xs uppercase tracking-wider">weight</span>
+                  <code class="tabular-nums text-[var(--color-fg-primary)]">${candidateWeightLabel(c)}</code>
+                </div>
               </li>
             `})}
           </ol>
@@ -606,7 +673,7 @@ function providerTone(p: CascadeHealthProvider): 'ok' | 'warn' | 'bad' {
  * - `active`: tracker recorded events in the window (ok).
  * - `cooldown`: actively blocked (bad).
  * - `configured`: declared but untouched — neutral. Rendering this
- *   explicitly answers "why is this provider not being used?" in a way
+ *   explicitly answers "why is this runtime lane not being used?" in a way
  *   that the previous "row is absent" encoding could not.
  */
 function providerStatusTone(
@@ -640,7 +707,7 @@ function fmtPerfTokPerSec(
 }
 
 /**
- * Compact rendering of per-provider p50/p95 latency used in the Health
+ * Compact rendering of per-runtime p50/p95 latency used in the Health
  * Tracker table.  Same empty-state rules as `fmtPerfTokPerSec`.
  */
 function NumCell({ children }: { children: unknown }) {
@@ -660,11 +727,10 @@ function fmtPerfLatencyPair(
 }
 
 /**
- * Pure filter for Health Tracker provider rows.
+ * Pure filter for Health Tracker runtime rows.
  *
- * Case-insensitive substring match on `provider_key`. Also matches the
- * literal keyword `cooldown` when `in_cooldown` is true so operators can
- * isolate all providers currently being blocked.
+ * Matches status labels and the literal keyword `cooldown` when
+ * `in_cooldown` is true so operators can isolate all blocked runtimes.
  *
  * Empty/whitespace query returns the input reference unchanged so the
  * non-filter path preserves referential equality (stable render).
@@ -678,7 +744,7 @@ function filterHealthProviders(
   const needle = query.trim().toLowerCase()
   if (needle === '') return providers
   return providers.filter(p => {
-    if (p.provider_key.toLowerCase().includes(needle)) return true
+    if (p.status && p.status.toLowerCase().includes(needle)) return true
     if (p.in_cooldown && 'cooldown'.includes(needle)) return true
     return false
   })
@@ -695,7 +761,7 @@ function HealthTable({
   searchQuery,
 }: { health: CascadeHealthResponse; searchQuery: { value: string } }) {
   if (health.providers.length === 0) {
-    return html`<${EmptyState}>아직 기록된 provider 이벤트가 없습니다.<//>`
+    return html`<${EmptyState}>아직 기록된 runtime 이벤트가 없습니다.<//>`
   }
   const filtered = filterHealthProviders(health.providers, searchQuery.value)
   const isFiltering = searchQuery.value.trim() !== ''
@@ -704,8 +770,8 @@ function HealthTable({
       <${TextInput}
         type="search"
         class="max-w-70"
-        placeholder="provider 필터 (key, cooldown...)"
-        ariaLabel="health provider 검색"
+        placeholder="runtime 필터 (status, cooldown...)"
+        ariaLabel="health runtime 검색"
         value=${searchQuery.value}
         onInput=${(e: Event) => { searchQuery.value = (e.target as HTMLInputElement).value }}
       />
@@ -714,13 +780,13 @@ function HealthTable({
         : null}
     </div>
     ${isFiltering && filtered.length === 0
-      ? html`<div class="py-4 text-center text-2xs text-[var(--color-fg-muted)]">필터 결과 없음 (${health.providers.length} providers)</div>`
+      ? html`<div class="py-4 text-center text-2xs text-[var(--color-fg-muted)]">필터 결과 없음 (${health.providers.length} runtimes)</div>`
       : html`
-        <table class="w-full text-xs" aria-label="cascade provider 상태">
+        <table class="w-full text-xs" aria-label="cascade runtime 상태">
           <thead>
             <tr class="text-[var(--color-fg-muted)] border-b border-[var(--color-border-default)]">
               <th scope="col" class="text-left py-1 w-4"></th>
-              <th scope="col" class="text-left py-1">제공자</th>
+              <th scope="col" class="text-left py-1">런타임</th>
               <th
                 scope="col"
                 class="text-left py-1"
@@ -737,7 +803,7 @@ function HealthTable({
               <th
                 scope="col"
                 class="text-right py-1"
-                title="프롬프트 prefill 처리량 (이 provider 의 모델 entry-가중 평균)"
+                title="프롬프트 prefill 처리량 (runtime entry-가중 평균)"
               >Prefill tok/s</th>
               <th
                 scope="col"
@@ -747,29 +813,27 @@ function HealthTable({
               <th
                 scope="col"
                 class="text-right py-1"
-                title="Latency p50 / p95 (밀리초, 모델별 퍼센타일의 가중 평균 근사)"
+                title="Latency p50 / p95 (밀리초, 런타임 퍼센타일의 가중 평균 근사)"
               >Latency p50/p95</th>
               <th scope="col" class="text-right py-1">쿨다운</th>
             </tr>
           </thead>
           <tbody>
-            ${filtered.map((p: CascadeHealthProvider) => {
+            ${filtered.map((p: CascadeHealthProvider, index) => {
               const tone = providerTone(p)
               const rejected = p.rejected_in_window ?? 0
               const status: CascadeProviderStatus | undefined = p.status
-              // `declared = false` on a tracker-only row signals config
-              // drift (provider was tracked but is no longer referenced
-              // by cascade.json). Surface it next to the provider key so
-              // operators can prune it. `undefined` means the server is
-              // too old to carry the field — don't decorate in that case.
+              // `declared = false` on a tracker-only row signals config drift.
+              // Keep the identity redacted while still showing that a stale
+              // runtime lane exists.
               const orphaned = p.declared === false
               return html`
               <tr class="border-b border-[var(--color-border-default)] last:border-b-0">
                 <td class="py-1"><span class=${`inline-block w-2 h-2 rounded-full ${TONE_DOT[tone]}`}></span></td>
                 <td class="py-1">
-                  <code class="text-[var(--color-fg-primary)]">${p.provider_key}</code>
+                  <code class="text-[var(--color-fg-primary)]">runtime-${index + 1}</code>
                   ${orphaned
-                    ? html`<span class="ml-1 text-2xs text-[var(--color-status-warn)]" title="Provider 가 추적되었지만 cascade.json 에 더 이상 선언되어 있지 않음">orphan</span>`
+                    ? html`<span class="ml-1 text-2xs text-[var(--color-status-warn)]" title="Runtime lane 이 추적되었지만 cascade.toml 에 더 이상 선언되어 있지 않음">orphan</span>`
                     : null}
                 </td>
                 <td class="py-1">
@@ -807,15 +871,6 @@ function capacityTone(entry: CascadeClientCapacityEntry): 'ok' | 'warn' | 'bad' 
   return 'ok'
 }
 
-function fmtRelativeTime(tsSec: number): string {
-  const deltaSec = Date.now() / 1000 - tsSec
-  if (!Number.isFinite(deltaSec) || deltaSec < 0) return '방금'
-  if (deltaSec < 1) return '방금'
-  if (deltaSec < 60) return `${Math.floor(deltaSec)}초 전`
-  if (deltaSec < 3600) return `${Math.floor(deltaSec / 60)}분 전`
-  if (deltaSec < 86400) return `${Math.floor(deltaSec / 3600)}시간 전`
-  return `${Math.floor(deltaSec / 86400)}일 전`
-}
 
 function eventKindTone(kind: CascadeCapacityEventKind): 'ok' | 'neutral' | 'bad' {
   switch (kind) {
@@ -905,7 +960,7 @@ function SloCard({ slo }: { slo: CascadeSloResponse }) {
           ? html`<span class="text-xs text-[var(--bad-light)]">violating: ${slo.violations.join(', ')}</span>`
           : null}
       </div>
-      <div class="grid grid-cols-3 gap-3">
+      <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
         <${StatCell}
           label="정렬 비율"
           value=${`${ratioPct}%`}
@@ -956,7 +1011,7 @@ function StrategyTraceTable({
           const tone = traceKindTone(e.kind)
           return html`
           <tr class="border-b border-[var(--color-border-default)] last:border-b-0">
-            <td class="py-1 text-[var(--color-fg-muted)] tabular-nums">${fmtRelativeTime(e.ts)}</td>
+            <td class="py-1 text-[var(--color-fg-muted)] tabular-nums">${formatTimeAgo(e.ts)}</td>
             <td class="py-1"><code class="text-[var(--color-fg-primary)]">${e.cascade_name}</code></td>
             <td class="py-1 text-[var(--color-fg-muted)]">${e.strategy}</td>
             <${NumCell}>${e.cycle}</${NumCell}>
@@ -983,7 +1038,7 @@ function ClientCapacityHistoryTable({
           <th scope="col" class="text-left py-1 w-20">시간</th>
           <th scope="col" class="text-left py-1">종류</th>
           <th scope="col" class="text-left py-1">키</th>
-          <th scope="col" class="text-right py-1">활성</th>
+          <th scope="col" class="text-right py-1">활성 수</th>
         </tr>
       </thead>
       <tbody>
@@ -991,7 +1046,7 @@ function ClientCapacityHistoryTable({
           const tone = eventKindTone(e.kind)
           return html`
           <tr class="border-b border-[var(--color-border-default)] last:border-b-0">
-            <td class="py-1 text-[var(--color-fg-muted)] tabular-nums">${fmtRelativeTime(e.ts)}</td>
+            <td class="py-1 text-[var(--color-fg-muted)] tabular-nums">${formatTimeAgo(e.ts)}</td>
             <td class="py-1"><${StatusChip} tone=${tone}>${eventKindLabel(e.kind)}<//></td>
             <td class="py-1"><code class="text-[var(--color-fg-primary)]">${e.key}</code></td>
             <${NumCell}>${e.active_after}</${NumCell}>
@@ -1004,7 +1059,7 @@ function ClientCapacityHistoryTable({
 
 function ClientCapacityTable({ capacity }: { capacity: CascadeClientCapacityResponse }) {
   if (capacity.entries.length === 0) {
-    return html`<${EmptyState}>등록된 client-capacity 슬롯이 없습니다. (cascade가 한 번도 호출되지 않았거나 CLI/ollama provider 미사용)<//>`
+    return html`<${EmptyState}>등록된 client-capacity 슬롯이 없습니다. (cascade가 한 번도 호출되지 않았거나 runtime lane 미사용)<//>`
   }
   return html`
     <table class="w-full text-xs" aria-label="client capacity 슬롯">
@@ -1013,7 +1068,7 @@ function ClientCapacityTable({ capacity }: { capacity: CascadeClientCapacityResp
           <th scope="col" class="text-left py-1 w-4"></th>
           <th scope="col" class="text-left py-1">종류</th>
           <th scope="col" class="text-left py-1">키</th>
-          <th scope="col" class="text-right py-1">활성</th>
+          <th scope="col" class="text-right py-1">활성 수</th>
           <th scope="col" class="text-right py-1">가용</th>
           <th scope="col" class="text-right py-1">전체</th>
         </tr>
@@ -1036,17 +1091,182 @@ function ClientCapacityTable({ capacity }: { capacity: CascadeClientCapacityResp
   `
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
+
+function SourceAssistInput({
+  id,
+  label,
+  value,
+  options,
+  onInput,
+}: {
+  id: string
+  label: string
+  value: string
+  options: readonly string[]
+  onInput: (value: string) => void
+}) {
+  return html`
+    <label class="flex min-w-0 flex-1 flex-col gap-1 text-2xs font-medium uppercase tracking-wide text-[var(--color-fg-muted)]">
+      ${label}
+      <input
+        class="w-full rounded-[var(--r-1)] border border-[var(--color-border-default)] bg-[var(--color-bg-page)] px-2 py-1.5 font-mono text-xs text-[var(--color-fg-primary)]"
+        list=${`${id}-list`}
+        value=${value}
+        onInput=${(event: Event) => onInput((event.target as HTMLInputElement).value)}
+      />
+      <datalist id=${`${id}-list`}>
+        ${options.map(option => html`<option value=${option} />`)}
+      </datalist>
+    </label>
+  `
 }
 
-function validateJsonText(raw: string): string | null {
-  try {
-    JSON.parse(raw)
-    return null
-  } catch (error) {
-    return errorMessage(error)
-  }
+// Find the first entry whose trimmed form is non-empty; return the original
+// (untrimmed) value, or '' when none qualifies. Distinct from
+// `lib/format-string.firstNonEmptyString` — that one returns the *trimmed* form
+// and `string | null`, this one preserves the raw value for `useSignal` seeding
+// and returns `string` so the signal has a guaranteed initial value.
+function firstNonBlankOrEmpty(values: readonly string[]): string {
+  return values.find(value => value.trim() !== '') ?? ''
+}
+
+function selectedBindingLabel(
+  provider: string,
+  model: string,
+  assist: CascadeRawConfigAssist,
+): string {
+  if (provider.trim() !== '' && model.trim() !== '') return `${provider.trim()}.${model.trim()}`
+  return firstNonBlankOrEmpty(assist.bindings)
+}
+
+function CascadeSourceAssist({
+  assist,
+  provider,
+  model,
+  tier,
+  maxConcurrent,
+  thinkingBudget,
+  onProviderInput,
+  onModelInput,
+  onTierInput,
+  onMaxConcurrentInput,
+  onThinkingBudgetInput,
+  onInsert,
+}: {
+  assist: CascadeRawConfigAssist
+  provider: string
+  model: string
+  tier: string
+  maxConcurrent: string
+  thinkingBudget: string
+  onProviderInput: (value: string) => void
+  onModelInput: (value: string) => void
+  onTierInput: (value: string) => void
+  onMaxConcurrentInput: (value: string) => void
+  onThinkingBudgetInput: (value: string) => void
+  onInsert: (snippet: string) => void
+}) {
+  const parentBinding = selectedBindingLabel(provider, model, assist)
+  const hasProviderModel = provider.trim() !== '' && model.trim() !== ''
+  const hasMember = parentBinding.trim() !== ''
+  const tierName = tier.trim() || 'primary'
+  const maxConcurrentValue = positiveIntOrDefault(maxConcurrent, 2)
+  const thinkingBudgetValue = positiveIntOrDefault(thinkingBudget, 8192)
+  const parsed = assist.parse_status === 'parsed'
+
+  return html`
+    <div class="rounded-[var(--r-1)] border border-[var(--color-border-default)] bg-[var(--color-bg-subtle)] p-3">
+      <div class="mb-3 flex items-center gap-2">
+        <${StatusChip} tone=${parsed ? 'ok' : 'warn'} uppercase=${false}>${parsed ? 'parsed' : 'parse issue'}<//>
+        <span class="text-xs text-[var(--color-fg-muted)]">
+          ${assist.providers.length} providers · ${assist.models.length} models · ${assist.bindings.length} bindings
+        </span>
+      </div>
+      ${assist.errors.length > 0
+        ? html`
+          <div class="mb-3 rounded-[var(--r-1)] border border-[var(--color-status-warn)] px-2 py-1 text-xs text-[var(--color-fg-muted)]">
+            ${assist.errors[0]?.path}: ${assist.errors[0]?.message}
+          </div>
+        `
+        : null}
+      <div class="grid gap-2 md:grid-cols-3">
+        <${SourceAssistInput}
+          id="cascade-provider-assist"
+          label="Provider"
+          value=${provider}
+          options=${assist.providers}
+          onInput=${onProviderInput}
+        />
+        <${SourceAssistInput}
+          id="cascade-model-assist"
+          label="Model"
+          value=${model}
+          options=${assist.models}
+          onInput=${onModelInput}
+        />
+        <${SourceAssistInput}
+          id="cascade-tier-assist"
+          label="Tier"
+          value=${tier}
+          options=${assist.tiers.length > 0 ? assist.tiers : ['primary']}
+          onInput=${onTierInput}
+        />
+      </div>
+      <div class="mt-2 grid gap-2 md:grid-cols-2">
+        <label class="flex min-w-0 flex-col gap-1 text-2xs font-medium uppercase tracking-wide text-[var(--color-fg-muted)]">
+          max-concurrent
+          <input
+            class="w-full rounded-[var(--r-1)] border border-[var(--color-border-default)] bg-[var(--color-bg-page)] px-2 py-1.5 text-xs text-[var(--color-fg-primary)]"
+            type="number"
+            min="1"
+            value=${maxConcurrent}
+            onInput=${(event: Event) => onMaxConcurrentInput((event.target as HTMLInputElement).value)}
+          />
+        </label>
+        <label class="flex min-w-0 flex-col gap-1 text-2xs font-medium uppercase tracking-wide text-[var(--color-fg-muted)]">
+          thinking-budget
+          <input
+            class="w-full rounded-[var(--r-1)] border border-[var(--color-border-default)] bg-[var(--color-bg-page)] px-2 py-1.5 text-xs text-[var(--color-fg-primary)]"
+            type="number"
+            min="1"
+            value=${thinkingBudget}
+            onInput=${(event: Event) => onThinkingBudgetInput((event.target as HTMLInputElement).value)}
+          />
+        </label>
+      </div>
+      <div class="mt-3 flex flex-wrap gap-2">
+        <${Btn}
+          disabled=${!hasProviderModel}
+          onClick=${() => onInsert(buildCascadeBindingSnippet(provider.trim(), model.trim(), maxConcurrentValue))}
+        >
+          Insert binding
+        <//>
+        <${Btn}
+          disabled=${!hasProviderModel}
+          onClick=${() => onInsert(buildCascadeThinkingAliasSnippet(provider.trim(), model.trim(), thinkingBudgetValue))}
+        >
+          Insert thinking alias
+        <//>
+        <${Btn}
+          disabled=${!hasMember}
+          onClick=${() => onInsert(buildCascadeTierSnippet(tierName, parentBinding, maxConcurrentValue))}
+        >
+          Insert tier
+        <//>
+      </div>
+      ${assist.feature_params.length > 0
+        ? html`
+          <div class="mt-3 flex flex-wrap gap-1">
+            ${assist.feature_params.map(param => html`
+              <span title=${`${param.scope} · ${param.example}`}>
+                <${StatusChip} tone="neutral" uppercase=${false}>${param.key}<//>
+              </span>
+            `)}
+          </div>
+        `
+        : null}
+    </div>
+  `
 }
 
 function CascadeRawConfigEditor({
@@ -1056,44 +1276,65 @@ function CascadeRawConfigEditor({
   raw: CascadeRawConfigResponse | null
   onRefresh: () => Promise<void>
 }) {
-  const editorText = useSignal(raw?.source_text ?? raw?.raw_json ?? '')
+  const editorText = useSignal(raw?.source_text ?? '')
   const editorDirty = useSignal(false)
   const saving = useSignal(false)
   const saveMessage = useSignal<string | null>(null)
+  const assistProvider = useSignal(firstNonBlankOrEmpty(raw?.assist?.providers ?? []))
+  const assistModel = useSignal(firstNonBlankOrEmpty(raw?.assist?.models ?? []))
+  const assistTier = useSignal(firstNonBlankOrEmpty(raw?.assist?.tiers ?? []) || 'primary')
+  const maxConcurrent = useSignal('2')
+  const thinkingBudget = useSignal('8192')
   const mode = rawConfigModeSummary(raw)
-  const sourceEditable = raw?.source_editable !== false
+  const sourceEditable = raw !== null && raw.source_editable !== false
 
   useEffect(() => {
     if (!raw || editorDirty.value) return
     editorText.value = raw.source_text
-  }, [raw?.config_path, raw?.updated_at, raw?.source_path, raw?.source_text])
+  }, [raw?.updated_at, raw?.source_path, raw?.source_text])
+
+  useEffect(() => {
+    const assist = raw?.assist
+    if (!assist) return
+    if (!assist.providers.includes(assistProvider.value)) {
+      assistProvider.value = firstNonBlankOrEmpty(assist.providers)
+    }
+    if (!assist.models.includes(assistModel.value)) {
+      assistModel.value = firstNonBlankOrEmpty(assist.models)
+    }
+    if (!assist.tiers.includes(assistTier.value)) {
+      assistTier.value = firstNonBlankOrEmpty(assist.tiers) || 'primary'
+    }
+  }, [raw?.updated_at, raw?.source_path])
 
   const syntaxError = validateSourceConfigText(raw, editorText.value)
   const saveDisabled = saving.value
     || !editorDirty.value
     || !sourceEditable
-    || raw?.config_path == null
     || syntaxError != null
 
   const handleReset = () => {
-    editorText.value = raw?.source_text ?? raw?.raw_json ?? ''
+    editorText.value = raw?.source_text ?? ''
     editorDirty.value = false
     saveMessage.value = 'Latest source snapshot restored in the editor.'
+  }
+
+  const insertSnippet = (snippet: string) => {
+    editorText.value = normalizeTomlBlock(editorText.value, snippet)
+    editorDirty.value = true
+    saveMessage.value = null
   }
 
   const handleSave = async (event: Event) => {
     event.preventDefault()
     const currentSyntaxError = validateSourceConfigText(raw, editorText.value)
     if (currentSyntaxError) {
-      saveMessage.value = `Invalid JSON: ${currentSyntaxError}`
+      saveMessage.value = `Invalid TOML: ${currentSyntaxError}`
       return
     }
-    if (raw?.config_path == null) {
-      saveMessage.value = 'Resolved cascade config path is unavailable.'
-      return
-    }
+
     if (!sourceEditable) {
-      saveMessage.value = `Active source is not editable: ${raw?.source_path ?? raw?.config_path ?? 'unresolved'}`
+      saveMessage.value = `Active source is not editable: ${raw?.source_path ?? 'unresolved'}`
       return
     }
     saving.value = true
@@ -1106,41 +1347,42 @@ function CascadeRawConfigEditor({
         await onRefresh()
         saveMessage.value = '저장 완료.'
       } catch (error) {
-        saveMessage.value = `저장됨, 새로고침 실패: ${errorMessage(error)}`
+        saveMessage.value = `저장됨, 새로고침 실패: ${errorToString(error)}`
       }
     } catch (error) {
-      saveMessage.value = `Failed to save: ${errorMessage(error)}`
+      saveMessage.value = `Failed to save: ${errorToString(error)}`
     } finally {
       saving.value = false
     }
   }
 
-  const materializationError = raw?.materialization_error ?? null
-
   return html`
-    <${Card} title=${mode.title}>
+    <${SectionCard} label=${mode.title}>
       <div class="flex flex-col gap-3 p-4">
         <p class="text-sm text-[var(--color-fg-muted)]">${mode.primary}</p>
         <p class="text-xs text-[var(--color-fg-muted)]">
           ${mode.secondary}
         </p>
 
-        ${materializationError
-          ? html`
-            <div
-              role="alert"
-              class="rounded-[var(--r-1)] border border-[var(--bad-light)] bg-[var(--bad-bg-soft, var(--color-bg-page))] px-3 py-2 text-xs text-[var(--bad-light)]"
-            >
-              <strong class="font-semibold">cascade.toml 적용 실패:</strong>
-              <span class="ml-1 font-mono break-all">${materializationError}</span>
-              <p class="mt-1 text-[var(--color-fg-muted)]">
-                아래 표시되는 raw_json 은 마지막으로 정상 머터리얼라이즈된 스냅샷입니다.
-                source_text 의 변경분은 strict-field 검증에 의해 거절되어 적용되지 않았습니다.
-              </p>
-            </div>`
-          : ''}
-
         <form class="flex flex-col gap-3" onSubmit=${handleSave}>
+          ${raw?.assist
+            ? html`
+              <${CascadeSourceAssist}
+                assist=${raw.assist}
+                provider=${assistProvider.value}
+                model=${assistModel.value}
+                tier=${assistTier.value}
+                maxConcurrent=${maxConcurrent.value}
+                thinkingBudget=${thinkingBudget.value}
+                onProviderInput=${(value: string) => { assistProvider.value = value }}
+                onModelInput=${(value: string) => { assistModel.value = value }}
+                onTierInput=${(value: string) => { assistTier.value = value }}
+                onMaxConcurrentInput=${(value: string) => { maxConcurrent.value = value }}
+                onThinkingBudgetInput=${(value: string) => { thinkingBudget.value = value }}
+                onInsert=${insertSnippet}
+              />
+            `
+            : null}
           <textarea
             aria-label="설정 편집기"
             class="h-96 w-full rounded-[var(--r-1)] border border-[var(--color-border-default)] bg-[var(--color-bg-page)] px-3 py-2 font-mono text-xs text-[var(--color-fg-primary)]"
@@ -1162,7 +1404,7 @@ function CascadeRawConfigEditor({
               ? html`<span class="text-[var(--bad-light)]">syntax: ${syntaxError}</span>`
               : html`
                 <span class="text-[var(--color-status-ok)]">
-                  ${raw?.source_kind === 'toml' ? 'syntax: validated on save (TOML)' : 'syntax: valid JSON'}
+                  syntax: validated on save (TOML)
                 </span>
               `}
             ${saveMessage.value
@@ -1199,25 +1441,7 @@ function CascadeRawConfigEditor({
             <//>
           </div>
         </form>
-        ${mode.previewTitle
-          ? html`
-            <div class="flex flex-col gap-2">
-              <div class="text-xs font-medium text-[var(--color-fg-primary)]">
-                ${mode.previewTitle}
-              </div>
-              <div class="text-xs text-[var(--color-fg-muted)]">
-                ${raw?.config_path ?? 'unresolved'}
-              </div>
-              <textarea
-                aria-label="설정 미리보기"
-                class="h-72 w-full rounded-[var(--r-1)] border border-[var(--color-border-default)] bg-[var(--color-bg-page)] px-3 py-2 font-mono text-xs text-[var(--color-fg-primary)]"
-                spellcheck="false"
-                readonly
-                value=${raw?.raw_json ?? ''}
-              />
-            </div>
-          `
-          : null}
+
       </div>
     <//>
   `
@@ -1245,7 +1469,7 @@ export function CascadeConfigPanel() {
   const slo = current.data?.slo ?? null
 
   return html`
-    <div class="flex flex-col gap-4">
+    <div class="min-w-0 flex flex-col gap-4">
       <div class="flex items-center gap-3 flex-wrap">
         <${Btn} onClick=${() => void loadCascadeData(resource)}>
           새로고침
@@ -1262,7 +1486,7 @@ export function CascadeConfigPanel() {
         ? html`<${LoadingState}>cascade snapshot 불러오는 중...<//>`
         : null}
 
-      <${Card} title="캐스케이드 라우팅">
+      <${SectionCard} label="캐스케이드 라우팅">
         ${config
           ? (() => {
               const keeperGroups = groupKeepersByCanonicalCascade(config.keeper_profiles)
@@ -1277,7 +1501,7 @@ export function CascadeConfigPanel() {
               )
               return html`
                 <${CascadeValidationBanner} config=${config} />
-                <div class="grid grid-cols-3 gap-3 mb-3">
+                <div class="grid min-w-0 grid-cols-1 gap-3 md:grid-cols-2 mb-3">
                   <${StatCell}
                     label="프로파일"
                     value=${config.profiles.length}
@@ -1297,7 +1521,7 @@ export function CascadeConfigPanel() {
                 ${config.profiles.length === 0
                   ? html`<${EmptyState}>표시할 유효 cascade profile 이 없습니다.<//>`
                   : html`
-                    <div class="grid gap-3 md:grid-cols-2 mb-3">
+                    <div class="grid min-w-0 gap-3 md:grid-cols-2 mb-3">
                       ${config.profiles.map(p => html`
                         <${ProfileCard}
                           profile=${p}
@@ -1322,10 +1546,10 @@ export function CascadeConfigPanel() {
         onRefresh=${() => loadCascadeData(resource)}
       />
 
-      <${Card} title="헬스 트래커">
+      <${SectionCard} label="헬스 트래커">
         ${health
           ? html`
-            <div class="grid grid-cols-3 gap-3 mb-3">
+            <div class="grid grid-cols-1 gap-3 md:grid-cols-2 mb-3">
               <${StatCell}
                 label="윈도우"
                 value=${`${health.window_sec}s`}
@@ -1347,25 +1571,25 @@ export function CascadeConfigPanel() {
           : null}
       <//>
 
-      <${Card} title="클라이언트 용량">
+      <${SectionCard} label="클라이언트 용량">
         ${capacity
           ? html`<${ClientCapacityTable} capacity=${capacity} />`
           : null}
       <//>
 
-      <${Card} title="클라이언트 용량 · 최근 이벤트">
+      <${SectionCard} label="클라이언트 용량 · 최근 이벤트">
         ${history
           ? html`<${ClientCapacityHistoryTable} history=${history} />`
           : null}
       <//>
 
-      <${Card} title="SLO 상태">
+      <${SectionCard} label="SLO 상태">
         ${slo
           ? html`<${SloCard} slo=${slo} />`
           : html`<${EmptyState}>SLO 데이터를 불러오는 중입니다.<//>`}
       <//>
 
-      <${Card} title="전략 결정 · 사이클 추적">
+      <${SectionCard} label="전략 결정 · 사이클 추적">
         ${trace
           ? html`
             <div class="flex items-center gap-3 mb-3">

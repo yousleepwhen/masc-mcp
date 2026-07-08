@@ -96,12 +96,7 @@ let inbound_of_json json =
       let raw = str "channel" in
       String.lowercase_ascii (String.trim raw)
     in
-    (* Prefer [destination_id]; fall back to legacy [keeper_name]. *)
-    let keeper_name =
-      let destination = str "destination_id" in
-      if destination <> "" then destination
-      else str "keeper_name"
-    in
+    let keeper_name = str "destination_id" in
     let metadata =
       match json |> member "metadata" with
       | `Assoc pairs ->
@@ -122,6 +117,9 @@ let inbound_of_json json =
     }
   with
   | Yojson.Json_error e -> Error ("invalid json: " ^ e)
+  (* RFC-0106 — cancellation MUST propagate; the catch-all here
+     would otherwise classify a fiber cancel as a "parse error". *)
+  | Eio.Cancel.Cancelled _ as exn -> raise exn
   | exn -> Error ("parse error: " ^ Printexc.to_string exn)
 
 let outbound_to_json out =
@@ -129,12 +127,11 @@ let outbound_to_json out =
     | None -> `Null
     | Some s ->
         `Assoc [
-          ("model_used", `String s.model_used);
+          ("model_used", `Null);
           ("duration_ms", `Int s.duration_ms);
           ("tokens_used", `Int s.tokens_used);
         ]
   in
-  (* Inbound still accepts [keeper_name] for backward compatibility. *)
   let base = [
     ("ok", `Bool true);
     ("destination_id", `String out.keeper_name);

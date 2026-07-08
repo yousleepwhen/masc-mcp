@@ -9,8 +9,8 @@
    other side must follow within the same PR or this test fails — which
    is the entire point of [@@deriving tla].
 
-   Cycle 3 of the Kimi keeper FSM review plan; see
-   [planning/claude-plans/30m-users-dancer-downloads-kimi-agent-ke-wobbly-shell.md]
+   Cycle 3 of the Provider_c keeper FSM review plan; see
+   [planning/agent_llm_a-plans/30m-users-dancer-downloads-provider_c-agent-ke-wobbly-shell.md]
    §10 ("formalized incompleteness") for the OCaml ↔ TLA+ identity goal. *)
 
 (* ── TLA+ spec parsing ───────────────────────────────────────

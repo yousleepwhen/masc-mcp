@@ -8,10 +8,11 @@ import {
   normalizeGovernanceJudgeSummary,
   normalizeGovernanceJudgment,
   normalizeKeeperApprovalQueueItem,
-  normalizePendingConfirmation,
 } from './board'
+import { normalizePendingConfirmation } from '../pending-confirm'
 import { normalizeKeeperTrustTerminalReason } from '../keeper-store-normalize'
-import { currentDashboardActor, get, post, patch, withRetries, NAMESPACE_TRUTH_GET_TIMEOUT_MS } from './core'
+import { currentDashboardActor, get, post, withRetries, type AbortableRequestOptions } from './core'
+import { DEFAULT_WINDOW_MINUTES_24H } from '../config/constants'
 import {
   parseAgentRelationsResponse,
   type AgentRelationsResponse,
@@ -21,7 +22,21 @@ import {
   type AgentTimelineEvent,
   type AgentTimelineResponse,
 } from './schemas/agent-timeline'
+import {
+  parseDashboardConfigResponse,
+  type DashboardConfigResponse,
+} from './schemas/dashboard-config'
 import { parseLogsResponse, type LogEntry, type LogsResponse } from './schemas/logs'
+import {
+  parseProviderLogTailResponse,
+  parseProviderLogsCatalogResponse,
+  type ProviderLogCatalogEntry,
+  type ProviderLogsCatalogResponse,
+  type ProviderLogTailLine,
+  type ProviderLogTailResponse,
+} from './schemas/provider-logs'
+import { asKeeperRuntimeBlockerClass } from '../lib/runtime-blocker-class'
+import { asKeeperApprovalRiskLevel } from '../lib/governance-risk-level'
 import type {
   KeeperConfig,
   KeeperFeatureStatus,
@@ -42,14 +57,14 @@ import type {
   GoalKeeperTrustSummary,
   GoalDetailTimelineEvent,
   GoalAttainmentProjection,
+  GoalCompletionSummary,
+  GoalTaskSummary,
   GoalTreeNode,
   GoalTreeSummary,
   GoalTreeTask,
   GoalVerificationRequest,
   GoalVerificationSummary,
   GoalVerificationVote,
-  DashboardNamespaceTruthResponse,
-  DashboardShellResponse,
   BoardSortMode,
   GovernanceCaseBundle,
   GovernanceDecisionItem,
@@ -61,6 +76,13 @@ import type {
   DashboardConfigResolution,
   DashboardRuntimeResolution,
 } from '../types'
+export { DashboardConfigSchemaDriftError } from './schemas/dashboard-config'
+export type {
+  ConfigEntry,
+  ConfigEntryProvenance,
+  ConfigEntrySource,
+  DashboardConfigResponse,
+} from './schemas/dashboard-config'
 export {
   fetchCascadeAuditRuns,
   fetchCascadeClientCapacity,
@@ -101,26 +123,43 @@ export type {
   CascadeValidationStatus,
 } from './dashboard-cascade'
 export { reportToolHostFailure } from './tool-host-failure'
+export { fetchDashboardBootstrap, fetchDashboardShell } from './dashboard-hot'
 
 // --- Dashboard projections ---
 
-type AbortableRequestOptions = {
-  signal?: AbortSignal
+export type DashboardFeedRetention = Record<string, unknown> & {
+  scope?: string
+  durable_store?: string
+  durable_replay_surface?: string
 }
 
-type DashboardShellRequestOptions = AbortableRequestOptions & {
-  light?: boolean
+export type DashboardFeedMetadata = {
+  generated_at_iso?: string
+  dashboard_surface?: string
+  source?: string
+  retention?: DashboardFeedRetention
 }
 
-export function fetchDashboardShell(opts?: DashboardShellRequestOptions): Promise<DashboardShellResponse> {
-  const qs = opts?.light ? '?light=true' : ''
-  return get(`/api/v1/dashboard/shell${qs}`, { signal: opts?.signal })
+function decodeDashboardFeedMetadata(raw: Record<string, unknown>): DashboardFeedMetadata {
+  return {
+    generated_at_iso: asString(raw.generated_at_iso),
+    dashboard_surface: asString(raw.dashboard_surface),
+    source: asString(raw.source),
+    retention: isRecord(raw.retention) ? raw.retention : undefined,
+  }
 }
 
 // --- System logs ---
 
 export type { LogEntry, LogsResponse }
 export { LogsSchemaDriftError } from './schemas/logs'
+export type {
+  ProviderLogCatalogEntry,
+  ProviderLogsCatalogResponse,
+  ProviderLogTailLine,
+  ProviderLogTailResponse,
+}
+export { ProviderLogsSchemaDriftError } from './schemas/provider-logs'
 
 export async function fetchLogs(opts?: {
   limit?: number
@@ -138,6 +177,22 @@ export async function fetchLogs(opts?: {
   const qs = params.toString()
   const raw = await get<unknown>(`/api/v1/dashboard/logs${qs ? `?${qs}` : ''}`)
   return parseLogsResponse(raw)
+}
+
+export async function fetchProviderLogsCatalog(): Promise<ProviderLogsCatalogResponse> {
+  const raw = await get<unknown>('/api/v1/dashboard/provider-logs')
+  return parseProviderLogsCatalogResponse(raw)
+}
+
+export async function fetchProviderLogTail(
+  provider: string,
+  opts?: { lines?: number },
+): Promise<ProviderLogTailResponse> {
+  const params = new URLSearchParams()
+  params.set('provider', provider)
+  if (opts?.lines) params.set('lines', String(opts.lines))
+  const raw = await get<unknown>(`/api/v1/dashboard/provider-logs/tail?${params.toString()}`)
+  return parseProviderLogTailResponse(raw)
 }
 
 export type { AgentTimelineEvent, AgentTimelineResponse }
@@ -165,39 +220,8 @@ export async function fetchAgentRelations(agentName: string): Promise<AgentRelat
   return parseAgentRelationsResponse(raw)
 }
 
-export type ConfigEntrySource = 'env' | 'default' | 'derived' | 'runtime'
-
-export interface ConfigEntryProvenance {
-  kind: ConfigEntrySource
-  detail: string
-  derived_from?: string[]
-}
-
-export interface ConfigEntry {
-  env: string
-  description: string
-  value: string | null
-  default: string
-  source: ConfigEntrySource
-  source_detail?: string
-  provenance?: ConfigEntryProvenance
-  sensitive: boolean
-}
-
-export interface DashboardConfigResponse {
-  generated_at: string
-  server: {
-    version: string
-    git_commit: string | null
-    ocaml_version: string
-    uptime_seconds: number
-    pid: number
-  }
-  categories: Record<string, ConfigEntry[]>
-}
-
 export function fetchDashboardConfig(): Promise<DashboardConfigResponse> {
-  return get('/api/v1/dashboard/config')
+  return get<unknown>('/api/v1/dashboard/config').then(parseDashboardConfigResponse)
 }
 
 /** Parse runtime context-ratio thresholds from the dashboard config response.
@@ -220,15 +244,38 @@ export function parseContextThresholds(
   }
 }
 
-export function fetchDashboardNamespaceTruth(opts?: AbortableRequestOptions): Promise<DashboardNamespaceTruthResponse> {
-  return get('/api/v1/dashboard/project-snapshot', {
-    timeoutMs: NAMESPACE_TRUTH_GET_TIMEOUT_MS,
-    signal: opts?.signal,
-  })
-}
+// Re-export from the hot-path API barrel where the SSOT definition lives
+// alongside `fetchDashboardShell` / `fetchDashboardBootstrap` (all three
+// share the same hot/bootstrap consumer profile). Until 2026-05-27 the
+// implementation was duplicated here verbatim, with `namespace-truth-actions`
+// importing the hot variant and `telemetry-unified` / `fleet-telemetry-panel`
+// the dashboard.ts variant — same endpoint, same timeout, two definitions
+// that could drift independently. SSOT now lives in `./dashboard-hot`.
+export { fetchDashboardNamespaceTruth } from './dashboard-hot'
 
 export function fetchDashboardExecution(opts?: AbortableRequestOptions): Promise<DashboardExecutionResponse> {
   return get('/api/v1/dashboard/execution', { signal: opts?.signal })
+}
+
+export type DashboardExecutionTrustKeeper = Record<string, unknown> & {
+  name?: string
+  agent_name?: string | null
+  keeper_id?: string | null
+  phase?: string | null
+  pipeline_stage?: string | null
+  status?: string | null
+  trace_id?: string | null
+  trust?: unknown
+}
+
+export type DashboardExecutionTrustResponse = TelemetryFreshnessMetadata & {
+  generated_at?: string
+  total: number
+  keepers: DashboardExecutionTrustKeeper[]
+}
+
+export function fetchDashboardExecutionTrust(opts?: AbortableRequestOptions): Promise<DashboardExecutionTrustResponse> {
+  return get<DashboardExecutionTrustResponse>('/api/v1/dashboard/execution-trust', { signal: opts?.signal })
 }
 
 type ToolQualityToolStat = {
@@ -258,19 +305,7 @@ export type ToolQualityHourlyPoint = {
   success_rate: number
 }
 
-export type ToolQualityResponse = {
-  source?: string
-  producer?: string
-  durable_store?: string
-  dashboard_surface?: string
-  freshness_slo_s?: number
-  latest_ts_unix?: number | null
-  latest_ts_iso?: string | null
-  latest_age_s?: number | null
-  health?: string
-  stale_reason?: string | null
-  entry_count?: number
-  exists?: boolean
+export type ToolQualityResponse = TelemetryFreshnessMetadata & {
   generated_at?: string
   sampling_mode?: 'recent_n' | 'window_hours' | string
   sample_limit?: number | null
@@ -281,6 +316,7 @@ export type ToolQualityResponse = {
   success_rate: number
   by_tool: ToolQualityToolStat[]
   by_keeper: ToolQualityKeeperStat[]
+  by_cascade?: ToolQualityKeeperStat[]
   failure_categories: ToolQualityFailureCategory[]
   hourly_trend?: ToolQualityHourlyPoint[]
 }
@@ -403,7 +439,7 @@ function normalizeKeeperApprovalRule(raw: unknown): KeeperApprovalRule | null {
     request_fingerprint: asNullableString(raw.request_fingerprint) ?? undefined,
     request_fingerprint_preview:
       asNullableString(raw.request_fingerprint_preview) ?? undefined,
-    max_risk: asNullableString(raw.max_risk) ?? undefined,
+    max_risk: asKeeperApprovalRiskLevel(raw.max_risk) ?? undefined,
     created_at: asNullableIsoTimestamp(raw.created_at_iso ?? raw.created_at),
     created_by: asNullableString(raw.created_by),
     last_matched_at:
@@ -678,11 +714,15 @@ export interface DashboardRuntimeModelMetricsResponse {
   models: DashboardRuntimeModelMetric[]
 }
 
+function runtimeLaneLabel(index: number): string {
+  return `runtime_lane_${index + 1}`
+}
+
 function decodeRuntimeProviderDiscovery(raw: unknown): DashboardRuntimeProviderDiscovery | null {
   if (!isRecord(raw)) return null
   return {
     healthy: asBoolean(raw.healthy),
-    discovered_model: asNullableString(raw.discovered_model),
+    discovered_model: null,
     ctx_size: asNumber(raw.ctx_size) ?? null,
     total_slots: asNumber(raw.total_slots) ?? null,
     busy_slots: asNumber(raw.busy_slots) ?? null,
@@ -696,17 +736,17 @@ function decodeRuntimeProviderSnapshot(raw: unknown): DashboardRuntimeProviderSn
   if (!provider) return null
   return {
     provider,
-    kind: asNullableString(raw.kind),
+    kind: 'runtime',
     runtime_kind: asNullableString(raw.runtime_kind),
     auth_kind: asNullableString(raw.auth_kind),
     status: asNullableString(raw.status),
     available: asBoolean(raw.available),
     supports_single_agent_run: asBoolean(raw.supports_single_agent_run),
-    default_model: asNullableString(raw.default_model),
+    default_model: null,
     model_count: asNumber(raw.model_count) ?? null,
-    models: asStringArray(raw.models),
+    models: [],
     source: asNullableString(raw.source),
-    endpoint_url: asNullableString(raw.endpoint_url),
+    endpoint_url: null,
     note: asNullableString(raw.note),
     discovery: decodeRuntimeProviderDiscovery(raw.discovery),
   }
@@ -737,7 +777,7 @@ function decodeRuntimeModelMetric(raw: unknown): DashboardRuntimeModelMetric | n
   if (!modelId) return null
   return {
     model_id: modelId,
-    provider: asNullableString(raw.provider),
+    provider: null,
     entry_count: asNumber(raw.entry_count) ?? null,
     avg_tok_per_sec: asNumber(raw.avg_tok_per_sec) ?? null,
     p50_tok_per_sec: asNumber(raw.p50_tok_per_sec) ?? null,
@@ -844,7 +884,7 @@ function decodeRuntimeModelMetricsResponse(raw: unknown): DashboardRuntimeModelM
           }))
       : null,
     models: asRecordArray(raw.models)
-      .map(decodeRuntimeModelMetric)
+      .map(metric => decodeRuntimeModelMetric(metric))
       .filter((metric): metric is DashboardRuntimeModelMetric => metric !== null),
   }
 }
@@ -890,6 +930,11 @@ function decodeKeeperCostMetric(raw: unknown): KeeperCostMetric | null {
   if (!isRecord(raw)) return null
   const keeperName = asString(raw.keeper_name)
   if (!keeperName) return null
+  const runtimeCost = Array.isArray(raw.model_breakdown)
+    ? (raw.model_breakdown as unknown[])
+        .filter(isRecord)
+        .reduce((sum, item) => sum + (asNumber(item.cost_usd) ?? 0), 0)
+    : 0
   return {
     keeper_name: keeperName,
     total_cost_usd: asNumber(raw.total_cost_usd) ?? 0,
@@ -899,12 +944,7 @@ function decodeKeeperCostMetric(raw: unknown): KeeperCostMetric | null {
     p50_latency_ms: asNumber(raw.p50_latency_ms) ?? null,
     p95_latency_ms: asNumber(raw.p95_latency_ms) ?? null,
     sample_count: asNumber(raw.sample_count) ?? 0,
-    model_breakdown: Array.isArray(raw.model_breakdown)
-      ? (raw.model_breakdown as unknown[])
-          .filter(isRecord)
-          .map(b => ({ model: asString(b.model) ?? '', cost_usd: asNumber(b.cost_usd) ?? 0 }))
-          .filter(b => b.model.length > 0)
-      : [],
+    model_breakdown: runtimeCost > 0 ? [{ model: 'runtime', cost_usd: runtimeCost }] : [],
   }
 }
 
@@ -920,7 +960,7 @@ function decodeKeeperCostMetricsResponse(raw: unknown): KeeperCostMetricsRespons
 }
 
 export async function fetchKeeperCostMetrics(
-  windowMinutes = 1440,
+  windowMinutes = DEFAULT_WINDOW_MINUTES_24H,
   opts?: AbortableRequestOptions,
 ): Promise<KeeperCostMetricsResponse> {
   const raw = await get<Record<string, unknown>>(`/api/v1/dashboard/keeper-costs?window=${windowMinutes}`, { signal: opts?.signal })
@@ -934,6 +974,9 @@ export interface KeeperDecision {
   keeper_name: string
   event_type: string
   outcome: string | null
+  choice: string | null
+  reason: string | null
+  context: KeeperDecisionContext | null
   model_used: string | null
   latency_ms: number | null
   cost_usd: number | null
@@ -946,10 +989,51 @@ export interface KeeperDecision {
   match_count: number | null
 }
 
-export interface KeeperDecisionsResponse {
+export interface KeeperDecisionContext {
+  file_path?: string | null
+  line?: number | null
+  goal_id?: string
+  task_id?: string
+  board_post_id?: string
+  comment_id?: string
+  pr_id?: string
+  git_ref?: string
+  log_id?: string
+  session_id?: string
+  operation_id?: string
+  worker_run_id?: string
+}
+
+export interface KeeperDecisionsResponse extends DashboardFeedMetadata {
   events: KeeperDecision[]
   limit: number
   generated_at: number | null
+}
+
+function decodeKeeperDecisionContext(raw: unknown): KeeperDecisionContext | null {
+  if (!isRecord(raw)) return null
+  const context: KeeperDecisionContext = {}
+  const filePath = asNullableString(raw.file_path)
+  if (filePath !== null) context.file_path = filePath
+  const line = asNumber(raw.line)
+  if (line !== undefined) context.line = line
+  const stringFields = [
+    ['goal_id', 'goal_id'],
+    ['task_id', 'task_id'],
+    ['board_post_id', 'board_post_id'],
+    ['comment_id', 'comment_id'],
+    ['pr_id', 'pr_id'],
+    ['git_ref', 'git_ref'],
+    ['log_id', 'log_id'],
+    ['session_id', 'session_id'],
+    ['operation_id', 'operation_id'],
+    ['worker_run_id', 'worker_run_id'],
+  ] as const
+  for (const [sourceKey, targetKey] of stringFields) {
+    const value = asString(raw[sourceKey])
+    if (value !== undefined) context[targetKey] = value
+  }
+  return Object.keys(context).length > 0 ? context : null
 }
 
 function decodeKeeperDecision(raw: unknown): KeeperDecision | null {
@@ -957,9 +1041,12 @@ function decodeKeeperDecision(raw: unknown): KeeperDecision | null {
   return {
     ts_unix: asNumber(raw.ts_unix) ?? null,
     keeper_name: asString(raw.keeper_name) ?? '',
-    event_type: asString(raw.event_type) ?? 'turn',
+    event_type: asString(raw.event_type) ?? '(unknown event_type)',
     outcome: asNullableString(raw.outcome),
-    model_used: asNullableString(raw.model_used),
+    choice: asNullableString(raw.choice),
+    reason: asNullableString(raw.reason),
+    context: decodeKeeperDecisionContext(raw.context),
+    model_used: null,
     latency_ms: asNumber(raw.latency_ms) ?? null,
     cost_usd: asNumber(raw.cost_usd) ?? null,
     input_tokens: asNumber(raw.input_tokens) ?? null,
@@ -975,6 +1062,7 @@ function decodeKeeperDecision(raw: unknown): KeeperDecision | null {
 function decodeKeeperDecisionsResponse(raw: unknown): KeeperDecisionsResponse | null {
   if (!isRecord(raw)) return null
   return {
+    ...decodeDashboardFeedMetadata(raw),
     events: asRecordArray(raw.events)
       .map(decodeKeeperDecision)
       .filter((d): d is KeeperDecision => d !== null),
@@ -1013,7 +1101,7 @@ export interface HeuristicFiring {
   cooldown_remaining_ms?: number
 }
 
-export interface HeuristicsResponse {
+export interface HeuristicsResponse extends DashboardFeedMetadata {
   limit: number
   count: number
   events: HeuristicEvent[]
@@ -1054,6 +1142,7 @@ function decodeHeuristicFiring(raw: unknown): HeuristicFiring | null {
 function decodeHeuristicsResponse(raw: unknown): HeuristicsResponse | null {
   if (!isRecord(raw)) return null
   return {
+    ...decodeDashboardFeedMetadata(raw),
     limit: asInt(raw.limit) ?? 0,
     count: asInt(raw.count) ?? 0,
     events: asRecordArray(raw.events)
@@ -1092,7 +1181,7 @@ export interface StressEvent {
   timestamp: number
 }
 
-export interface StressResponse {
+export interface StressResponse extends DashboardFeedMetadata {
   limit: number
   count: number
   events: StressEvent[]
@@ -1154,6 +1243,7 @@ function decodeAgentStressRow(raw: unknown): AgentStressRow | null {
 function decodeStressResponse(raw: unknown): StressResponse | null {
   if (!isRecord(raw)) return null
   return {
+    ...decodeDashboardFeedMetadata(raw),
     limit: asInt(raw.limit) ?? 0,
     count: asInt(raw.count) ?? 0,
     events: asRecordArray(raw.events)
@@ -1182,7 +1272,7 @@ export interface CoverageSite {
   triggered_count: number
 }
 
-export interface HeuristicCoverage {
+export interface HeuristicCoverage extends DashboardFeedMetadata {
   total_events: number
   decision_shape_count: number
   mixed_outcome_sites: number
@@ -1204,6 +1294,7 @@ function decodeHeuristicCoverage(raw: unknown): HeuristicCoverage | null {
   if (!isRecord(raw)) return null
   const decisionShapeCount = asInt(raw.decision_shape_count) ?? asInt(raw.unique_decision_tuples) ?? 0
   return {
+    ...decodeDashboardFeedMetadata(raw),
     total_events: asInt(raw.total_events) ?? 0,
     decision_shape_count: decisionShapeCount,
     mixed_outcome_sites: asInt(raw.mixed_outcome_sites) ?? 0,
@@ -1405,10 +1496,19 @@ function decodeGoalKeeperTrustLatestEvent(raw: unknown): GoalKeeperTrustLatestEv
 
 function decodeGoalKeeperTrustApprovalState(raw: unknown): GoalKeeperTrustApprovalState | null {
   if (!isRecord(raw)) return null
+  const pendingFirst = isRecord(raw.pending_first) ? raw.pending_first : null
   return {
     state: asNullableString(raw.state),
     summary: asNullableString(raw.summary),
     pending_count: asInt(raw.pending_count) ?? null,
+    pending_first: pendingFirst
+      ? {
+          id: asNullableString(pendingFirst.id),
+          tool_name: asNullableString(pendingFirst.tool_name),
+          task_id: asNullableString(pendingFirst.task_id),
+          blocker_class: asNullableString(pendingFirst.blocker_class),
+        }
+      : null,
   }
 }
 
@@ -1416,7 +1516,24 @@ function decodeGoalKeeperTrustExecutionSummary(raw: unknown): GoalKeeperTrustExe
   if (!isRecord(raw)) return null
   return {
     tool_contract_result: asNullableString(raw.tool_contract_result),
+    runtime_proof_status: asNullableString(raw.runtime_proof_status),
+    required_tools: asStringArray(raw.required_tools),
+    missing_required_tools: asStringArray(raw.missing_required_tools),
+    requested_tools: asStringArray(raw.requested_tools),
+    tools_used: asStringArray(raw.tools_used),
+    unexpected_tools: asStringArray(raw.unexpected_tools),
+    requested_tool_count: asInt(raw.requested_tool_count) ?? null,
+    tools_used_count: asInt(raw.tools_used_count) ?? null,
+    unexpected_tool_count: asInt(raw.unexpected_tool_count) ?? null,
+    provider_attempt_count: asInt(raw.provider_attempt_count) ?? null,
+    provider_fallback_applied:
+      typeof raw.provider_fallback_applied === 'boolean'
+        ? raw.provider_fallback_applied
+        : null,
+    provider_selected_model: asNullableString(raw.provider_selected_model),
+    cascade_outcome: asNullableString(raw.cascade_outcome),
     sandbox_summary: asNullableString(raw.sandbox_summary),
+    sandbox_root: asNullableString(raw.sandbox_root),
     mutation_guard_summary: asNullableString(raw.mutation_guard_summary),
     latest_receipt_at: asNullableString(raw.latest_receipt_at),
   }
@@ -1485,6 +1602,59 @@ function decodeGoalAttainmentProjection(
   }
 }
 
+function decodeNumberRecord(raw: unknown): Record<string, number> {
+  if (!isRecord(raw)) return {}
+  const out: Record<string, number> = {}
+  for (const [key, value] of Object.entries(raw)) {
+    const count = asInt(value)
+    if (count != null) out[key] = count
+  }
+  return out
+}
+
+function decodeGoalTaskSummary(
+  raw: unknown,
+  fallback: { taskCount: number; taskDoneCount: number; tasks: GoalTreeTask[] },
+): GoalTaskSummary | undefined {
+  if (!isRecord(raw)) return undefined
+  const terminal = asInt(raw.terminal) ?? fallback.tasks.filter(task => task.is_terminal).length
+  return {
+    total: asInt(raw.total) ?? fallback.taskCount,
+    done: asInt(raw.done) ?? fallback.taskDoneCount,
+    open: asInt(raw.open) ?? Math.max(0, fallback.taskCount - terminal),
+    terminal,
+    awaiting_verification: asInt(raw.awaiting_verification) ?? 0,
+    cancelled: asInt(raw.cancelled) ?? 0,
+    unassigned: asInt(raw.unassigned) ?? 0,
+    completion_pct: asInt(raw.completion_pct) ?? null,
+    by_status: decodeNumberRecord(raw.by_status),
+    by_linkage_source: decodeNumberRecord(raw.by_linkage_source),
+  }
+}
+
+function decodeGoalCompletionSummary(raw: unknown): GoalCompletionSummary | undefined {
+  if (!isRecord(raw)) return undefined
+  return {
+    state: asString(raw.state, 'unmeasured'),
+    pct: asInt(raw.pct) ?? null,
+    pct_source: asString(raw.pct_source, 'none'),
+    attainment_state: asString(raw.attainment_state, 'unmeasured'),
+    attainment_basis: asString(raw.attainment_basis, 'unmeasured'),
+    task_total: asInt(raw.task_total) ?? 0,
+    task_done: asInt(raw.task_done) ?? 0,
+    task_open: asInt(raw.task_open) ?? 0,
+    is_complete: asBoolean(raw.is_complete) ?? false,
+    is_terminal: asBoolean(raw.is_terminal) ?? false,
+    ready_to_request_completion: asBoolean(raw.ready_to_request_completion) ?? false,
+    gate: asString(raw.gate, 'none'),
+    requires_verifier: asBoolean(raw.requires_verifier) ?? false,
+    requires_completion_approval: asBoolean(raw.requires_completion_approval) ?? false,
+    active_verification_request: asBoolean(raw.active_verification_request) ?? false,
+    blocking_source: asString(raw.blocking_source, 'none'),
+    blocking_reason: asString(raw.blocking_reason, ''),
+  }
+}
+
 function decodeGoalTreeNode(raw: unknown): GoalTreeNode | null {
   if (!isRecord(raw)) return null
   const id = asString(raw.id)
@@ -1500,6 +1670,13 @@ function decodeGoalTreeNode(raw: unknown): GoalTreeNode | null {
   const targetValue = asNullableString(raw.target_value)
   const taskCount = asInt(raw.task_count) ?? tasks.length
   const taskDoneCount = asInt(raw.task_done_count) ?? 0
+  const attainment = decodeGoalAttainmentProjection(raw.attainment, {
+    metric,
+    targetValue,
+    taskDoneCount,
+    taskCount,
+  })
+  const verificationSummary = decodeGoalVerificationSummary(raw.verification_summary)
   return {
     id,
     title,
@@ -1516,20 +1693,22 @@ function decodeGoalTreeNode(raw: unknown): GoalTreeNode | null {
     priority: asInt(raw.priority) ?? 0,
     metric,
     target_value: targetValue,
+    require_completion_approval: asBoolean(raw.require_completion_approval) ?? false,
     due_date: asNullableString(raw.due_date),
     parent_goal_id: asNullableString(raw.parent_goal_id),
     convergence: asNumber(raw.convergence, 0),
     convergence_pct: asInt(raw.convergence_pct) ?? 0,
-    attainment: decodeGoalAttainmentProjection(raw.attainment, {
-      metric,
-      targetValue,
-      taskDoneCount,
-      taskCount,
-    }),
+    attainment,
     tasks,
     task_count: taskCount,
     task_done_count: taskDoneCount,
-    verification_summary: decodeGoalVerificationSummary(raw.verification_summary),
+    task_summary: decodeGoalTaskSummary(raw.task_summary, {
+      taskCount,
+      taskDoneCount,
+      tasks,
+    }),
+    completion_summary: decodeGoalCompletionSummary(raw.completion_summary),
+    verification_summary: verificationSummary,
     effective_verifier_policy: decodeGoalVerificationPolicySnapshot(raw.effective_verifier_policy),
     active_verification_request: decodeGoalVerificationRequest(raw.active_verification_request),
     pending_verification_count: asInt(raw.pending_verification_count) ?? 0,
@@ -1721,19 +1900,7 @@ export interface ToolMetricsTopEntry {
   call_count: number
 }
 
-export interface ToolMetricsResponse {
-  source?: string
-  producer?: string
-  durable_store?: string
-  dashboard_surface?: string
-  freshness_slo_s?: number | null
-  latest_ts_unix?: number | null
-  latest_ts_iso?: string | null
-  latest_age_s?: number | null
-  health?: string
-  stale_reason?: string | null
-  entry_count?: number
-  exists?: boolean
+export interface ToolMetricsResponse extends TelemetryFreshnessMetadata {
   total_calls: number
   distinct_tools_called: number
   top_20: ToolMetricsTopEntry[]
@@ -1859,7 +2026,7 @@ export async function fetchDashboardTools(opts?: AbortableRequestOptions): Promi
   const normalizedTools = raw.tool_inventory?.tools?.map(t => ({
     ...t,
     category: t.category ?? 'uncategorized',
-    tier: t.tier ?? 'standard',
+    tier: t.tier ?? '(unknown tier)',
   }))
   return {
     ...raw,
@@ -1924,6 +2091,13 @@ function asLooseBoolean(value: unknown, fallback = false): boolean {
     if (normalized === 'false') return false
   }
   return fallback
+}
+
+function asLooseNullableBoolean(value: unknown): boolean | null {
+  const booleanValue = asBoolean(value)
+  if (booleanValue !== undefined) return booleanValue
+  if (typeof value !== 'string') return null
+  return asLooseBoolean(value)
 }
 
 function asLooseNumber(value: unknown): number | undefined {
@@ -2029,33 +2203,6 @@ function normalizeCascadeCatalogSourceKind(
   }
 }
 
-function normalizeRuntimeBlockerClass(value: unknown): KeeperConfig['runtime']['runtime_blocker_class'] {
-  const blockerClass = asNullableString(value)
-  switch (blockerClass) {
-    case 'ambiguous_post_commit_timeout':
-    case 'ambiguous_post_commit_failure':
-    case 'autonomous_slot_wait_timeout':
-    case 'admission_queue_wait_timeout':
-    case 'turn_timeout_after_queue_wait':
-    case 'oas_timeout_budget':
-    case 'turn_timeout':
-    case 'completion_contract_violation':
-    case 'cascade_exhausted':
-    case 'no_tool_capable_provider':
-    case 'provider_runtime_error':
-    case 'tool_required_unsatisfied':
-    case 'fiber_unresolved':
-    case 'stale_turn_timeout':
-    case 'stale_termination_storm':
-    case 'heartbeat_failures':
-    case 'turn_failures':
-    case 'exception':
-    case 'stale_fleet_batch':
-      return blockerClass
-    default:
-      return null
-  }
-}
 
 function normalizeKeeperSandboxEnvironment(
   raw: unknown,
@@ -2095,12 +2242,13 @@ function normalizeKeeperConfig(raw: unknown, requestedName: string): KeeperConfi
   const metrics = isRecord(data.metrics) ? data.metrics : {}
   const sandboxEnvironment = normalizeKeeperSandboxEnvironment(data.sandbox_environment)
   const perProviderTimeoutSec = asLooseNullableNumber(execution.per_provider_timeout_sec)
+  const lastLatencyMs = asInt(metrics.last_latency_ms)
 
   return {
     name: asNullableString(data.name) ?? requestedName,
     active_goal_ids: normalizeStringList(data.active_goal_ids),
-    sandbox_profile: asNullableString(data.sandbox_profile) ?? 'local',
-    network_mode: asNullableString(data.network_mode) ?? 'inherit',
+    sandbox_profile: asNullableString(data.sandbox_profile) ?? '(unknown sandbox_profile)',
+    network_mode: asNullableString(data.network_mode) ?? '(unknown network_mode)',
     sandbox_last_error: asNullableString(data.sandbox_last_error),
     effective_sandbox_image: asNullableString(data.effective_sandbox_image),
     private_workspace_root: asNullableString(data.private_workspace_root),
@@ -2125,9 +2273,9 @@ function normalizeKeeperConfig(raw: unknown, requestedName: string): KeeperConfi
     },
     execution: {
       models: normalizeStringList(execution.models),
-      active_model: asNullableString(execution.active_model) ?? '',
-      active_model_label: asNullableString(execution.active_model_label),
-      last_model_used_label: asNullableString(execution.last_model_used_label),
+      active_model: '',
+      active_model_label: null,
+      last_model_used_label: null,
       per_provider_timeout_sec: perProviderTimeoutSec,
       per_provider_timeout_mode:
         asNullableString(execution.per_provider_timeout_mode)
@@ -2142,7 +2290,7 @@ function normalizeKeeperConfig(raw: unknown, requestedName: string): KeeperConfi
         ?? '',
     },
     compaction: {
-      profile: asNullableString(compaction.profile) ?? 'balanced',
+      profile: asNullableString(compaction.profile) ?? '(unknown compaction profile)',
       ratio_gate: asLooseNumber(compaction.ratio_gate) ?? 0.85,
       message_gate: asInt(compaction.message_gate) ?? 0,
       token_gate: asInt(compaction.token_gate) ?? 0,
@@ -2155,12 +2303,7 @@ function normalizeKeeperConfig(raw: unknown, requestedName: string): KeeperConfi
     },
     drift: {
       status: normalizeKeeperFeatureStatus(drift.status),
-      enabled:
-        typeof drift.enabled === 'boolean'
-          ? drift.enabled
-          : (typeof drift.enabled === 'string'
-              ? asLooseBoolean(drift.enabled)
-              : null),
+      enabled: asLooseNullableBoolean(drift.enabled),
       min_turn_gap: asInt(drift.min_turn_gap) ?? null,
       count_total: asInt(drift.count_total) ?? null,
       last_reason: asNullableString(drift.last_reason),
@@ -2190,16 +2333,11 @@ function normalizeKeeperConfig(raw: unknown, requestedName: string): KeeperConfi
       fiber_health: asNullableString(runtime.fiber_health) ?? 'unknown',
       presence_keepalive: asLooseBoolean(runtime.presence_keepalive),
       presence_keepalive_sec: asInt(runtime.presence_keepalive_sec) ?? 0,
-      runtime_blocker_class: normalizeRuntimeBlockerClass(runtime.runtime_blocker_class),
-      active_model_label: asNullableString(runtime.active_model_label),
-      last_model_used_label: asNullableString(runtime.last_model_used_label),
+      runtime_blocker_class: asKeeperRuntimeBlockerClass(runtime.runtime_blocker_class),
+      active_model_label: null,
+      last_model_used_label: null,
       runtime_blocker_summary: asNullableString(runtime.runtime_blocker_summary),
-      runtime_blocker_continue_gate:
-        typeof runtime.runtime_blocker_continue_gate === 'boolean'
-          ? runtime.runtime_blocker_continue_gate
-          : (typeof runtime.runtime_blocker_continue_gate === 'string'
-              ? asLooseBoolean(runtime.runtime_blocker_continue_gate)
-              : null),
+      runtime_blocker_continue_gate: asLooseNullableBoolean(runtime.runtime_blocker_continue_gate),
     },
     runtime_trust: runtimeTrust,
     coordination: {
@@ -2229,12 +2367,6 @@ function normalizeKeeperConfig(raw: unknown, requestedName: string): KeeperConfi
         normalizeCascadeCatalogSourceKind(sources.cascade_catalog_source_kind),
       cascade_catalog_source_path:
         asNullableString(sources.cascade_catalog_source_path),
-      cascade_runtime_json_path:
-        asNullableString(sources.cascade_runtime_json_path),
-      cascade_runtime_json_editable:
-        typeof sources.cascade_runtime_json_editable === 'boolean'
-          ? sources.cascade_runtime_json_editable
-          : asLooseBoolean(sources.cascade_runtime_json_editable),
     },
     metrics: {
       generation: asInt(metrics.generation) ?? 0,
@@ -2243,11 +2375,11 @@ function normalizeKeeperConfig(raw: unknown, requestedName: string): KeeperConfi
       total_output_tokens: asInt(metrics.total_output_tokens) ?? 0,
       total_tokens: asInt(metrics.total_tokens) ?? 0,
       total_cost_usd: asLooseNumber(metrics.total_cost_usd) ?? 0,
-      last_model_used: asNullableString(metrics.last_model_used) ?? '',
+      last_model_used: '',
       last_input_tokens: asInt(metrics.last_input_tokens) ?? 0,
       last_output_tokens: asInt(metrics.last_output_tokens) ?? 0,
       last_total_tokens: asInt(metrics.last_total_tokens) ?? 0,
-      last_latency_ms: asInt(metrics.last_latency_ms) ?? 0,
+      last_latency_ms: lastLatencyMs != null && lastLatencyMs > 0 ? lastLatencyMs : null,
       last_total_tokens_per_sec: asLooseNullableNumber(metrics.last_total_tokens_per_sec),
       last_output_tokens_per_sec: asLooseNullableNumber(metrics.last_output_tokens_per_sec),
       compaction_count: asInt(metrics.compaction_count) ?? 0,
@@ -2300,7 +2432,7 @@ export function patchKeeperConfig(
   name: string,
   payload: KeeperConfigUpdatePayload,
 ): Promise<KeeperConfig> {
-  return patch<unknown>(
+  return post<unknown>(
     `/api/v1/keepers/${encodeURIComponent(name)}/config`,
     payload,
   ).then(raw => normalizeKeeperConfig(raw, name))
@@ -2390,6 +2522,7 @@ export type TelemetryFreshnessMetadata = {
   producer?: string
   durable_store?: string
   dashboard_surface?: string
+  dashboard_surface_envelope?: DashboardSurfaceEnvelope | null
   freshness_slo_s?: number | null
   latest_ts_unix?: number | null
   latest_ts_iso?: string | null
@@ -2398,14 +2531,109 @@ export type TelemetryFreshnessMetadata = {
   stale_reason?: string | null
   entry_count?: number
   exists?: boolean
+  coverage_gaps?: TelemetryCoverageGap[]
+  coverage_gap_count?: number
+}
+
+export type DashboardSurfaceEnvelope = {
+  schema?: string
+  schema_version?: number
+  surface?: string
+  source?: string
+  generated_at_iso?: string
+  cache?: {
+    state?: string
+    key?: string | null
+    ttl_s?: number | null
+    stale?: boolean
+    stale_reason?: string | null
+    latest_age_s?: number | null
+    health?: string | null
+  }
+  migration?: {
+    body_shape?: string
+    rule?: string
+  }
+}
+
+export type TelemetryCoverageGap = {
+  schema?: string
+  ts?: number
+  ts_iso?: string | null
+  source?: string
+  producer?: string
+  durable_store?: string
+  dashboard_surface?: string
+  stale_reason?: string
+  keeper_name?: string | null
+  trace_id?: string | null
+  error?: string | null
+  // RFC-0154 PR-2: backend-classified typed tag. Absent on v1 rows; present
+  // on v2 rows. Values are the short tags from `System_error_class.to_short_tag`
+  // ("fd_exhaustion" / "disk_exhaustion" / "permission_denied" /
+  // "connection_refused" / "timeout" / "other"). Consumers should fall back to
+  // substring matching on `error` when this field is null (legacy / pre-PR-2).
+  error_class?: string | null
+}
+
+function decodeDashboardSurfaceEnvelope(raw: unknown): DashboardSurfaceEnvelope | null {
+  if (!isRecord(raw)) return null
+  const cache = isRecord(raw.cache)
+    ? {
+        state: asString(raw.cache.state),
+        key: asNullableString(raw.cache.key),
+        ttl_s: asNumber(raw.cache.ttl_s),
+        stale: asBoolean(raw.cache.stale),
+        stale_reason: asNullableString(raw.cache.stale_reason),
+        latest_age_s: asNumber(raw.cache.latest_age_s),
+        health: asNullableString(raw.cache.health),
+      }
+    : undefined
+  const migration = isRecord(raw.migration)
+    ? {
+        body_shape: asString(raw.migration.body_shape),
+        rule: asString(raw.migration.rule),
+      }
+    : undefined
+  return {
+    schema: asString(raw.schema),
+    schema_version: asNumber(raw.schema_version),
+    surface: asString(raw.surface),
+    source: asString(raw.source),
+    generated_at_iso: asString(raw.generated_at_iso),
+    cache,
+    migration,
+  }
+}
+
+function decodeTelemetryCoverageGap(raw: unknown): TelemetryCoverageGap | null {
+  if (!isRecord(raw)) return null
+  return {
+    schema: asString(raw.schema),
+    ts: asNumber(raw.ts),
+    ts_iso: asNullableString(raw.ts_iso),
+    source: asString(raw.source),
+    producer: asString(raw.producer),
+    durable_store: asString(raw.durable_store),
+    dashboard_surface: asString(raw.dashboard_surface),
+    stale_reason: asString(raw.stale_reason),
+    keeper_name: asNullableString(raw.keeper_name),
+    trace_id: asNullableString(raw.trace_id),
+    error: asNullableString(raw.error),
+    error_class: asNullableString(raw.error_class),
+  }
 }
 
 function decodeTelemetryFreshnessMetadata(raw: Record<string, unknown>): TelemetryFreshnessMetadata {
+  const coverageGaps = asRecordArray(raw.coverage_gaps)
+    .map(decodeTelemetryCoverageGap)
+    .filter((gap): gap is TelemetryCoverageGap => gap !== null)
   return {
     source: asString(raw.source),
     producer: asString(raw.producer),
     durable_store: asString(raw.durable_store),
     dashboard_surface: asString(raw.dashboard_surface),
+    dashboard_surface_envelope: decodeDashboardSurfaceEnvelope(raw.dashboard_surface_envelope),
     freshness_slo_s: asNumber(raw.freshness_slo_s),
     latest_ts_unix: asNumber(raw.latest_ts_unix),
     latest_ts_iso: asNullableString(raw.latest_ts_iso),
@@ -2414,6 +2642,8 @@ function decodeTelemetryFreshnessMetadata(raw: Record<string, unknown>): Telemet
     stale_reason: asNullableString(raw.stale_reason),
     entry_count: asNumber(raw.entry_count),
     exists: asBoolean(raw.exists),
+    coverage_gaps: coverageGaps,
+    coverage_gap_count: asNumber(raw.coverage_gap_count, coverageGaps.length),
   }
 }
 
@@ -2622,28 +2852,50 @@ export type TelemetryEntry = Record<string, unknown> & {
 
 export type TelemetryResponse = {
   generated_at: string
+  generated_at_iso?: string
+  dashboard_surface?: string
+  source?: string
+  retention?: Record<string, unknown>
+  query?: Record<string, unknown>
   count: number
   total_matching_entries?: number
   truncated?: boolean
   entries: TelemetryEntry[]
 }
 
-export type TelemetrySourceSummary = {
+export type DashboardCacheEntryDetail = {
+  key: string
+  kind: string
+  ttl_remaining_ms?: number
+  stale_remaining_ms?: number
+  computing_for_ms?: number
+  has_stale_fallback?: boolean
+}
+
+export type DashboardCacheStatsResponse = {
+  entries: number
+  fresh: number
+  stale: number
+  expired: number
+  ready_fresh: number
+  ready_stale: number
+  computing: number
+  max_entries: number
+  hits_total: number
+  misses_total: number
+  hit_ratio: number
+  timeout_circuit_open: number
+  timeout_circuit_tracked: number
+  entries_truncated_to: number
+  entry_details: DashboardCacheEntryDetail[]
+}
+
+export type TelemetrySourceSummary = TelemetryFreshnessMetadata & {
   source: string
   path?: string
-  exists?: boolean
   entry_count: number
   keepers?: Array<{ name: string; path: string }>
   keeper_count?: number
-  freshness_slo_s?: number | null
-  producer?: string
-  durable_store?: string
-  dashboard_surface?: string
-  latest_ts_unix?: number | null
-  latest_ts_iso?: string | null
-  latest_age_s?: number | null
-  health?: string
-  stale_reason?: string | null
 }
 
 export type TelemetrySummaryResponse = {
@@ -2689,6 +2941,11 @@ function decodeTelemetryResponse(raw: unknown): TelemetryResponse | null {
   if (!generatedAt) return null
   return {
     generated_at: generatedAt,
+    generated_at_iso: asString(raw.generated_at_iso),
+    dashboard_surface: asString(raw.dashboard_surface),
+    source: asString(raw.source),
+    retention: isRecord(raw.retention) ? raw.retention : undefined,
+    query: isRecord(raw.query) ? raw.query : undefined,
     count: asNumber(raw.count, 0),
     total_matching_entries: asNumber(raw.total_matching_entries, asNumber(raw.count, 0)),
     truncated: asBoolean(raw.truncated, false),
@@ -2698,11 +2955,50 @@ function decodeTelemetryResponse(raw: unknown): TelemetryResponse | null {
   }
 }
 
+function decodeDashboardCacheEntryDetail(raw: unknown): DashboardCacheEntryDetail | null {
+  if (!isRecord(raw)) return null
+  const key = asString(raw.key)
+  const kind = asString(raw.kind)
+  if (!key || !kind) return null
+  return {
+    key,
+    kind,
+    ttl_remaining_ms: asNumber(raw.ttl_remaining_ms),
+    stale_remaining_ms: asNumber(raw.stale_remaining_ms),
+    computing_for_ms: asNumber(raw.computing_for_ms),
+    has_stale_fallback: asBoolean(raw.has_stale_fallback),
+  }
+}
+
+function decodeDashboardCacheStatsResponse(raw: unknown): DashboardCacheStatsResponse | null {
+  if (!isRecord(raw)) return null
+  return {
+    entries: asNumber(raw.entries, 0),
+    fresh: asNumber(raw.fresh, 0),
+    stale: asNumber(raw.stale, 0),
+    expired: asNumber(raw.expired, 0),
+    ready_fresh: asNumber(raw.ready_fresh, 0),
+    ready_stale: asNumber(raw.ready_stale, 0),
+    computing: asNumber(raw.computing, 0),
+    max_entries: asNumber(raw.max_entries, 0),
+    hits_total: asNumber(raw.hits_total, 0),
+    misses_total: asNumber(raw.misses_total, 0),
+    hit_ratio: asNumber(raw.hit_ratio, 0),
+    timeout_circuit_open: asNumber(raw.timeout_circuit_open, 0),
+    timeout_circuit_tracked: asNumber(raw.timeout_circuit_tracked, 0),
+    entries_truncated_to: asNumber(raw.entries_truncated_to, 0),
+    entry_details: asRecordArray(raw.entry_details)
+      .map(decodeDashboardCacheEntryDetail)
+      .filter((entry): entry is DashboardCacheEntryDetail => entry !== null),
+  }
+}
+
 function decodeTelemetrySourceSummary(raw: unknown): TelemetrySourceSummary | null {
   if (!isRecord(raw)) return null
   const source = asString(raw.source)
   if (!source) return null
   return {
+    ...decodeTelemetryFreshnessMetadata(raw),
     source,
     path: asString(raw.path),
     exists: asBoolean(raw.exists),
@@ -2715,15 +3011,6 @@ function decodeTelemetrySourceSummary(raw: unknown): TelemetrySourceSummary | nu
       })
       .filter((keeper): keeper is { name: string; path: string } => keeper !== null),
     keeper_count: asNumber(raw.keeper_count),
-    freshness_slo_s: asNumber(raw.freshness_slo_s),
-    producer: asString(raw.producer),
-    durable_store: asString(raw.durable_store),
-    dashboard_surface: asString(raw.dashboard_surface),
-    latest_ts_unix: asNumber(raw.latest_ts_unix),
-    latest_ts_iso: asString(raw.latest_ts_iso),
-    latest_age_s: asNumber(raw.latest_age_s),
-    health: asString(raw.health),
-    stale_reason: asNullableString(raw.stale_reason),
   }
 }
 
@@ -2778,6 +3065,15 @@ export function fetchTelemetrySummary(opts?: AbortableRequestOptions): Promise<T
     })
 }
 
+export function fetchDashboardCacheStats(opts?: AbortableRequestOptions): Promise<DashboardCacheStatsResponse> {
+  return get<Record<string, unknown>>('/api/v1/dashboard/cache-stats', { signal: opts?.signal })
+    .then((raw) => {
+      const decoded = decodeDashboardCacheStatsResponse(raw)
+      if (!decoded) throw new Error('유효하지 않은 dashboard cache stats payload')
+      return decoded
+    })
+}
+
 // --- Excuse Patterns ---
 
 export type ExcusePattern = [string, string]
@@ -2824,6 +3120,15 @@ export interface MemorySubsystemsMemoryEntry {
   ts_unix: number
 }
 
+/** RFC-0149 §3.1 — per-keeper memory bank read failure, surfaced as
+ *  a typed sibling field next to the entry rows.  `error_class` is one
+ *  of the closed 4-value `Keeper_memory_recall_exn_class.t` labels
+ *  (`yojson_parse_error | io_error | type_error | other`). */
+export interface MemorySubsystemsMemoryEntryError {
+  keeper: string
+  error_class: string
+}
+
 export interface MemorySubsystemsResponse {
   generated_at: string
   hebbian: {
@@ -2843,6 +3148,11 @@ export interface MemorySubsystemsResponse {
     shown: number
     limit: number
     items: MemorySubsystemsMemoryEntry[]
+    /** RFC-0149 §3.1 — per-keeper memory bank read failures.  Each
+     *  entry means that keeper's `memory.jsonl` could not be read and
+     *  the corresponding rows are absent from `items`; the rest of
+     *  `items` is still trustworthy. */
+    errors?: MemorySubsystemsMemoryEntryError[]
   }
   filters: {
     keepers: string[]
@@ -3121,15 +3431,29 @@ function decodeCostPerAgentRow(raw: unknown): CostPerAgentRow | null {
 
 function decodeCostMatrix(raw: unknown): CostMatrix | null {
   if (!isRecord(raw)) return null
-  const providers = asStringArray(raw.providers)
-  const models = asStringArray(raw.models)
-  const grid = Array.isArray(raw.grid)
+  const rawModels = asStringArray(raw.models)
+  const rawGrid = Array.isArray(raw.grid)
     ? (raw.grid as unknown[]).map(row =>
         Array.isArray(row)
           ? (row as unknown[]).map(v => asNumber(v) ?? 0)
           : []
       )
     : []
+  const colCount = Math.max(
+    rawModels.length,
+    rawGrid.reduce((max, row) => Math.max(max, row.length), 0),
+  )
+  const models = Array.from({ length: colCount }, (_, index) =>
+    rawModels[index] ?? runtimeLaneLabel(index),
+  )
+  const providers = colCount > 0 || asStringArray(raw.providers).length > 0 ? ['runtime'] : []
+  const grid = providers.length === 0
+    ? []
+    : [
+        Array.from({ length: colCount }, (_, column) =>
+          rawGrid.reduce((sum, row) => sum + (row[column] ?? 0), 0),
+        ),
+      ]
   return { providers, models, grid }
 }
 
@@ -3139,7 +3463,7 @@ function decodeCostLatencyResponse(raw: unknown): CostLatencyResponse | null {
   if (!matrix) return null
   return {
     perAgent: asRecordArray(raw.perAgent)
-      .map(decodeCostPerAgentRow)
+      .map(row => decodeCostPerAgentRow(row))
       .filter((r): r is CostPerAgentRow => r !== null),
     matrix,
     latencyBuckets: Array.isArray(raw.latencyBuckets)
@@ -3154,13 +3478,13 @@ function decodeCostLatencyResponse(raw: unknown): CostLatencyResponse | null {
     p50: asNumber(raw.p50) ?? null,
     p95: asNumber(raw.p95) ?? null,
     total_cost_usd: asNumber(raw.total_cost_usd) ?? 0,
-    window_minutes: asNumber(raw.window_minutes) ?? 1440,
+    window_minutes: asNumber(raw.window_minutes) ?? DEFAULT_WINDOW_MINUTES_24H,
     generated_at: asNumber(raw.generated_at) ?? 0,
   }
 }
 
 export async function fetchCostLatency(
-  windowMinutes = 1440,
+  windowMinutes = DEFAULT_WINDOW_MINUTES_24H,
   opts?: AbortableRequestOptions,
 ): Promise<CostLatencyResponse> {
   const raw = await get<Record<string, unknown>>(

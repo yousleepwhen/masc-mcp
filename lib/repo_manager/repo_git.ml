@@ -1,16 +1,5 @@
 open Repo_manager_types
 
-let ensure_dir path =
-  let rec loop dir =
-    if dir = "" || dir = "." || Sys.file_exists dir then ()
-    else begin
-      loop (Filename.dirname dir);
-      try Unix.mkdir dir 0o755
-      with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
-    end
-  in
-  loop path
-
 let merge_env overrides =
   let keys = List.map fst overrides in
   let has_key entry =
@@ -61,12 +50,12 @@ let run_git ~cwd ?(env = []) args : (string list, string) result =
   let raw_source = String.concat " " (List.map Filename.quote argv) in
   let status, stdout, stderr =
     Masc_exec.Exec_gate.run_argv_with_status_split
-      ~actor:"repo-manager/git" ~raw_source ~summary:"repo manager git"
+      ~actor:(Masc_exec.Agent_id.of_string "repo-manager/git") ~raw_source ~summary:"repo manager git"
       ~timeout_sec:(Env_config_exec_timeout.timeout_sec ~caller:Repo_manager_git ()) ~env:envp argv
   in
   match status with
   | Unix.WEXITED 0 -> Ok (split_lines stdout)
-  | _ ->
+  | Unix.WEXITED _ | Unix.WSIGNALED _ | Unix.WSTOPPED _ ->
       let status_text =
         match status with
         | Unix.WEXITED code -> Printf.sprintf "exit %d" code
@@ -85,7 +74,7 @@ let run_git ~cwd ?(env = []) args : (string list, string) result =
 let clone ~repository ~credential =
   let env = env_of_credential credential in
   let parent_dir = Filename.dirname repository.local_path in
-  ensure_dir parent_dir;
+  Fs_compat.mkdir_p parent_dir;
   match
     run_git ~cwd:parent_dir ~env
       ["clone"; repository.url; repository.local_path]
@@ -105,27 +94,18 @@ let fetch ~repository ~credential : (string list, string) result =
       | Ok lines -> Ok lines
       | Error msg -> Error msg)
 
-let checkout_worktree ~repository ~branch =
-  let safe_branch_path =
-    String.map (function '/' | ':' | '\\' -> '-' | c -> c) branch
-  in
-  let worktree_path =
-    Filename.concat repository.local_path (Printf.sprintf "_worktrees/%s" safe_branch_path)
-  in
-  ensure_dir (Filename.dirname worktree_path);
-  match
-    run_git ~cwd:repository.local_path
-      ["worktree"; "add"; worktree_path; branch]
-  with
-  | Ok _ -> Ok worktree_path
-  | Error msg -> Error msg
-
 let get_branches ~repository =
   match
     run_git ~cwd:repository.local_path
       ["branch"; "-a"; "--format=%(refname:short)"]
   with
   | Ok lines -> Ok lines
+  | Error msg -> Error msg
+
+let get_origin_url ~local_path =
+  match run_git ~cwd:local_path [ "remote"; "get-url"; "origin" ] with
+  | Ok (url :: _) -> Ok url
+  | Ok [] -> Error "git remote get-url origin returned no output"
   | Error msg -> Error msg
 
 let get_recent_commits ~repository ~branch ~limit =

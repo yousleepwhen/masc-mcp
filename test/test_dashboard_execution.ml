@@ -5,7 +5,7 @@ module Types = Masc_domain
 let () = Masc_mcp.Server_startup_state.mark_state_ready ~backend_mode:"test"
 let () =
   let base_path = Masc_test_deps.find_project_root () in
-  ignore (Result.get_ok (Masc_mcp.Keeper_exec_tools.init_policy_config ~base_path))
+  ignore (Result.get_ok (Masc_mcp.Agent_tool_dispatch_runtime.init_policy_config ~base_path))
 
 module Lib = Masc_mcp
 
@@ -67,6 +67,9 @@ let post_json ~id ~author ?(title = "") ?(body = "") ?hearth ?thread_id
   in
   `Assoc fields
 
+let request target =
+  Httpun.Request.create ~headers:(Httpun.Headers.of_list []) `GET target
+
 let comment_json ~id ~post_id ~author ~content ?(created_at = 1000.0) () =
   `Assoc
     [
@@ -92,7 +95,7 @@ let warm_meta_cognition_summary (config : Lib.Coord.config) =
     (Printf.sprintf "shell:coord=%s:" config.base_path)
 
 let with_execution_cache json f =
-  let surface = Lib.Server_dashboard_http._execution_cache in
+  let surface = Lib.Server_dashboard_http.execution_cache in
   let original_json = surface.json in
   let original_last_success_at = surface.last_success_at in
   let original_last_success_unix = surface.last_success_unix in
@@ -155,6 +158,9 @@ let test_dashboard_execution_fixture () =
         check string "top queue handoff surface" "command"
           (execution_queue |> List.hd |> member "top_handoff" |> member "surface" |> to_string);
         check int "operation briefs" 2 (List.length operation_briefs);
+        check string "operation next tool uses active operator surface"
+          "masc_operator_snapshot"
+          (operation_briefs |> List.hd |> member "next_tool" |> to_string);
         check int "worker briefs" 3 (List.length worker_briefs);
         check string "worker signal truth" "live"
           (worker_briefs |> List.hd |> member "signal_truth" |> to_string);
@@ -401,8 +407,8 @@ let test_dashboard_shell_includes_meta_cognition_summary () =
             ~created_at:1010.0 ();
         ];
       Lib.Dashboard_cache.invalidate_all ();
-      Atomic.set Lib.Server_dashboard_http._shell_warmed false;
-      Atomic.set Lib.Server_dashboard_http._last_good_shell (`Assoc []);
+      Atomic.set Lib.Server_dashboard_http.shell_warmed false;
+      Atomic.set Lib.Server_dashboard_http.last_good_shell (`Assoc []);
       let cold_json = Lib.Server_dashboard_http.dashboard_shell_http_json config in
       let open Yojson.Safe.Util in
       check bool "cold shell defers meta cognition while warming" true
@@ -448,14 +454,17 @@ let create_keeper env sw config name =
             ("autoboot_enabled", `Bool false);
           ])
   with
-  | Some (true, _) -> ()
-  | Some (false, err) -> fail err
+  | Some result when Tool_result.is_success result -> ()
+  | Some result -> fail (Tool_result.message result)
   | None -> fail "missing masc_keeper_up dispatch"
 
-let append_execution_receipt ?(outcome = "ok")
+let append_execution_receipt
+    ?(outcome : Lib.Keeper_execution_receipt.outcome_kind = `Ok)
     ?(terminal_reason_code = "completed")
-    ?(tool_contract_result = "satisfied")
-    ?(stop_reason = Some "completed")
+    ?(tool_contract_result : Lib.Keeper_execution_receipt.tool_contract_result =
+      Contract_satisfied_completion)
+    ?(stop_reason = Some Lib.Cascade_runner.Completed)
+    ?(required_tool_candidates = [])
     config ~keeper_name =
   let meta =
     match Lib.Keeper_types.read_meta config keeper_name with
@@ -472,60 +481,66 @@ let append_execution_receipt ?(outcome = "ok")
       trace_id = Lib.Keeper_id.Trace_id.to_string meta.runtime.trace_id;
       generation = meta.runtime.generation;
       turn_count = Some 3;
+      oas_turn_count = None;
+      oas_dispatch_mode = None;
+      oas_internal_cascade_disabled = false;
       current_task_id = None;
       goal_ids = meta.active_goal_ids;
       outcome;
       terminal_reason_code;
       response_text_present = true;
       model_used = Some "custom:mock";
-      requested_tools = [ "keeper_task_claim"; "keeper_fs_read" ];
-      reported_tools = [ "Read" ];
-      observed_tools = [ "keeper_fs_read" ];
-      canonical_tools = [ "keeper_fs_read" ];
-      unexpected_tools = [ "WebSearch" ];
-      tools_used = [ "keeper_fs_read" ];
+      requested_tools = [ "keeper_task_claim"; "tool_read_file" ];
+      reported_tools = [ "ReadFile" ];
+      observed_tools = [ "tool_read_file" ];
+      canonical_tools = [ "tool_read_file" ];
+      unexpected_tools = [ "SearchWeb" ];
+      tools_used = [ "tool_read_file" ];
       tool_contract_result;
       tool_surface =
         {
-          turn_lane = "tool";
-          tool_surface_class = "mixed";
+          turn_lane = Masc_mcp.Keeper_agent_tool_surface.Lane_tool_required;
+          tool_surface_class = Masc_mcp.Keeper_agent_tool_surface.Surface_mixed;
           tool_requirement = Masc_mcp.Keeper_agent_tool_surface.Required;
           visible_tool_count = 2;
           tool_gate_enabled = true;
           tool_surface_fallback_used = false;
           required_tools = [];
+          required_tool_candidates;
           missing_required_tools = [];
+          materialized_tools = [];
         };
       sandbox_kind =
         Lib.Keeper_execution_receipt.sandbox_kind_of_meta meta;
       sandbox_root = Some config.base_path;
-      network_mode = Lib.Keeper_types.network_mode_to_string meta.network_mode;
+      network_mode = meta.network_mode;
       approval_profile = Some "trusted_local";
       approval_profile_derived = false;
       cascade_name =
-        Lib.Keeper_execution_receipt.cascade_name_of_string meta.cascade_name;
+        Cascade_name.of_string_exn (Lib.Keeper_types.cascade_name_of_meta meta);
       cascade_selected_model = Some "custom:mock";
       cascade_attempt_count = 2;
       cascade_fallback_applied = true;
-      cascade_outcome = "passed_to_next_model";
+      cascade_outcome = Lib.Keeper_execution_receipt.Cascade_passed_to_next_model;
       degraded_retry_applied = true;
       degraded_retry_cascade =
         Some
-          (Lib.Keeper_execution_receipt.cascade_name_of_string
-             Lib.Keeper_config.local_recovery_cascade_name);
-      fallback_reason = Some "turn_timeout";
+          (Cascade_name.of_string_exn
+             Lib.Keeper_config.phase_recovery_cascade_name);
+      fallback_reason = Some Lib.Keeper_error_classify.Turn_timeout;
       cascade_rotation_attempts =
         [
           {
             from_cascade =
-              Lib.Keeper_execution_receipt.cascade_name_of_string
-                Lib.Keeper_config.default_cascade_name;
+              Cascade_name.of_string_exn
+                Lib.(Keeper_config.default_cascade_name ());
             to_cascade =
-              Lib.Keeper_execution_receipt.cascade_name_of_string
-                Lib.Keeper_config.local_recovery_cascade_name;
-            reason = "turn_timeout";
-            outcome = "retry_scheduled";
-            slot_release_at_phase = Some "productive_phase_exhausted";
+              Cascade_name.of_string_exn
+                Lib.Keeper_config.phase_recovery_cascade_name;
+            reason = Lib.Keeper_error_classify.Turn_timeout;
+            outcome = Lib.Keeper_execution_receipt.Rotation_retry_scheduled;
+            slot_release_at_phase =
+              Some Lib.Keeper_execution_receipt.Productive_phase_exhausted;
             productive_phase_elapsed_ms = Some 174000;
             retry_phase_elapsed_ms = Some 0;
             error_kind =
@@ -539,6 +554,14 @@ let append_execution_receipt ?(outcome = "ok")
       error_message = None;
       started_at;
       ended_at;
+      extra_system_context_digest = None;
+      extra_system_context_injected_size = None;
+      extra_system_context_computed_size = None;
+      pre_dispatch_compacted = false;
+      pre_dispatch_compaction_trigger = None;
+      pre_dispatch_compaction_before_tokens = None;
+      pre_dispatch_compaction_after_tokens = None;
+      oas_internal_cascade_allowed = false;
     }
   in
   let tm = Unix.gmtime (Unix.gettimeofday ()) in
@@ -680,15 +703,82 @@ let test_dashboard_execution_surfaces_keeper_diagnostic () =
             check bool "diagnostic next action surfaced" true
               (row |> member "diagnostic" |> member "next_action_path" <> `Null);
             check string "raw cascade surfaced on execution keeper row"
-              Lib.Keeper_config.default_cascade_name
+              Lib.(Keeper_config.default_cascade_name ())
               (row |> member "cascade_name" |> to_string);
             check string "canonical cascade surfaced on execution keeper row"
-              Lib.Keeper_config.default_cascade_name
+              Lib.(Keeper_config.default_cascade_name ())
               (row |> member "cascade_canonical" |> to_string);
-            check bool "primary model surfaced on execution keeper row" true
-              (row |> member "primary_model" <> `Null);
-            check bool "active model label surfaced on execution keeper row" true
-              (row |> member "active_model_label" <> `Null))))
+            check bool "primary model omitted on execution keeper row" true
+              (row |> member "primary_model" = `Null);
+            check bool "active model label omitted on execution keeper row" true
+              (row |> member "active_model_label" = `Null))))
+
+let test_dashboard_execution_reconciles_stale_approval_attention () =
+  let dir = test_dir () in
+  Fun.protect
+    ~finally:(fun () -> cleanup_dir dir)
+    (fun () ->
+      Eio_main.run @@ fun env ->
+      Fs_compat.set_fs (Eio.Stdenv.fs env);
+      let config = Coord_utils.default_config dir in
+      ignore (Lib.Coord.init config ~agent_name:None);
+      Eio.Switch.run (fun sw ->
+        Fun.protect
+          ~finally:(fun () ->
+            Masc_mcp.Keeper_keepalive.stop_keepalive "sangsu")
+          (fun () ->
+            create_keeper env sw config "sangsu";
+            Lib.Dashboard_cache.invalidate_all ();
+            let approval_id =
+              Lib.Keeper_approval_queue.submit_pending
+                ~keeper_name:"sangsu"
+                ~tool_name:"WriteFile"
+                ~input:(`Assoc [ ("file_path", `String "lib/example.ml") ])
+                ~risk_level:Lib.Keeper_approval_queue.High
+                ~base_path:dir
+                ~task_id:"task-dashboard-approval"
+                ~on_resolution:(fun _ -> ())
+                ()
+            in
+            let render () =
+              Lib.Dashboard_execution.json
+                ~config
+                ~sw
+                ~clock:(Eio.Stdenv.clock env)
+                ~proc_mgr:None
+                ()
+            in
+            let keeper_row json =
+              let open Yojson.Safe.Util in
+              json |> member "keepers" |> to_list
+              |> List.find (fun keeper ->
+                     keeper |> member "name" |> to_string = "sangsu")
+            in
+            let pending_row = keeper_row (render ()) in
+            let open Yojson.Safe.Util in
+            check string "cached snapshot starts with pending approval"
+              "approval_pending"
+              (pending_row |> member "attention_reason" |> to_string);
+            (match
+               Lib.Keeper_approval_queue.resolve
+                 ~id:approval_id
+                 ~decision:(Agent_sdk.Hooks.Reject "test resolved")
+             with
+             | Ok () -> ()
+             | Error err ->
+               fail
+                 (Lib.Keeper_approval_queue.resolve_error_to_string err));
+            let reconciled_row = keeper_row (render ()) in
+            let trust = reconciled_row |> member "runtime_trust" in
+            check int "fresh trust has no pending approvals" 0
+              (trust |> member "approval_state" |> member "pending_count" |> to_int);
+            check bool "fresh trust no longer needs attention" false
+              (trust |> member "needs_attention" |> to_bool);
+            check (option string) "row attention follows fresh trust"
+              (trust |> member "attention_reason" |> to_string_option)
+              (reconciled_row |> member "attention_reason" |> to_string_option);
+            check bool "stale approval reason cleared" true
+              (reconciled_row |> member "attention_reason" = `Null))))
 
 let test_execution_trust_surfaces_latest_receipt () =
   let dir = test_dir () in
@@ -705,7 +795,10 @@ let test_execution_trust_surfaces_latest_receipt () =
             Masc_mcp.Keeper_keepalive.stop_keepalive "sangsu")
           (fun () ->
             create_keeper env sw config "sangsu";
-            append_execution_receipt config ~keeper_name:"sangsu";
+            append_execution_receipt
+              ~required_tool_candidates:
+                [ "keeper_board_comment"; "keeper_board_post" ]
+              config ~keeper_name:"sangsu";
             let compact_json =
               Lib.Dashboard_http_keeper.keepers_dashboard_json
                 ~compact:true config
@@ -742,9 +835,13 @@ let test_execution_trust_surfaces_latest_receipt () =
               (compact_row |> member "trust" |> member "last_outcome"
              |> to_string);
             check string "compact keeper row exposes trust contract result"
-              "satisfied"
+              "satisfied_completion"
               (compact_row |> member "trust" |> member "tool_contract_result"
              |> to_string);
+            check (list string) "compact row exposes required tool candidates"
+              [ "keeper_board_comment"; "keeper_board_post" ]
+              (compact_row |> member "trust" |> member "required_tool_candidates"
+             |> to_list |> List.map to_string);
             check string "execution trust row preserves sandbox kind"
               "local"
               (trust_row |> member "trust" |> member "sandbox"
@@ -765,7 +862,7 @@ let test_execution_trust_surfaces_latest_receipt () =
               (trust_row |> member "trust" |> member "cascade"
              |> member "degraded_retry_applied" |> to_bool);
             check (option string) "execution trust row preserves degraded retry lane"
-              (Some Lib.Keeper_config.local_recovery_cascade_name)
+              (Some Lib.Keeper_config.phase_recovery_cascade_name)
               (trust_row |> member "trust" |> member "cascade"
              |> member "degraded_retry_cascade" |> to_string_option);
             check (option string) "execution trust row preserves fallback reason"
@@ -773,7 +870,7 @@ let test_execution_trust_surfaces_latest_receipt () =
               (trust_row |> member "trust" |> member "cascade"
              |> member "fallback_reason" |> to_string_option);
             check string "execution trust row preserves rotation target"
-              Lib.Keeper_config.local_recovery_cascade_name
+              Lib.Keeper_config.phase_recovery_cascade_name
               (trust_row |> member "trust" |> member "cascade"
              |> member "rotation_attempts" |> to_list |> List.hd
              |> member "to_cascade" |> to_string);
@@ -788,8 +885,15 @@ let test_execution_trust_surfaces_latest_receipt () =
              |> member "rotation_attempts" |> to_list |> List.hd
              |> member "slot_release_at_phase" |> to_string);
             check (list string) "execution trust row preserves unexpected tools"
-              [ "WebSearch" ]
+              [ "SearchWeb" ]
               (trust_row |> member "trust" |> member "unexpected_tools"
+             |> to_list |> List.map to_string);
+            check int "execution trust row preserves unexpected tool count" 1
+              (trust_row |> member "trust" |> member "unexpected_tool_count"
+             |> to_int);
+            check (list string) "execution trust row preserves required candidates"
+              [ "keeper_board_comment"; "keeper_board_post" ]
+              (trust_row |> member "trust" |> member "required_tool_candidates"
              |> to_list |> List.map to_string);
             let execution_json =
               Lib.Dashboard_execution.json
@@ -807,17 +911,28 @@ let test_execution_trust_surfaces_latest_receipt () =
             check int "execution row exposes provider attempt count" 2
               (execution_row |> member "trust" |> member "execution_summary"
              |> member "provider_attempt_count" |> to_int);
-            check string "execution row exposes provider selected model"
-              "custom:mock"
+            check bool "execution row omits provider selected model" true
               (execution_row |> member "trust" |> member "execution_summary"
-             |> member "provider_selected_model" |> to_string);
+             |> member "provider_selected_model" = `Null);
             check bool "execution row exposes provider fallback" true
               (execution_row |> member "trust" |> member "execution_summary"
              |> member "provider_fallback_applied" |> to_bool);
             check string "execution row exposes cascade outcome"
               "passed_to_next_model"
               (execution_row |> member "trust" |> member "execution_summary"
-             |> member "cascade_outcome" |> to_string))))
+             |> member "cascade_outcome" |> to_string);
+            check (list string) "execution row exposes unexpected tools"
+              [ "SearchWeb" ]
+              (execution_row |> member "trust" |> member "execution_summary"
+             |> member "unexpected_tools" |> to_list |> List.map to_string);
+            check int "execution row exposes unexpected tool count" 1
+              (execution_row |> member "trust" |> member "execution_summary"
+             |> member "unexpected_tool_count" |> to_int);
+            check (list string) "execution row exposes required candidates"
+              [ "keeper_board_comment"; "keeper_board_post" ]
+              (execution_row |> member "trust" |> member "execution_summary"
+             |> member "required_tool_candidates" |> to_list
+             |> List.map to_string))))
 
 let test_dashboard_execution_queue_surfaces_keeper_runtime_trust () =
   let dir = test_dir () in
@@ -835,10 +950,10 @@ let test_dashboard_execution_queue_surfaces_keeper_runtime_trust () =
           (fun () ->
             create_keeper env sw config "sangsu";
             append_execution_receipt config ~keeper_name:"sangsu"
-              ~outcome:"error"
+              ~outcome:`Error
               ~terminal_reason_code:"required_tool_use_unsatisfied"
-              ~tool_contract_result:"violated"
-              ~stop_reason:(Some "completion_contract_violation:require_tool_use");
+              ~tool_contract_result:Contract_violated
+              ~stop_reason:None;
             let execution_json =
               Lib.Dashboard_execution.json
                 ~config
@@ -922,7 +1037,7 @@ let test_patch_keeper_dependent_caches_tolerates_null_agent () =
       ~keeper_name:"sangsu" ~event:"started";
     let open Yojson.Safe.Util in
     let keepers =
-      Lib.Server_dashboard_http._execution_cache.json
+      Lib.Server_dashboard_http.execution_cache.json
       |> member "keepers" |> to_list
     in
     let row = List.hd keepers in
@@ -932,6 +1047,103 @@ let test_patch_keeper_dependent_caches_tolerates_null_agent () =
     check bool "keepalive running patched"
       true
       (row |> member "keepalive_running" |> to_bool))
+
+let test_execution_default_route_exposes_provenance () =
+  let dir = test_dir () in
+  Fun.protect
+    ~finally:(fun () -> cleanup_dir dir)
+    (fun () ->
+      Eio_main.run @@ fun env ->
+      Eio.Switch.run (fun sw ->
+        let state =
+          Lib.Mcp_server_eio.create_state ~test_mode:true ~base_path:dir ()
+        in
+        let seed =
+          `Assoc
+            [ "status", `Assoc [ "namespace", `String "default" ]
+            ; "agents", `List []
+            ; "execution_queue", `List []
+            ; "generated_at", `String "2026-05-15T01:00:00Z"
+            ]
+        in
+        with_execution_cache seed (fun () ->
+          let json =
+            Lib.Server_dashboard_http.dashboard_execution_http_json
+              ~state
+              ~sw
+              ~clock:(Eio.Stdenv.clock env)
+              (request "/api/v1/dashboard/execution")
+          in
+          let open Yojson.Safe.Util in
+          check string "surface" "/api/v1/dashboard/execution"
+            (json |> member "dashboard_surface" |> to_string);
+          check string "source" "dashboard_execution_read_model"
+            (json |> member "source" |> to_string);
+          check string "generated_at_iso" "2026-05-15T01:00:00Z"
+            (json |> member "generated_at_iso" |> to_string);
+          check string "retention scope" "dashboard_execution"
+            (json |> member "retention" |> member "scope" |> to_string);
+          check string "retention store" "process_cache"
+            (json |> member "retention" |> member "store_kind" |> to_string);
+          check bool "query default" true
+            (json |> member "query" |> member "default_light_request" |> to_bool);
+          check bool "query light" true
+            (json |> member "query" |> member "light" |> to_bool);
+          check string "cache state" "fresh"
+            (json |> member "cache" |> member "cache_state" |> to_string);
+          check string "cache key" "execution:default:light"
+            (json |> member "cache" |> member "request_cache_key" |> to_string))))
+
+let test_transport_health_route_exposes_provenance () =
+  let dir = test_dir () in
+  Fun.protect
+    ~finally:(fun () -> cleanup_dir dir)
+    (fun () ->
+      let state =
+        Lib.Mcp_server_eio.create_state ~test_mode:true ~base_path:dir ()
+      in
+      let json =
+        Lib.Server_dashboard_http.dashboard_transport_health_http_json ~state
+      in
+      let open Yojson.Safe.Util in
+      check string "surface" "/api/v1/dashboard/transport-health"
+        (json |> member "dashboard_surface" |> to_string);
+      check string "source" "transport_health_read_model"
+        (json |> member "source" |> to_string);
+      check string "retention scope" "dashboard_transport_health"
+        (json |> member "retention" |> member "scope" |> to_string);
+      check string "retention store" "process_cache"
+        (json |> member "retention" |> member "store_kind" |> to_string);
+      check bool "query default" true
+        (json |> member "query" |> member "default_snapshot_request" |> to_bool);
+      check string "cache scope" "dashboard_transport_health"
+        (json |> member "cache" |> member "scope" |> to_string);
+      check bool "generated surfaced" true
+        (String.length (json |> member "generated_at_iso" |> to_string) > 0))
+
+let callback_metric_value callback =
+  Lib.Prometheus.metric_value_or_zero
+    Masc_mcp.Keeper_metrics.(to_string LifecycleCallbackFailures)
+    ~labels:[ ("callback", callback) ]
+    ()
+
+let test_invalidate_execution_cache_counts_failures () =
+  let surface_callback = "execution_surface_cache_invalidate" in
+  let light_callback = "dashboard_execution_light_cache_invalidate" in
+  let before_surface = callback_metric_value surface_callback in
+  let before_light = callback_metric_value light_callback in
+  Lib.Server_dashboard_http.invalidate_execution_cache_with_hooks_for_testing
+    ~invalidate_execution_surface:(fun () ->
+      raise (Failure "synthetic surface invalidation failure"))
+    ~invalidate_light_cache:(fun () ->
+      raise (Failure "synthetic light invalidation failure"))
+    ();
+  check (float 0.0001) "surface invalidation failure counted"
+    (before_surface +. 1.0)
+    (callback_metric_value surface_callback);
+  check (float 0.0001) "light invalidation failure counted"
+    (before_light +. 1.0)
+    (callback_metric_value light_callback)
 
 let test_patch_surface_json_for_running_keepers_tolerates_null_agent () =
   let dir = test_dir () in
@@ -1027,14 +1239,22 @@ let () =
             test_dashboard_execution_fresh_join_not_marked_stale;
           Alcotest.test_case "execution surfaces keeper diagnostic" `Quick
             test_dashboard_execution_surfaces_keeper_diagnostic;
+          Alcotest.test_case "execution clears stale approval attention" `Quick
+            test_dashboard_execution_reconciles_stale_approval_attention;
           Alcotest.test_case "execution trust surfaces latest receipt" `Quick
             test_execution_trust_surfaces_latest_receipt;
           Alcotest.test_case "execution queue surfaces keeper runtime trust" `Quick
             test_dashboard_execution_queue_surfaces_keeper_runtime_trust;
           Alcotest.test_case "execution trust surfaces coverage gap health" `Quick
             test_execution_trust_surfaces_coverage_gap_health;
+          Alcotest.test_case "cache invalidation failures are counted" `Quick
+            test_invalidate_execution_cache_counts_failures;
           Alcotest.test_case "lifecycle patch tolerates null agent" `Quick
             test_patch_keeper_dependent_caches_tolerates_null_agent;
+          Alcotest.test_case "execution default route exposes provenance" `Quick
+            test_execution_default_route_exposes_provenance;
+          Alcotest.test_case "transport health route exposes provenance" `Quick
+            test_transport_health_route_exposes_provenance;
           Alcotest.test_case "running keeper patch tolerates null agent" `Quick
             test_patch_surface_json_for_running_keepers_tolerates_null_agent;
           Alcotest.test_case "patch keeper row tolerates null agent shape" `Quick

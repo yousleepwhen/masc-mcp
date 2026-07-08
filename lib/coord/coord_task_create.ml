@@ -7,7 +7,11 @@
 open Masc_domain
 include Coord_utils
 include Coord_state
+open Coord_backlog
+open Coord_task_id
 include Coord_broadcast
+open Coord_backlog
+open Coord_task_id
 
 (** Normalize title for deduplication: lowercase, keep only alphanumeric+space.
     Deterministic string transform — no LLM involved. *)
@@ -49,6 +53,7 @@ let add_task
       ?contract
       ?goal_id
       ?created_by
+      ?reject_if
       config
       ~title
       ~priority
@@ -63,6 +68,12 @@ let add_task
       match read_backlog_r config with
       | Error msg -> Printf.sprintf "Error: %s" msg
       | Ok backlog ->
+        (match reject_if with
+         | Some reject_if -> reject_if backlog
+         | None -> None)
+        |> (function
+          | Some msg -> Printf.sprintf "Error: %s" msg
+          | None ->
         (* Dedup guard: reject if an active task with the same normalized title exists *)
         (match find_duplicate_task backlog ~title ~goal_id with
          | Some existing_id ->
@@ -90,11 +101,11 @@ let add_task
              ; files = []
              ; created_at = now_iso ()
              ; created_by
-             ; worktree = None
              ; stage = None
              ; contract
              ; handoff_context = None
              ; cycle_count = 0
+             ; reclaim_policy = None
              ; do_not_reclaim_reason = None
              }
            in
@@ -135,7 +146,7 @@ let add_task
                ~from_agent:actor
                ~content:(Printf.sprintf "New quest: %s" title)
            in
-           Printf.sprintf "Added %s: %s" task_id title))
+           Printf.sprintf "Added %s: %s" task_id title)))
   with
   | Eio.Cancel.Cancelled _ as e -> raise e
   | e -> Printf.sprintf "Error: %s" (Printexc.to_string e)
@@ -174,11 +185,11 @@ let batch_add_tasks_internal ?created_by config tasks =
                 ; files = []
                 ; created_at = now_iso ()
                 ; created_by
-                ; worktree = None
                 ; stage = None
                 ; contract
                 ; handoff_context = None
                 ; cycle_count = 0
+                ; reclaim_policy = None
                 ; do_not_reclaim_reason = None
                 })
              tasks

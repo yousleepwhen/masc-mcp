@@ -29,12 +29,12 @@ let all_vote_directions = [ Up; Down ]
 let valid_vote_direction_strings =
   List.map vote_direction_to_string all_vote_directions
 
-(* Sound partial parser — case-insensitive, trims whitespace, accepts
-   empty as default Up for back-compat with [tool_board.ml] which
-   defaults to "up" when the field is missing. *)
+(* Sound partial parser — case-insensitive, trims whitespace, and
+   rejects empty input. Missing direction defaults belong at the tool
+   boundary, not in the wire-value parser. *)
 let vote_direction_of_string_opt raw =
   match String.trim (String.lowercase_ascii raw) with
-  | "up" | "" -> Some Up
+  | "up" -> Some Up
   | "down" -> Some Down
   | _ -> None
 
@@ -334,163 +334,11 @@ let stats store =
     ]
   )
 
-let visibility_of_string = Board_core_classify.visibility_of_string
-
-let post_of_yojson (json : Yojson.Safe.t) : post option =
-  match
-    Safe_ops.json_string_opt "id" json,
-    Safe_ops.json_string_opt "author" json,
-    Safe_ops.json_string_opt "content" json,
-    Safe_ops.json_string_opt "visibility" json,
-    Safe_ops.json_float_opt "created_at" json,
-    Safe_ops.json_float_opt "expires_at" json
-  with
-  | Some id_str, Some author_str, Some content, Some vis_str,
-    Some created_at, Some expires_at ->
-    let title_opt = Safe_ops.json_string_opt "title" json in
-    let body_opt = Safe_ops.json_string_opt "body" json in
-    (* Backward compat: default updated_at to created_at if missing *)
-    let updated_at =
-      Safe_ops.json_float_opt "updated_at" json
-      |> Option.value ~default:created_at
-    in
-    let votes_up = Safe_ops.json_int ~default:0 "votes_up" json in
-    let votes_down = Safe_ops.json_int ~default:0 "votes_down" json in
-    let reply_count = Safe_ops.json_int ~default:0 "reply_count" json in
-    let hearth = Safe_ops.json_string_opt "hearth" json in
-    let thread_id = Safe_ops.json_string_opt "thread_id" json in
-    let post_kind_opt =
-      match Safe_ops.json_string_opt "post_kind" json with
-      | Some raw -> post_kind_of_string raw
-      | None -> None
-    in
-    let meta_json =
-      match Safe_ops.json_member_opt "meta" json with
-      | Some (`Assoc _ as meta) -> Some meta
-      | Some _ | None ->
-        (match Safe_ops.json_string_opt "meta_json" json with
-         | Some raw -> (try Some (Yojson.Safe.from_string raw) with Yojson.Json_error _ -> None)
-         | None -> None)
-    in
-    (match Post_id.of_string id_str, Agent_id.of_string author_str, visibility_of_string vis_str with
-    | Ok id, Ok author, Some visibility ->
-        let resolved_kind =
-          match post_kind_opt with
-          | Some kind -> kind
-          | None ->
-              legacy_migrate_post_kind
-                ~author:author_str
-                ~meta_json
-                ~visibility
-                ~expires_at
-                ~hearth
-        in
-        let title, body, post_kind, meta_json =
-          normalize_post_payload ~content ?title:title_opt ?body:body_opt
-            ~post_kind:resolved_kind ?meta_json ()
-        in
-        Some {
-          id;
-          author;
-          title;
-          body;
-          content = body;
-          post_kind;
-          meta_json;
-          visibility;
-          created_at;
-          updated_at;
-          expires_at;
-          votes_up;
-          votes_down;
-          reply_count;
-          hearth;
-          thread_id;
-        }
-    | _ -> None)
-  | _ -> None
-
-let comment_of_yojson (json : Yojson.Safe.t) : comment option =
-  match
-    Safe_ops.json_string_opt "id" json,
-    Safe_ops.json_string_opt "post_id" json,
-    Safe_ops.json_string_opt "author" json,
-    Safe_ops.json_string_opt "content" json,
-    Safe_ops.json_float_opt "created_at" json,
-    Safe_ops.json_float_opt "expires_at" json
-  with
-  | Some id_str, Some post_id_str, Some author_str, Some content,
-    Some created_at, Some expires_at ->
-    let parent_id_opt = Safe_ops.json_string_opt "parent_id" json in
-    let votes_up = Safe_ops.json_int ~default:0 "votes_up" json in
-    let votes_down = Safe_ops.json_int ~default:0 "votes_down" json in
-    (match Comment_id.of_string id_str, Post_id.of_string post_id_str, Agent_id.of_string author_str with
-    | Ok id, Ok post_id, Ok author ->
-        let parent_id = match parent_id_opt with
-          | Some s -> (match Comment_id.of_string s with Ok cid -> Some cid | _ -> None)
-          | None -> None
-        in
-        Some { id; post_id; parent_id; author; content; created_at; expires_at; votes_up; votes_down }
-    | _ -> None)
-  | _ -> None
-
-let load_persisted_posts store =
-  let path = persist_path () in
-  if Fs_compat.file_exists path then begin
-    try
-      let now = Time_compat.now () in
-      let loaded = ref 0 in
-      let lines = Fs_compat.load_jsonl path in
-      List.iter (fun json ->
-        match post_of_yojson json with
-        | Some p when Stdlib.Float.compare p.expires_at 0.0 = 0 || Stdlib.Float.compare p.expires_at now > 0 ->
-            Hashtbl.replace store.posts (Post_id.to_string p.id) p;
-            Stdlib.incr loaded
-        | _ -> ()
-      ) lines;
-      store.post_count := Hashtbl.length store.posts;
-      if !loaded > 0 then
-        Log.BoardLog.info "loaded %d posts from %s" !loaded path
-      else
-        Log.BoardLog.debug "loaded 0 posts from %s" path
-    with
-    | Eio.Cancel.Cancelled _ as e -> raise e
-    | e ->
-      Log.BoardLog.error "load posts failed: %s" (Printexc.to_string e)
-  end
-
-let load_persisted_comments store =
-  let path = comments_path () in
-  if Fs_compat.file_exists path then begin
-    try
-      let now = Time_compat.now () in
-      let loaded = ref 0 in
-      let lines = Fs_compat.load_jsonl path in
-      List.iter (fun json ->
-        match comment_of_yojson json with
-        | Some c when Stdlib.Float.compare c.expires_at 0.0 = 0 || Stdlib.Float.compare c.expires_at now > 0 ->
-            let cid = Comment_id.to_string c.id in
-            Hashtbl.replace store.comments cid c;
-            (* Build comments_by_post index *)
-            let post_key = Post_id.to_string c.post_id in
-            let existing = Hashtbl.find_opt store.comments_by_post post_key |> Option.value ~default:[] in
-            let indexed =
-              if List.exists (String.equal cid) existing then existing
-              else cid :: existing
-            in
-            Hashtbl.replace store.comments_by_post post_key indexed;
-            Stdlib.incr loaded
-        | _ -> ()
-      ) lines;
-      if !loaded > 0 then
-        Log.BoardLog.info "loaded %d comments from %s" !loaded path
-      else
-        Log.BoardLog.debug "loaded 0 comments from %s" path
-    with
-    | Eio.Cancel.Cancelled _ as e -> raise e
-    | e ->
-      Log.BoardLog.error "load comments failed: %s" (Printexc.to_string e)
-  end
+let visibility_of_string = Board_votes_json.visibility_of_string
+let post_of_yojson = Board_votes_json.post_of_yojson
+let comment_of_yojson = Board_votes_json.comment_of_yojson
+let load_persisted_posts = Board_votes_json.load_persisted_posts
+let load_persisted_comments = Board_votes_json.load_persisted_comments
 
 (** Recalculate reply_count for all posts based on actual comments.
     This ensures data consistency after loading from disk. *)
@@ -528,17 +376,37 @@ let recalculate_reply_counts store =
 
     Env var: [MASC_BOARD_VOTE_QUARANTINE=1] promotes detection from
     warn-and-load to skip-fixture-rows. Defaults to warn-only to
-    avoid surprising live operators.  *)
-let is_fixture_voter_target target =
-  let voter =
-    match String.rindex_opt target ':' with
-    | Some idx when idx + 1 < String.length target ->
-        String.sub target (idx + 1) (String.length target - idx - 1)
-    | _ -> target
-  in
-  String.starts_with ~prefix:"hot-voter-" voter
-  || String.starts_with ~prefix:"synthetic-voter-" voter
-  || String.starts_with ~prefix:"test-voter-" voter
+    avoid surprising live operators.
+
+    RFC-0089 §4-3 G2: voter classification is now typed via
+    {!voter_kind}.  The boundary parser {!classify_voter_target}
+    extracts the voter segment from the persisted target key and
+    derives the variant once; downstream call sites pattern-match
+    instead of re-running [String.starts_with]. *)
+
+type fixture_voter_kind =
+  | Hot_voter           (* "hot-voter-" prefix *)
+  | Synthetic_voter     (* "synthetic-voter-" prefix *)
+  | Test_voter          (* "test-voter-" prefix *)
+
+type voter_kind =
+  | Production_voter
+  | Fixture_voter of fixture_voter_kind
+
+let extract_voter_segment target =
+  match String.rindex_opt target ':' with
+  | Some idx when idx + 1 < String.length target ->
+      String.sub target (idx + 1) (String.length target - idx - 1)
+  | _ -> target
+
+let classify_voter_target (target : string) : voter_kind =
+  let voter = extract_voter_segment target in
+  if String.starts_with ~prefix:"hot-voter-" voter then Fixture_voter Hot_voter
+  else if String.starts_with ~prefix:"synthetic-voter-" voter then
+    Fixture_voter Synthetic_voter
+  else if String.starts_with ~prefix:"test-voter-" voter then
+    Fixture_voter Test_voter
+  else Production_voter
 
 let quarantine_enabled () =
   (* #9886: production ledger observed 112/112 (100%) fixture-pattern
@@ -557,7 +425,8 @@ let quarantine_enabled () =
 
 let load_persisted_votes store =
   let path = vote_log_path () in
-  if Fs_compat.file_exists path then begin
+  if not (Fs_compat.file_exists path) then Ok 0
+  else begin
     try
       let loaded = ref 0 in
       let quarantined = ref 0 in
@@ -568,30 +437,32 @@ let load_persisted_votes store =
         match Safe_ops.json_string_opt "target" json,
               Safe_ops.json_string_opt "direction" json with
         | Some target, Some dir_str ->
-          let direction = if String.equal dir_str "down" then Down else Up in
-          (* #10086: legacy rows persisted before this fix may have
-             [ts] overwritten by a prior flush cycle.  Use the
-             recorded value when present; fall back to 0.0 rather
-             than [Time_compat.now ()] — loading a ledger at server
-             start time must NOT advance the ts of every pre-fix
-             vote to "now".  Downstream readers treat ts=0.0 as
-             "unknown cast time". *)
-          let ts =
-            match Safe_ops.json_float_opt "ts" json with
-            | Some t -> t
-            | None -> 0.0
-          in
-          if is_fixture_voter_target target then begin
-            Stdlib.incr fixture_detected;
-            if quarantine then Stdlib.incr quarantined
-            else begin
-              Hashtbl.replace store.vote_log target (direction, ts);
-              Stdlib.incr loaded
-            end
-          end else begin
-            Hashtbl.replace store.vote_log target (direction, ts);
-            Stdlib.incr loaded
-          end
+          (match vote_direction_of_string_opt dir_str with
+           | None -> ()
+           | Some direction ->
+             (* #10086: legacy rows persisted before this fix may have
+                [ts] overwritten by a prior flush cycle.  Use the
+                recorded value when present; fall back to 0.0 rather
+                than [Time_compat.now ()] — loading a ledger at server
+                start time must NOT advance the ts of every pre-fix
+                vote to "now".  Downstream readers treat ts=0.0 as
+                "unknown cast time". *)
+             let ts =
+               match Safe_ops.json_float_opt "ts" json with
+               | Some t -> t
+               | None -> 0.0
+             in
+             (match classify_voter_target target with
+              | Fixture_voter _ ->
+                  Stdlib.incr fixture_detected;
+                  if quarantine then Stdlib.incr quarantined
+                  else begin
+                    Hashtbl.replace store.vote_log target (direction, ts);
+                    Stdlib.incr loaded
+                  end
+              | Production_voter ->
+                  Hashtbl.replace store.vote_log target (direction, ts);
+                  Stdlib.incr loaded))
         | _ -> ()
       ) lines;
       if !fixture_detected > 0 then begin
@@ -609,16 +480,17 @@ let load_persisted_votes store =
       if !loaded > 0 then
         Log.BoardLog.info "loaded %d vote entries from %s" !loaded path
       else
-        Log.BoardLog.debug "loaded 0 vote entries from %s" path
+        Log.BoardLog.debug "loaded 0 vote entries from %s" path;
+      Ok !loaded
     with
     | Eio.Cancel.Cancelled _ as e -> raise e
-    | e ->
-      Log.BoardLog.error "load votes failed: %s" (Printexc.to_string e)
+    | e -> Error (path, e)
   end
 
 let load_persisted_reactions store =
   let path = reactions_path () in
-  if Fs_compat.file_exists path then begin
+  if not (Fs_compat.file_exists path) then Ok 0
+  else begin
     try
       let loaded = ref 0 in
       let lines = Fs_compat.load_jsonl path in
@@ -639,16 +511,17 @@ let load_persisted_reactions store =
       if !loaded > 0 then
         Log.BoardLog.info "loaded %d reactions from %s" !loaded path
       else
-        Log.BoardLog.debug "loaded 0 reactions from %s" path
+        Log.BoardLog.debug "loaded 0 reactions from %s" path;
+      Ok !loaded
     with
     | Eio.Cancel.Cancelled _ as e -> raise e
-    | e ->
-        Log.BoardLog.error "load reactions failed: %s" (Printexc.to_string e)
+    | e -> Error (path, e)
   end
 
 let load_persisted_sub_boards store =
   let path = sub_boards_path () in
-  if Fs_compat.file_exists path then begin
+  if not (Fs_compat.file_exists path) then Ok 0
+  else begin
     try
       let loaded = ref 0 in
       let lines = Fs_compat.load_jsonl path in
@@ -665,11 +538,11 @@ let load_persisted_sub_boards store =
       if !loaded > 0 then
         Log.BoardLog.info "loaded %d sub-boards from %s" !loaded path
       else
-        Log.BoardLog.debug "loaded 0 sub-boards from %s" path
+        Log.BoardLog.debug "loaded 0 sub-boards from %s" path;
+      Ok !loaded
     with
     | Eio.Cancel.Cancelled _ as e -> raise e
-    | e ->
-        Log.BoardLog.error "load sub-boards failed: %s" (Printexc.to_string e)
+    | e -> Error (path, e)
   end
 
 (** {1 Hearth (topic) operations} *)
@@ -703,63 +576,107 @@ let set_thread_id store ~post_id ~thread_id : (unit, board_error) Result.t =
             Ok ()
       )
 
+let posts_jsonl_snapshot store =
+  let buf = Buffer.create 4096 in
+  Hashtbl.iter (fun _ (pst : post) ->
+    Buffer.add_string buf (Yojson.Safe.to_string (post_to_yojson pst));
+    Buffer.add_char buf '\n'
+  ) store.posts;
+  Buffer.contents buf
+
+let comments_jsonl_snapshot store =
+  let buf = Buffer.create 4096 in
+  Hashtbl.iter (fun _ (cmt : comment) ->
+    Buffer.add_string buf (Yojson.Safe.to_string (comment_to_yojson cmt));
+    Buffer.add_char buf '\n'
+  ) store.comments;
+  Buffer.contents buf
+
+let reactions_jsonl_snapshot store =
+  let buf = Buffer.create 4096 in
+  Hashtbl.iter
+    (fun _ (reaction : reaction) ->
+       Buffer.add_string buf (Yojson.Safe.to_string (reaction_to_yojson reaction));
+       Buffer.add_char buf '\n')
+    store.reactions;
+  Buffer.contents buf
+
+let save_jsonl_snapshot ~where ~path content =
+  try
+    ensure_masc_dir ();
+    match Fs_compat.save_file_atomic path content with
+    | Ok () -> ()
+    | Error msg -> record_persist_error ~where msg
+  with Sys_error msg -> record_persist_error ~where msg
+
 let delete_post store ~post_id : (unit, board_error) Result.t =
   match Post_id.of_string post_id with
   | Error e -> Error e
   | Ok pid ->
-      with_lock store (fun () ->
-        let post_key = Post_id.to_string pid in
-        match Hashtbl.find_opt store.posts post_key with
-        | None -> Error (Post_not_found post_id)
-        | Some _ ->
-            let comment_ids =
-              Hashtbl.fold
-                (fun key (c : comment) acc ->
-                  if String.equal (Post_id.to_string c.post_id) post_key then key :: acc else acc)
-                store.comments []
-            in
-            Hashtbl.remove store.posts post_key;
-            Hashtbl.remove store.comments_by_post post_key;
-            List.iter (fun comment_key -> Hashtbl.remove store.comments comment_key) comment_ids;
-            let vote_keys =
-              Hashtbl.fold
-                (fun key _ acc ->
-                  if String.starts_with ~prefix:("post:" ^ post_key ^ ":") key
-                     || List.exists
-                          (fun comment_key ->
-                            String.starts_with ~prefix:("comment:" ^ comment_key ^ ":") key)
-                          comment_ids
-                  then key :: acc
-                  else acc)
-                store.vote_log []
-            in
-            let reaction_keys =
-              Hashtbl.fold
-                (fun key (reaction : reaction) acc ->
-                  if
-                    ((=) reaction.target_type Reaction_post
-                     && String.equal reaction.target_id post_key)
-                    || ((=) reaction.target_type Reaction_comment
-                        && List.exists (String.equal reaction.target_id)
-                             comment_ids)
-                  then key :: acc
-                  else acc)
-                store.reactions []
-            in
-            List.iter (fun key -> Hashtbl.remove store.vote_log key) vote_keys;
-            List.iter (fun key -> Hashtbl.remove store.reactions key) reaction_keys;
-            store.post_count := max 0 (!(store.post_count) - 1);
-            invalidate_post_caches store;
-            invalidate_comment_caches store;
-            rewrite_posts store;
-            rewrite_comments store;
-            rewrite_vote_log store;
-            rewrite_reactions_unlocked store;
-            store.dirty_posts <- false;
-            store.dirty_comments <- false;
-            Hashtbl.clear store.dirty_post_ids;
-            Hashtbl.clear store.dirty_comment_ids;
-            store.last_flush <- Time_compat.now ();
+      with_persist_lock store (fun () ->
+        let snapshot =
+          with_lock store (fun () ->
+            let post_key = Post_id.to_string pid in
+            match Hashtbl.find_opt store.posts post_key with
+            | None -> Error (Post_not_found post_id)
+            | Some _ ->
+                let comment_ids =
+                  Hashtbl.fold
+                    (fun key (c : comment) acc ->
+                      if String.equal (Post_id.to_string c.post_id) post_key then key :: acc else acc)
+                    store.comments []
+                in
+                Hashtbl.remove store.posts post_key;
+                Hashtbl.remove store.comments_by_post post_key;
+                List.iter (fun comment_key -> Hashtbl.remove store.comments comment_key) comment_ids;
+                let vote_keys =
+                  Hashtbl.fold
+                    (fun key _ acc ->
+                      if String.starts_with ~prefix:("post:" ^ post_key ^ ":") key
+                         || List.exists
+                              (fun comment_key ->
+                                String.starts_with ~prefix:("comment:" ^ comment_key ^ ":") key)
+                              comment_ids
+                      then key :: acc
+                      else acc)
+                    store.vote_log []
+                in
+                let reaction_keys =
+                  Hashtbl.fold
+                    (fun key (reaction : reaction) acc ->
+                      if
+                        ((=) reaction.target_type Reaction_post
+                         && String.equal reaction.target_id post_key)
+                        || ((=) reaction.target_type Reaction_comment
+                            && List.exists (String.equal reaction.target_id)
+                                 comment_ids)
+                      then key :: acc
+                      else acc)
+                    store.reactions []
+                in
+                List.iter (fun key -> Hashtbl.remove store.vote_log key) vote_keys;
+                List.iter (fun key -> Hashtbl.remove store.reactions key) reaction_keys;
+                store.post_count := max 0 (!(store.post_count) - 1);
+                invalidate_post_caches store;
+                invalidate_comment_caches store;
+                store.dirty_posts <- false;
+                store.dirty_comments <- false;
+                Hashtbl.clear store.dirty_post_ids;
+                Hashtbl.clear store.dirty_comment_ids;
+                store.last_flush <- Time_compat.now ();
+                Ok
+                  ( posts_jsonl_snapshot store
+                  , comments_jsonl_snapshot store
+                  , vote_log_jsonl store
+                  , reactions_jsonl_snapshot store ))
+        in
+        match snapshot with
+        | Error _ as e -> e
+        | Ok (posts_jsonl, comments_jsonl, votes_jsonl, reactions_jsonl) ->
+            save_jsonl_snapshot ~where:"rewrite_posts" ~path:(persist_path ()) posts_jsonl;
+            save_jsonl_snapshot ~where:"rewrite_comments" ~path:(comments_path ()) comments_jsonl;
+            save_vote_log_jsonl votes_jsonl;
+            save_jsonl_snapshot ~where:"rewrite_reactions" ~path:(reactions_path ()) reactions_jsonl;
             Ok ())
 
 (** {1 Global Store}
@@ -768,15 +685,28 @@ let delete_post store ~post_id : (unit, board_error) Result.t =
     [cancel:`Protect] ensures store creation completes even if the
     forcing fiber is cancelled. *)
 
+(* Loaders return [(int, string * exn) result] so the caller is forced to
+   acknowledge persistence-load failures.  Best-effort semantics live here
+   at the call site, not hidden inside the loader bodies. *)
+let log_persistence_result ~kind = function
+  | Ok _ -> ()
+  | Error (path, e) ->
+    Log.BoardLog.error
+      "load %s failed: path=%s reason=%s (continuing with best-effort partial state)"
+      kind path (Printexc.to_string e)
+
+let load_all_persisted store =
+  log_persistence_result ~kind:"posts" (load_persisted_posts store);
+  log_persistence_result ~kind:"comments" (load_persisted_comments store);
+  recalculate_reply_counts store;
+  log_persistence_result ~kind:"votes" (load_persisted_votes store);
+  log_persistence_result ~kind:"reactions" (load_persisted_reactions store);
+  log_persistence_result ~kind:"sub-boards" (load_persisted_sub_boards store)
+
 let global_lazy : store Eio.Lazy.t ref =
   ref (Eio.Lazy.from_fun ~cancel:`Protect (fun () ->
     let store = create_store () in
-    load_persisted_posts store;
-    load_persisted_comments store;
-    recalculate_reply_counts store;
-    load_persisted_votes store;
-    load_persisted_reactions store;
-    load_persisted_sub_boards store;
+    load_all_persisted store;
     store))
 
 let global () = Eio.Lazy.force !global_lazy
@@ -784,43 +714,27 @@ let global () = Eio.Lazy.force !global_lazy
 (** Reset global store for test isolation. Next [global ()] call creates fresh store.
     Safe: only called from test setup before concurrent fibers exist. *)
 let reset_global_for_test () =
+  reset_comment_rate_tracker ();
   global_lazy := Eio.Lazy.from_fun ~cancel:`Protect (fun () ->
     let store = create_store () in
-    load_persisted_posts store;
-    load_persisted_comments store;
-    recalculate_reply_counts store;
-    load_persisted_votes store;
-    load_persisted_reactions store;
-    load_persisted_sub_boards store;
+    load_all_persisted store;
     store)
 
-(** Flush any dirty state to disk. Call on shutdown to prevent data loss. *)
+(** Flush any dirty state to disk. Call on shutdown to prevent data loss.
+
+    RFC-0091 (board persistence path unification): mutation/vote flushes
+    write a full snapshot via [save_jsonl_snapshot] instead of replaying
+    the dirty list through [append_post]/[append_comment]. The previous
+    [List.iter append_post posts] grew [board_posts.jsonl] by one line per
+    vote/mutation per post, sharing the same .id, producing the dup vector
+    that motivated the RFC. The snapshot path was already canonical for
+    restart-load ([load_persisted_posts]), so promoting it to the
+    flush-write path makes [board_posts.jsonl] a true snapshot file with
+    one line per id and atomic rewrite semantics. *)
 let flush_dirty store =
-  let posts, comments, vote_log =
+  let had_dirty, vote_log =
     with_lock store (fun () ->
       let had_dirty = store.dirty_posts || store.dirty_comments in
-      let posts =
-        if store.dirty_posts then
-          Hashtbl.fold
-            (fun post_id () acc ->
-              match Hashtbl.find_opt store.posts post_id with
-              | Some post -> post :: acc
-              | None -> acc)
-            store.dirty_post_ids []
-        else
-          []
-      in
-      let comments =
-        if store.dirty_comments then
-          Hashtbl.fold
-            (fun comment_id () acc ->
-              match Hashtbl.find_opt store.comments comment_id with
-              | Some comment -> comment :: acc
-              | None -> acc)
-            store.dirty_comment_ids []
-        else
-          []
-      in
       Hashtbl.clear store.dirty_post_ids;
       Hashtbl.clear store.dirty_comment_ids;
       store.dirty_posts <- false;
@@ -829,11 +743,19 @@ let flush_dirty store =
       let vote_log =
         if had_dirty then Some (vote_log_jsonl store) else None
       in
-      (posts, comments, vote_log))
+      (had_dirty, vote_log))
   in
   with_persist_lock store (fun () ->
-      List.iter append_post posts;
-      List.iter append_comment comments;
+      if had_dirty then begin
+        let posts_jsonl = with_lock store (fun () -> posts_jsonl_snapshot store) in
+        let comments_jsonl =
+          with_lock store (fun () -> comments_jsonl_snapshot store)
+        in
+        save_jsonl_snapshot ~where:"flush_posts"
+          ~path:(persist_path ()) posts_jsonl;
+        save_jsonl_snapshot ~where:"flush_comments"
+          ~path:(comments_path ()) comments_jsonl
+      end;
       Option.iter save_vote_log_jsonl vote_log)
 
 
@@ -969,30 +891,42 @@ let karma_event_to_yojson (e : karma_event) : Yojson.Safe.t =
     ("ts_iso",      `String ts_iso);
   ]
 
-(** Get karma for all agents (cached) *)
+(** Get karma for all agents (cached).
+
+    Cache check / rebuild / write are all performed inside one
+    [with_lock] block — same pattern as [Board_core.list_posts] for
+    [sorted_posts_cache].  Previously the read at [store.karma_cache]
+    and the write to it lived outside [with_lock] while
+    [Board_core.invalidate_*_caches] (callers always hold the lock)
+    cleared the field under lock — so two fibers could both observe
+    [None] and both rebuild, and an invalidation occurring between an
+    unlocked read of a stale [Some _] and a downstream consumer was
+    silently lost.  Hashtbl iteration / fold / List.sort are pure CPU
+    with no fiber yields, so holding the Eio mutex during the rebuild
+    is safe. *)
 let get_all_karma store =
-  match store.karma_cache with
-  | Some cached -> cached
-  | None ->
-      let result =
-        with_lock store (fun () ->
-          let tbl = Hashtbl.create 64 in
-          Hashtbl.iter
-            (fun key vote ->
-               match karma_event_of_vote store key vote with
-               | None -> ()
-               | Some (e : karma_event) ->
-                   let prev =
-                     Hashtbl.find_opt tbl e.recipient
-                     |> Option.value ~default:0
-                   in
-                   Hashtbl.replace tbl e.recipient (prev + e.delta))
-            store.vote_log;
-          Hashtbl.fold (fun k v acc -> (k, v) :: acc) tbl [])
-        |> List.sort (fun (_, a) (_, b) -> Int.compare b a)
-      in
-      store.karma_cache <- Some result;
-      result
+  with_lock store (fun () ->
+    match store.karma_cache with
+    | Some cached -> cached
+    | None ->
+        let tbl = Hashtbl.create 64 in
+        Hashtbl.iter
+          (fun key vote ->
+             match karma_event_of_vote store key vote with
+             | None -> ()
+             | Some (e : karma_event) ->
+                 let prev =
+                   Hashtbl.find_opt tbl e.recipient
+                   |> Option.value ~default:0
+                 in
+                 Hashtbl.replace tbl e.recipient (prev + e.delta))
+          store.vote_log;
+        let result =
+          Hashtbl.fold (fun k v acc -> (k, v) :: acc) tbl []
+          |> List.sort (fun (_, a) (_, b) -> Int.compare b a)
+        in
+        store.karma_cache <- Some result;
+        result)
 
 (** Calculate karma (total peer upvotes) for an agent *)
 let get_agent_karma store ~agent_name =

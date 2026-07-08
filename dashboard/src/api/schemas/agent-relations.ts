@@ -11,11 +11,15 @@ import {
   nullable,
   number,
   object,
+  optional,
+  record,
   safeParse,
   string,
+  unknown,
   type BaseIssue,
   type InferOutput,
 } from 'valibot'
+import { formatIssues } from './drift-error'
 
 const AgentCollaboratorSchema = object({
   name: string(),
@@ -37,7 +41,13 @@ const AgentRelationSchema = object({
   participants: array(AgentRelationParticipantSchema),
 })
 
+const DashboardFeedRetentionSchema = record(string(), unknown())
+
 const AgentRelationsResponseSchema = object({
+  dashboard_surface: optional(string()),
+  source: optional(string()),
+  retention: optional(DashboardFeedRetentionSchema),
+  generated_at_iso: optional(string()),
   agent_name: string(),
   collaborators: array(AgentCollaboratorSchema),
   interests: array(string()),
@@ -51,13 +61,7 @@ export type AgentRelationsResponse = InferOutput<typeof AgentRelationsResponseSc
 export class AgentRelationsSchemaDriftError extends Error {
   readonly issues: readonly BaseIssue<unknown>[]
   constructor(issues: readonly BaseIssue<unknown>[]) {
-    const summary = issues
-      .map(issue => {
-        const path = issue.path?.map(p => String(p.key)).join('.') ?? '<root>'
-        return `${path}: ${issue.message}`
-      })
-      .join('; ')
-    super(`agent-relations schema drift: ${summary}`)
+    super(`agent-relations schema drift: ${formatIssues(issues)}`)
     this.name = AgentRelationsSchemaDriftError.name
     this.issues = issues
   }

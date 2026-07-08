@@ -36,7 +36,7 @@
     [send_resource_updated_notification],
     [dedup_strings], [core_status_resource_ids] +
     [task_resource_ids] + [agent_resource_ids] +
-    [message_resource_ids] + [worktree_resource_ids],
+    [message_resource_ids],
     [resource_id_of_uri],
     [affected_resource_ids_for_tool],
     [handle_initialize_eio],
@@ -83,7 +83,7 @@ val clear_resource_subscriptions_for_session : string -> unit
 val broadcast_tools_list_changed : unit -> unit
 (** Emits [notifications/tools/list_changed] to every
     session.  Fired after a tool registry change (e.g.
-    autoresearch loop start / stop) so dashboards can
+    long-running mutation start / stop) so dashboards can
     refresh their tool inspector without polling. *)
 
 val maybe_emit_resource_notifications :

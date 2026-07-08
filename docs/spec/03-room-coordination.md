@@ -7,8 +7,9 @@ code_refs:
   - lib/goal/
   - lib/tool_task.ml
   - lib/tool_agent.ml
-  - lib/tool_worktree.ml
   - lib/tool_control.ml
+  - lib/coord/coord_git.ml
+  - lib/coord/coord_task_claim.ml
   - lib/tool_schemas/tool_schemas_coord_extra.ml
 ---
 
@@ -22,13 +23,13 @@ code_refs:
 | Dependencies | 02-types-and-invariants |
 | Modules | 20 (.ml) + 4 (.mli) |
 | LOC | ~7,653 |
-| MCP Tools | `tool_task`, `tool_agent`, `tool_worktree`, `tool_control` |
+| MCP Tools | `tool_task`, `tool_agent`, `Coord_git`-backed worktree lifecycle, `tool_control` |
 
 ---
 
 ## 1. Purpose
 
-Room은 MASC의 핵심 조율 단위다. 에이전트가 참여(join)하고, 태스크를 등록/할당받고, 하트비트로 활성 상태를 유지하며, 투표/합의로 의사결정하고, git worktree로 작업을 격리하는 공간.
+Room은 MASC의 핵심 조율 단위다. 에이전트가 참여(join)하고, 태스크를 등록/할당받고, 하트비트로 활성 상태를 유지하며, 투표/합의로 의사결정하는 공간.
 
 Room 하나가 소유하는 것:
 - **state**: `room_state` 레코드 (protocol version, active agents, message seq, pause flag)
@@ -52,7 +53,7 @@ graph TB
     RT --> RTS[room_task_schedule<br>claim_next / stale]
     RS --> RGC[room_gc<br>zombie / archive]
     RS --> RV[room_vote<br>create / cast]
-    RS --> RWT[room_worktree<br>create / remove]
+    RS --> RWT[coord_git<br>create / remove / list]
     RWT --> RG[room_git<br>git ops]
     RS --> RP[room_portal<br>A2A]
     RS --> RM[room_multi<br>slug / registry]
@@ -73,7 +74,6 @@ graph TB
     TT[tool_task] --> RT
     TA[tool_agent] --> RA
     TH[tool_heartbeat] --> HB
-    TW[tool_worktree] --> RWT
     TC[tool_control<br>pause/resume] --> RI
     TS[tool_social<br>vote] --> RV
   end
@@ -87,7 +87,7 @@ graph TB
 | `coord_eio` | 670 | Eio 백엔드 구현 (direct-style async I/O) |
 | `coord_utils_ops` | 513 | filesystem lock + room 공통 연산 |
 | `coord_gc` | 413 | 좀비 정리, stale 아카이브, 메시지 정리 |
-| `coord_worktree` | 403 | task worktree 관리 |
+| `coord_git` | 353 | git/worktree 관리 |
 | `coord_utils_backend_setup` | 396 | filesystem backend setup |
 | `coord_query` | 373 | 룸 내 에이전트/태스크 카운트 쿼리 |
 | `coord_task_schedule` | 337 | claim_next, starvation prevention |
@@ -121,8 +121,8 @@ type room_state = {
 
 ```ocaml
 type agent = {
-  name : string;           (* nickname: "claude-swift-fox" *)
-  agent_type : string;     (* base type: "claude", "gemini" *)
+  name : string;           (* nickname: "agent-llm-a-swift-fox" *)
+  agent_type : string;     (* base type: "agent-llm-a", "provider-f" *)
   status : agent_status;   (* Active | Busy | Inactive *)
   capabilities : string list;
   current_task : string option;
@@ -284,11 +284,10 @@ type goal_phase =
 - `goal.require_completion_approval`: verification 통과 후 operator approval gate 필요 여부
 
 도구 surface:
-- `masc_goal_list`: `phase` 기준 조회를 우선 지원하고, `status`는 compatibility alias로만 유지
+- `masc_goal_list`: `phase` 기준 조회만 지원한다. `status` 입력 alias는 제거됐다.
 - `masc_goal_upsert`: goal metadata + verifier policy 설정
 - `masc_goal_transition`: explicit Goal FSM action (`request_complete`, `pause`, `resume`, `operator_block`, `approve_completion`, ...)
 - `masc_goal_verify`: open verification request에 대한 1 principal 1 vote
-- `masc_goal_review`: legacy wrapper. 새 lifecycle / quorum flow의 정식 surface는 아님
 
 전이 요약:
 
@@ -441,14 +440,14 @@ type mode =
 
 ---
 
-## 9. Git Operations (`room_worktree`)
+## 9. Git Operations (`coord_git`)
 
 에이전트별 git worktree 격리.
 
 ### 9.1 Worktree Create
 
 ```
-worktree_create_r ~agent_name ~task_id ~base_branch
+Coord_git.create ~agent_name ~task_id ~base_branch
 ```
 
 1. git 저장소 검증 (`.git` 존재 확인)
@@ -461,26 +460,17 @@ worktree_create_r ~agent_name ~task_id ~base_branch
 ### 9.2 Worktree Remove
 
 ```
-worktree_remove_r ~agent_name ~task_id
+Coord_git.remove ~agent_name ~task_id
 ```
 
 - `git worktree remove --force`
 - 로컬 브랜치 삭제
 
-### 9.3 Task Sandbox (`task_sandbox`)
+### 9.3 Task Worktree Metadata
 
-`Room_worktree` 위에 고수준 샌드박스 생명주기를 제공.
-
-```ocaml
-type sandbox = {
-  task_id : string;
-  worktree_path : string;
-  branch_name : string;
-  created_at : float;
-}
-```
-
-- 샌드박스 생성 -> 작업 실행 -> diff 수집 -> 정리
+Per-task workspace ownership is stored on the task as `worktree_info` and
+cleared by `Coord_task_claim.clear_stale_worktree_binding` before a new owner
+claims the task. There is no separate `task_sandbox` module.
 
 ---
 
@@ -616,13 +606,11 @@ Docker-style `{agent_type}-{adjective}-{animal}`:
 | Tool | 동작 |
 |------|------|
 | `masc_agents` | 에이전트 목록 (상태, 좀비 여부 포함) |
-| `masc_register_capabilities` | 에이전트 능력 등록 |
 | `masc_agent_update` | 에이전트 상태/능력 갱신 |
 | `masc_find_by_capability` | 능력 기반 에이전트 검색 |
 | `masc_get_metrics` | 에이전트 성과 메트릭 |
 | `masc_agent_fitness` | 에이전트 적합도 평가 |
 | `masc_select_agent` | 태스크에 최적 에이전트 선택 |
-| ~`masc_collaboration_graph`~ | 협업 그래프 (retired) |
 | `masc_consolidate_learning` | 학습 통합 |
 | `masc_agent_card` | 에이전트 카드 조회 |
 | `masc_agent_relations` | 에이전트 관계 조회 |
@@ -636,13 +624,10 @@ Docker-style `{agent_type}-{adjective}-{animal}`:
 | `masc_heartbeat_stop` | 하트비트 중단 |
 | `masc_heartbeat_list` | 활성 하트비트 목록 |
 
-### 14.5 Worktree (`tool_worktree`)
+### 14.5 Worktree (`Coord_git`)
 
-| Tool | 동작 |
-|------|------|
-| `masc_worktree_create` | 에이전트+태스크별 worktree 생성 |
-| `masc_worktree_remove` | worktree 삭제 |
-| `masc_worktree_list` | worktree 목록 |
+별도 worktree MCP tool은 없다. repo/worktree 조작은 `Execute`에서
+`executable="git"`와 typed `argv`를 사용한다.
 
 ### 14.6 Control (`tool_control`)
 
@@ -652,7 +637,7 @@ Docker-style `{agent_type}-{adjective}-{animal}`:
 | `masc_resume` | Room 재개 |
 | `masc_pause_status` | 정지 상태 조회 |
 
-### 14.7 Social (`tool_social`, vote 부분)
+### 14.6 Social (`tool_social`, vote 부분)
 
 | Tool | 동작 |
 |------|------|
@@ -674,7 +659,6 @@ Docker-style `{agent_type}-{adjective}-{animal}`:
 | INV-ROOM-008 | GC Phase 3 실패 시 Phase 4(파일 삭제)를 건너뛴다 (데이터 보존) | `room_gc.cleanup_zombies` |
 | INV-ROOM-009 | claim_next는 현재 보유 태스크를 자동 해제한 후 새 태스크를 할당한다 | `room_task_schedule.claim_next_r` (BUG-004) |
 | INV-ROOM-010 | 닉네임은 동일 agent_type에 대해 세션 내 재사용된다 (identity drift 방지) | `room_lifecycle.join` |
-| INV-ROOM-011 | Worktree 경로는 반드시 `.worktrees/` 하위에 생성된다 (경로 탈출 방지) | `room_worktree.ensure_worktree_path` |
 | INV-ROOM-012 | historical: `"default"` room은 named-room registry에서 reserved였다 | removed named-room registry |
 | INV-ROOM-013 | 투표에서 각 에이전트는 1회만 투표할 수 있다 | `room_vote.vote_cast` |
 | INV-ROOM-014 | Portal은 양방향이다 (reverse portal 자동 생성) | `room_portal.portal_open_r` |
@@ -702,8 +686,8 @@ Docker-style `{agent_type}-{adjective}-{animal}`:
 - `lib/coord/coord_hooks.ml`: 콜백 ref (GC, board, governance)
 - `lib/coord/coord_query.ml`: 룸 내 에이전트/태스크 카운트 쿼리
 - `lib/coord/coord_status.ml`: 상태 요약 출력
-- `lib/coord/coord_git.ml`: git 명령 래퍼 (base branch 해석, worktree 목록)
-- `lib/task_sandbox.ml`: 태스크별 worktree sandbox 고수준 API
+- `lib/coord/coord_git.ml`: git 명령 래퍼 (base branch 해석, worktree create/remove/list)
+- `lib/coord/coord_task_claim.ml`: claim 전 stale worktree binding 정리
 - 02-types-and-invariants: `agent_status`, `task_status`, `room_state` 타입 정의
 - 05-keeper-agent: Keeper가 Room GC와 태스크 해제에 관여하는 경로
 - 09-server-transport: MCP tool dispatch가 Room 함수를 호출하는 경로

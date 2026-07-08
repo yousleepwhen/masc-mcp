@@ -1,7 +1,6 @@
-(** Background shell task lifecycle — Phase 2 of the Legendary Bash
-    roadmap.
+(** Background shell task lifecycle for the Execute process surface.
 
-    Maps claude-code's [backgroundTaskId] / [BashOutput] / [KillShell]
+    Maps agent_llm_a-code's [backgroundTaskId] / [BashOutput] / [KillShell]
     triad onto OCaml Unix primitives.
 
     Tick 6a (current): pull-based.  [read] drains whatever is pending
@@ -122,11 +121,48 @@ val list_with_started_at : keeper:string -> (task_id * float) list
     wall-clock elapsed time without consulting the child process or
     reading the PID file. *)
 
+type lifetime_guard = { acquire : unit -> (unit -> unit) }
+(** Process-wide guard for long-lived background task resources.
+    [acquire ()] runs before {!Process_eio.spawn_detached}; the returned
+    release callback is held until the task process exits or is reaped.
+    stdout/stderr read FDs may remain open until the next {!read} drains
+    and closes the final snapshot. *)
+
+val set_lifetime_guard : lifetime_guard -> unit
+(** Install a process-wide lifetime guard. The default guard is a no-op. *)
+
+val reset_lifetime_guard_for_testing : unit -> unit
+(** Restore the default no-op guard. Intended for focused tests. *)
+
+val set_exit_watcher_thread_create_for_testing : ((unit -> unit) -> unit) -> unit
+(** Install a process-local exit watcher thread starter. Intended for focused
+    tests that simulate [Thread.create] failure after a detached process has
+    spawned. *)
+
+val reset_exit_watcher_thread_create_for_testing : unit -> unit
+(** Restore the default [Thread.create]-backed exit watcher starter. *)
+
 val set_sidecar_failure_observer : (site:string -> exn -> unit) -> unit
 (** Install the process-local observer for PID sidecar persistence
     failures.  The top-level Prometheus module wires this to
     [masc_bg_task_sidecar_failures_total]; [bg_task] keeps the hook here
     to avoid a lower-library dependency cycle. *)
+
+val set_drain_failure_observer :
+  (fd_kind:string -> err_kind:string -> unit) -> unit
+(** Install the process-local observer for unexpected (non-EAGAIN /
+    EWOULDBLOCK / EINTR / EOF) errors raised by [Unix.read] inside
+    [drain_fd_to_buf].  The top-level Prometheus module wires this to
+    [masc_bg_task_drain_unexpected_errors_total].
+
+    Labels are closed-vocabulary and cardinality-bounded:
+    - [fd_kind] is either ["stdout"] or ["stderr"] (call-site tagged).
+    - [err_kind] is either ["unix_error"] (a [Unix.Unix_error] that
+      is neither EAGAIN/EWOULDBLOCK nor EINTR — e.g. EBADF, EIO,
+      ENOMEM) or ["other"] (any other exception).
+
+    Cancellation ([Eio.Cancel.Cancelled]) is re-raised inside the
+    drain loop and never reaches the observer. *)
 
 val reap_orphans : base_path:string -> int
 (** Startup hook: read PID files under \`.masc/keeper/*/bg/*.pid\`,

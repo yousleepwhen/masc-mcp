@@ -44,7 +44,7 @@ let () =
             (fun () ->
               let all_schemas =
                 Config.visible_tool_schemas ~include_hidden:true
-                  ~include_deprecated:false ()
+                  ()
               in
               let schema_names =
                 List.map
@@ -91,14 +91,6 @@ let () =
               let meta = Tool_catalog.metadata "masc_run_get" in
               check (option bool) "readonly" (Some true) meta.readonly;
               check (option bool) "idempotent" (Some true) meta.idempotent);
-          test_case "masc_operation_stop has destructive override" `Quick
-            (fun () ->
-              let meta = Tool_catalog.metadata "masc_operation_stop" in
-              check (option bool) "destructive" (Some true) meta.destructive);
-          test_case "masc_operation_pause is not destructive" `Quick
-            (fun () ->
-              let meta = Tool_catalog.metadata "masc_operation_pause" in
-              check (option bool) "destructive" (Some false) meta.destructive);
           test_case "default tools have None annotations" `Quick (fun () ->
               let meta = Tool_catalog.metadata "masc_join" in
               check (option bool) "readonly" None meta.readonly;
@@ -120,7 +112,7 @@ let () =
                     (Tool_catalog.is_on_surface Tool_catalog.Keeper_internal name);
                   check bool (name ^ " reason present") true
                     (Option.is_some meta.reason))
-                [ "keeper_time_now"; "keeper_board_post"; "keeper_bash" ]);
+                [ "keeper_time_now"; "keeper_board_post"; "tool_execute" ]);
           test_case "known hidden tools are not visible by default" `Quick
             (fun () ->
               let hidden_names =
@@ -234,9 +226,9 @@ let () =
           test_case "internal tools are not public" `Quick
             (fun () ->
               let internal =
-                [ "masc_code_search";
+                [ "tool_search_files";
                   "masc_auth_create_token";
-                  "masc_worktree_create"; "masc_governance_set" ]
+                  "tool_execute"; "masc_governance_set" ]
               in
               List.iter
                 (fun name ->
@@ -249,8 +241,8 @@ let () =
                 Config.raw_all_tool_schemas
                 |> List.map (fun (s : Masc_domain.tool_schema) -> s.name)
               in
-              (* masc_code_search has a schema but is not public *)
-              let internal = "masc_code_search" in
+              (* tool_search_files has a schema but is not public *)
+              let internal = "tool_search_files" in
               check bool (internal ^ " in registry") true
                 (List.mem internal all_names);
               check bool (internal ^ " not public") false

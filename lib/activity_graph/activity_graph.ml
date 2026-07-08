@@ -5,7 +5,7 @@ include Activity_graph_types
 include Activity_graph_registry
 include Activity_graph_reducer
 
-module StringMap = Map.Make (String)
+module StringMap = Set_util.StringMap
 
 (* ================================================================ *)
 (* File storage paths                                               *)
@@ -162,30 +162,132 @@ let collect_event_files config =
              None)
     |> List.flatten
 
+let repair_event_file_utf8_once config path =
+  let content = Fs_compat.load_file path in
+  if String.is_valid_utf_8 content then
+    content
+  else
+    Coord_utils.with_file_lock config (lock_path config) (fun () ->
+        let latest = Fs_compat.load_file path in
+        if String.is_valid_utf_8 latest then
+          latest
+        else
+          let repair =
+            Safe_ops.repair_utf8_text_with_stats ~surface:"activity_graph"
+              ~path:("event_file:" ^ path)
+              latest
+          in
+          if not repair.changed then
+            latest
+          else begin
+            (if String.equal path (day_path config) then
+               Log.Misc.warn
+                 "[activity_graph] UTF-8 repaired current event file in memory path=%s \
+                  invalid_bytes=%d action=read_only_current_day"
+                 path repair.invalid_bytes
+             else
+               match Fs_compat.save_file_atomic path repair.text with
+               | Ok () ->
+                   Log.Misc.warn
+                     "[activity_graph] UTF-8 repaired persisted event file path=%s \
+                      invalid_bytes=%d action=rewrite_once"
+                     path repair.invalid_bytes
+               | Error msg ->
+                   Log.Misc.warn
+                     "[activity_graph] UTF-8 repaired event file in memory path=%s \
+                      invalid_bytes=%d action=rewrite_failed error=%s"
+                     path repair.invalid_bytes msg);
+            repair.text
+          end)
+
+let parse_events_from_file config path =
+  let content = repair_event_file_utf8_once config path in
+  let lines = String.split_on_char '\n' content in
+  List.filter_map
+    (fun line ->
+      if String.trim line = "" then None else parse_event_line line)
+    lines
+
+(* RFC-0201 Step 4 — past-day file cache.
+
+   [read_all_events] historically full-scans every activity-events
+   JSONL file on every call.  With 15+ MB of historic data that
+   compute dominated the background refresh fiber and undermined
+   the Step 1 wait-free read (snapshot only refreshes after the
+   fiber finishes one full scan).
+
+   Past-day files are immutable: once the calendar day rolls over,
+   no process appends to that JSONL again.  Cache the parsed event
+   list per (path, mtime).  On re-read, if mtime matches the cached
+   entry, reuse the parsed list and skip [Fs_compat.load_file] +
+   line split + parse.  Only the current-day file (whose mtime
+   changes on append) is reparsed each refresh. *)
+module Past_day_path_map = Stdlib.Map.Make (String)
+
+(* [Atomic.t] holding an immutable persistent map keeps reads
+   wait-free across HTTP fibers and the refresh fiber.  CAS update
+   loses only the *parse result* on contention; the underlying
+   file remains the SSOT, so a lost insert just causes a re-parse
+   on the next call. *)
+let past_day_cache : (float * event list) Past_day_path_map.t Atomic.t =
+  Atomic.make Past_day_path_map.empty
+
+let past_day_cache_lookup path mtime =
+  match Past_day_path_map.find_opt path (Atomic.get past_day_cache) with
+  | Some (cached_mtime, parsed) when Float.equal cached_mtime mtime ->
+    Some parsed
+  | _ -> None
+
+let rec past_day_cache_insert path mtime parsed =
+  let prev = Atomic.get past_day_cache in
+  let next = Past_day_path_map.add path (mtime, parsed) prev in
+  if not (Atomic.compare_and_set past_day_cache prev next) then
+    past_day_cache_insert path mtime parsed
+
+let file_mtime path =
+  try Some (Unix.stat path).Unix.st_mtime with _ -> None
+
 let read_all_events config =
+  let current_day = day_path config in
   collect_event_files config
   |> List.fold_left
        (fun acc path ->
-         let content = Fs_compat.load_file path in
-         let lines = String.split_on_char '\n' content in
          let rows =
-           List.filter_map (fun line ->
-             if String.trim line = "" then None
-             else parse_event_line line) lines
+           if String.equal path current_day then
+             (* Current-day file mtime changes on every append. *)
+             parse_events_from_file config path
+           else
+             match file_mtime path with
+             | None -> parse_events_from_file config path
+             | Some mtime ->
+               (match past_day_cache_lookup path mtime with
+                | Some cached -> cached
+                | None ->
+                  let parsed = parse_events_from_file config path in
+                  past_day_cache_insert path mtime parsed;
+                  parsed)
          in
          List.rev_append rows acc)
        []
   |> List.sort (fun a b -> Int.compare a.seq b.seq)
 
+let max_event_seq events =
+  List.fold_left (fun acc (value : event) -> max acc value.seq) 0 events
+
 let matches_filters ?(kinds = []) (value : event) =
   kinds = [] || List.mem value.kind kinds
 
-(** Returns [(page, total_matching)] where [total_matching] is the count
-    of all events matching filters before [limit] is applied. *)
-let list_events_with_total config ?(kinds = []) ~after_seq ~limit
+(** Returns [(page, total_matching, latest_store_seq, latest_matching_seq)].
+    [total_matching] and [latest_matching_seq] are computed before [limit].
+    [latest_store_seq] is the max of the persisted sequence counter and the
+    JSONL rows so a stale [_seq] file cannot make dashboard cursors move
+    backward. *)
+let list_events_with_meta config ?(kinds = []) ~after_seq ~limit
     ?since_ms () =
+  let stored = read_all_events config in
+  let latest_store_seq = max (read_current_seq config) (max_event_seq stored) in
   let all =
-    read_all_events config
+    stored
     |> List.filter (fun value ->
            value.seq > after_seq
            && matches_filters ~kinds value
@@ -200,10 +302,22 @@ let list_events_with_total config ?(kinds = []) ~after_seq ~limit
     else
       all |> List.drop (max 0 (total - limit))
   in
+  (page, total, latest_store_seq, max_event_seq all)
+
+(** Returns [(page, total_matching)] where [total_matching] is the count
+    of all events matching filters before [limit] is applied. *)
+let list_events_with_total config ?(kinds = []) ~after_seq ~limit
+    ?since_ms () =
+  let page, total, _latest_store_seq, _latest_matching_seq =
+    list_events_with_meta config ~kinds ~after_seq ~limit ?since_ms ()
+  in
   (page, total)
 
 let list_events config ?(kinds = []) ~after_seq ~limit () =
-  fst (list_events_with_total config ~kinds ~after_seq ~limit ())
+  let page, _total, _latest_store_seq, _latest_matching_seq =
+    list_events_with_meta config ~kinds ~after_seq ~limit ()
+  in
+  page
 
 let window_meta ~limit ~events_shown ~events_store_total
     ?(extra = []) () : Yojson.Safe.t =
@@ -215,6 +329,8 @@ let window_meta ~limit ~events_shown ~events_store_total
   ] @ extra)
 
 let latest_seq config = read_current_seq config
+
+let activity_events_store_path config = root_dir config
 
 (* ================================================================ *)
 (* Event emission                                                   *)
@@ -269,7 +385,9 @@ let emit config ?actor ?subject ?(tags = []) ~kind ~payload () =
 (* ================================================================ *)
 
 let json_response config ?(kinds = []) ~after_seq ~limit () =
-  let events = list_events config ~kinds ~after_seq ~limit () in
+  let events, total_matching, latest_store_seq, latest_matching_seq =
+    list_events_with_meta config ~kinds ~after_seq ~limit ()
+  in
   let next_after_seq =
     match List.rev events with
     | last :: _ -> last.seq
@@ -277,14 +395,38 @@ let json_response config ?(kinds = []) ~after_seq ~limit () =
   in
   `Assoc
     [
+      ("generated_at_iso", `String (Masc_domain.now_iso ()));
+      ("dashboard_surface", `String "/api/v1/activity/events");
+      ("source", `String "activity_graph_jsonl");
+      ( "retention",
+        `Assoc
+          [
+            ("scope", `String "activity_events");
+            ("coordination_root", `String (Coord_utils.masc_dir config));
+            ("durable_store", `String (activity_events_store_path config));
+            ("file_pattern", `String "activity-events/YYYY-MM/DD.jsonl");
+            ("seq_counter", `String (seq_path config));
+            ( "cache_policy",
+              `String
+                "uncached; reads persisted JSONL rows; delta cursor via after_seq" );
+          ] );
+      ( "query",
+        `Assoc
+          [
+            ("after_seq", `Int after_seq);
+            ("limit", `Int limit);
+            ("kinds", `List (List.map (fun value -> `String value) kinds));
+          ] );
       ("events", `List (List.map event_to_yojson events));
       ("count", `Int (List.length events));
+      ("total_matching_events", `Int total_matching);
       ("after_seq", `Int after_seq);
       ("next_after_seq", `Int next_after_seq);
       ("limit", `Int limit);
       ("room_id", `String "default");  (* backward compat *)
       ("kinds", `List (List.map (fun value -> `String value) kinds));
-      ("latest_seq", `Int (latest_seq config));
+      ("latest_seq", `Int latest_store_seq);
+      ("latest_matching_seq", `Int latest_matching_seq);
     ]
 
 (* ================================================================ *)

@@ -2,17 +2,13 @@ module Lib = Masc_mcp
 open Alcotest
 
 let assoc key attrs = List.assoc_opt key attrs
-let cascade_name raw = Lib.Keeper_cascade_profile.Runtime_name raw
+let cascade_name raw = Cascade_name.of_string_exn raw
 let attr_string = function
   | Some (`String s) -> Some s
   | _ -> None
 
 let attr_bool = function
   | Some (`Bool b) -> Some b
-  | _ -> None
-
-let attr_int = function
-  | Some (`Int i) -> Some i
   | _ -> None
 
 let test_keeper_turn_span_name () =
@@ -23,12 +19,12 @@ let test_keeper_turn_span_name () =
     (Lib.Otel_genai.keeper_turn_span_name ~keeper_name:"ani1999")
 ;;
 
-let test_keeper_turn_attrs_dual_emit () =
+let test_keeper_turn_attrs_canonical_emit () =
   let attrs =
     Lib.Otel_genai.keeper_turn_attrs
       ~keeper_name:"ani1999"
       ~agent_name:"ani1999"
-      ~cascade_name:(cascade_name "research")
+      ~cascade_name:(cascade_name "tier-group.research")
       ~trace_id:"trace-123"
       ~generation:7
       ~max_context:120000
@@ -66,13 +62,9 @@ let test_keeper_turn_attrs_dual_emit () =
   check
     (option (of_pp Fmt.Dump.string))
     "masc cascade extension"
-    (Some "research")
+    (Some "tier-group.research")
     (attr_string (assoc Lib.Otel_genai.Attr_key.masc_gen_ai_cascade_name attrs));
-  check
-    (option (of_pp Fmt.Dump.string))
-    "legacy cascade"
-    (Some "research")
-    (attr_string (assoc Lib.Otel_genai.Attr_key.keeper_cascade_name attrs));
+  check bool "no duplicate cascade key" false (List.mem_assoc "keeper.cascade.name" attrs);
   check
     (option (of_pp Fmt.Dump.string))
     "task id"
@@ -85,7 +77,7 @@ let test_keeper_turn_attrs_omit_missing_task () =
     Lib.Otel_genai.keeper_turn_attrs
       ~keeper_name:"ani1999"
       ~agent_name:"ani1999"
-      ~cascade_name:(cascade_name "research")
+      ~cascade_name:(cascade_name "tier-group.research")
       ~trace_id:"trace-123"
       ~generation:7
       ~max_context:120000
@@ -305,7 +297,7 @@ let test_attr_key_registry_has_no_orphans () =
 ;;
 
 let test_tool_execution_attrs () =
-  let attrs = Lib.Otel_genai.tool_execution_attrs ~tool_name:"keeper_shell" in
+  let attrs = Lib.Otel_genai.tool_execution_attrs ~tool_name:"tool_search_files" in
   check
     (option (of_pp Fmt.Dump.string))
     "tool operation"
@@ -314,7 +306,7 @@ let test_tool_execution_attrs () =
   check
     (option (of_pp Fmt.Dump.string))
     "tool name"
-    (Some "keeper_shell")
+    (Some "tool_search_files")
     (attr_string (assoc Lib.Otel_genai.Attr_key.gen_ai_tool_name attrs))
 ;;
 
@@ -329,19 +321,26 @@ let test_dispatch_hook_emits_tool_span_payload () =
         ~emit_span:(fun ~name ~attrs -> spans := (name, attrs) :: !spans)
         (fun () ->
           Lib.Otel_dispatch_hook.install ();
-          let result : Lib.Tool_result.t =
-            { success = true
-            ; data = `String "ok"
-            ; legacy_message = "ok"
-            ; tool_name = "keeper_shell"
-            ; duration_ms = 123.4
-            }
+          let result : Tool_result.result =
+            Ok
+              { Tool_result.tool_name = "tool_search_files"
+              ; data = `String "ok"
+              ; duration_ms = 123.4
+              }
           in
-          let returned = Lib.Tool_dispatch.run_post_hooks result in
-          check bool "post-hook preserves success" true returned.success);
+          let returned =
+            Lib.Tool_dispatch_emit.finalize
+              ~outcome:Lib.Dispatch_outcome.Handled
+              (Some result)
+          in
+          match returned with
+          | Some returned ->
+              check bool "finalizer preserves success" true
+                (Tool_result.is_success returned)
+          | None -> fail "expected finalized result");
       match !spans with
       | [ (name, attrs) ] ->
-          check string "span name" "tool/keeper_shell" name;
+          check string "span name" "tool/tool_search_files" name;
           check
             (option (of_pp Fmt.Dump.string))
             "tool operation"
@@ -351,24 +350,16 @@ let test_dispatch_hook_emits_tool_span_payload () =
           check
             (option (of_pp Fmt.Dump.string))
             "gen_ai tool name"
-            (Some "keeper_shell")
+            (Some "tool_search_files")
             (attr_string
                (assoc Lib.Otel_genai.Attr_key.gen_ai_tool_name attrs));
+          check bool "no legacy tool.name" false (List.mem_assoc "tool.name" attrs);
+          check bool "no legacy tool.success" false (List.mem_assoc "tool.success" attrs);
           check
-            (option (of_pp Fmt.Dump.string))
-            "legacy tool name"
-            (Some "keeper_shell")
-            (attr_string (assoc Lib.Otel_genai.Attr_key.tool_name attrs));
-          check
-            (option bool)
-            "legacy tool success"
-            (Some true)
-            (attr_bool (assoc Lib.Otel_genai.Attr_key.tool_success attrs));
-          check
-            (option int)
-            "legacy duration ms"
-            (Some 123)
-            (attr_int (assoc Lib.Otel_genai.Attr_key.tool_duration_ms attrs));
+            bool
+            "no legacy tool.duration_ms"
+            false
+            (List.mem_assoc "tool.duration_ms" attrs);
           check
             (option (of_pp Fmt.Dump.string))
             "otel status"
@@ -382,7 +373,7 @@ let () =
     "otel_genai"
     [ ( "keeper turn"
       , [ test_case "span name" `Quick test_keeper_turn_span_name
-        ; test_case "dual emit attrs" `Quick test_keeper_turn_attrs_dual_emit
+        ; test_case "canonical emit attrs" `Quick test_keeper_turn_attrs_canonical_emit
         ; test_case "omit missing task id" `Quick test_keeper_turn_attrs_omit_missing_task
         ; test_case "attr key registry boundaries" `Quick
             test_attr_key_registry_boundaries

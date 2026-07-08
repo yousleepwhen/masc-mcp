@@ -72,9 +72,16 @@ let capacity url =
 
 type release = unit -> unit
 
+type acquire_result =
+  | Acquired of release
+  | Full of { retry_after_s : float option }
+  | Unregistered
+
+let default_retry_after_sec = 5.0
+
 let try_acquire url =
   match lookup url with
-  | None -> None
+  | None -> Unregistered
   | Some e ->
     (* Optimistic CAS on the atomic counter.  Loop to retry when
        another fiber bumps the count between read and CAS. *)
@@ -88,7 +95,7 @@ let try_acquire url =
           kind = Rejected_full;
           active_after = current;
         };
-        None
+        Full { retry_after_s = Some default_retry_after_sec }
       end
       else if Atomic.compare_and_set e.active current (current + 1) then (
         Cascade_client_capacity_history.record {
@@ -111,7 +118,7 @@ let try_acquire url =
             }
           end
         in
-        Some release)
+        Acquired release)
       else attempt ()
     in
     attempt ()
@@ -143,9 +150,6 @@ let int_of_env ?(default = 0) name =
   | Invalid raw ->
     Log.Misc.warn "Invalid int for %s=%S, using default %d" name raw default;
     default
-
-let ollama_default_max () =
-  max 1 (int_of_env ~default:1 "MASC_OLLAMA_MAX_CONCURRENT")
 
 let cli_default_max () =
   max 1 (int_of_env ~default:1 "MASC_CLI_MAX_CONCURRENT")
@@ -205,44 +209,15 @@ let () =
       (fun (url, max_concurrent) -> register ~url ~max_concurrent)
       (parse_capacity_env s)
 
-(* ── Heuristic auto-registration for ollama-like URLs ─────────────
-
-   Auto-registration runs whenever a candidate set arrives without an
-   explicit MASC_CLIENT_CAPACITY entry. The pattern check delegates to
-   [Masc_network_defaults] so the URL→provider mapping stays in one
-   place; we used to make these decisions here and elsewhere with
-   ad-hoc substring checks, so the audit (audit_derived_state #9, Kimi
-   3-7) flagged it as a hidden heuristic. Operators who want to pin
-   capacity should use MASC_CLIENT_CAPACITY (parsed above); when this
-   path fires we log it at info level so the auto-decision is visible
-   in the operations log. *)
-
-let looks_like_ollama = Masc_network_defaults.is_ollama_url
+(* The old [looks_like_ollama] / [auto_register_for_candidates] /
+   [auto_register_ollama_with_override] helpers used a [:11434]
+   substring scan to decide which URLs to register. That heuristic
+   misclassified non-ollama services on the same port and missed
+   ollama on non-default ports. The keeper-side caller now consults the
+   provider-kind HTTP-probe capability and calls {!register} directly, so the
+   heuristic is gone. *)
 
 let looks_like_cli_sentinel = Masc_network_defaults.is_cli_sentinel_url
-
-let auto_register_for_candidates ~base_urls =
-  let max_concurrent = ollama_default_max () in
-  List.iter
-    (fun url ->
-       if looks_like_ollama url && not (is_registered url) then begin
-         Log.Misc.info
-           "auto-registering ollama-like url=%S with max_concurrent=%d \
-            (override via MASC_CLIENT_CAPACITY)" url max_concurrent;
-         register ~url ~max_concurrent
-       end)
-    base_urls
-
-let auto_register_ollama_with_override ~base_urls ~max_concurrent =
-  List.iter
-    (fun url ->
-       if looks_like_ollama url && not (is_registered url) then begin
-         Log.Misc.info
-           "auto-registering ollama-like url=%S with override max_concurrent=%d"
-           url max_concurrent;
-         register ~url ~max_concurrent
-       end)
-    base_urls
 
 let auto_register_cli_for_candidates ~capacity_keys =
   let max_concurrent = cli_default_max () in

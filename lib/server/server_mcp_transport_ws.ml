@@ -250,7 +250,7 @@ let valid_dashboard_slice = function
   | _ -> false
 
 let dashboard_slice_for_sse_type = function
-  | "project_snapshot" | "namespace_truth_snapshot" | "room_truth_snapshot" ->
+  | "project_snapshot" | "namespace_truth_snapshot" ->
       Some "namespace"
   | "execution_snapshot" ->
       Some "execution"
@@ -333,15 +333,22 @@ let verify_dashboard_token ~base_path token =
             | Error err -> Error (Masc_domain.masc_error_to_string err)))
 
 let dashboard_hello ~base_path ~session_id ?token () =
-  match find_session session_id with
-  | None -> Error "WebSocket session not found"
-  | Some session -> (
-      match verify_dashboard_token ~base_path token with
-      | Error msg -> Error msg
-      | Ok agent ->
-          session.dashboard_authenticated <- true;
-          session.dashboard_agent <- agent;
-          Ok (dashboard_auth_success_payload session))
+  let start_time = Unix.gettimeofday () in
+  let result =
+    match find_session session_id with
+    | None -> Error "WebSocket session not found"
+    | Some session -> (
+        match verify_dashboard_token ~base_path token with
+        | Error msg -> Error msg
+        | Ok agent ->
+            session.dashboard_authenticated <- true;
+            session.dashboard_agent <- agent;
+            Ok (dashboard_auth_success_payload session))
+  in
+  Transport_metrics.observe_ws_dashboard_hello_latency
+    ~success:(match result with Ok _ -> true | Error _ -> false)
+    (Unix.gettimeofday () -. start_time);
+  result
 
 let dashboard_snapshot session =
   let slices =
@@ -415,6 +422,21 @@ let dashboard_unsubscribe ~session_id ?slices () =
                   slices);
         Ok (`Assoc [ ("session", dashboard_session_result session) ])
       end
+
+let dashboard_ping ~session_id () =
+  match find_session session_id with
+  | None -> Error "WebSocket session not found"
+  | Some session ->
+      if not session.dashboard_authenticated then
+        Error "dashboard/ping requires dashboard/hello first"
+      else
+        Ok
+          (`Assoc
+            [
+              ("ok", `Bool true);
+              ("session_id", `String session.id);
+              ("seq", `Int session.dashboard_seq);
+            ])
 
 let dashboard_ack ~session_id ~seq ?buffered_amount () =
   match find_session session_id with
@@ -528,7 +550,30 @@ let parse_sse_dashboard_event sse_event =
       | None -> None
       | Some json_body ->
         match Yojson.Safe.from_string json_body with
-        | exception _ -> None
+        | exception (Yojson.Json_error msg) ->
+            (* Iter 28: previously silently dropped — now emit a counter
+               and a warn with a size-bounded body preview so operators
+               can detect malformed frames from clients. Behavior is
+               preserved (still returns None). *)
+            let preview_len = min 200 (String.length json_body) in
+            Log.Server.warn
+              "[mcp-ws] dropping incoming frame: malformed JSON (%s); \
+               body_preview=%s"
+              msg
+              (String.sub json_body 0 preview_len);
+            Transport_metrics.inc_ws_frame_json_parse_failure
+              ~error_kind:Transport_metrics.Yojson_parse_error;
+            None
+        | exception Eio.Cancel.Cancelled e -> raise (Eio.Cancel.Cancelled e)
+        | exception exn ->
+            let preview_len = min 200 (String.length json_body) in
+            Log.Server.warn
+              "[mcp-ws] dropping incoming frame: %s; body_preview=%s"
+              (Printexc.to_string exn)
+              (String.sub json_body 0 preview_len);
+            Transport_metrics.inc_ws_frame_json_parse_failure
+              ~error_kind:Transport_metrics.Other_ws_frame_json_parse_error;
+            None
         | `Assoc fields as event_json -> (
             match List.assoc_opt "type" fields with
             | Some (`String event_type) ->
@@ -709,8 +754,13 @@ let send_dashboard_or_raw_sse session sse_event =
              collapses N identical [Bytes.of_string] allocations into 1. *)
           send_text_shared_checked ~context:"sse-forward" session sse_event
   end
-  else
-    send_text_shared_checked ~context:"sse-forward" session sse_event
+  else begin
+    (* Unauthenticated session: drop SSE events until dashboard/hello
+       completes.  Forwarding before hello floods the client with SSE
+       frames that can bury the JSON-RPC hello response, causing the
+       browser RPC timeout to fire and triggering a reconnect loop. *)
+    true
+  end
 
 let read_payload_string payload ~len ~on_complete =
   let buffer = Bytes.create len in

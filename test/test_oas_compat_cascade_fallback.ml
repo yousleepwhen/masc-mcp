@@ -1,11 +1,11 @@
 (* test/test_oas_compat_cascade_fallback.ml
 
-   #9932: kimi_cli permanent failure blocks 5 keepers (409 BDI blockers) —
-   big_three cascade fallback was not firing because
+   #9932: a provider-local CLI failure blocked 5 keepers (409 BDI blockers) —
+   primary cascade fallback was not firing because
    [Oas_compat.Http_client.should_cascade] classified per-provider CLI
    rejections as non-cascadable. The correct policy: a permanent error
-   specific to one provider (kimi auth/config, gemini startup crash) still
-   cascades because the NEXT hop is a different provider that may succeed.
+   specific to one provider (auth/config, startup crash) still cascades because
+   the NEXT hop is a different provider that may succeed.
 
    This test pins the should_cascade policy for AcceptRejected reasons. The
    FSM call site is [lib/cascade/cascade_fsm.ml:43-48]: Call_err -> Try_next
@@ -23,55 +23,55 @@
 
 module Http_client = Llm_provider.Http_client
 
-let test_kimi_cli_exit_1_cascades () =
+let test_provider_cli_exit_1_cascades () =
   let reason =
-    "kimi_cli rejected the request (exit 1). "
+    "provider CLI rejected the request (exit 1). "
     ^ "This is usually a permanent auth/config/model error rather "
     ^ "than a transient transport failure. "
-    ^ "kimi exited with code 1: To resume this session…"
+    ^ "cli-tool exited with code 1: To resume this session…"
   in
   let err = Http_client.AcceptRejected { reason } in
   Alcotest.(check bool)
-    "kimi_cli exit 1 must cascade — permanent error is Moonshot-specific, \
-     next cascade hop (claude/gpt/ollama) unaffected"
+    "provider CLI exit 1 must cascade — permanent error is provider-local, \
+     next cascade hop (agent_llm_a/gpt/ollama) unaffected"
     true
     (Oas_compat.Http_client.should_cascade err)
 
-let test_gemini_cli_startup_crash_cascades () =
+let test_cli_tool_b_startup_crash_cascades () =
   let reason =
-    "gemini_cli startup crash detected (unsettled top-level await / \
+    "cli_tool_b startup crash detected (unsettled top-level await / \
      yoga_wasm). Known bad CLI runtime; rejecting without retry so the \
      cascade can move on."
   in
   let err = Http_client.AcceptRejected { reason } in
   Alcotest.(check bool)
-    "gemini_cli startup crash must cascade — OAS source labels intent \
+    "cli_tool_b startup crash must cascade — OAS source labels intent \
      explicitly ('so the cascade can move on')"
     true
     (Oas_compat.Http_client.should_cascade err)
 
-let test_kimi_cli_startup_crash_cascades () =
+let test_provider_cli_startup_crash_cascades () =
   let reason =
-    "kimi_cli startup crash while setting process title \
+    "provider CLI startup crash while setting process title \
      (UnicodeDecodeError). This is a local CLI/runtime failure, not \
      keeper auth or sandbox failure; rejecting without retry so the \
      cascade can move on."
   in
   let err = Http_client.AcceptRejected { reason } in
   Alcotest.(check bool)
-    "kimi_cli startup crash must cascade — next provider may still succeed"
+    "provider CLI startup crash must cascade — next provider may still succeed"
     true
     (Oas_compat.Http_client.should_cascade err)
 
 let test_does_not_support_still_cascades () =
   (* Regression pin for #9850: the provider-capability-mismatch marker
-     added by codex_cli runtime_mcp_auth / tool_support must keep
+     added by cli_tool_a runtime_mcp_auth / tool_support must keep
      cascading. *)
   let err =
     Http_client.AcceptRejected
       {
         reason =
-          "codex_cli does not support runtime_mcp_auth headers for \
+          "cli_tool_a does not support runtime_mcp_auth headers for \
            masc_plan_set_task, masc_claim_next, masc_transition";
       }
   in
@@ -100,6 +100,68 @@ let test_http_429_cascades () =
     "HTTP 429 cascades (baseline)"
     true
     (Oas_compat.Http_client.should_cascade err)
+
+let test_timeout_error_cascades () =
+  let err =
+    Http_client.TimeoutError
+      { phase = Http_client.Http_operation; message = "provider request timed out" }
+  in
+  Alcotest.(check bool)
+    "TimeoutError remains a provider-hop failure and should cascade"
+    true
+    (Oas_compat.Http_client.should_cascade err);
+  (match Oas_compat.Http_client.classify err with
+   | Network_error -> ()
+   | _ -> Alcotest.fail "TimeoutError must classify with network retry policy");
+  Alcotest.(check string)
+    "TimeoutError message is preserved"
+    "provider request timed out"
+    (Oas_compat.Http_client.error_message err)
+
+let test_tls_error_does_not_cascade () =
+  let err =
+    Http_client.NetworkError
+      { kind = Tls_error; message = "TLS failure: invalid certificate chain" }
+  in
+  Alcotest.(check bool)
+    "TLS errors are route/config terminal and must not fan out to another provider"
+    false
+    (Oas_compat.Http_client.should_cascade err);
+  match Oas_compat.Http_client.classify err with
+  | Tls_error -> ()
+  | _ -> Alcotest.fail "TLS NetworkError must classify as Tls_error"
+
+let test_local_resource_error_does_not_cascade () =
+  let err =
+    Http_client.NetworkError
+      { kind = Local_resource_exhaustion; message = "Too many open files in system" }
+  in
+  Alcotest.(check bool)
+    "local resource exhaustion must not cascade"
+    false
+    (Oas_compat.Http_client.should_cascade err);
+  match Oas_compat.Http_client.classify err with
+  | Local_resource_exhaustion -> ()
+  | _ -> Alcotest.fail "local resource exhaustion must keep its typed class"
+
+let test_timeout_error_cascades () =
+  let err =
+    Http_client.TimeoutError
+      { phase = Provider_step; message = "provider step timed out" }
+  in
+  Alcotest.(check bool)
+    "typed timeout is provider-local and should cascade"
+    true
+    (Oas_compat.Http_client.should_cascade err);
+  (match Oas_compat.Http_client.classify err with
+   | Provider_timeout -> ()
+   | _ -> Alcotest.fail "TimeoutError must classify as Provider_timeout");
+  let rendered = Oas_compat.Http_client.error_message err in
+  Alcotest.(check bool)
+    "TimeoutError -> message preserves phase"
+    true
+    (Astring.String.is_infix ~affix:"provider_step" rendered
+     && Astring.String.is_infix ~affix:"provider step timed out" rendered)
 
 (* --- ProviderTerminal: pin classify, should_cascade, and the new
        error_message helper. The variant arrived in agent_sdk without
@@ -159,20 +221,20 @@ let test_provider_failure_capacity_cascades () =
             {
               scope = Failure_scope_model;
               retry_after = Some 3.0;
-              model = Some "gemini-2.5-pro";
+              model = Some "provider_f-3.1-pro-preview";
             };
         message = "model overloaded";
       }
   in
   Alcotest.(check bool)
-    "ProviderFailure Capacity_exhausted must cascade"
+    "ProviderFailure Capacity_backpressure must cascade"
     true
     (Oas_compat.Http_client.should_cascade err);
   match Oas_compat.Http_client.classify err with
-  | Provider_capacity_exhausted -> ()
+  | Provider_capacity_backpressure -> ()
   | _ ->
       Alcotest.fail
-        "Capacity_exhausted must classify as Provider_capacity_exhausted"
+        "Capacity_backpressure must classify as Provider_capacity_backpressure"
 
 let test_provider_failure_hard_quota_cascades () =
   let err =
@@ -200,7 +262,7 @@ let test_provider_failure_capability_mismatch_cascades () =
     Http_client.ProviderFailure
       {
         kind = Capability_mismatch { capability = Some "runtime_mcp_tools" };
-        message = "gemini_cli cannot receive runtime MCP tools";
+        message = "cli_tool_b cannot receive runtime MCP tools";
       }
   in
   Alcotest.(check bool)
@@ -213,6 +275,28 @@ let test_provider_failure_capability_mismatch_cascades () =
        Alcotest.fail
          "Capability_mismatch must classify as Provider_capability_mismatch")
 
+let test_timeout_error_cascades_with_phase_evidence () =
+  let err =
+    Http_client.TimeoutError
+      {
+        message = "stream idle after thinking";
+        phase = Stream_idle Streaming_thinking;
+      }
+  in
+  Alcotest.(check bool)
+    "TimeoutError cascades as provider-local timeout evidence"
+    true
+    (Oas_compat.Http_client.should_cascade err);
+  (match Oas_compat.Http_client.classify err with
+   | Provider_timeout -> ()
+   | _ -> Alcotest.fail "TimeoutError must classify as Provider_timeout");
+  let rendered = Oas_compat.Http_client.error_message err in
+  Alcotest.(check bool)
+    "error_message preserves timeout phase"
+    true
+    (Astring.String.is_infix ~affix:"stream_idle:streaming_thinking" rendered
+     && Astring.String.is_infix ~affix:"stream idle after thinking" rendered)
+
 let test_error_message_baseline () =
   (* Smoke check that the new helper preserves existing semantics for
      the variants that already had inline matches at the call sites. *)
@@ -220,9 +304,9 @@ let test_error_message_baseline () =
               { message = "boom"; kind = Llm_provider.Http_client.Unknown } in
   Alcotest.(check string) "NetworkError -> message"
     "boom" (Oas_compat.Http_client.error_message net);
-  let cli = Http_client.CliTransportRequired { kind = "claude" } in
+  let cli = Http_client.CliTransportRequired { kind = "agent_llm_a" } in
   Alcotest.(check string) "CliTransportRequired -> humanised"
-    "claude provider requires a CLI transport"
+    "agent_llm_a provider requires a CLI transport"
     (Oas_compat.Http_client.error_message cli);
   let acc = Http_client.AcceptRejected { reason = "x" } in
   Alcotest.(check string) "AcceptRejected -> reason"
@@ -244,7 +328,7 @@ let retryable_error_to_string = function
      compile error here, ensuring this helper stays synchronised. *)
 
 let test_classify_accept_rejected_model_unsupported () =
-  let reason = "codex_cli does not support runtime_mcp_auth headers" in
+  let reason = "cli_tool_a does not support runtime_mcp_auth headers" in
   (match Oas_compat.Http_client.classify_accept_rejected reason with
    | Some Oas_compat.Http_client.Model_unsupported -> ()
    | other ->
@@ -254,7 +338,7 @@ let test_classify_accept_rejected_model_unsupported () =
 
 let test_classify_accept_rejected_request_rejected () =
   let reason =
-    "kimi_cli rejected the request (exit 1). Permanent auth/config/model error"
+    "provider CLI rejected the request (exit 1). Permanent auth/config/model error"
   in
   (match Oas_compat.Http_client.classify_accept_rejected reason with
    | Some Oas_compat.Http_client.Request_rejected -> ()
@@ -265,7 +349,7 @@ let test_classify_accept_rejected_request_rejected () =
 
 let test_classify_accept_rejected_startup_crash () =
   let reason =
-    "gemini_cli startup crash detected (unsettled top-level await / yoga_wasm)"
+    "cli_tool_b startup crash detected (unsettled top-level await / yoga_wasm)"
   in
   (match Oas_compat.Http_client.classify_accept_rejected reason with
    | Some Oas_compat.Http_client.Startup_crash -> ()
@@ -273,6 +357,24 @@ let test_classify_accept_rejected_startup_crash () =
        Alcotest.failf
          "expected Startup_crash, got %s"
          (retryable_error_to_string other))
+
+let test_classify_accept_rejected_required_tool_lane_unavailable () =
+  (* Regression for #15091: the [required_tool_lane_unavailable_error]
+     wrapper emits an [InvalidConfig {field = "tool_support"; detail}]
+     whose detail begins with [required_tool_lane_unavailable: ...].
+     Without a matching marker the cascade stayed terminal; with the
+     marker it must route to [Model_unsupported] so the next provider
+     in the cascade gets a chance. *)
+  let reason =
+    "required_tool_lane_unavailable: lane=text_only \
+     missing_required_tools=[edit] materialized_tools=[read,bash]"
+  in
+  match Oas_compat.Http_client.classify_accept_rejected reason with
+  | Some Oas_compat.Http_client.Model_unsupported -> ()
+  | other ->
+    Alcotest.failf
+      "expected Model_unsupported for required_tool_lane_unavailable, got %s"
+      (retryable_error_to_string other)
 
 let test_classify_accept_rejected_unknown_returns_none () =
   let reason = "output_schema violation: value is not a string" in
@@ -309,12 +411,12 @@ let () =
     [
       ( "AcceptRejected — per-provider failure cascades (#9932)",
         [
-          Alcotest.test_case "kimi_cli exit 1 cascades"
-            `Quick test_kimi_cli_exit_1_cascades;
-          Alcotest.test_case "gemini_cli startup crash cascades"
-            `Quick test_gemini_cli_startup_crash_cascades;
-          Alcotest.test_case "kimi_cli startup crash cascades"
-            `Quick test_kimi_cli_startup_crash_cascades;
+          Alcotest.test_case "provider_cli exit 1 cascades"
+            `Quick test_provider_cli_exit_1_cascades;
+          Alcotest.test_case "cli_tool_b startup crash cascades"
+            `Quick test_cli_tool_b_startup_crash_cascades;
+          Alcotest.test_case "provider_cli startup crash cascades"
+            `Quick test_provider_cli_startup_crash_cascades;
         ] );
       ( "AcceptRejected — capability mismatch still cascades (#9850)",
         [
@@ -329,6 +431,20 @@ let () =
       ( "Baseline: HTTP errors unaffected",
         [
           Alcotest.test_case "HTTP 429 cascades" `Quick test_http_429_cascades;
+          Alcotest.test_case "TimeoutError cascades"
+            `Quick test_timeout_error_cascades;
+        ] );
+      ( "Network terminal errors do not cascade",
+        [
+          Alcotest.test_case "TLS error does not cascade"
+            `Quick test_tls_error_does_not_cascade;
+          Alcotest.test_case "local resource error does not cascade"
+            `Quick test_local_resource_error_does_not_cascade;
+        ] );
+      ( "Typed timeout errors cascade",
+        [
+          Alcotest.test_case "TimeoutError classify + cascade + message"
+            `Quick test_timeout_error_cascades;
         ] );
       ( "ProviderTerminal — agent-level terminal does not cascade",
         [
@@ -339,12 +455,17 @@ let () =
         ] );
       ( "ProviderFailure — typed provider-local skips cascade",
         [
-          Alcotest.test_case "Capacity_exhausted classify + cascade"
+          Alcotest.test_case "Capacity_backpressure classify + cascade"
             `Quick test_provider_failure_capacity_cascades;
           Alcotest.test_case "Hard_quota classify + cascade + message"
             `Quick test_provider_failure_hard_quota_cascades;
           Alcotest.test_case "Capability_mismatch classify + cascade"
             `Quick test_provider_failure_capability_mismatch_cascades;
+        ] );
+      ( "TimeoutError — typed timeout phase cascades",
+        [
+          Alcotest.test_case "TimeoutError classify + cascade + message"
+            `Quick test_timeout_error_cascades_with_phase_evidence;
         ] );
       ( "error_message helper baseline",
         [
@@ -359,6 +480,8 @@ let () =
             `Quick test_classify_accept_rejected_request_rejected;
           Alcotest.test_case "startup crash → Startup_crash"
             `Quick test_classify_accept_rejected_startup_crash;
+          Alcotest.test_case "required_tool_lane_unavailable → Model_unsupported"
+            `Quick test_classify_accept_rejected_required_tool_lane_unavailable;
           Alcotest.test_case "unrecognised reason → None"
             `Quick test_classify_accept_rejected_unknown_returns_none;
         ] );

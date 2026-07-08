@@ -41,15 +41,32 @@ type boot_meta_resolution = {
 }
 (** Result of [load_or_materialize_boot_meta]. *)
 
+type autoboot_exclusion = {
+  keeper_name : string;
+  reason : string;
+}
+(** Why a configured keeper is intentionally absent from
+    {!bootable_keeper_names}. *)
+
 val bootable_keeper_names : Coord.config -> string list
 (** Names of every keeper whose [keepers/<name>/keeper.toml] exists and
     looks bootable on disk. *)
+
+val autoboot_excluded_keeper_reasons : Coord.config -> autoboot_exclusion list
+(** Configured keepers skipped by autoboot with operator-facing reason labels. *)
+
+val auto_recoverable_paused_keeper_names : ?now:float -> Coord.config -> string list
+(** Configured, autoboot-enabled keepers that are currently paused but whose
+    supervisor-owned auto-resume timer has elapsed.  These keepers remain
+    excluded from {!bootable_keeper_names} until the supervisor clears
+    [paused=false], but they are enough reason to start the supervisor sweep on
+    cold boot. *)
 
 val canonicalize_if_keeper : Coord.config -> string -> string
 (** [canonicalize_if_keeper config name] returns [keeper-<n>-agent]
     when [name] (bare or already canonical) refers to a configured
     keeper, else returns [name] unchanged. Safe to apply at credential
-    lookup sites: dashboard / admin / codex-mcp-client pass through
+    lookup sites: dashboard / admin / external MCP clients pass through
     untouched, keeper bare names get canonicalized so the bare-stub
     redirect path stops being load-bearing. (PR-3b1, AuthIdentityFSM
     invariant I1 IdentityBindsToken.) *)
@@ -62,8 +79,6 @@ val apply_default_opt : 'a option -> 'a option -> 'a option
 (** [apply_default_opt primary fallback] returns [primary] when it is
     [Some], else [fallback]. *)
 
-val contains_substring : string -> string -> bool
-(** [true] when [haystack] contains [needle] (raw byte search). *)
 
 val invalid_profile_defaults_error : keeper_name:string -> string -> string
 (** Render the structured error message for a profile-defaults parse
@@ -96,7 +111,6 @@ val load_or_materialize_boot_meta :
 (** {1 Supervisor sweep state} *)
 
 type keeper_bootstrap_stats = {
-  enabled : bool;        (** Is supervisor sweep enabled by config? *)
   scanned : int;         (** Keepers inspected during boot. *)
   started : int;         (** Keepers whose keepalive fiber was spawned. *)
   stale : int;           (** Keepers skipped because last heartbeat is stale. *)

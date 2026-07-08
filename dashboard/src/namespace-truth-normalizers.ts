@@ -7,6 +7,7 @@ import {
   normalizeRecommendedAction,
   normalizeShellMetaCognitionSummary,
 } from './store-normalizers'
+import { normalizePendingConfirmSummary } from './pending-confirm'
 import type {
   DashboardAttentionEvent,
   DashboardNamespaceTruthAttentionSummary,
@@ -16,32 +17,10 @@ import type {
   DashboardReadinessSummary,
   DashboardNamespaceTruthRecommendationSummary,
   DashboardNamespaceTruthResponse,
-  PendingConfirmSummary,
+  DashboardRuntimeCountAuthority,
 } from './types'
 
-function normalizePendingConfirmSummary(raw: unknown): PendingConfirmSummary | null {
-  if (!isRecord(raw)) return null
-  return {
-    actor_filter: asString(raw.actor_filter) ?? null,
-    filter_active: asBoolean(raw.filter_active) ?? false,
-    visible_count: asNumber(raw.visible_count) ?? 0,
-    total_count: asNumber(raw.total_count) ?? 0,
-    hidden_count: asNumber(raw.hidden_count) ?? 0,
-    hidden_actors: asStringArray(raw.hidden_actors),
-    confirm_required_actions: extractArray(raw.confirm_required_actions).flatMap(item => {
-      if (!isRecord(item)) return []
-      const actionType = asString(item.action_type)
-      const targetType = asString(item.target_type)
-      if (!actionType || !targetType) return []
-      return [{
-        action_type: actionType,
-        target_type: targetType,
-        description: asString(item.description),
-        confirm_required: asBoolean(item.confirm_required),
-      }]
-    }),
-  }
-}
+// normalizePendingConfirmSummary imported from pending-confirm.ts (SSOT)
 
 function normalizeAttentionSummary(raw: unknown): DashboardNamespaceTruthAttentionSummary | null {
   if (!isRecord(raw)) return null
@@ -154,6 +133,32 @@ function normalizeReadiness(raw: unknown): DashboardReadinessSummary | null {
   }
 }
 
+function normalizeRuntimeCountAuthority(raw: unknown): DashboardRuntimeCountAuthority | undefined {
+  if (!isRecord(raw)) return undefined
+  const countRoles = isRecord(raw.count_roles)
+    ? Object.fromEntries(
+        Object.entries(raw.count_roles)
+          .map(([key, value]) => {
+            const text = asString(value)
+            return text ? [key, text] : null
+          })
+          .filter((entry): entry is [string, string] => entry !== null),
+      )
+    : undefined
+  return {
+    source: asString(raw.source),
+    authority: asString(raw.authority),
+    configured_authority: asString(raw.configured_authority),
+    fallback_policy: asString(raw.fallback_policy),
+    shell_arbitration_allowed: asBoolean(raw.shell_arbitration_allowed),
+    live_total_runtimes: asNumber(raw.live_total_runtimes),
+    live_keepers: asNumber(raw.live_keepers),
+    configured_keepers: asNumber(raw.configured_keepers),
+    configured_minus_live_keepers: asNumber(raw.configured_minus_live_keepers),
+    count_roles: countRoles,
+  }
+}
+
 function normalizeAttentionEvent(raw: unknown): DashboardAttentionEvent | null {
   if (!isRecord(raw)) return null
   const severity = asString(raw.severity)
@@ -180,8 +185,24 @@ export function normalizeNamespaceTruth(raw: unknown): DashboardNamespaceTruthRe
   const commandBlock = isRecord(root.command) ? root.command : {}
   const metaCognitionBlock = isRecord(root.meta_cognition) ? root.meta_cognition : {}
   const operatorBlock = isRecord(root.operator) ? root.operator : {}
+  const retentionBlock = isRecord(root.retention) ? root.retention : null
   return {
     generated_at: asString(root.generated_at),
+    generated_at_iso: asString(root.generated_at_iso),
+    dashboard_surface: asString(root.dashboard_surface),
+    dashboard_aliases: asStringArray(root.dashboard_aliases),
+    source: asString(root.source),
+    retention: retentionBlock
+      ? {
+          scope: asString(retentionBlock.scope),
+          coordination_root: asString(retentionBlock.coordination_root),
+          workspace_path: asString(retentionBlock.workspace_path),
+          shell_input: asString(retentionBlock.shell_input),
+          execution_input: asString(retentionBlock.execution_input),
+          command_input: asString(retentionBlock.command_input),
+          cache_policy: asString(retentionBlock.cache_policy),
+        }
+      : undefined,
     root: {
       status: normalizeServerStatus(namespaceBlock.status),
       counts: isRecord(namespaceBlock.counts)
@@ -193,6 +214,7 @@ export function normalizeNamespaceTruth(raw: unknown): DashboardNamespaceTruthRe
           }
         : undefined,
       configured_keepers: asNumber(namespaceBlock.configured_keepers),
+      runtime_count_authority: normalizeRuntimeCountAuthority(namespaceBlock.runtime_count_authority),
       provenance: asString(namespaceBlock.provenance) ?? null,
     },
     execution: {

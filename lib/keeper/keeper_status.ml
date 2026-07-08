@@ -5,8 +5,8 @@ open Tool_args
 open Keeper_types
 open Keeper_memory
 open Keeper_execution
-open Keeper_exec_status
-open Keeper_exec_status_metrics
+open Keeper_status_runtime
+open Keeper_status_metrics
 
 type tool_result = Keeper_types.tool_result
 
@@ -15,12 +15,19 @@ include Keeper_status_bridge
 (* Re-export handle_keeper_status from the detail module *)
 let handle_keeper_status = Keeper_status_detail.handle_keeper_status
 
+let read_tail_lines_or_empty ~site path ~max_bytes ~max_lines =
+  match read_file_tail_lines_result path ~max_bytes ~max_lines with
+  | Ok lines -> lines
+  | Error exn_class ->
+      record_memory_recall_read_error ~site path exn_class;
+      []
+
 let handle_keeper_list ctx args : tool_result =
   let limit = max 0 (get_int args "limit" 50) in
   let detailed = get_bool args "detailed" false in
   let dir = keeper_dir ctx.config in
   match Safe_ops.list_dir_safe dir with
-  | Error e -> (false, e)
+  | Error e -> tool_result_error e
   | Ok _files ->
   let keeper_names = Keeper_types.keeper_names ctx.config |> take limit in
   if not detailed then
@@ -28,7 +35,7 @@ let handle_keeper_list ctx args : tool_result =
       ("count", `Int (List.length keeper_names));
       ("keepers", `List (List.map (fun k -> `String k) keeper_names));
     ] in
-    (true, Yojson.Safe.to_string json)
+    tool_result_ok (Yojson.Safe.to_string json)
   else
     let now_ts = Time_compat.now () in
     let keepers =
@@ -58,12 +65,14 @@ let handle_keeper_list ctx args : tool_result =
           let (compact_ratio_gate, compact_message_gate, compact_token_gate) =
             compaction_policy_of_keeper m
           in
-          let metrics_store = keeper_metrics_store ctx.config m.name in
-          let metrics_path = keeper_metrics_path ctx.config m.name in
+          let metrics_store = Keeper_types_support.keeper_metrics_store ctx.config m.name in
+          let metrics_path = Keeper_types_support.keeper_metrics_path ctx.config m.name in
           let metrics_window_lines =
             let dated = Dated_jsonl.read_recent_lines metrics_store 120 in
             if dated <> [] then dated
-            else read_file_tail_lines metrics_path ~max_bytes:120000 ~max_lines:120
+            else
+              read_tail_lines_or_empty ~site:"keeper_status_metrics" metrics_path
+                ~max_bytes:120000 ~max_lines:120
           in
           let last_metrics =
             match List.rev metrics_window_lines with
@@ -86,19 +95,45 @@ let handle_keeper_list ctx args : tool_result =
             in
             find_latest (List.rev metrics_window_lines)
           in
-          let memory_bank_summary =
-              read_keeper_memory_summary
+          (* RFC-0149 §3.1 — single typed read drives both the structured
+             [memory_bank_summary] (consumed by [memory_bank] / counts
+             elsewhere in this object) and the operator-visible
+             [memory_recent_note] string field.  An IO fault surfaces a
+             typed unavailable marker on the note, and the empty-shaped
+             summary preserves the legacy aggregate semantics (zero notes,
+             no kinds) so downstream JSON keys stay populated. *)
+          let memory_bank_summary, memory_recent_note =
+            match
+              read_keeper_memory_summary_result
                 ctx.config
                 ~name:m.name
                 ~max_bytes:120000
                 ~max_lines:180
                 ~recent_limit:3
-            in
-            let memory_recent_note =
-              match memory_bank_summary.recent_notes with
-              | row :: _ -> Some row.text
-              | [] -> None
-            in
+            with
+            | Ok summary ->
+              let note =
+                match summary.recent_notes with
+                | row :: _ -> Some row.text
+                | [] -> None
+              in
+              summary, note
+            | Error exn_class ->
+              let empty : Keeper_memory_policy.keeper_memory_summary =
+                { total_notes = 0
+                ; last_ts_unix = 0.0
+                ; top_kind = None
+                ; kind_counts = []
+                ; recent_notes = []
+                }
+              in
+              let note =
+                Some
+                  (Printf.sprintf "[memory unavailable: %s]"
+                     (Keeper_memory_recall_exn_class.to_label exn_class))
+              in
+              empty, note
+          in
             let continuity_reflection_hold_s =
               let cooldown = Float.of_int m.compaction.cooldown_sec in
               let last_reflection_ts =
@@ -252,13 +287,31 @@ let handle_keeper_list ctx args : tool_result =
                 ("meta", `String (keeper_meta_path ctx.config m.name));
                 ("metrics", `String (Dated_jsonl.base_dir metrics_store));
                 ("metrics_single_file", `String metrics_path);
-                ("memory_bank", `String (keeper_memory_bank_path ctx.config m.name));
-                ("policy", `String (keeper_policy_log_path ctx.config m.name));
-                ("feedback", `String (keeper_feedback_log_path ctx.config m.name));
-                ("dataset_export", `String (keeper_dataset_export_path ctx.config m.name));
-                ("session_dir", `String (keeper_session_dir ctx.config (Keeper_id.Trace_id.to_string m.runtime.trace_id)));
-                ("history", `String (keeper_history_path ctx.config (Keeper_id.Trace_id.to_string m.runtime.trace_id)));
-                ("history_internal", `String (keeper_internal_history_path ctx.config (Keeper_id.Trace_id.to_string m.runtime.trace_id)));
+                ( "memory_bank"
+                , `String (Keeper_types_support.keeper_memory_bank_path ctx.config m.name) );
+                ( "policy"
+                , `String (Keeper_types_support.keeper_policy_log_path ctx.config m.name) );
+                ( "feedback"
+                , `String (Keeper_types_support.keeper_feedback_log_path ctx.config m.name) );
+                ( "dataset_export"
+                , `String
+                    (Keeper_types_support.keeper_dataset_export_path ctx.config m.name)
+                );
+                ( "session_dir"
+                , `String
+                    (Keeper_types_support.keeper_session_dir
+                       ctx.config
+                       (Keeper_id.Trace_id.to_string m.runtime.trace_id)) );
+                ( "history"
+                , `String
+                    (Keeper_types_support.keeper_history_path
+                       ctx.config
+                       (Keeper_id.Trace_id.to_string m.runtime.trace_id)) );
+                ( "history_internal"
+                , `String
+                    (Keeper_types_support.keeper_internal_history_path
+                       ctx.config
+                       (Keeper_id.Trace_id.to_string m.runtime.trace_id)) );
               ]);
             ]))
         ) keeper_names
@@ -267,16 +320,20 @@ let handle_keeper_list ctx args : tool_result =
         ("count", `Int (List.length keepers));
         ("keepers", `List keepers);
       ] in
-      (true, Yojson.Safe.to_string json)
+      tool_result_ok (Yojson.Safe.to_string json)
 
 let handle_keeper_trajectory ctx args : tool_result =
   let requested_name = String.trim (get_string args "name" "") in
   if not (validate_name requested_name) then
-    (false, "invalid keeper name")
+    tool_result_error
+      (Printf.sprintf
+         "invalid keeper name %S (must be non-empty and match \
+          [A-Za-z0-9._-]+; see Keeper_config.validate_name)"
+         requested_name)
   else
     match read_meta_resolved ctx.config requested_name with
-    | Error e -> (false, "read error: " ^ e)
-    | Ok None -> (false, Printf.sprintf "keeper not found: %s" requested_name)
+    | Error e -> tool_result_error ("read error: " ^ e)
+    | Ok None -> tool_result_error (Printf.sprintf "keeper not found: %s" requested_name)
     | Ok (Some (_resolved_name, m)) ->
       let limit = get_int args "limit" 20 in
       let masc_root = Common.masc_dir_from_base_path ~base_path:ctx.config.base_path in
@@ -292,7 +349,11 @@ let handle_keeper_trajectory ctx args : tool_result =
           List.filteri (fun i _e -> i >= drop) entries
       in
       if recent = [] then
-        (true, Printf.sprintf "Keeper %s (trace: %s) has no trajectory entries." m.name (Keeper_id.Trace_id.to_string m.runtime.trace_id))
+        tool_result_ok
+          (Printf.sprintf
+             "Keeper %s (trace: %s) has no trajectory entries."
+             m.name
+             (Keeper_id.Trace_id.to_string m.runtime.trace_id))
       else
         let json_list = List.map Trajectory.entry_to_json recent in
         let json = `Assoc [
@@ -303,16 +364,20 @@ let handle_keeper_trajectory ctx args : tool_result =
           ("showing", `Int (List.length recent));
           ("entries", `List json_list);
         ] in
-        (true, Yojson.Safe.to_string json)
+        tool_result_ok (Yojson.Safe.to_string json)
 
 let handle_keeper_eval ctx args : tool_result =
   let requested_name = String.trim (get_string args "name" "") in
   if not (validate_name requested_name) then
-    (false, "invalid keeper name")
+    tool_result_error
+      (Printf.sprintf
+         "invalid keeper name %S (must be non-empty and match \
+          [A-Za-z0-9._-]+; see Keeper_config.validate_name)"
+         requested_name)
   else
     match read_meta_resolved ctx.config requested_name with
-    | Error e -> (false, "read error: " ^ e)
-    | Ok None -> (false, Printf.sprintf "keeper not found: %s" requested_name)
+    | Error e -> tool_result_error ("read error: " ^ e)
+    | Ok None -> tool_result_error (Printf.sprintf "keeper not found: %s" requested_name)
     | Ok (Some (_resolved_name, m)) ->
       let scenario_file = get_string_opt args "scenario_file" in
       let masc_root = Common.masc_dir_from_base_path ~base_path:ctx.config.base_path in
@@ -320,7 +385,8 @@ let handle_keeper_eval ctx args : tool_result =
         Trajectory.read_entries ~masc_root ~keeper_name:m.name ~trace_id:(Keeper_id.Trace_id.to_string m.runtime.trace_id)
       in
       if entries = [] then
-        (true, Printf.sprintf "Keeper %s has no trajectory data to evaluate." m.name)
+        tool_result_ok
+          (Printf.sprintf "Keeper %s has no trajectory data to evaluate." m.name)
       else
         let total = List.length entries in
         (* Build a lightweight eval summary from trajectory *)
@@ -366,4 +432,4 @@ let handle_keeper_eval ctx args : tool_result =
           ("scenario_file", scenario_info);
           ("autonomous_action_count", `Int m.runtime.autonomous_action_count);
         ] in
-        (true, Yojson.Safe.to_string json)
+        tool_result_ok (Yojson.Safe.to_string json)

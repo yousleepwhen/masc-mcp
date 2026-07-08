@@ -29,12 +29,12 @@ import type {
 import { fleetCompositeSnapshot } from '../composite-signals'
 import { dispatchOperatorAction } from '../operator-store'
 import { showToast } from './common/toast'
+import { unixSecondsToDate } from '../lib/format-time'
 import { TextInput } from './common/input'
 import {
   displayState,
   extractLaneValue,
   INVARIANT_LABELS,
-  TRANSITION_FIELDS,
   type LaneKey,
 } from './fsm-hub-types'
 
@@ -88,25 +88,26 @@ const CHIP_CLASS_BY_STATE: Record<string, string> = {
   Crashed:      'bg-[var(--bad-10)] text-[var(--bad-light)] border-[var(--bad-20)]',
   Restarting:   'bg-[var(--accent-10)] text-[var(--color-accent-fg)] border-[var(--accent-20)]',
   Dead:         'bg-[var(--color-bg-elevated)] text-[var(--bad-light)] border-[var(--bad-20)]',
+  Zombie:       'bg-[var(--color-bg-elevated)] text-[var(--bad-light)] border-[var(--bad-20)]',
   Offline:      'bg-[var(--color-bg-elevated)] text-[var(--color-fg-muted)] border-[var(--color-border-default)]',
-  // KTC
-  idle:         'bg-[var(--color-bg-elevated)] text-[var(--color-fg-muted)] border-[var(--color-border-default)]',
+  // KTC (unique keys — shared keys like idle/exhausted/compacting/donelisten under KCL/KMC below)
   prompting:    'bg-[var(--accent-10)] text-[var(--color-accent-fg)] border-[var(--accent-20)]',
+  routing:      'bg-[var(--accent-10)] text-[var(--color-accent-fg)] border-[var(--accent-20)]',
   executing:    'bg-[var(--ok-10)] text-[var(--color-status-ok)] border-[var(--ok-20)]',
-  compacting:   'bg-[var(--warn-10)] text-[var(--color-status-warn)] border-[var(--warn-20)]',
   finalizing:   'bg-[var(--accent-10)] text-[var(--color-accent-fg)] border-[var(--accent-20)]',
   // KDP
   undecided:          'bg-[var(--color-bg-elevated)] text-[var(--color-fg-muted)] border-[var(--color-border-default)]',
   guard_ok:           'bg-[var(--ok-10)] text-[var(--color-status-ok)] border-[var(--ok-20)]',
   gate_rejected:      'bg-[var(--bad-10)] text-[var(--bad-light)] border-[var(--bad-20)]',
   tool_policy_selected: 'bg-[var(--accent-10)] text-[var(--color-accent-fg)] border-[var(--accent-20)]',
-  // KCL
+  // KCL + KMC + shared keys (idle, exhausted, compacting, done)
+  idle:         'bg-[var(--color-bg-elevated)] text-[var(--color-fg-muted)] border-[var(--color-border-default)]',
   selecting:    'bg-[var(--accent-10)] text-[var(--color-accent-fg)] border-[var(--accent-20)]',
   trying:       'bg-[var(--warn-10)] text-[var(--color-status-warn)] border-[var(--warn-20)]',
   done:         'bg-[var(--ok-10)] text-[var(--color-status-ok)] border-[var(--ok-20)]',
   exhausted:    'bg-[var(--bad-10)] text-[var(--bad-light)] border-[var(--bad-20)]',
-  // KMC
   accumulating: 'bg-[var(--color-bg-elevated)] text-[var(--color-fg-muted)] border-[var(--color-border-default)]',
+  compacting:   'bg-[var(--warn-10)] text-[var(--color-status-warn)] border-[var(--warn-20)]',
   // KCB (LT-16-KCB Phase 3). Clean = baseline grey same as any other
   // "nothing happening" state; warning = amber (partial failure
   // streak); cooling = blue (at least one past trip, currently
@@ -226,6 +227,11 @@ function parseEpochSeconds(value: string | null | undefined): number | null {
 
 export function latestRuntimeActivityEpoch(snapshot: KeeperCompositeSnapshot): number | null {
   const candidates: number[] = []
+  if (snapshot.live_turn?.last_progress_at != null) {
+    candidates.push(snapshot.live_turn.last_progress_at)
+  } else if (snapshot.live_turn?.started_at != null) {
+    candidates.push(snapshot.live_turn.started_at)
+  }
   if (snapshot.last_outcome?.ended_at != null) {
     candidates.push(snapshot.last_outcome.ended_at)
   }
@@ -235,6 +241,11 @@ export function latestRuntimeActivityEpoch(snapshot: KeeperCompositeSnapshot): n
   }
   if (candidates.length === 0) return null
   return Math.max(...candidates)
+}
+
+function hasPreviousTurnExecutionReceipt(snapshot: KeeperCompositeSnapshot): boolean {
+  return snapshot.runtime_attention?.stale_execution_receipt === true
+    || snapshot.runtime_attention?.execution_current === false
 }
 
 function formatAge(seconds: number | null): string {
@@ -257,19 +268,40 @@ function isIdleComposite(snapshot: KeeperCompositeSnapshot): boolean {
 
 function executionEvidence(snapshot: KeeperCompositeSnapshot): string[] {
   const execution = snapshot.execution
+  const surface = execution?.tool_surface
   const parts: string[] = []
+  const previousReceipt = hasPreviousTurnExecutionReceipt(snapshot)
   if (!snapshot.is_live) parts.push('is_live=false')
+  if (previousReceipt) parts.push('receipt=previous_turn')
   if (execution?.operator_disposition) {
-    parts.push(`operator=${execution.operator_disposition}`)
+    parts.push(`${previousReceipt ? 'previous_' : ''}operator=${execution.operator_disposition}`)
   }
   if (execution?.operator_disposition_reason) {
-    parts.push(`reason=${execution.operator_disposition_reason}`)
+    parts.push(`${previousReceipt ? 'previous_' : ''}reason=${execution.operator_disposition_reason}`)
   }
   if (execution?.terminal_reason_code) {
-    parts.push(`terminal=${execution.terminal_reason_code}`)
+    parts.push(`${previousReceipt ? 'previous_' : ''}terminal=${execution.terminal_reason_code}`)
   }
   if (execution?.tool_contract_result) {
-    parts.push(`tool=${execution.tool_contract_result}`)
+    parts.push(`${previousReceipt ? 'previous_' : ''}tool=${execution.tool_contract_result}`)
+  }
+  if (surface?.tool_requirement) {
+    parts.push(`tool_requirement=${surface.tool_requirement}`)
+  }
+  if (surface?.turn_lane) {
+    parts.push(`turn_lane=${surface.turn_lane}`)
+  }
+  if (surface?.tool_surface_class) {
+    parts.push(`tool_surface=${surface.tool_surface_class}`)
+  }
+  if (typeof surface?.visible_tool_count === 'number') {
+    parts.push(`visible_tools=${surface.visible_tool_count}`)
+  }
+  if (surface?.tool_surface_fallback_used === true) {
+    parts.push('tool_surface_fallback=true')
+  }
+  if (surface?.tool_gate_enabled === false) {
+    parts.push('tool_gate=false')
   }
   if (execution?.error?.kind) {
     parts.push(`error=${execution.error.kind}`)
@@ -277,11 +309,17 @@ function executionEvidence(snapshot: KeeperCompositeSnapshot): string[] {
   return parts
 }
 
+// `execution.outcome` wire format is the TLA-prefix form
+// ('receipt_done' / 'receipt_skipped' / 'receipt_failed' /
+//  'receipt_cancelled') emitted by `outcome_kind_to_tla_receipt`
+// (lib/keeper/keeper_execution_receipt.ml:24-29). Prior short-form
+// compares ('error' / 'ok') were dead in production.
 function hasBlockingExecutionEvidence(snapshot: KeeperCompositeSnapshot): boolean {
   const execution = snapshot.execution
   if (!execution) return false
+  if (hasPreviousTurnExecutionReceipt(snapshot)) return false
   if (execution.operator_disposition === 'pause_human') return true
-  if (execution.outcome === 'error') return true
+  if (execution.outcome === 'receipt_failed') return true
   if (execution.terminal_reason_code && execution.terminal_reason_code !== 'completed') return true
   if (execution.tool_contract_result === 'missing_required_tool_use') return true
   if (execution.tool_contract_result === 'unknown' && execution.error != null) return true
@@ -360,7 +398,8 @@ function hasHealthyExecutionEvidence(snapshot: KeeperCompositeSnapshot): boolean
   const execution = snapshot.execution
   if (!execution || hasBlockingExecutionEvidence(snapshot)) return false
   if (execution.latest_receipt_present !== true) return false
-  if (execution.outcome === 'ok') return true
+  // TLA-prefix wire format — see `hasBlockingExecutionEvidence` comment above.
+  if (execution.outcome === 'receipt_done' || execution.outcome === 'receipt_skipped') return true
   if (execution.terminal_reason_code === 'completed') return true
   if (execution.tool_contract_result?.startsWith('satisfied')) return true
   return false
@@ -386,8 +425,8 @@ function blockingCause(snapshot: KeeperCompositeSnapshot): string {
   if (execution.operator_disposition === 'pause_human') {
     parts.push(
       execution.operator_disposition_reason
-        ? `operator pause: ${execution.operator_disposition_reason}`
-        : 'operator pause requested',
+        ? `blocked: ${execution.operator_disposition_reason}`
+        : 'blocked by operator disposition',
     )
   }
   if (execution.tool_contract_result === 'missing_required_tool_use') {
@@ -404,8 +443,8 @@ function blockingCause(snapshot: KeeperCompositeSnapshot): string {
   if (execution.error?.kind) {
     parts.push(`error: ${execution.error.kind}`)
   }
-  if (execution.outcome === 'error' && parts.length === 0) {
-    parts.push('execution outcome: error')
+  if (execution.outcome === 'receipt_failed' && parts.length === 0) {
+    parts.push('execution outcome: receipt_failed')
   }
   return parts.length > 0 ? parts.join(' · ') : 'blocking execution evidence present'
 }
@@ -429,7 +468,7 @@ function blockingNextStep(snapshot: KeeperCompositeSnapshot): string {
     return 'provider timeout budget/cascade lane 확인'
   }
   if (execution.operator_disposition === 'pause_human') {
-    return 'operator gate/approval 상태와 최신 receipt 확인'
+    return 'blocker gate/approval 상태와 최신 receipt 확인'
   }
   if (execution.terminal_reason_code && execution.terminal_reason_code !== 'completed') {
     return `terminal=${execution.terminal_reason_code} receipt 확인`
@@ -442,8 +481,10 @@ function blockingNextStep(snapshot: KeeperCompositeSnapshot): string {
 
 function staleCause(snapshot: KeeperCompositeSnapshot, ageText: string): string {
   const receiptReason = snapshot.execution?.operator_disposition_reason
-  const base = snapshot.phase === 'Running'
-    ? 'KSM=Running이지만 live turn 없음'
+  // `snapshot.phase` wire format is lowercase (phase_to_string in
+  // keeper_state_machine.ml:21-35); the prior PascalCase compare was dead.
+  const base = snapshot.phase === 'running'
+    ? 'KSM=running이지만 live turn 없음'
     : `live turn 없음 · KSM=${snapshot.phase}`
   const receipt = receiptReason ? ` · last receipt: ${receiptReason}` : ''
   return `${base} · latest ${ageText}${receipt}`
@@ -453,7 +494,7 @@ function staleNextStep(snapshot: KeeperCompositeSnapshot, latest: number | null)
   if (latest == null) {
     return 'turn 시작/keepalive 이벤트가 composite로 들어오는지 확인'
   }
-  if (snapshot.phase === 'Running') {
+  if (snapshot.phase === 'running') {
     return 'keeper keepalive와 turn 시작 이벤트 경로 확인'
   }
   return `phase=${snapshot.phase} 전환 또는 재시작 경로 확인`
@@ -474,6 +515,12 @@ export function buildRuntimeAssistPrompt(
       tool_contract_result: snapshot.execution.tool_contract_result,
       required_tools: snapshot.execution.tool_surface?.required_tools ?? [],
       missing_required_tools: snapshot.execution.tool_surface?.missing_required_tools ?? [],
+      tool_requirement: snapshot.execution.tool_surface?.tool_requirement ?? null,
+      turn_lane: snapshot.execution.tool_surface?.turn_lane ?? null,
+      tool_surface_class: snapshot.execution.tool_surface?.tool_surface_class ?? null,
+      visible_tool_count: snapshot.execution.tool_surface?.visible_tool_count ?? null,
+      tool_gate_enabled: snapshot.execution.tool_surface?.tool_gate_enabled ?? null,
+      tool_surface_fallback_used: snapshot.execution.tool_surface?.tool_surface_fallback_used ?? null,
       error_kind: snapshot.execution.error?.kind ?? null,
       error_preview: snapshot.execution.error?.message_preview ?? null,
     })
@@ -757,6 +804,7 @@ export function tallyInvariantViolations(
     no_cascade_before_measurement: 0,
     compaction_atomicity: 0,
     event_priority_monotone: 0,
+    phase_derivation_agreement: 0,
   }
   for (const s of snapshots) {
     for (const k of INVARIANT_KEYS) {
@@ -923,8 +971,32 @@ export function FleetFsmMatrix(props: FleetFsmMatrixProps = {}) {
     () => (data ? tallyInvariantViolations(data.snapshots) : null),
     [data],
   )
+  // Backend emits this Prometheus counter (`metric_fsm_guard_violation`)
+  // as a fleet-wide total duplicated onto every snapshot — see
+  // keeper_composite_observer.ml:452. Reading [0] is intentional;
+  // summing across snapshots would multiply the count by fleet size.
+  const fsmGuardViolationsTotal = useMemo(
+    () => (data ? (data.snapshots[0]?.fsm_guard_violations ?? 0) : 0),
+    [data],
+  )
+  const fsmGuardViolationBreakdown = useMemo(
+    () => (data ? (data.snapshots[0]?.fsm_guard_violation_breakdown ?? []) : []),
+    [data],
+  )
+  const fsmGuardViolationTitle = useMemo(() => {
+    const total = fsmGuardViolationsTotal ?? 0
+    const top = fsmGuardViolationBreakdown[0]
+    if (total > 0 && top) {
+      return `전체 [@@fsm_guard] 런타임 assertion 위반 횟수 · 최다 ${top.action}/${top.stage}: ${top.count}`
+    }
+    return '전체 [@@fsm_guard] 런타임 assertion 위반 횟수'
+  }, [fsmGuardViolationBreakdown, fsmGuardViolationsTotal])
   const runtimeTallies = useMemo(
     () => (data ? tallyRuntimeAttention(data.snapshots, data.generated_at) : null),
+    [data],
+  )
+  const idleCompositeCount = useMemo(
+    () => (data ? data.snapshots.filter(isIdleComposite).length : 0),
     [data],
   )
   const visibleSnapshots = useMemo(
@@ -975,7 +1047,7 @@ export function FleetFsmMatrix(props: FleetFsmMatrixProps = {}) {
       <header class="flex flex-wrap items-baseline gap-3 border-b border-[var(--color-border-default)] p-3">
         <h2 class="text-sm font-semibold text-[var(--color-fg-muted)]">Fleet 통합 (KSM × KTC × KDP × KCL × KMC × KCB)</h2>
         <span class="text-xs text-[var(--color-fg-muted)]0">
-          키퍼 ${data.count}명 · ${new Date(data.generated_at * 1000).toLocaleTimeString()} 업데이트
+          키퍼 ${data.count}명 · ${unixSecondsToDate(data.generated_at).toLocaleTimeString()} 업데이트
         </span>
         <${TextInput}
           type="search"
@@ -1031,6 +1103,32 @@ export function FleetFsmMatrix(props: FleetFsmMatrixProps = {}) {
                     </span>
                   `
                 })}
+                <span
+                  data-testid="idle-composite-chip"
+                  class="rounded-[var(--r-1)] border bg-[var(--ok-10)] px-2 py-0.5 text-xs text-[var(--color-status-ok)] border-[var(--ok-20)]"
+                  title="모든 sub-FSM이 idle인 keeper 수 (turn=idle, decision=undecided, cascade=idle, compaction=accumulating, circuit=clean)"
+                >
+                  Composite idle: ${idleCompositeCount}
+                </span>
+                ${(fsmGuardViolationsTotal ?? 0) > 0
+                  ? html`
+                      <span
+                        data-testid="fsm-guard-violation-chip"
+                        class="rounded-[var(--r-1)] border bg-[var(--bad-10)] px-2 py-0.5 text-xs text-[var(--bad-light)] border-[var(--bad-20)]"
+                        title=${fsmGuardViolationTitle}
+                      >
+                        FSM guard 위반: ${fsmGuardViolationsTotal}
+                      </span>
+                    `
+                  : html`
+                      <span
+                        data-testid="fsm-guard-violation-chip"
+                        class="rounded-[var(--r-1)] border bg-[var(--ok-10)] px-2 py-0.5 text-xs text-[var(--color-status-ok)] border-[var(--ok-20)]"
+                        title=${fsmGuardViolationTitle}
+                      >
+                        FSM guard 위반: 0
+                      </span>
+                    `}
               </div>
             `
           : null}
@@ -1205,8 +1303,3 @@ export function inferKeeperNameFrom(snap: KeeperCompositeSnapshot): string {
   const m = /^keeper:([^:]+):/.exec(snap.correlation_id)
   return m?.[1] ?? snap.correlation_id
 }
-
-// Re-exported helpers let tests target the pure slices without spinning
-// up the component. TRANSITION_FIELDS is re-exported for completeness
-// so a caller doesn't need to reach into fsm-hub-types for AXES parity.
-export { TRANSITION_FIELDS }

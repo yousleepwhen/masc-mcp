@@ -199,10 +199,13 @@ let get_recent_events config ~limit =
   let current_seq = match Backend.FileSystem.atomic_get config.backend event_seq_key with
     | Ok n -> n
     | Error (Backend.NotFound _) -> 0
-    | Error e ->
+    | Error (Backend.IOError m) ->
+        Log.Coord.warn "get_recent_events: event seq read failed: %s" m;
+        0
+    | Error (Backend.AlreadyExists _ | Backend.InvalidKey _
+            | Backend.ConnectionFailed _ | Backend.BackendNotSupported _) ->
         Log.Coord.warn "get_recent_events: event seq read failed: %s"
-          (match e with Backend.IOError m -> m
-           | _ -> "unexpected backend error");
+          "unexpected backend error";
         0
   in
   let start_seq = max 0 (current_seq - limit) in
@@ -276,14 +279,11 @@ let read_state config =
       with Eio.Cancel.Cancelled _ as e -> raise e | e -> Error (Printexc.to_string e))
   | Error (Backend.NotFound _) ->
       Ok (default_room_state ())
-  | Error e ->
-      Error (match e with
-        | Backend.IOError msg -> msg
-        | Backend.NotFound k -> "Not found: " ^ k
-        | Backend.AlreadyExists k -> "Already exists: " ^ k
-        | Backend.InvalidKey k -> "Invalid key: " ^ k
-        | Backend.ConnectionFailed m -> "Connection failed: " ^ m
-        | Backend.BackendNotSupported m -> "Not supported: " ^ m)
+  | Error (Backend.IOError msg) -> Error msg
+  | Error (Backend.AlreadyExists k) -> Error ("Already exists: " ^ k)
+  | Error (Backend.InvalidKey k) -> Error ("Invalid key: " ^ k)
+  | Error (Backend.ConnectionFailed m) -> Error ("Connection failed: " ^ m)
+  | Error (Backend.BackendNotSupported m) -> Error ("Not supported: " ^ m)
 
 (** Write room state *)
 let write_state config state =
@@ -402,10 +402,10 @@ let register_agent config ~name ?(capabilities=[]) () =
       end;
 
       Ok agent
-  | Error e ->
-      Error (match e with
-        | Backend.IOError msg -> msg
-        | _ -> "Failed to register agent")
+  | Error (Backend.IOError msg) -> Error msg
+  | Error (Backend.NotFound _ | Backend.AlreadyExists _ | Backend.InvalidKey _
+          | Backend.ConnectionFailed _ | Backend.BackendNotSupported _) ->
+      Error "Failed to register agent"
 
 (** Get agent state *)
 let get_agent config ~name =
@@ -417,10 +417,10 @@ let get_agent config ~name =
       with Eio.Cancel.Cancelled _ as e -> raise e | e -> Error (Printexc.to_string e))
   | Error (Backend.NotFound _) ->
       Error "Agent not found"
-  | Error e ->
-      Error (match e with
-        | Backend.IOError msg -> msg
-        | _ -> "Failed to get agent")
+  | Error (Backend.IOError msg) -> Error msg
+  | Error (Backend.AlreadyExists _ | Backend.InvalidKey _
+          | Backend.ConnectionFailed _ | Backend.BackendNotSupported _) ->
+      Error "Failed to get agent"
 
 (** Remove agent *)
 let remove_agent config ~name =
@@ -443,10 +443,10 @@ let remove_agent config ~name =
       Ok ()
   | Error (Backend.NotFound _) ->
       Ok ()  (* Already removed *)
-  | Error e ->
-      Error (match e with
-        | Backend.IOError msg -> msg
-        | _ -> "Failed to remove agent")
+  | Error (Backend.IOError msg) -> Error msg
+  | Error (Backend.AlreadyExists _ | Backend.InvalidKey _
+          | Backend.ConnectionFailed _ | Backend.BackendNotSupported _) ->
+      Error "Failed to remove agent"
 
 (** {1 Lock Operations} *)
 
@@ -479,15 +479,35 @@ let lock_info_of_json json =
       | `String s -> Some s
       | _ -> None
     in
-    match
-      (parse_string (member "resource" json),
-       parse_string (member "owner" json),
-       parse_float (member "acquired_at" json),
-       parse_float (member "expires_at" json))
-    with
+    let resource_opt = parse_string (member "resource" json) in
+    let owner_opt = parse_string (member "owner" json) in
+    let acquired_at_opt = parse_float (member "acquired_at" json) in
+    let expires_at_opt = parse_float (member "expires_at" json) in
+    match resource_opt, owner_opt, acquired_at_opt, expires_at_opt with
     | Some resource, Some owner, Some acquired_at, Some expires_at ->
         Ok { resource; owner; acquired_at; expires_at }
-    | _ -> Error "Invalid lock metadata"
+    | _ ->
+        (* Previously collapsed to the bare "Invalid lock metadata".
+           Operators reading a recover/repair log line cannot tell
+           which of the four fields the lock JSON was missing; that
+           detail is what the producer-side fix needs.  Enumerate
+           which field(s) failed to parse so the message carries the
+           same information the parser already has in scope. *)
+        let missing =
+          List.filter_map (fun (name, opt) ->
+            if Option.is_none opt then Some name else None)
+            [ ("resource (string)", Option.map (fun _ -> ()) resource_opt);
+              ("owner (string)", Option.map (fun _ -> ()) owner_opt);
+              ("acquired_at (number)",
+               Option.map (fun _ -> ()) acquired_at_opt);
+              ("expires_at (number)",
+               Option.map (fun _ -> ()) expires_at_opt);
+            ]
+        in
+        Error
+          (Printf.sprintf
+             "Invalid lock metadata: missing or wrong-type field(s) [%s]"
+             (String.concat ", " missing))
   with
   | Eio.Cancel.Cancelled _ as e -> raise e
   | e -> Error (Printexc.to_string e)
@@ -507,20 +527,20 @@ let acquire_lock config ~resource ~owner =
       Ok (Some lock)
   | Ok false ->
       Ok None  (* Lock held by someone else *)
-  | Error e ->
-      Error (match e with
-        | Backend.IOError msg -> msg
-        | _ -> "Failed to acquire lock")
+  | Error (Backend.IOError msg) -> Error msg
+  | Error (Backend.NotFound _ | Backend.AlreadyExists _ | Backend.InvalidKey _
+          | Backend.ConnectionFailed _ | Backend.BackendNotSupported _) ->
+      Error "Failed to acquire lock"
 
 (** Release lock *)
 let release_lock config ~resource ~owner =
   match Backend.FileSystem.release_lock config.backend ~key:resource ~owner with
   | Ok true -> Ok ()
   | Ok false -> Error "Not lock owner"
-  | Error e ->
-      Error (match e with
-        | Backend.IOError msg -> msg
-        | _ -> "Failed to release lock")
+  | Error (Backend.IOError msg) -> Error msg
+  | Error (Backend.NotFound _ | Backend.AlreadyExists _ | Backend.InvalidKey _
+          | Backend.ConnectionFailed _ | Backend.BackendNotSupported _) ->
+      Error "Failed to release lock"
 
 (** Extend lock TTL *)
 let extend_lock config ~resource ~owner =
@@ -529,10 +549,10 @@ let extend_lock config ~resource ~owner =
           ~key:resource ~owner ~ttl_seconds with
   | Ok true -> Ok ()
   | Ok false -> Error "Not lock owner or lock expired"
-  | Error e ->
-      Error (match e with
-        | Backend.IOError msg -> msg
-        | _ -> "Failed to extend lock")
+  | Error (Backend.IOError msg) -> Error msg
+  | Error (Backend.NotFound _ | Backend.AlreadyExists _ | Backend.InvalidKey _
+          | Backend.ConnectionFailed _ | Backend.BackendNotSupported _) ->
+      Error "Failed to extend lock"
 
 (** {1 Message Operations} *)
 
@@ -626,10 +646,10 @@ let broadcast config ~from_agent ~content =
          Log.Coord.warn "on_broadcast_mention callback failed: %s"
            (Printexc.to_string exn));
       Ok msg
-  | Error e ->
-      Error (match e with
-        | Backend.IOError msg -> msg
-        | _ -> "Failed to broadcast message")
+  | Error (Backend.IOError msg) -> Error msg
+  | Error (Backend.NotFound _ | Backend.AlreadyExists _ | Backend.InvalidKey _
+          | Backend.ConnectionFailed _ | Backend.BackendNotSupported _) ->
+      Error "Failed to broadcast message"
 
 (** Get message by sequence number *)
 let get_message config ~seq =
@@ -641,20 +661,20 @@ let get_message config ~seq =
       with Eio.Cancel.Cancelled _ as e -> raise e | e -> Error (Printexc.to_string e))
   | Error (Backend.NotFound _) ->
       Error "Message not found"
-  | Error e ->
-      Error (match e with
-        | Backend.IOError msg -> msg
-        | _ -> "Failed to get message")
+  | Error (Backend.IOError msg) -> Error msg
+  | Error (Backend.AlreadyExists _ | Backend.InvalidKey _
+          | Backend.ConnectionFailed _ | Backend.BackendNotSupported _) ->
+      Error "Failed to get message"
 
 (** {1 Health Check} *)
 
 let health_check config =
   match Backend.FileSystem.health_check config.backend with
   | Ok result -> Ok result
-  | Error e ->
-      Error (match e with
-        | Backend.IOError msg -> msg
-        | _ -> "Health check failed")
+  | Error (Backend.IOError msg) -> Error msg
+  | Error (Backend.NotFound _ | Backend.AlreadyExists _ | Backend.InvalidKey _
+          | Backend.ConnectionFailed _ | Backend.BackendNotSupported _) ->
+      Error "Health check failed"
 
 (** {1 Coord Status} *)
 

@@ -13,8 +13,6 @@ let source_root () =
 let script_path () =
   Filename.concat (source_root ()) "scripts/ci-run-tests.sh"
 
-let quote = Filename.quote
-
 let contains_substring haystack needle =
   let hlen = String.length haystack in
   let nlen = String.length needle in
@@ -29,6 +27,10 @@ let read_file path =
 
 let write_file path content =
   Out_channel.with_open_bin path (fun oc -> output_string oc content)
+
+let write_executable path content =
+  write_file path content;
+  Unix.chmod path 0o755
 
 let rec rm_rf path =
   if Sys.file_exists path then
@@ -45,24 +47,51 @@ let with_temp_dir prefix f =
   Unix.mkdir dir 0o755;
   Fun.protect ~finally:(fun () -> rm_rf dir) (fun () -> f dir)
 
-let run_shell ?(env = []) ~cwd cmd =
-  let env_prefix =
-    env
-    |> List.map (fun (k, v) -> Printf.sprintf "%s=%s" k (quote v))
-    |> String.concat " "
-  in
-  let full =
-    if env_prefix = "" then
-      Printf.sprintf "cd %s && %s" (quote cwd) cmd
-    else
-      Printf.sprintf "cd %s && %s %s" (quote cwd) env_prefix cmd
-  in
+let env_array overrides =
+  let table = Hashtbl.create 64 in
+  Unix.environment ()
+  |> Array.iter (fun entry ->
+         match String.index_opt entry '=' with
+         | None -> ()
+         | Some idx ->
+             let key = String.sub entry 0 idx in
+             let value =
+               String.sub entry (idx + 1) (String.length entry - idx - 1)
+             in
+             Hashtbl.replace table key value);
+  List.iter (fun (key, value) -> Hashtbl.replace table key value) overrides;
+  Hashtbl.fold
+    (fun key value acc -> Printf.sprintf "%s=%s" key value :: acc)
+    table []
+  |> Array.of_list
+
+let run_process ?(env = []) ~cwd prog argv =
   let out = Filename.temp_file "ci-run-tests-out" ".txt" in
   let err = Filename.temp_file "ci-run-tests-err" ".txt" in
-  let wrapped =
-    Printf.sprintf "%s > %s 2> %s" full (quote out) (quote err)
+  let out_fd = Unix.openfile out [ Unix.O_WRONLY; Unix.O_TRUNC ] 0o600 in
+  let err_fd = Unix.openfile err [ Unix.O_WRONLY; Unix.O_TRUNC ] 0o600 in
+  let original_cwd = Sys.getcwd () in
+  let pid =
+    Fun.protect
+      ~finally:(fun () ->
+        Sys.chdir original_cwd;
+        Unix.close out_fd;
+        Unix.close err_fd)
+      (fun () ->
+        Sys.chdir cwd;
+        Unix.create_process_env prog argv (env_array env) Unix.stdin out_fd
+          err_fd)
   in
-  let code = Sys.command wrapped in
+  let rec wait () =
+    try Unix.waitpid [] pid
+    with Unix.Unix_error (Unix.EINTR, _, _) -> wait ()
+  in
+  let _, status = wait () in
+  let code =
+    match status with
+    | Unix.WEXITED code -> code
+    | Unix.WSIGNALED _ | Unix.WSTOPPED _ -> 255
+  in
   let stdout = read_file out in
   let stderr = read_file err in
   Sys.remove out;
@@ -97,6 +126,18 @@ exit 0
   ;
   Unix.chmod dune_path 0o755;
   bin_dir
+
+let make_dune_test_command ~dir =
+  Printf.sprintf "dune test --root %s" dir
+
+let make_sleep_command ~dir =
+  let path = Filename.concat dir "sleep-long.sh" in
+  write_executable path "#!/bin/sh\nset -eu\nsleep 10\n";
+  path
+
+let run_ci ?(env = []) ~cwd command =
+  let script = script_path () in
+  run_process ~cwd ~env script [| script; command |]
 
 let make_fake_dune_flaky_then_agent_sdk_artifact_failure dir =
   let bin_dir = Filename.concat dir "bin-interface" in
@@ -158,6 +199,7 @@ exit 1
 
 let test_rpc_retry_uses_isolated_build_dir () =
   with_temp_dir "ci-run-tests-retry" (fun dir ->
+      let cwd = Unix.realpath dir in
       let repo_dir = Filename.concat dir "repo" in
       Unix.mkdir repo_dir 0o755;
       let fake_log = Filename.concat dir "fake-dune.log" in
@@ -179,10 +221,7 @@ let test_rpc_retry_uses_isolated_build_dir () =
         ]
       in
       let code, stdout, stderr =
-        run_shell ~cwd:dir ~env
-          (Printf.sprintf "%s %s" (quote (script_path ()))
-             (quote
-                (Printf.sprintf "cd %s && dune test --root ." (quote repo_dir))))
+        run_ci ~cwd:dir ~env (make_dune_test_command ~dir)
       in
       if code <> 0 then
         failf "ci-run-tests failed (%d)\nstdout:\n%s\nstderr:\n%s" code stdout
@@ -207,10 +246,10 @@ let test_rpc_retry_uses_isolated_build_dir () =
       match log_lines with
       | [ first; second ] ->
           check string "first attempt uses default build dir and repo cwd"
-            (Printf.sprintf "test||%s" repo_dir)
+            (Printf.sprintf "test||%s" cwd)
             first;
           check string "second attempt uses isolated build dir and repo cwd"
-            (Printf.sprintf "test|.ci_build|%s" repo_dir)
+            (Printf.sprintf "test|.ci_build|%s" cwd)
             second
       | _ ->
           failf "expected exactly two dune invocations, got:\n%s"
@@ -218,6 +257,7 @@ let test_rpc_retry_uses_isolated_build_dir () =
 
 let test_agent_sdk_artifact_failure_after_flaky_retry_disables_cache () =
   with_temp_dir "ci-run-tests-interface" (fun dir ->
+      let cwd = Unix.realpath dir in
       let repo_dir = Filename.concat dir "repo" in
       Unix.mkdir repo_dir 0o755;
       let fake_log = Filename.concat dir "fake-dune.log" in
@@ -239,10 +279,7 @@ let test_agent_sdk_artifact_failure_after_flaky_retry_disables_cache () =
         ]
       in
       let code, stdout, stderr =
-        run_shell ~cwd:dir ~env
-          (Printf.sprintf "%s %s" (quote (script_path ()))
-             (quote
-                (Printf.sprintf "cd %s && dune test --root ." (quote repo_dir))))
+        run_ci ~cwd:dir ~env (make_dune_test_command ~dir)
       in
       if code <> 0 then
         failf "ci-run-tests failed (%d)\nstdout:\n%s\nstderr:\n%s" code stdout
@@ -268,16 +305,16 @@ let test_agent_sdk_artifact_failure_after_flaky_retry_disables_cache () =
       match log_lines with
       | [ first; second; third; fourth ] ->
           check string "first attempt uses default build dir"
-            (Printf.sprintf "test|||%s" repo_dir)
+            (Printf.sprintf "test|||%s" cwd)
             first;
           check string "flaky retry uses isolated build dir without cache override"
-            (Printf.sprintf "test|.ci_build_flaky||%s" repo_dir)
+            (Printf.sprintf "test|.ci_build_flaky||%s" cwd)
             second;
           check string "clean uses isolated build dir"
-            (Printf.sprintf "clean|.ci_build_flaky||%s" dir)
+            (Printf.sprintf "clean|.ci_build_flaky||%s" cwd)
             third;
           check string "clean retry disables dune cache"
-            (Printf.sprintf "test|.ci_build_flaky|disabled|%s" repo_dir)
+            (Printf.sprintf "test|.ci_build_flaky|disabled|%s" cwd)
             fourth
       | _ ->
           failf "expected exactly four dune invocations, got:\n%s"
@@ -285,6 +322,7 @@ let test_agent_sdk_artifact_failure_after_flaky_retry_disables_cache () =
 
 let test_disk_full_failure_skips_flaky_retry () =
   with_temp_dir "ci-run-tests-disk-full" (fun dir ->
+      let cwd = Unix.realpath dir in
       let repo_dir = Filename.concat dir "repo" in
       Unix.mkdir repo_dir 0o755;
       let fake_log = Filename.concat dir "fake-dune.log" in
@@ -307,10 +345,7 @@ let test_disk_full_failure_skips_flaky_retry () =
         ]
       in
       let code, stdout, stderr =
-        run_shell ~cwd:dir ~env
-          (Printf.sprintf "%s %s" (quote (script_path ()))
-             (quote
-                (Printf.sprintf "cd %s && dune test --root ." (quote repo_dir))))
+        run_ci ~cwd:dir ~env (make_dune_test_command ~dir)
       in
       check int "disk full exit code" 1 code;
       let ci_log_contents = read_file ci_log in
@@ -333,7 +368,7 @@ let test_disk_full_failure_skips_flaky_retry () =
       match log_lines with
       | [ first ] ->
           check string "single attempt uses repo cwd"
-            (Printf.sprintf "test||%s" repo_dir)
+            (Printf.sprintf "test||%s" cwd)
             first
       | _ ->
           failf "expected exactly one dune invocation, got:\n%s"
@@ -351,9 +386,7 @@ let test_timeout_diagnostics_capture_active_process_group () =
         ]
       in
       let code, stdout, stderr =
-        run_shell ~cwd:dir ~env
-          (Printf.sprintf "%s %s" (quote (script_path ()))
-             (quote "sh -c 'sleep 10'"))
+        run_ci ~cwd:dir ~env (make_sleep_command ~dir)
       in
       check int "timeout exit code" 124 code;
       let ci_log_contents = read_file ci_log in
@@ -368,7 +401,8 @@ let test_timeout_diagnostics_capture_active_process_group () =
         (contains_substring observed_output
            "active command process tree snapshot:");
       check bool "sleeping process captured" true
-        (contains_substring observed_output "sleep 10");
+        (contains_substring observed_output "sleep 10"
+        || contains_substring observed_output "sleep-long.sh");
       check bool "timeout error present" true
         (contains_substring observed_output
            "[ci-run] ERROR: test command timed out after 2s"))

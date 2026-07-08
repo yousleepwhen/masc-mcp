@@ -6,7 +6,7 @@ import {
   liveFilters,
   toggleLiveFilter,
   eventKindColor,
-  eventKindLabel,
+  journalEventKindLabel,
   eventKindTone,
   type LiveFilterKind,
 } from '../../live-store'
@@ -14,7 +14,7 @@ import { connected, totalEvents } from '../../sse'
 import { ActionButton } from '../common/button'
 import { EmptyState, ErrorState } from '../common/feedback-state'
 import { StatusChip } from '../common/status-chip'
-import { formatTimeAgo } from '../common/time-ago'
+import { formatTimeAgo } from '../../lib/format-time'
 
 const FILTER_OPTIONS: { kind: LiveFilterKind; label: string }[] = [
   { kind: 'broadcast', label: '브로드캐스트' },
@@ -66,7 +66,7 @@ export function ActivityStream() {
               class="activity-item rounded-[var(--r-1)] border border-[var(--color-border-divider)] border-l-2 bg-[var(--color-bg-surface)] px-3.5 py-3 ${eventKindColor(entry)} ${i === 0 ? 'activity-item-new' : ''}"
             >
               <div class="activity-item-head flex items-center gap-2">
-                <${StatusChip} tone=${eventKindTone(entry)}>${eventKindLabel(entry)}<//>
+                <${StatusChip} tone=${eventKindTone(entry)}>${journalEventKindLabel(entry)}<//>
                 <span class="text-xs text-[var(--color-fg-primary)] font-medium">${entry.agent}</span>
                 <span class="text-2xs text-[var(--color-fg-muted)] ml-auto">${formatTimeAgo(entry.timestamp)}</span>
               </div>

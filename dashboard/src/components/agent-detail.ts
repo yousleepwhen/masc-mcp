@@ -5,11 +5,13 @@ import { html } from 'htm/preact'
 import { useSignal } from '@preact/signals'
 import { formatPct } from '../lib/format-number'
 import { useMemo, useRef } from 'preact/hooks'
-import { Card } from './common/card'
+import { SectionCard } from './common/card'
 import { EmptyState, ErrorState } from './common/feedback-state'
 import { StatusBadge } from './common/status-badge'
 import { TimeAgo } from './common/time-ago'
 import { resolveUnifiedStatus } from '../lib/unified-status'
+import { keeperDisplayStatus } from '../lib/keeper-runtime-display'
+import { findKeeper } from '../lib/keeper-utils'
 import { ActionButton } from './common/button'
 import { TextInput } from './common/input'
 import { keeperIdentityHint } from './common/keeper-identity'
@@ -21,8 +23,8 @@ import { AgentWorkerBrief } from './agent-detail-worker'
 import { AgentDetailMemory } from './agent-detail-memory'
 import { CollapsibleSection } from './common/collapsible'
 import { SessionTraceView } from './session-trace/session-trace-view'
+import { selectedAgentName } from './agent-detail-selection'
 import {
-  selectedAgentName,
   loading,
   detailError,
   namespaceActivity,
@@ -31,7 +33,6 @@ import {
   sendingMention,
   selectedAgent,
   assignedTasks,
-  keeperForAgent,
   missionAgentBrief,
   continuityBriefForAgent,
   closeAgentDetail,
@@ -52,12 +53,9 @@ import { invalidateDashboardCache, refreshDashboard } from '../store'
 import { purgeAgent } from '../api/actions'
 import { ringFocusClasses } from './common/ring'
 
-// Re-export public API for external consumers
-export { selectedAgentName, openAgentDetail, closeAgentDetail } from './agent-detail-state'
-
 // Wire keeper redirect: keeper-linked agents open the keeper detail overlay
 setKeeperRedirect((agentName: string) => {
-  const keeper = keeperForAgent(agentName)
+  const keeper = findKeeper(agentName)
   if (keeper) {
     openKeeperDetail(keeper)
     return true
@@ -173,7 +171,7 @@ export function AgentDetailOverlay() {
   const closeButtonRef = useRef<HTMLButtonElement>(null)
 
   const agent = selectedAgent()
-  const keeper = keeperForAgent(agentName)
+  const keeper = findKeeper(agentName)
   const continuityBrief = continuityBriefForAgent(agentName)
   const missionBrief = missionAgentBrief(agentName)
   const ownedTasks = assignedTasks(agentName)
@@ -192,7 +190,8 @@ export function AgentDetailOverlay() {
   const isFilteringTasks = taskQuery.value.trim() !== ''
   const displayName = missionBrief?.display_name ?? keeper?.name ?? agentName
   const secondaryLabel = displayName !== agentName ? agentName : null
-  const unified = resolveUnifiedStatus(keeper?.status, agent?.status, missionBrief?.signal_truth)
+  const keeperStatus = keeper ? keeperDisplayStatus(keeper, agent?.status) : null
+  const unified = resolveUnifiedStatus(keeperStatus, agent?.status, missionBrief?.signal_truth)
   const isArchivedParticipant = !agent && missionBrief?.is_live === false
   const lastSeenAt =
     agent?.last_seen
@@ -265,7 +264,6 @@ export function AgentDetailOverlay() {
                   <${StatusBadge} status=${unified.canonical} />
                   ${unified.description !== unified.label ? html`<span class="text-3xs font-medium py-1 px-2 border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] text-text-muted whitespace-nowrap rounded-[var(--r-1)]" title=${unified.description}>${unified.description}</span>` : null}
                   ${isArchivedParticipant ? html`<${IdPill}>이전 세션 참여자<//>` : null}
-                  ${agent?.model ? html`<span class="font-mono text-3xs font-medium bg-[var(--color-bg-hover)] border border-[var(--color-border-divider)] px-2 py-1 rounded-[var(--r-1)] text-text-muted shadow-1">${agent.model}</span>` : ''}
                   ${!agent && missionBrief?.archived_reason
                     ? html`<span class="text-xs text-text-dim italic">${missionBrief.archived_reason}</span>`
                     : null}
@@ -356,11 +354,11 @@ export function AgentDetailOverlay() {
         </div>
 
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          <${Card} title="할당된 작업">
+          <${SectionCard} label="할당된 작업">
             ${renderOwnedTasks(ownedTasks, visibleOwnedTasks, isFilteringTasks)}
           <//>
 
-          <${Card} title="최근 활동">
+          <${SectionCard} label="최근 활동">
             ${lines.length === 0
               ? html`<div class="h-full min-h-30"><${EmptyState} message="최근 활동 메시지가 없습니다" compact /></div>`
               : html`<div role="log" aria-label="최근 활동 로그" class="max-h-60 overflow-y-auto flex flex-col gap-2 pr-1 custom-scrollbar">${lines.map((line: string, idx: number) => html`<div key=${idx} class="border border-card-border bg-card/40 px-3 py-2.5 font-mono text-xs text-text-body leading-relaxed rounded-[var(--r-1)] shadow-[var(--shadow-1)] hover:bg-card/60 transition-colors">${line}</div>`)}</div>`}
@@ -373,7 +371,7 @@ export function AgentDetailOverlay() {
           <${AgentDetailMemory} agentName=${agentName} />
           <${AgentWorkerBrief} agentName=${agentName} />
           ${agentFitness.value ? html`
-            <${Card} title="적합도 (7일)" role="region" ariaLabel="에이전트 적합도">
+            <${CollapsibleSection} title="적합도 (7일)" mountWhenOpen=${true}>
               <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 ${([
                   ['완료율', agentFitness.value.completion_rate],
@@ -390,11 +388,11 @@ export function AgentDetailOverlay() {
             <//>
           ` : null}
 
-          <${Card} title="작업 이력">
+          <${CollapsibleSection} title=${`작업 이력 (${historyRows.length})`} mountWhenOpen=${true}>
             ${renderTaskHistories(historyRows, visibleHistories, isFilteringTasks)}
           <//>
 
-          <${Card} title="직접 멘션">
+          <${SectionCard} label="직접 멘션">
             <div class="grid grid-cols-[1fr_auto] gap-3">
               <${TextInput}
                 class="px-4 py-2.5 rounded-[var(--r-1)] bg-card/60 text-text-strong text-sm placeholder:text-text-dim shadow-inset"

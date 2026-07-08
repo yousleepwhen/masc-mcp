@@ -1,6 +1,7 @@
 type t = {
   config : Coord.config;
   meta : Keeper_types.keeper_meta;
+  turn_id : int;
   default_network_override : Keeper_types.network_mode option;
   cache :
     ((bool * string), Keeper_turn_sandbox_runtime.t) Hashtbl.t;
@@ -8,10 +9,11 @@ type t = {
 }
 
 let create ?default_network_override
-    ~(config : Coord.config) ~(meta : Keeper_types.keeper_meta) () =
+    ~(config : Coord.config) ~(meta : Keeper_types.keeper_meta) ?(turn_id = 0) () =
   {
     config;
     meta;
+    turn_id;
     default_network_override;
     cache = Hashtbl.create 4;
     mutex = Eio.Mutex.create ();
@@ -20,12 +22,7 @@ let create ?default_network_override
 let with_lock (t : t) f =
   Eio.Mutex.use_rw ~protect:true t.mutex f
 
-let strip_trailing_slashes path =
-  let rec loop i =
-    if i > 0 && path.[i - 1] = '/' then loop (i - 1) else i
-  in
-  let len = loop (String.length path) in
-  if len = String.length path then path else String.sub path 0 len
+let strip_trailing_slashes = Env_config_core.strip_trailing_slashes
 
 let normalize p =
   Keeper_alerting_path.normalize_path_for_check p
@@ -44,8 +41,7 @@ let resolve (t : t) ~cwd =
   with_lock t (fun () ->
     let in_playground = in_playground_of_cwd t ~cwd in
     let (effective_profile, effective_network) =
-      Keeper_shell_docker.effective_sandbox_profile
-        ~meta:t.meta ~in_playground
+      Keeper_sandbox_runner.effective_sandbox_profile ~meta:t.meta
     in
     let actual_network =
       Option.value t.default_network_override ~default:effective_network
@@ -64,6 +60,7 @@ let resolve (t : t) ~cwd =
             ~config:t.config
             ~meta:t.meta
             ~network_mode:actual_network
+            ~turn_id:t.turn_id
             ()
         in
         Hashtbl.add t.cache key r;

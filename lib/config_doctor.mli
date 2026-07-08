@@ -45,6 +45,11 @@ val status_to_string : status -> string
     ["ok"] / ["warn"] / ["error"].  Pinned literal — drift would
     break tooling that parses the config-doctor JSON. *)
 
+val warning_is_blocking : string -> bool
+(** [warning_is_blocking warning] returns [false] for informational
+    warnings that should remain visible in config-doctor output without
+    blocking higher-level diagnostics such as [doctor keeper]. *)
+
 (** {1 Inputs + report records} *)
 
 type inputs = {
@@ -55,7 +60,6 @@ type inputs = {
   env_config_dir : string option;
   env_personas_dir : string option;
   resolution_source : string option;
-  repo_config_fallback_enabled : bool;
 }
 (** Inputs to {!analyze_with}.  Concrete record because callers
     construct via [{ Config_doctor.cwd; ... }] at the dispatch
@@ -74,7 +78,6 @@ type t = {
   explicit_config_dir : string option;
   explicit_personas_dir : string option;
   repo_config_seed_path : string option;
-  repo_fallback_enabled : bool;
   keeper_runtime_toml_present : bool;
   warnings : string list;
   next_actions : string list;
@@ -84,6 +87,11 @@ type t = {
 (** Aggregate report.  Concrete record — callers (CLI rendering,
     tests, dashboard JSON) destructure fields directly.
     18 fields; new fields go through this contract. *)
+
+val has_blocking_warning : t -> bool
+(** [has_blocking_warning report] treats [Error] reports as blocking and
+    [Warn] reports as blocking only when at least one warning needs operator
+    action before another diagnostic should proceed. *)
 
 (** {1 Catalog issue re-exports} *)
 
@@ -134,9 +142,13 @@ val analyze_live :
     + Initialise [Process_eio] with the resolved base path.
     + Run [Keeper_sandbox_runtime.docker_preflight] (10 s timeout).
     + Live cascade catalog validation (when reachable).
+    + Verify [keeper_turn] / [tool_required] routes can produce at
+      least one forced required-tool provider (inline [tool_choice] or
+      runtime MCP).
     + Combine into a final {!status} via the cascading severity
       ladder (Invalid_env / Missing_init -> Error; serving stale
-      catalog -> Error; partial catalog -> Warn; etc.).
+      catalog -> Error; tool-required route dead -> Error; partial
+      catalog -> Warn; etc.).
 
     Side-effecting (Process_eio init, Docker probe, file reads)
     but does not mutate persistent state. *)

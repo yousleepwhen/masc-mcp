@@ -1,6 +1,9 @@
 (** Decide on-disk materialisation status for a credential record.
     See {!Credential_materializer} module documentation for the full
-    state-derivation table.  RFC-0019 §4.4. *)
+    state-derivation table.  A bundle is materialized only when its
+    [hosts.yml] contains an [oauth_token] that can be projected into a
+    Docker keeper container; host keyring-only gh auth is [Stale].
+    RFC-0019 §4.4. *)
 
 open Repo_manager_types
 
@@ -27,11 +30,6 @@ val sha256_prefix : string -> string
     comparison; the prefix is short enough to surface in logs/audit
     without redaction concerns yet long enough (48 bits) to make
     accidental collisions astronomically unlikely.  RFC-0019 §3.2 P1. *)
-
-val waitpid_status_nointr_for_test : int -> Unix.process_status
-(** Test hook for the credential subprocess reaper.  Production callers
-    use the internal helper through [verify_state], [f1_gate_check], and
-    [provision_via_with_token]. *)
 
 val compute_token_sha256_prefix : gh_config_dir:string -> string option
 (** [compute_token_sha256_prefix ~gh_config_dir] reads the
@@ -77,8 +75,8 @@ val provision_via_with_token :
     (token leakage):
 
     - [token] is never logged, returned, captured, or echoed.
-    - [stdout]/[stderr] of the subprocess are redirected to [/dev/null]
-      so [gh] cannot leak a malformed-token diagnostic.
+    - [stdout]/[stderr] of the subprocess are ignored so [gh] cannot
+      leak a malformed-token diagnostic through this API.
     - [gh_config_dir] is rejected if it contains a [..] segment.
     - [gh] receives a bundle-local environment that scrubs ambient
       GH_TOKEN/GITHUB_TOKEN values and forces [--insecure-storage], so

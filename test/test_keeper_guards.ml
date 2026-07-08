@@ -10,6 +10,8 @@
 open Alcotest
 module KG = Masc_mcp.Keeper_guards
 module HK = Masc_mcp.Keeper_hooks_oas
+module HGA = Masc_mcp.Keeper_hooks_oas_gate_attempt
+module P = Masc_mcp.Prometheus
 
 (* ----------------------------------------------------------------- *)
 (* Helpers                                                             *)
@@ -105,12 +107,12 @@ let with_env name value f =
 
 let test_render_inline_skip_reason () =
   let s = KG.render_inline_skip_reason
-    ~tool_name:"keeper_fs_read"
+    ~tool_name:"tool_read_file"
     ~reason_code:"streak_gate"
     ~reason_text:"called 5 times"
   in
-  check bool "contains tool=keeper_fs_read" true
-    (contains_substring s "tool=keeper_fs_read");
+  check bool "contains tool=tool_read_file" true
+    (contains_substring s "tool=tool_read_file");
   check bool "contains code=streak_gate" true
     (contains_substring s "code=streak_gate");
   check bool "contains source=keeper_hook" true
@@ -118,7 +120,7 @@ let test_render_inline_skip_reason () =
   let with_source = KG.render_inline_skip_reason_with_source
     ~source_path:"lib/keeper/keeper_guards.ml"
     ~source_line:123
-    ~tool_name:"keeper_fs_read"
+    ~tool_name:"tool_read_file"
     ~reason_code:"streak_gate"
     ~reason_text:"called 5 times"
   in
@@ -129,6 +131,7 @@ let test_render_inline_skip_reason () =
 
 let make_gate_event ?(decision = KG.Gate_override) () =
   { KG.stage = "keeper_deny";
+    keeper_name = "test_keeper";
     decision;
     reason_code = "keeper_deny";
     reason_text = "tool is on the keeper deny list";
@@ -142,13 +145,13 @@ let make_gate_event ?(decision = KG.Gate_override) () =
   }
 
 let test_render_pre_tool_gate_output_preserves_source () =
-  let blocked = HK.render_pre_tool_gate_output (make_gate_event ()) in
+  let blocked = HGA.render_pre_tool_gate_output (make_gate_event ()) in
   check bool "override output carries source path" true
     (contains_substring blocked "source_path=lib/keeper/keeper_guards.ml");
   check bool "override output carries source line" true
     (contains_substring blocked "source_line=123");
   let approval =
-    HK.render_pre_tool_gate_output
+    HGA.render_pre_tool_gate_output
       (make_gate_event ~decision:KG.Gate_approval_required ())
   in
   check bool "approval output carries source path" true
@@ -169,6 +172,79 @@ let test_gate_decision_vocabulary () =
     (KG.gate_decision_is_rejection KG.Gate_continue);
   check bool "approval rejects" true
     (KG.gate_decision_is_rejection KG.Gate_approval_required)
+
+let test_gate_rejection_log_severity_splits_repeats () =
+  KG.For_testing.reset_gate_rejection_log_counts ();
+  Fun.protect
+    ~finally:KG.For_testing.reset_gate_rejection_log_counts
+    (fun () ->
+      let next () =
+        KG.For_testing.record_gate_rejection_log_severity
+          ~keeper_name:"test_keeper"
+          ~stage:"keeper_deny"
+          ~tool_name:"dangerous_tool"
+          ~reason_code:"keeper_deny"
+          ()
+      in
+      check string "first rejection is warn" "warn"
+        (KG.gate_rejection_log_severity_to_string (next ()));
+      (match next () with
+       | KG.Gate_rejection_repeat_info 2 -> ()
+       | severity ->
+         failf "expected second rejection info/2, got %s"
+           (KG.gate_rejection_log_severity_to_string severity));
+      (match next () with
+       | KG.Gate_rejection_repeat_debug 3 -> ()
+       | severity ->
+         failf "expected third rejection debug/3, got %s"
+           (KG.gate_rejection_log_severity_to_string severity)))
+
+let test_gate_rejection_log_severity_keys_by_rejection () =
+  KG.For_testing.reset_gate_rejection_log_counts ();
+  Fun.protect
+    ~finally:KG.For_testing.reset_gate_rejection_log_counts
+    (fun () ->
+      let record ?reason_key ~tool_name () =
+        KG.For_testing.record_gate_rejection_log_severity
+          ?reason_key
+          ~keeper_name:"test_keeper"
+          ~stage:"destructive_guard"
+          ~tool_name
+          ~reason_code:"destructive_guard"
+          ()
+      in
+      let first = record ~reason_key:"rm -rf" ~tool_name:"shell_exec" () in
+      let repeat = record ~reason_key:"rm -rf" ~tool_name:"shell_exec" () in
+      let different_tool =
+        record ~reason_key:"rm -rf" ~tool_name:"tool_execute" ()
+      in
+      let different_reason =
+        record ~reason_key:"chmod 777" ~tool_name:"shell_exec" ()
+      in
+      check string "first key warns" "warn"
+        (KG.gate_rejection_log_severity_to_string first);
+      check string "same key repeats as info" "info"
+        (KG.gate_rejection_log_severity_to_string repeat);
+      check string "different tool has own first warn" "warn"
+        (KG.gate_rejection_log_severity_to_string different_tool);
+      check string "different reason has own first warn" "warn"
+        (KG.gate_rejection_log_severity_to_string different_reason))
+
+let test_gate_rejection_planner_alternative () =
+  let streak =
+    KG.For_testing.planner_alternative_for_gate
+      ~stage:"streak_gate" ~tool_name:"tool_read_file"
+  in
+  check bool "includes structured field" true
+    (contains_substring streak "planner_alternative=");
+  check bool "names retry alternative" true
+    (contains_substring streak "keeper_stay_silent");
+  let destructive =
+    KG.For_testing.planner_alternative_for_gate
+      ~stage:"destructive_guard" ~tool_name:"shell_exec"
+  in
+  check bool "destructive suggests safe command" true
+    (contains_substring destructive "safe read-only command")
 
 (* ----------------------------------------------------------------- *)
 (* Individual guard tests                                              *)
@@ -207,6 +283,7 @@ let test_deny_guard_notifies_gate_observer () =
   match !observed with
   | [ event ] ->
     check string "stage" "keeper_deny" event.KG.stage;
+    check string "keeper_name" "test_keeper" event.KG.keeper_name;
     check string "decision" "override"
       (KG.gate_decision_to_string event.KG.decision);
     check string "reason_code" "keeper_deny" event.KG.reason_code;
@@ -225,6 +302,27 @@ let test_deny_guard_notifies_gate_observer () =
        | _ -> false)
   | events ->
     failf "expected one observer event, got %d" (List.length events)
+
+let test_gate_observer_failure_counts_actual_keeper () =
+  let meta_ref = make_meta_ref "keeper_gate_observer_failure" in
+  let keeper = (!meta_ref).name in
+  let labels = [ ("keeper", keeper); ("site", "gate_observer") ] in
+  let before =
+    P.metric_value_or_zero Masc_mcp.Keeper_metrics.(to_string GuardsFailures) ~labels ()
+  in
+  let on_gate_decision _event =
+    raise (Failure "synthetic gate observer failure")
+  in
+  let hook =
+    KG.deny_guard ~meta_ref ~on_gate_decision ~denied:["dangerous_tool"]
+  in
+  let d = invoke hook (pre_tool_use_event ~tool_name:"dangerous_tool" ()) in
+  check string "denied tool still overrides" "Override" (decision_kind d);
+  let after =
+    P.metric_value_or_zero Masc_mcp.Keeper_metrics.(to_string GuardsFailures) ~labels ()
+  in
+  check (float 0.0001) "observer failure counted for keeper"
+    (before +. 1.0) after
 
 let test_deny_guard_continues () =
   let meta_ref = make_meta_ref "test_keeper" in
@@ -358,7 +456,7 @@ let test_governance_approval_notifies_gate_observer () =
     let hook = KG.governance_approval_guard ~meta_ref ~on_gate_decision in
     let d =
       invoke hook
-        (pre_tool_use_event ~tool_name:"keeper_fs_edit"
+        (pre_tool_use_event ~tool_name:"tool_edit_file"
            ~input:(`Assoc [ ("path", `String "/tmp/file"); ("content", `String "x") ])
            ())
     in
@@ -370,7 +468,7 @@ let test_governance_approval_notifies_gate_observer () =
       check string "decision" "approval_required"
         (KG.gate_decision_to_string event.KG.decision);
       check string "reason_code" "governance_approval" event.KG.reason_code;
-      check string "tool_name" "keeper_fs_edit" event.KG.tool_name;
+      check string "tool_name" "tool_edit_file" event.KG.tool_name;
       check (option string) "source_path"
         (Some "lib/keeper/keeper_guards.ml")
         event.KG.source_path;
@@ -474,11 +572,19 @@ let () = run "Keeper_guards" [
     test_case "pre-tool gate output preserves source" `Quick
       test_render_pre_tool_gate_output_preserves_source;
     test_case "gate decision vocabulary" `Quick test_gate_decision_vocabulary;
+    test_case "gate rejection log severity splits repeats" `Quick
+      test_gate_rejection_log_severity_splits_repeats;
+    test_case "gate rejection log severity keys by rejection" `Quick
+      test_gate_rejection_log_severity_keys_by_rejection;
+    test_case "gate rejection planner alternative" `Quick
+      test_gate_rejection_planner_alternative;
   ];
   "deny_guard", [
     test_case "blocks denied tool" `Quick test_deny_guard_blocks;
     test_case "notifies observer on block" `Quick
       test_deny_guard_notifies_gate_observer;
+    test_case "observer failure counts actual keeper" `Quick
+      test_gate_observer_failure_counts_actual_keeper;
     test_case "continues for allowed tool" `Quick test_deny_guard_continues;
   ];
   "cost_guard", [

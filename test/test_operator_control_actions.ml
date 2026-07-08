@@ -3,7 +3,7 @@ module Types = Masc_domain
 open Masc_mcp
 open Test_operator_control_support
 
-module CT = Masc_mcp.Cdal_types
+module CT = Cdal_types
 
 let make_review_required_verdict ?(run_id = "review-run-001") () :
     CT.contract_verdict =
@@ -61,6 +61,7 @@ let test_task_inject_executes_immediately () =
     ~finally:(fun () -> cleanup_dir base_dir)
     (fun () ->
       let config = Coord.default_config base_dir in
+      (* See test setup: room init side effect is the fixture under test. *)
       ignore (Coord.init config ~agent_name:(Some "operator"));
       let ctx = operator_ctx env sw config "operator" in
       let action_json =
@@ -69,7 +70,7 @@ let test_task_inject_executes_immediately () =
             [
               ("actor", `String "operator");
               ("action_type", `String "task_inject");
-              ("target_type", `String "namespace");
+              ("target_type", `String "root");
               ( "payload",
                 `Assoc
                   [
@@ -99,7 +100,7 @@ let test_task_inject_executes_immediately () =
       let tasks = Coord.get_tasks_raw config in
       Alcotest.(check int) "task injected" 1 (List.length tasks))
 
-let test_digest_defaults_to_namespace_target () =
+let test_digest_defaults_to_root_target () =
   Eio_main.run @@ fun env ->
   ensure_fs env;
   Eio.Switch.run @@ fun sw ->
@@ -117,6 +118,60 @@ let test_digest_defaults_to_namespace_target () =
       in
       Alcotest.(check string) "default target_type" "root"
         Yojson.Safe.Util.(digest_json |> member "target_type" |> to_string))
+
+let test_operator_action_rejects_legacy_action_aliases () =
+  let retired_actions =
+    [
+      "autonomy_tick";
+      "keeper_msg";
+      "room_pause";
+      "room_resume";
+      "team_note";
+      "team_broadcast";
+      "team_task_inject";
+      "team_worker_spawn_batch";
+      "team_stop";
+    ]
+  in
+  List.iter
+    (fun action_type ->
+      Alcotest.(check bool)
+        (action_type ^ " not allowed")
+        false
+        (Operator_approval.is_allowed action_type);
+      Alcotest.(check bool)
+        (action_type ^ " not confirm-required")
+        false
+        (Operator_approval.confirm_required action_type))
+    retired_actions;
+  Eio_main.run @@ fun env ->
+  ensure_fs env;
+  Eio.Switch.run @@ fun sw ->
+  let base_dir = temp_dir () in
+  Fun.protect
+    ~finally:(fun () -> cleanup_dir base_dir)
+    (fun () ->
+      let config = Coord.default_config base_dir in
+      ignore (Coord.init config ~agent_name:(Some "operator"));
+      let ctx = operator_ctx env sw config "operator" in
+      List.iter
+        (fun action_type ->
+          match
+            Operator_control.action_json ctx
+              (`Assoc
+                [
+                  ("actor", `String "operator");
+                  ("action_type", `String action_type);
+                  ("payload", `Assoc []);
+                ])
+          with
+          | Ok _ -> Alcotest.failf "%s should be rejected" action_type
+          | Error message ->
+              Alcotest.(check string)
+                (action_type ^ " rejection")
+                ("unsupported action_type: " ^ action_type)
+                message)
+        retired_actions)
 
 (* review_queue / deferred_queue / review_summary fields were emitted for
    a retired dashboard surface; the producers (split_review_items,

@@ -90,8 +90,23 @@ let verdict_of_yojson = function
              | _ -> "no reason given"
            in
            Ok (Partial (score, reason))
-       | _ -> Error "unknown or missing verdict")
-  | _ -> Error "verdict must be a JSON object"
+       | other ->
+           let got =
+             match other with
+             | Some j -> Printf.sprintf "got %s" (Json_util.excerpt j)
+             | None -> "field missing"
+           in
+           Error
+             (Printf.sprintf
+                "unknown or missing 'verdict' (expected one of: \
+                 pass | fail | partial; %s)"
+                got))
+  | other ->
+      Error
+        (Printf.sprintf
+           "verdict must be a JSON object, got %s: %s"
+           (Json_util.kind_name other)
+           (Json_util.excerpt other))
 
 (** Verification request *)
 type verification_request = {
@@ -130,13 +145,38 @@ let request_status_of_yojson = function
        | Some (`String "assigned") ->
            (match List.assoc_opt "verifier" fields with
             | Some (`String a) -> Ok (Assigned a)
-            | _ -> Error "assigned requires 'verifier' field")
+            | other ->
+                let got =
+                  match other with
+                  | Some j -> Printf.sprintf "got %s" (Json_util.excerpt j)
+                  | None -> "field missing"
+                in
+                Error
+                  (Printf.sprintf
+                     "assigned status requires 'verifier' string field \
+                      (%s)"
+                     got))
        | Some (`String "completed") ->
            (match verdict_of_yojson (`Assoc fields) with
             | Ok v -> Ok (Completed v)
             | Error e -> Error e)
-       | _ -> Error "unknown request status")
-  | _ -> Error "request status must be a JSON object"
+       | other ->
+           let got =
+             match other with
+             | Some j -> Printf.sprintf "got %s" (Json_util.excerpt j)
+             | None -> "field missing"
+           in
+           Error
+             (Printf.sprintf
+                "unknown 'status' (expected one of: pending | assigned \
+                 | completed; %s)"
+                got))
+  | other ->
+      Error
+        (Printf.sprintf
+           "request status must be a JSON object, got %s: %s"
+           (Json_util.kind_name other)
+           (Json_util.excerpt other))
 
 let request_to_yojson req =
   `Assoc [
@@ -197,8 +237,31 @@ let request_of_yojson = function
              | None -> Pending
            in
            Ok { id; task_id; output; criteria; worker; verifier; created_at; status }
-       | _ -> Error "verification request requires 'id', 'task_id', 'worker' fields")
-  | _ -> Error "verification request must be a JSON object"
+       | id_opt, task_opt, worker_opt ->
+           let missing =
+             List.filter_map
+               (fun (name, opt) -> if Option.is_none opt then Some name else None)
+               [ "id", id_opt; "task_id", task_opt; "worker", worker_opt ]
+           in
+           Error
+             (Printf.sprintf
+                "verification request missing required string field(s) \
+                 [%s] (object had keys: [%s])"
+                (String.concat ", " missing)
+                (String.concat ", " (List.map fst fields))))
+  | other ->
+      Error
+        (Printf.sprintf
+           "verification request must be a JSON object, got %s: %s"
+           (Json_util.kind_name other)
+           (Json_util.excerpt other))
+
+let request_status_is_actionable = function
+  | Pending | Assigned _ -> true
+  | Completed _ -> false
+
+let request_is_actionable (req : verification_request) =
+  request_status_is_actionable req.status
 
 (** ID generation — cryptographic random, 128-bit space.
 
@@ -293,20 +356,55 @@ let validate_cross_agent ~worker ~verifier =
 
 let verifications_dir = Coord_verification_store.verifications_dir
 
-let ensure_dir path =
-  Fs_compat.mkdir_p path
-
 let request_path base_path req_id =
   Coord_verification_store.request_path base_path req_id
+
+(* [list_requests] used to walk [verifications/*.json] on every dashboard
+   refresh: one [Safe_ops.list_dir_safe] for the directory followed by
+   [Safe_ops.read_json_eio] per file (the per-file [load_request] in the
+   filter_map below).  Dashboard layers — [Dashboard_verification.proof_compose],
+   [summary_json], [requests_json] — and verification HTTP routes all funnel
+   into this scan.  PR #19015 collapsed two scans into one within the proof
+   compose, but each cache miss still pays N+1 disk reads.
+
+   This storage-level cache keeps the most-recent parsed list addressed by
+   [(base_path, dir mtime)].  When the directory has not changed since the
+   last scan, the cache returns the previously-parsed list — a single
+   [Unix.stat] syscall — and skips the readdir + per-file open chain.
+
+   Single-entry [Atomic.t] is sufficient because production deployments run
+   a single [base_path] per MASC server instance.  Multi-tenant workloads
+   would alternate cache misses but never serve stale data — the mtime guard
+   detects directory churn from any source (file create/update/delete all
+   bump [st_mtime]).  Write paths below ([save_request]) additionally
+   invalidate the cache explicitly to close the sub-second mtime resolution
+   race on fast filesystems. *)
+type list_requests_cache_entry = {
+  cache_base_path : string;
+  dir_mtime : float;
+  results : verification_request list;
+}
+
+let list_requests_cache : list_requests_cache_entry option Atomic.t =
+  Atomic.make None
+
+let invalidate_list_requests_cache () =
+  Atomic.set list_requests_cache None
+
+let dir_mtime_opt dir =
+  try Some (Unix.stat dir).Unix.st_mtime with
+  | Unix.Unix_error _ | Sys_error _ -> None
 
 let save_request base_path req =
   try
     let dir = verifications_dir base_path in
-    ensure_dir dir;
+    Fs_compat.mkdir_p dir;
     let json = request_to_yojson req in
     let path = request_path base_path req.id in
     match Fs_compat.save_file_atomic path (Yojson.Safe.pretty_to_string json) with
-    | Ok () -> Ok req.id
+    | Ok () ->
+        invalidate_list_requests_cache ();
+        Ok req.id
     | Error e -> Error e
   with
   | Eio.Cancel.Cancelled _ as e -> raise e
@@ -328,7 +426,7 @@ let load_request base_path req_id =
   else
     Error (Printf.sprintf "Verification %s not found" req_id)
 
-let list_requests base_path =
+let list_requests_uncached base_path =
   let surface = "verification" in
   let observe_drop ~reason =
     Prometheus.inc_counter Prometheus.metric_persistence_read_drops
@@ -343,11 +441,26 @@ let list_requests base_path =
       ~detail
   in
   let dir = verifications_dir base_path in
-  if not (Sys.file_exists dir) then
+  if Keeper_fd_pressure.active ()
+  then []
+  else
+    let dir_exists =
+      try Sys.file_exists dir with
+      | Eio.Cancel.Cancelled _ as e -> raise e
+      | exn ->
+        Keeper_fd_pressure.note_exception ~site:"verification.list_requests.exists" exn;
+        report_drop
+          ~reason:Safe_ops.persistence_read_drop_reason_list_dir_error
+          ~path:dir
+          ~detail:(Printexc.to_string exn);
+        false
+    in
+    if not dir_exists then
     []
   else
     match Safe_ops.list_dir_safe dir with
     | Error detail ->
+      Keeper_fd_pressure.note_if_fd_exhaustion ~site:"verification.list_requests" detail;
       report_drop ~reason:Safe_ops.persistence_read_drop_reason_list_dir_error ~path:dir ~detail;
       []
     | Ok files ->
@@ -362,6 +475,29 @@ let list_requests base_path =
             ~reason:Safe_ops.persistence_read_drop_reason_entry_load_error
             ~path:(Filename.concat dir f)
             (load_request base_path id))
+
+(* Public entry: check the mtime-keyed cache before the readdir + N+1 open
+   chain.  A cache hit returns the previously-parsed list after a single
+   [Unix.stat] syscall; cache miss falls through to [list_requests_uncached]
+   and refreshes the entry.  See [list_requests_cache] above for the design. *)
+let list_requests base_path =
+  let dir = verifications_dir base_path in
+  match dir_mtime_opt dir with
+  | None ->
+      (* Directory missing or stat failed — defer to the uncached path so
+         the existing dir_exists / fd_pressure / log paths run unchanged. *)
+      list_requests_uncached base_path
+  | Some mtime -> (
+      match Atomic.get list_requests_cache with
+      | Some entry
+        when String.equal entry.cache_base_path base_path
+             && Float.equal entry.dir_mtime mtime ->
+          entry.results
+      | _ ->
+          let results = list_requests_uncached base_path in
+          Atomic.set list_requests_cache
+            (Some { cache_base_path = base_path; dir_mtime = mtime; results });
+          results)
 
 (** High-level API *)
 

@@ -1,6 +1,5 @@
 import { describe, expect, it, beforeEach } from 'vitest'
 import {
-  appendLiveToolCall,
   closeSessionTrace,
   getTraceEvents,
   getFilteredEvents,
@@ -15,9 +14,9 @@ import {
   getTraceLoading,
   getTraceError,
   buildTraceEvents,
-  _liveTraceFeeds as liveTraceFeeds,
-  _traceSlots as traceSlots,
+  traceSlots,
 } from './session-trace-state'
+import { appendLiveToolCall, liveTraceFeeds } from './session-trace-live-store'
 
 // Reset trace slots before each test
 beforeEach(() => {
@@ -56,6 +55,8 @@ describe('appendLiveToolCall', () => {
       success: true,
       error: null,
       tsUnix: 1712400000,
+      toolArgs: '{"file_path":"/tmp/readme.md"}',
+      toolResult: 'file contents',
     })
 
     const events = getTraceEvents('keeper-a')
@@ -65,6 +66,10 @@ describe('appendLiveToolCall', () => {
     expect(e.toolName).toBe('keeper_fs_read')
     expect(e.duration_ms).toBe(250)
     expect(e.error).toBeNull()
+    expect(e.toolArgs).toBe('{"file_path":"/tmp/readme.md"}')
+    expect(e.toolResult).toBe('file contents')
+    expect(e.detail.tool_args_preview).toBe('{"file_path":"/tmp/readme.md"}')
+    expect(e.detail.tool_output_preview).toBe('file contents')
     expect(e.ts).toBe(1712400000 * 1000)
     expect(e.id).toMatch(/^live-/)
   })
@@ -83,7 +88,7 @@ describe('appendLiveToolCall', () => {
     }
 
     appendLiveToolCall('keeper-a', {
-      toolName: 'keeper_bash',
+      toolName: 'Execute',
       durationMs: 5000,
       success: false,
       error: 'command not found',
@@ -152,7 +157,7 @@ describe('appendLiveToolCall', () => {
     }
 
     appendLiveToolCall('keeper-a', {
-      toolName: 'keeper_bash',
+      toolName: 'Execute',
       durationMs: 300,
       success: true,
       error: null,
@@ -213,6 +218,7 @@ describe('buildTraceEvents', () => {
             tool_name: 'keeper_fs_read',
             duration_ms: 42,
             tool_args_preview: '{"path":"/tmp/test.txt"}',
+            tool_output_preview: 'file preview',
           },
         }],
         summary: { tasks_completed: 0, tasks_claimed: 0, messages_sent: 0, active_duration_minutes: 0, total_events: 1 },
@@ -223,6 +229,7 @@ describe('buildTraceEvents', () => {
     expect(events[0]!.kind).toBe('tool_call')
     expect(events[0]!.summary).toBe('keeper_fs_read')
     expect(events[0]!.toolArgs).toBe('{"path":"/tmp/test.txt"}')
+    expect(events[0]!.toolResult).toBe('file preview')
   })
 
   it('enriches trajectory rows from tool-call log and suppresses shallow timeline duplicates', () => {
@@ -305,7 +312,7 @@ describe('buildTraceEvents', () => {
         entries: [{
           ts: 1712397700,
           keeper: 'test',
-          tool: 'keeper_bash',
+          tool: 'Execute',
           input: { cmd: 'false' },
           output: 'command exited 1',
           success: false,
@@ -321,7 +328,7 @@ describe('buildTraceEvents', () => {
     )
     expect(events).toHaveLength(1)
     expect(events[0]!.kind).toBe('tool_call')
-    expect(events[0]!.toolName).toBe('keeper_bash')
+    expect(events[0]!.toolName).toBe('Execute')
     expect(events[0]!.error).toBe('command exited 1')
     expect(events[0]!.detail.trace_origin).toBe('tool_call_log')
     expect(events[0]!.detail.lane).toBe('runtime_mcp')
@@ -495,7 +502,7 @@ describe('getTraceSummary', () => {
             kind: 'lifecycle',
             sourceLane: 'oas',
             summary: 'LLM 요청',
-            detail: { durable_kind: 'llm_request', turn: 1, model: 'qwen', input_tokens: 100 },
+            detail: { durable_kind: 'llm_request', turn: 1, model: 'provider-h', input_tokens: 100 },
           },
           {
             id: 'r2',
@@ -504,7 +511,7 @@ describe('getTraceSummary', () => {
             kind: 'lifecycle',
             sourceLane: 'oas',
             summary: 'LLM 요청',
-            detail: { durable_kind: 'llm_request', turn: 2, model: 'qwen', input_tokens: 200 },
+            detail: { durable_kind: 'llm_request', turn: 2, model: 'provider-h', input_tokens: 200 },
           },
           {
             id: 'e1',

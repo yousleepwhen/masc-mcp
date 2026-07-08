@@ -33,7 +33,7 @@ MCP(Model Context Protocol)를 다중 트랜스포트(HTTP/1.1, HTTP/2 h2c, WebS
 - SSE는 per-session `Eio.Stream.t` mailbox 패턴. broadcast 시 global write-lock 없음.
 - HTTP/2는 `h2-eio` 기반이며 `MASC_USE_H2=auto|1|0`로 listener mode를 제어한다. 기본값 `auto`는 HTTP/1.1과 h2c를 같은 포트에서 자동 감지한다.
 - gRPC, WebSocket, WebRTC는 보조지만 지원되는 트랜스포트다. 현재 runtime 기본값은 활성이고 `MASC_*_ENABLED=0`으로만 비활성화한다.
-- stdio 모드는 Claude Code MCP 클라이언트의 표준 연결 방식.
+- stdio 모드는 CLI-Tool-A MCP 클라이언트의 표준 연결 방식.
 
 ---
 
@@ -42,9 +42,9 @@ MCP(Model Context Protocol)를 다중 트랜스포트(HTTP/1.1, HTTP/2 h2c, WebS
 ```mermaid
 graph TB
     subgraph Clients["클라이언트"]
-        CC[Claude Code<br/>MCP stdio]
-        GC[Gemini CLI<br/>MCP HTTP]
-        CX[Codex CLI<br/>MCP HTTP]
+        CC[CLI-Tool-A<br/>MCP stdio]
+        GC[CLI-Tool-C<br/>MCP HTTP]
+        CX[CLI-Tool-B<br/>MCP HTTP]
         DB[Dashboard<br/>Browser SSE]
         EXT[외부 에이전트<br/>gRPC / WS / WebRTC]
     end
@@ -313,7 +313,7 @@ Sse.subscribe_external ~id:"ws-123"
 
 | 상수 | 값 | 근거 |
 |------|-----|------|
-| `max_clients` | 200 | Claude.ai MCP 클라이언트 재연결 대응. 초과 시 oldest eviction |
+| `max_clients` | 200 | Agent-LLM-A.ai MCP 클라이언트 재연결 대응. 초과 시 oldest eviction |
 | `stream_capacity` | 1024 | 0이면 동기 rendez-vous가 됨. 1024 미만이면 broadcast 블로킹 위험 |
 | `push_timeout_s` | 5.0 | 로컬 TCP write에 5초. 초과 시 client drop |
 | `max_buffer_size` | 100 | event replay buffer 크기 |
@@ -338,7 +338,6 @@ Sse.subscribe_external ~id:"ws-123"
 | GET | `/mcp/operator` | `handle_get_operator_mcp` | Operator SSE |
 | DELETE | `/mcp/operator` | `handle_delete_mcp ~profile:Operator_remote` | Operator 세션 종료 |
 | GET | `/sse` | `sse_simple_handler` | 단순 SSE (Observer) |
-| POST | `/messages` | `handle_post_messages` | 레거시 MCP 메시지 엔드포인트 |
 | GET | `/ws` | `websocket_discovery_json` | WebSocket discovery JSON (`enabled`, `ws_port`, `ws_url`) |
 | POST | `/webrtc/offer` | `handle_offer_request` | WebRTC offer signaling |
 | POST | `/webrtc/answer` | `handle_answer_request` | WebRTC answer signaling |
@@ -399,8 +398,8 @@ let make_routes ~port ~host ~sw ~clock =
   room_secret.hash     -- room-level secret (SHA256 해시)
   initial_admin        -- 최초 admin agent 이름
   agents/
-    claude.json        -- credential JSON (agent_name, token_hash, admin, expires_at)
-    gemini.json
+    agent-llm-a.json        -- credential JSON (agent_name, token_hash, admin, expires_at)
+    provider-f.json
 ```
 
 ### 7.2 인증 흐름
@@ -428,9 +427,7 @@ let make_routes ~port ~host ~sw ~clock =
 | `Worker` | 도구 호출, broadcast, task claim/complete |
 | `Observer` | 읽기 전용 (status, messages 조회) |
 
-`permission_for_tool` 함수가 각 MCP 도구명을 필요 권한으로 매핑한다. 매핑되지 않은 `masc_*` 도구는:
-- `MASC_TOOL_AUTH_STRICT=1` (기본값): `CanBroadcast` 이상 필요
-- `MASC_TOOL_AUTH_STRICT=0`: fail-open (레거시 호환)
+`permission_for_tool` 함수가 각 MCP 도구명을 필요 권한으로 매핑한다. 매핑되지 않은 내부 도구명은 `CanBroadcast` 이상을 요구하고, 매핑되지 않은 외부 도구명은 거부한다. 이 동작은 fail-closed 고정값이며 환경변수로 완화할 수 없다.
 
 ### 7.5 Admin 인증
 
@@ -448,7 +445,7 @@ Access-Control-Expose-Headers: Mcp-Session-Id, Mcp-Protocol-Version
 Access-Control-Allow-Credentials: true
 ```
 
-MCP 경로(`/mcp`, `/sse`, `/messages`)에서 Origin 검증을 수행한다. 유효하지 않은 origin은 `403 Forbidden`.
+MCP 경로(`/mcp`, `/sse`)에서 Origin 검증을 수행한다. 유효하지 않은 origin은 `403 Forbidden`.
 
 ---
 
@@ -611,7 +608,7 @@ hermetic CI는 signaling + peer lifecycle만 검증한다. 실제 인터넷 상�
 
 ## 12. Stdio Transport
 
-**소스**: `bin/main_stdio_eio.ml` (50 LOC), `lib/mcp_server_eio.ml` (`run_stdio`)
+**소스**: `bin/main_stdio_eio.ml` (50 LOC), `lib/mcp_server_eio.ml` (`run_stdio`), `lib/mcp_server_eio_protocol.ml` (`detect_mode`)
 
 ### 12.1 Protocol Detection
 
@@ -744,7 +741,7 @@ sequenceDiagram
 |---------|--------|------|
 | `MASC_HOST` | `127.0.0.1` | 바인드 주소 |
 | `--port` / `-p` | `8935` | 리스닝 포트 |
-| `--base-path` | `$MASC_BASE_PATH` or `HOME` (`cwd` only if `HOME` is unavailable) | `.masc` 데이터 디렉토리 위치 |
+| `--base-path` | `$MASC_BASE_PATH` or `cwd` | `.masc` 데이터 디렉토리 위치 |
 
 ### 15.2 트랜스포트 설정
 
@@ -762,9 +759,7 @@ sequenceDiagram
 | 환경변수 | 기본값 | 설명 |
 |---------|--------|------|
 | `MASC_HTTP_AUTH_STRICT` | non-loopback시 자동 | MCP 경로 토큰 인증 강제 |
-| `MASC_TOOL_AUTH_STRICT` | 1 | 미매핑 masc_* 도구에 Worker 이상 권한 요구 |
 | `MASC_ADMIN_TOKEN` | (미설정) | Admin API 토큰 |
-| `MASC_ALLOW_LEGACY_ACCEPT` | 0 | Accept 헤더 레거시 호환 |
 
 ### 15.4 SSE 설정
 

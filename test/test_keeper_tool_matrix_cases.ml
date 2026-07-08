@@ -1,8 +1,8 @@
 module Types = Masc_domain
 
 module Generic = Test_mcp_tool_matrix_cases
-module KET = Masc_mcp.Keeper_exec_tools
-module KTO = Masc_mcp.Keeper_tools_oas
+module KET = Masc_mcp.Agent_tool_dispatch_runtime
+module KTO = Masc_mcp.Keeper_tools_oas_bundle
 module Tool = Agent_sdk.Tool
 
 type init_mode = Generic.init_mode =
@@ -53,25 +53,6 @@ let dedupe_tool_schemas (schemas : Masc_domain.tool_schema list) =
         true))
     schemas
 
-let github_guard_fragments =
-  Generic.git_guard_fragments
-  @ Generic.provider_guard_fragments
-  @
-  [
-    "not logged into any github hosts";
-    "authentication failed";
-    "gh auth login";
-    "gh_token";
-    "gh: command not found";
-    "could not resolve host";
-    "tool call failed";
-    "gh_auth: failed";
-    "could not determine repository";
-    "state must be one of open, closed, merged, all";
-    "pr_number is required";
-    "keeper_pr_create is draft-only";
-  ]
-
 let voice_guard_fragments =
   Generic.provider_guard_fragments
   @
@@ -97,7 +78,7 @@ let init_keeper_bridge () =
   (match KET.init_policy_config ~base_path with
    | Ok () -> ()
    | Error err -> Printf.eprintf "[WARN] init_policy_config failed: %s\n" err);
-  Masc_mcp.Keeper_exec_shared.tag_dispatch_fn := Masc_mcp.Keeper_tag_dispatch.dispatch;
+  Masc_mcp.Agent_tool_shared_runtime.tag_dispatch_fn := Masc_mcp.Keeper_tag_dispatch.dispatch;
   KET.inject_masc_schemas Masc_mcp.Config.raw_all_tool_schemas
 
 let make_meta ?(name = "keeper-tool-matrix") () =
@@ -139,10 +120,10 @@ let make_fixture sw ~proc_mgr ~fs ~net ~mono_clock clock ~base_path init_mode =
   in
   let config = Masc_mcp.Coord.default_config base_path in
   let ctx =
-    Masc_mcp.Keeper_exec_context.create ~system_prompt:"keeper tool matrix"
+    Masc_mcp.Keeper_context_runtime.create ~system_prompt:"keeper tool matrix"
       ~max_tokens:4000
     |> fun ctx ->
-    Masc_mcp.Keeper_exec_context.append ctx
+    Masc_mcp.Keeper_context_runtime.append ctx
       (Agent_sdk.Types.user_msg "tool matrix memory needle")
   in
   let ctx_snapshot = ctx in
@@ -164,9 +145,17 @@ let make_fixture sw ~proc_mgr ~fs ~net ~mono_clock clock ~base_path init_mode =
   { generic; config; meta; ctx_snapshot; tools }
 
 let find_tool fixture name =
-  List.find_opt
-    (fun (tool : Agent_sdk.Tool.t) -> String.equal tool.schema.name name)
-    fixture.tools
+  let by_name tool_name =
+    List.find_opt
+      (fun (tool : Agent_sdk.Tool.t) -> String.equal tool.schema.name tool_name)
+      fixture.tools
+  in
+  match by_name name with
+  | Some _ as found -> found
+  | None ->
+    (match Masc_mcp.Keeper_tool_alias.public_name_for_internal name with
+     | Some public -> by_name public
+     | None -> None)
 
 let ensure_sample_file fixture =
   let relative = "keeper-tool-matrix.txt" in
@@ -240,6 +229,9 @@ let keeper_arguments fixture (schema : Masc_domain.tool_schema) =
   | "keeper_board_get" ->
       `Assoc [ ("post_id", `String (Generic.ensure_board_post fixture.generic)) ]
   | "keeper_board_list" -> `Assoc [ ("limit", `Int 5) ]
+  | "keeper_board_curation_read" -> `Assoc []
+  | "keeper_board_curation_submit" ->
+      `Assoc [ ("rationale", `String "tool matrix curation") ]
   | "keeper_board_comment" ->
       `Assoc
         [
@@ -255,29 +247,30 @@ let keeper_arguments fixture (schema : Masc_domain.tool_schema) =
   | "keeper_board_stats" -> `Assoc []
   | "keeper_board_search" ->
       `Assoc [ ("query", `String "tool-matrix"); ("limit", `Int 5) ]
-  | "keeper_fs_read" ->
+  | "tool_read_file" ->
       `Assoc [ ("path", `String (ensure_sample_file fixture)) ]
-  | "keeper_fs_edit" ->
+  | "tool_edit_file" ->
       `Assoc
         [
           ("path", `String "keeper-matrix-write.txt");
           ("content", `String "matrix write\n");
           ("mode", `String "overwrite");
         ]
-  | "keeper_shell" -> `Assoc [ ("op", `String "git_status") ]
-  | "keeper_bash" ->
-      `Assoc [ ("cmd", `String "pwd"); ("timeout_sec", `Float 5.0) ]
-  | "keeper_bash_output" ->
-      (* No live background task in test fixtures — handler returns
-         structured "no background task with id=..." error which the
-         expectation table accepts as a valid Bg_task surface. *)
-      `Assoc [ ("task_id", `String "bgt-matrix-fixture-0-0") ]
-  | "keeper_bash_kill" ->
+  | "tool_search_files" ->
       `Assoc
         [
-          ("task_id", `String "bgt-matrix-fixture-0-0");
-          ("grace_sec", `Float 0.5);
+          ("pattern", `String "needle");
+          ("path", `String (ensure_sample_file fixture));
         ]
+  | "tool_write_file" ->
+      `Assoc
+        [
+          ("path", `String "keeper-matrix-write.txt");
+          ("content", `String "matrix write\n");
+          ("mode", `String "overwrite");
+        ]
+  | "tool_execute" ->
+      `Assoc [ ("executable", `String "pwd"); ("timeout_sec", `Float 5.0) ]
   | "keeper_voice_speak" ->
       `Assoc [ ("message", `String "tool matrix hello") ]
   | "keeper_voice_listen" ->
@@ -318,41 +311,6 @@ let keeper_arguments fixture (schema : Masc_domain.tool_schema) =
             `String
               "Validated the keeper tool matrix case as a follow-up smoke check, confirmed the task fixture was claimed, and recorded the successful completion path." );
         ]
-  | "keeper_board_cleanup" | "keeper_board_delete" ->
-      `Assoc [ ("post_id", `String (Generic.ensure_board_post fixture.generic)) ]
-  | "keeper_pr_review_comment" ->
-      `Assoc
-        [
-          ("pr_number", `Int 1);
-          ("comment", `String "tool matrix review");
-          ("body", `String "tool matrix review body");
-          ("path", `String "README.md");
-          ("line", `Int 1);
-        ]
-  | "keeper_pr_review_read" ->
-      `Assoc [ ("pr_number", `Int 1) ]
-  | "keeper_pr_review_reply" ->
-      `Assoc
-        [
-          ("pr_number", `Int 1);
-          ("comment_id", `Int 1);
-          ("body", `String "tool matrix reply body");
-          ("reply", `String "tool matrix reply");
-          ("repo", `String "owner/tool-matrix");
-        ]
-  | "keeper_pr_list" ->
-      `Assoc [ ("repo", `String "owner/tool-matrix"); ("state", `String "invalid") ]
-  | "keeper_pr_status" ->
-      `Assoc [ ("repo", `String "owner/tool-matrix"); ("pr_number", `Int 0) ]
-  | "keeper_pr_create" ->
-      `Assoc
-        [
-          ("repo", `String "owner/tool-matrix");
-          ("title", `String "tool matrix draft PR");
-          ("body", `String "tool matrix draft PR body");
-          ("draft", `Bool false);
-        ]
-  | "keeper_preflight_check" -> `Assoc []
   | "keeper_stay_silent" ->
       `Assoc [ ("reason", `String "tool matrix silence") ]
   | "keeper_task_create" ->
@@ -372,14 +330,6 @@ let keeper_expectation_for_name name =
   | "keeper_voice_speak"
   | "keeper_voice_agent" ->
       Expect_success_or_guard voice_guard_fragments
-  | "keeper_pr_review_read"
-  | "keeper_pr_review_comment"
-  | "keeper_pr_review_reply"
-  | "keeper_pr_list"
-  | "keeper_pr_status"
-  | "keeper_pr_create"
-  | "keeper_preflight_check" ->
-      Expect_success_or_guard github_guard_fragments
   | "keeper_task_done" ->
       Expect_success_or_guard
         [
@@ -387,18 +337,15 @@ let keeper_expectation_for_name name =
           "review format unrecognized";
           "Revise your completion notes";
         ]
-  | "keeper_fs_read" ->
+  | "tool_read_file" ->
       (* Playground resolves paths under .masc/playground/<agent>/ but
          the sample file is written at base_path. File-not-found in
          tests without a playground file is an acceptable outcome. *)
-      Expect_success_or_guard [ "file not found" ]
-  | "keeper_bash_output" | "keeper_bash_kill" ->
-      (* Matrix fixtures never spawn a real background task, so the
-         only outcome is the handler's structured "no background task"
-         response. Bg_task.read returns Unknown_task; the keeper-side
-         handler maps it to error_json with this exact phrase. *)
       Expect_success_or_guard
-        [ "no background task with id="; "already reaped" ]
+        [ "file not found"; "keeper not found in registry" ]
+  | "tool_edit_file" | "tool_search_files" | "tool_write_file" ->
+      Expect_success_or_guard
+        [ "keeper not found in registry"; "tool call failed" ]
   | _ -> Expect_success
 
 let extra_guard_fragments_for_name = function
@@ -406,16 +353,14 @@ let extra_guard_fragments_for_name = function
       [ "agent_name must match the authenticated agent";
         "no credential found" ]
   | "masc_auth_revoke" -> [ "no credential found" ]
-  | "masc_autoresearch_cycle"
-  | "masc_autoresearch_inject"
-  | "masc_autoresearch_status"
-  | "masc_autoresearch_stop" ->
-      [ "no autoresearch loop running" ]
   | "masc_board_migrate" -> [ "requires postgresql backend" ]
   | "masc_get_metrics" -> [ "no metrics found" ]
   | "masc_library_promote" -> [ "no candidate matching" ]
   | "masc_portal_send" -> [ "no portal open" ]
-  | "masc_worktree_remove" -> [ "worktree not found" ]
+  | "masc_keeper_list" | "masc_keeper_msg" | "masc_keeper_msg_result"
+  | "masc_keeper_status" ->
+      [ "keeper management tool"; "use MCP client" ]
+  | "tool_execute" -> [ "worktree not found" ]
   | _ -> []
 
 let merge_expectation base extras =
@@ -432,32 +377,17 @@ let case_for_name name =
     {
       init_mode = generic_case.init_mode;
       prepare = (fun fixture ->
-        Generic.prepare_for_name fixture.generic name;
-        (* In the keeper tool matrix, masc_worktree_* runs inside a
-           keeper context whose meta.name is "keeper-tool-matrix", not
-           the generic fixture's "codex-tool-matrix". After PRs
-           #6533/#6542 the worktree resolver requires a clone under
-           the keeper's own playground, so mirror the generic
-           ensure_playground_clone for the keeper meta name too.
-           For masc_worktree_remove, also create the actual worktree
-           under the keeper name so the removal has a matching target. *)
-        if List.mem name [ "masc_worktree_create"; "masc_worktree_list" ] then
-          ignore
-            (Generic.ensure_playground_clone_for
-               ~agent:"keeper-tool-matrix" fixture.generic);
-        if name = "masc_worktree_remove" then begin
-          fixture.generic.worktree_task_id <- None;
-          ignore
-            (Generic.ensure_worktree_created_for
-               ~agent:"keeper-tool-matrix" fixture.generic)
-        end);
+        Generic.prepare_for_name fixture.generic name);
       arguments =
         (fun fixture schema -> Generic.tool_arguments fixture.generic schema);
       expectation =
         merge_expectation generic_case.expectation
           (extra_guard_fragments_for_name name);
     }
-  else if string_starts_with ~prefix:"keeper_" name then
+  else if
+    string_starts_with ~prefix:"keeper_" name
+    || string_starts_with ~prefix:"tool_" name
+  then
     {
       init_mode = Init_joined;
       prepare = (fun fixture -> prepare_keeper_name fixture name);
@@ -514,17 +444,9 @@ let run_case sw ~proc_mgr ~fs ~net ~mono_clock clock
     [
       ("MASC_BASE_PATH", Sys.getenv_opt "MASC_BASE_PATH");
       ("MASC_STORAGE_TYPE", Sys.getenv_opt "MASC_STORAGE_TYPE");
-      ("MASC_POSTGRES_URL", Sys.getenv_opt "MASC_POSTGRES_URL");
-      ("DATABASE_URL", Sys.getenv_opt "DATABASE_URL");
-      ("SUPABASE_DB_URL", Sys.getenv_opt "SUPABASE_DB_URL");
-      ("SB_PG_URL", Sys.getenv_opt "SB_PG_URL");
     ]
   in
   Unix.putenv "MASC_STORAGE_TYPE" "filesystem";
-  Unix.putenv "MASC_POSTGRES_URL" "";
-  Unix.putenv "DATABASE_URL" "";
-  Unix.putenv "SUPABASE_DB_URL" "";
-  Unix.putenv "SB_PG_URL" "";
   let base_path = Generic.temp_dir "keeper-tool-matrix-" in
   Unix.putenv "MASC_BASE_PATH" base_path;
   let result =

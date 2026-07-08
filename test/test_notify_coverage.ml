@@ -14,6 +14,27 @@ open Alcotest
 
 module Notify = Masc_mcp.Notify
 
+let source_root () =
+  match Sys.getenv_opt "DUNE_SOURCEROOT" with
+  | Some root -> root
+  | None -> Sys.getcwd ()
+
+let source_file rel =
+  let path = Filename.concat (source_root ()) rel in
+  let ic = open_in_bin path in
+  Fun.protect ~finally:(fun () -> close_in_noerr ic) @@ fun () ->
+  really_input_string ic (in_channel_length ic)
+
+let contains_substring haystack needle =
+  let len = String.length needle in
+  let n = String.length haystack in
+  let rec loop i =
+    if i + len > n then false
+    else if String.sub haystack i len = needle then true
+    else loop (i + 1)
+  in
+  loop 0
+
 (* ============================================================
    sanitize_token Tests
    ============================================================ *)
@@ -130,21 +151,21 @@ let test_escape_shell_special_chars () =
 
 let test_render_focus_template_target () =
   let payload : Notify.focus_payload = {
-    target_agent = Some "claude";
+    target_agent = Some "agent_llm_a";
     from_agent = None;
     task_id = None;
   } in
   let result = Notify.render_focus_template "focus {{target}}" payload in
-  check string "target" "focus claude" result
+  check string "target" "focus agent_llm_a" result
 
 let test_render_focus_template_from () =
   let payload : Notify.focus_payload = {
     target_agent = None;
-    from_agent = Some "gemini";
+    from_agent = Some "provider_f";
     task_id = None;
   } in
   let result = Notify.render_focus_template "from {{from}}" payload in
-  check string "from" "from gemini" result
+  check string "from" "from provider_f" result
 
 let test_render_focus_template_task () =
   let payload : Notify.focus_payload = {
@@ -157,12 +178,12 @@ let test_render_focus_template_task () =
 
 let test_render_focus_template_all () =
   let payload : Notify.focus_payload = {
-    target_agent = Some "claude";
-    from_agent = Some "gemini";
+    target_agent = Some "agent_llm_a";
+    from_agent = Some "provider_f";
     task_id = Some "task-001";
   } in
   let result = Notify.render_focus_template "{{target}} {{from}} {{task}}" payload in
-  check string "all" "claude gemini task-001" result
+  check string "all" "agent_llm_a provider_f task-001" result
 
 let test_render_focus_template_none () =
   let payload : Notify.focus_payload = {
@@ -175,7 +196,7 @@ let test_render_focus_template_none () =
 
 let test_render_focus_template_no_placeholders () =
   let payload : Notify.focus_payload = {
-    target_agent = Some "claude";
+    target_agent = Some "agent_llm_a";
     from_agent = None;
     task_id = None;
   } in
@@ -184,7 +205,7 @@ let test_render_focus_template_no_placeholders () =
 
 let test_render_focus_template_sanitizes () =
   let payload : Notify.focus_payload = {
-    target_agent = Some "claude@test";
+    target_agent = Some "agent_llm_a@test";
     from_agent = None;
     task_id = None;
   } in
@@ -218,13 +239,13 @@ let test_escape_applescript_mixed () =
    ============================================================ *)
 
 let test_agent_emoji_claude () =
-  check string "claude" "🟣" (Notify.agent_emoji "claude")
+  check string "agent_llm_a" "🟣" (Notify.agent_emoji "agent_llm_a")
 
 let test_agent_emoji_gemini () =
-  check string "gemini" "🔵" (Notify.agent_emoji "gemini")
+  check string "provider_f" "🔵" (Notify.agent_emoji "provider_f")
 
 let test_agent_emoji_codex () =
-  check string "codex" "🟢" (Notify.agent_emoji "codex")
+  check string "agent_code" "🟢" (Notify.agent_emoji "agent_code")
 
 let test_agent_emoji_llama () =
   check string "llama" "🦙" (Notify.agent_emoji "llama")
@@ -244,43 +265,43 @@ let test_agent_emoji_empty () =
 
 let test_event_mention () =
   let e : Notify.event = Mention {
-    from_agent = "gemini";
-    target_agent = Some "claude";
+    from_agent = "provider_f";
+    target_agent = Some "agent_llm_a";
     message = "hello";
   } in
   match e with
   | Notify.Mention { from_agent; target_agent; message } ->
-    check string "from_agent" "gemini" from_agent;
-    check (option string) "target_agent" (Some "claude") target_agent;
+    check string "from_agent" "provider_f" from_agent;
+    check (option string) "target_agent" (Some "agent_llm_a") target_agent;
     check string "message" "hello" message
   | _ -> fail "expected Mention"
 
 let test_event_interrupt () =
-  let e : Notify.event = Interrupt { agent = "claude"; action = "stop" } in
+  let e : Notify.event = Interrupt { agent = "agent_llm_a"; action = "stop" } in
   match e with
   | Notify.Interrupt { agent; action } ->
-    check string "agent" "claude" agent;
+    check string "agent" "agent_llm_a" agent;
     check string "action" "stop" action
   | _ -> fail "expected Interrupt"
 
 let test_event_portal_message () =
   let e : Notify.event = PortalMessage {
-    from_agent = "codex";
+    from_agent = "agent_code";
     target_agent = None;
     message = "data";
   } in
   match e with
   | Notify.PortalMessage { from_agent; target_agent; message } ->
-    check string "from_agent" "codex" from_agent;
+    check string "from_agent" "agent_code" from_agent;
     check (option string) "target_agent" None target_agent;
     check string "message" "data" message
   | _ -> fail "expected PortalMessage"
 
 let test_event_task_completed () =
-  let e : Notify.event = TaskCompleted { agent = "claude"; task_id = "task-001" } in
+  let e : Notify.event = TaskCompleted { agent = "agent_llm_a"; task_id = "task-001" } in
   match e with
   | Notify.TaskCompleted { agent; task_id } ->
-    check string "agent" "claude" agent;
+    check string "agent" "agent_llm_a" agent;
     check string "task_id" "task-001" task_id
   | _ -> fail "expected TaskCompleted"
 
@@ -303,12 +324,12 @@ let test_event_custom () =
 
 let test_focus_payload_all_some () =
   let p : Notify.focus_payload = {
-    target_agent = Some "claude";
-    from_agent = Some "gemini";
+    target_agent = Some "agent_llm_a";
+    from_agent = Some "provider_f";
     task_id = Some "task-001";
   } in
-  check (option string) "target" (Some "claude") p.target_agent;
-  check (option string) "from" (Some "gemini") p.from_agent;
+  check (option string) "target" (Some "agent_llm_a") p.target_agent;
+  check (option string) "from" (Some "provider_f") p.from_agent;
   check (option string) "task" (Some "task-001") p.task_id
 
 let test_focus_payload_all_none () =
@@ -320,6 +341,16 @@ let test_focus_payload_all_none () =
   check (option string) "target" None p.target_agent;
   check (option string) "from" None p.from_agent;
   check (option string) "task" None p.task_id
+
+let test_terminal_notifier_execute_requires_opt_in () =
+  let src = source_file "lib/notify.ml" in
+  check bool "execute opt-in env is present" true
+    (contains_substring src "MASC_NOTIFY_ALLOW_SHELL_EXECUTE");
+  check bool "focus builder defaults to no shell command" true
+    (contains_substring src "if not (shell_execute_clicks_enabled ())");
+  check bool "terminal-notifier execute is guarded" true
+    (contains_substring src
+       "Some cmd when shell_execute_clicks_enabled () -> base @ [\"-execute\"; cmd]")
 
 (* ============================================================
    Test Runners
@@ -384,9 +415,9 @@ let () =
       test_case "mixed" `Quick test_escape_applescript_mixed;
     ];
     "agent_emoji", [
-      test_case "claude" `Quick test_agent_emoji_claude;
-      test_case "gemini" `Quick test_agent_emoji_gemini;
-      test_case "codex" `Quick test_agent_emoji_codex;
+      test_case "agent_llm_a" `Quick test_agent_emoji_claude;
+      test_case "provider_f" `Quick test_agent_emoji_gemini;
+      test_case "agent_code" `Quick test_agent_emoji_codex;
       test_case "llama" `Quick test_agent_emoji_llama;
       test_case "system" `Quick test_agent_emoji_system;
       test_case "unknown" `Quick test_agent_emoji_unknown;
@@ -402,5 +433,9 @@ let () =
     "focus_payload", [
       test_case "all some" `Quick test_focus_payload_all_some;
       test_case "all none" `Quick test_focus_payload_all_none;
+    ];
+    "shell_execute_guard", [
+      test_case "terminal-notifier execute requires opt-in" `Quick
+        test_terminal_notifier_execute_requires_opt_in;
     ];
   ]

@@ -24,7 +24,7 @@ MASC는 ID 타입 간 혼용을 컴파일 타임에 차단하기 위해 추상 n
 
 | Module | Type | 생성 방식 | 형식 예시 |
 |--------|------|----------|----------|
-| `Agent_id` | `Agent_id.t` | `of_string` | `"claude-swift-fox"` |
+| `Agent_id` | `Agent_id.t` | `of_string` | `"agent-llm-a-swift-fox"` |
 | `Task_id` | `Task_id.t` | `of_string` / `generate()` | `"task-1711234567000-001a"` |
 | `Thread_id` | `Thread_id.t` | `of_string` / `generate()` | `"thread-1711234567000-001a"` |
 | `Turn_id` | `Turn_id.t` | `of_string` / `generate ~thread_id ~seq` | `"thread-...-turn-0003"` |
@@ -75,7 +75,7 @@ JSON 직렬화 시 소문자 문자열(`"active"`, `"busy"`, ...)로 표현된�
 ```ocaml
 type agent_meta = {
   session_id : string;
-  agent_type : string;        (* "claude", "gemini", "codex" *)
+  agent_type : string;        (* "agent-llm-a", "provider-f", "agent-code" *)
   pid : int option;
   hostname : string option;
   tty : string option;
@@ -90,8 +90,8 @@ type agent_meta = {
 
 ```ocaml
 type agent = {
-  name : string;               (* 룸 내 유일한 이름: claude-swift-fox *)
-  agent_type : string;         (* claude, gemini, codex *)
+  name : string;               (* 룸 내 유일한 이름: agent-llm-a-swift-fox *)
+  agent_type : string;         (* agent-llm-a, provider-f, agent-code *)
   status : agent_status;
   capabilities : string list;
   current_task : string option;
@@ -356,22 +356,27 @@ Result alias: `type 'a masc_result = ('a, masc_error) result`
 ### 4.1 Handler
 
 ```ocaml
-type handler = name:string -> args:Yojson.Safe.t -> (bool * string) option
+type handler = name:string -> args:Yojson.Safe.t -> Tool_result.result option
 ```
 
-모든 MCP 도구 호출은 이 시그니처로 통일된다. `None`을 반환하면 "이 핸들러가 해당 도구를 모른다"는 의미다.
+모든 MCP 도구 호출은 typed `Tool_result.result` 시그니처로 통일된다. `None`을 반환하면 "이 핸들러가 해당 도구를 모른다"는 의미다.
 
 ### 4.2 Hooks
 
 ```ocaml
-type pre_hook = name:string -> args:Yojson.Safe.t -> Tool_result.t option
-(* None -> 진행, Some result -> 핸들러를 건너뛰고 즉시 반환 *)
+type pre_hook_action =
+  | Pass
+  | Proceed of Yojson.Safe.t
+  | Reject of Tool_result.result
 
-type post_hook = Tool_result.t -> Tool_result.t
-(* 핸들러 결과를 변환하거나 관찰 *)
+type pre_hook = name:string -> args:Yojson.Safe.t -> pre_hook_action
+(* Pass -> 진행, Proceed -> args 교체 후 진행, Reject -> 즉시 반환 *)
+
+type dispatch_observer = Dispatch_outcome.t -> Tool_result.result option -> unit
+(* typed outcome 관찰 전용. 결과 변환은 result_transformer가 담당한다. *)
 ```
 
-실행 순서: pre_hooks -> handler -> post_hooks.
+실행 순서: telemetry span -> pre_hooks -> handler -> result_transformer -> dispatch_observers.
 
 ### 4.3 Module Tag (2-level dispatch)
 
@@ -388,26 +393,34 @@ type module_tag =
   | Mod_control | Mod_agent_timeline | Mod_misc | Mod_suspend
   | Mod_library | Mod_keeper
   | Mod_inline
-  | Mod_autoresearch
   | Mod_shard
 ```
 
-21개 variant (SSOT: `lib/tool_dispatch.mli`). 도구 이름으로 O(1) tag lookup 후, tag별로 적합한 모듈 컨텍스트를 지연 생성한다. Retired 모듈들(command_plane, team_session, voice, mdal, goals, heartbeat, encryption, auth, hat, audit, rate_limit, cost, social, vote, council, handover, relay, cache, tempo, portal, code_swarm, notifications, research, model_catalog, fire_task)은 tag 목록에서 제거됐다.
+19개 variant (SSOT: `lib/tool_dispatch.mli`). 도구 이름으로 O(1) tag lookup 후, tag별로 적합한 모듈 컨텍스트를 지연 생성한다. 제거된 모듈 이름은 tag 목록이나 운영 문서의 기준 목록으로 보존하지 않는다.
 
-### 4.4 Tool_result.t (structured)
+### 4.4 Tool_result.result (structured)
 
 **소스**: `lib/tool_result.mli`
 
 ```ocaml
-type t = {
-  success : bool;
+type success_payload = {
   data : Yojson.Safe.t;
   tool_name : string;
   duration_ms : float;
 }
+
+type failure_payload = {
+  class_ : tool_failure_class;
+  message : string;
+  data : Yojson.Safe.t;
+  tool_name : string;
+  duration_ms : float;
+}
+
+type result = (success_payload, failure_payload) Stdlib.Result.t
 ```
 
-레거시 `(bool * string)` 튜플은 `wrap ~tool_name ~start_time`으로 변환된다. `to_legacy`로 역변환이 가능하다.
+도구 핸들러는 `Tool_result.result`를 직접 반환한다. 기존 `(bool * string)` 튜플과 legacy record 기반 dispatch 계약은 제거됐고, 성공/실패는 `Ok`/`Error` variant로만 표현된다.
 
 ---
 
@@ -625,7 +638,7 @@ type rate_limit_error = {
 |----|--------|----------|
 | INV-TYPE-010 | 도구 핸들러 등록은 서버 시작(init) 시점에 완료된다. init 이후 동적 등록은 발생하지 않는다. `is_tag_registry_initialized()`가 `true`를 반환한 후에는 `register_module_tag` 호출이 없어야 한다. | init 직후 `registered_count()` 스냅샷 비교 |
 | INV-TYPE-011 | `dispatch`는 O(1) Hashtbl lookup이다. 등록된 도구 수에 비례하는 순차 탐색은 발생하지 않는다. | 구현 검사 (Hashtbl.find) |
-| INV-TYPE-012 | `pre_hook`이 `Some result`를 반환하면 핸들러를 건너뛴다 (short-circuit). `post_hook`은 실행되지 않는다. | hook 테스트 |
+| INV-TYPE-012 | `pre_hook`이 `Some result`를 반환하면 핸들러를 건너뛴다 (short-circuit). dispatch observer는 실행되지 않는다. | hook 테스트 |
 
 ### Auth
 
@@ -634,7 +647,7 @@ type rate_limit_error = {
 | INV-TYPE-013 | `auth_config.enabled = false`이면 모든 도구 호출이 인가된다. 토큰 검증을 수행하지 않는다. | `check_permission` with `enabled = false` 테스트 |
 | INV-TYPE-014 | raw token은 저장하지 않는다. `agent_credential.token` 필드에는 SHA256 해시만 저장된다. | `create_token` 후 credential 파일 내용 검사 |
 | INV-TYPE-015 | initial admin(auth를 활성화한 에이전트)은 bootstrap grace로 모든 permission을 갖는다. | `check_permission` with initial_admin 테스트 |
-| INV-TYPE-016 | strict mode(`MASC_TOOL_AUTH_STRICT=true`, 기본값)에서 `permission_for_tool`에 매핑되지 않은 `masc_*` 도구는 최소 `CanBroadcast` 권한을 요구한다. | unmapped tool name 테스트 |
+| INV-TYPE-016 | `permission_for_tool`에 매핑되지 않은 내부 도구는 최소 `CanBroadcast` 권한을 요구하고, 매핑되지 않은 외부 도구는 거부한다. 이 fail-closed 동작은 환경변수로 완화할 수 없다. | unmapped tool name 테스트 |
 
 ### Serialization
 

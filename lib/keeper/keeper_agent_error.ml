@@ -31,18 +31,21 @@ let keeper_internal_error_to_json = function
       [ "kind", `String "tool_surface_mismatch"
       ; "keeper_name", `String keeper_name
       ; "required_tools", `List (List.map (fun value -> `String value) required_tools)
-      ; ( "missing_required_tools",
-          `List (List.map (fun value -> `String value) missing_required_tools) )
+      ; ( "missing_required_tools"
+        , `List (List.map (fun value -> `String value) missing_required_tools) )
       ; "visible_tools", `List (List.map (fun value -> `String value) visible_tools)
       ]
+;;
 
 let sdk_error_of_keeper_internal_error err =
   Agent_sdk.Error.Internal
     (keeper_internal_error_prefix
      ^ Yojson.Safe.to_string (keeper_internal_error_to_json err))
+;;
 
 let sdk_error_kind = function
   | Agent_sdk.Error.Api _ -> "api"
+  | Agent_sdk.Error.Provider _ -> "provider"
   | Agent_sdk.Error.Agent _ -> "agent"
   | Agent_sdk.Error.Mcp _ -> "mcp"
   | Agent_sdk.Error.Config _ -> "config"
@@ -51,6 +54,84 @@ let sdk_error_kind = function
   | Agent_sdk.Error.Orchestration _ -> "orchestration"
   | Agent_sdk.Error.A2a _ -> "a2a"
   | Agent_sdk.Error.Internal _ -> "internal"
+;;
+
+type sdk_termination_semantics =
+  | Provider_wall_clock_timeout
+  | Oas_agent_execution_timeout
+  | Oas_turn_budget_exhausted
+  | Oas_idle_budget_exhausted
+  | Oas_exit_condition_reached
+  | Oas_token_budget_exhausted
+  | Oas_cost_budget_exhausted
+  | Oas_cost_budget_unenforceable
+  | Oas_contract_violation
+  | Oas_tool_retry_exhausted
+  | Oas_guardrail_violation
+  | Oas_tripwire_violation
+  | Oas_input_required
+  | Sdk_error_failure
+
+let sdk_termination_semantics = function
+  | Agent_sdk.Error.Api (Agent_sdk.Retry.Timeout { message })
+    when Keeper_error_classify.is_structural_oas_timeout_message message ->
+    Oas_agent_execution_timeout
+  | Agent_sdk.Error.Api (Agent_sdk.Retry.Timeout _) -> Provider_wall_clock_timeout
+  | Agent_sdk.Error.Provider (Llm_provider.Error.Timeout _)
+  | Agent_sdk.Error.Provider
+      (Llm_provider.Error.NetworkError { timeout_phase = Some _; _ }) ->
+    Provider_wall_clock_timeout
+  | Agent_sdk.Error.Agent (Agent_sdk.Error.AgentExecutionTimeout _) ->
+    Oas_agent_execution_timeout
+  | Agent_sdk.Error.Agent (Agent_sdk.Error.MaxTurnsExceeded _) ->
+    Oas_turn_budget_exhausted
+  | Agent_sdk.Error.Agent (Agent_sdk.Error.IdleDetected _) ->
+    Oas_idle_budget_exhausted
+  | Agent_sdk.Error.Agent (Agent_sdk.Error.ExitConditionMet _) ->
+    Oas_exit_condition_reached
+  | Agent_sdk.Error.Agent (Agent_sdk.Error.TokenBudgetExceeded _) ->
+    Oas_token_budget_exhausted
+  | Agent_sdk.Error.Agent (Agent_sdk.Error.CostBudgetExceeded _) ->
+    Oas_cost_budget_exhausted
+  | Agent_sdk.Error.Agent (Agent_sdk.Error.CostBudgetUnenforceable _) ->
+    Oas_cost_budget_unenforceable
+  | Agent_sdk.Error.Agent (Agent_sdk.Error.CompletionContractViolation _) ->
+    Oas_contract_violation
+  | Agent_sdk.Error.Agent (Agent_sdk.Error.ToolRetryExhausted _) ->
+    Oas_tool_retry_exhausted
+  | Agent_sdk.Error.Agent (Agent_sdk.Error.GuardrailViolation _) ->
+    Oas_guardrail_violation
+  | Agent_sdk.Error.Agent (Agent_sdk.Error.TripwireViolation _) ->
+    Oas_tripwire_violation
+  | Agent_sdk.Error.Agent (Agent_sdk.Error.InputRequired _) -> Oas_input_required
+  | Agent_sdk.Error.Agent (Agent_sdk.Error.UnrecognizedStopReason _) -> Sdk_error_failure
+  | Agent_sdk.Error.Provider _ -> Sdk_error_failure
+  | Agent_sdk.Error.Api _ -> Sdk_error_failure
+  | Agent_sdk.Error.Mcp _ -> Sdk_error_failure
+  | Agent_sdk.Error.Config _ -> Sdk_error_failure
+  | Agent_sdk.Error.Serialization _ -> Sdk_error_failure
+  | Agent_sdk.Error.Io _ -> Sdk_error_failure
+  | Agent_sdk.Error.Orchestration _ -> Sdk_error_failure
+  | Agent_sdk.Error.A2a _ -> Sdk_error_failure
+  | Agent_sdk.Error.Internal _ -> Sdk_error_failure
+;;
+
+let sdk_termination_semantics_to_string = function
+  | Provider_wall_clock_timeout -> "provider_wall_clock_timeout"
+  | Oas_agent_execution_timeout -> "oas_agent_execution_timeout"
+  | Oas_turn_budget_exhausted -> "oas_turn_budget_exhausted"
+  | Oas_idle_budget_exhausted -> "oas_idle_budget_exhausted"
+  | Oas_exit_condition_reached -> "oas_exit_condition_reached"
+  | Oas_token_budget_exhausted -> "oas_token_budget_exhausted"
+  | Oas_cost_budget_exhausted -> "oas_cost_budget_exhausted"
+  | Oas_cost_budget_unenforceable -> "oas_cost_budget_unenforceable"
+  | Oas_contract_violation -> "oas_contract_violation"
+  | Oas_tool_retry_exhausted -> "oas_tool_retry_exhausted"
+  | Oas_guardrail_violation -> "oas_guardrail_violation"
+  | Oas_tripwire_violation -> "oas_tripwire_violation"
+  | Oas_input_required -> "oas_input_required"
+  | Sdk_error_failure -> "sdk_error_failure"
+;;
 
 (* Per-variant terminal_reason_code for Agent_sdk.Error.Api.
    Previously every API failure collapsed to "api_error", so 7 keepers
@@ -69,79 +150,224 @@ let api_error_terminal_reason_code (err : Agent_sdk.Error.api_error) : string =
   | Agent_sdk.Retry.NotFound _ -> "api_error_not_found"
   | Agent_sdk.Retry.ContextOverflow _ -> "api_error_context_overflow"
   | Agent_sdk.Retry.NetworkError _ -> "api_error_network"
+  | Agent_sdk.Retry.Timeout { message }
+    when Keeper_error_classify.is_structural_oas_timeout_message message ->
+    "api_error_oas_agent_execution_timeout"
   | Agent_sdk.Retry.Timeout _ -> "api_error_timeout"
+;;
+
+let provider_error_terminal_reason_code
+    (err : Agent_sdk.Error.provider_error)
+  : string
+  =
+  match err with
+  | Llm_provider.Error.MissingApiKey _ -> "provider_error_missing_api_key"
+  | Llm_provider.Error.InvalidConfig { field; _ } ->
+    Printf.sprintf "provider_error_invalid_config:%s" field
+  | Llm_provider.Error.ParseError _ -> "provider_error_parse"
+  | Llm_provider.Error.UnknownVariant { type_name; value } ->
+    Printf.sprintf "provider_error_unknown_variant:%s:%s" type_name value
+  | Llm_provider.Error.ProviderUnavailable { provider; _ } ->
+    Printf.sprintf "provider_error_unavailable:%s" provider
+  | Llm_provider.Error.RateLimit { provider; _ } ->
+    Printf.sprintf "provider_error_rate_limited:%s" provider
+  | Llm_provider.Error.HardQuota { provider; _ } ->
+    Printf.sprintf "provider_error_hard_quota:%s" provider
+  | Llm_provider.Error.CapacityExhausted { scope; _ } ->
+    Printf.sprintf
+      "provider_error_capacity_backpressure:%s"
+      (Llm_provider.Error.capacity_scope_to_string scope)
+  | Llm_provider.Error.AuthError { provider; _ } ->
+    Printf.sprintf "provider_error_auth:%s" provider
+  | Llm_provider.Error.ServerError { provider; code; _ } ->
+    Printf.sprintf "provider_error_server:%s:%d" provider code
+  | Llm_provider.Error.NetworkError { provider; kind; _ } ->
+    Printf.sprintf
+      "provider_error_network:%s:%s"
+      provider
+      (match kind with
+       | Llm_provider.Http_client.Connection_refused -> "connection_refused"
+       | Llm_provider.Http_client.Dns_failure -> "dns_failure"
+       | Llm_provider.Http_client.Tls_error -> "tls_error"
+       | Llm_provider.Http_client.Timeout -> "timeout"
+       | Llm_provider.Http_client.Local_resource_exhaustion ->
+         "local_resource_exhaustion"
+       | Llm_provider.Http_client.End_of_file -> "end_of_file"
+       | Llm_provider.Http_client.Unknown -> "unknown")
+  | Llm_provider.Error.Timeout { provider; _ } ->
+    Printf.sprintf "provider_error_timeout:%s" provider
+  | Llm_provider.Error.InvalidRequest { provider; _ } ->
+    Printf.sprintf "provider_error_invalid_request:%s" provider
+  | Llm_provider.Error.NotFound { provider; _ } ->
+    Printf.sprintf "provider_error_not_found:%s" provider
+  | Llm_provider.Error.ProviderTerminal { provider; reason; _ } ->
+    Printf.sprintf "provider_error_terminal:%s:%s" provider reason
+;;
 
 (* Per-variant terminal_reason_code for Agent_sdk.Error.Agent.
    Previously every Agent failure collapsed to "agent_error", mirroring
    the old Api behaviour. Memory: no-collapse-richer-enum-at-sdk-boundary. *)
 let agent_error_terminal_reason_code = function
-  | Agent_sdk.Error.CompletionContractViolation { contract; _ } ->
+  | Agent_sdk.Error.CompletionContractViolation
+      { contract; violation_detail = Some detail; _ } ->
+    Keeper_execution_receipt.encode_contract_violation_reason
+      ~called_tools:detail.called_tools
+      ~satisfying_tools:detail.satisfying_tools
+      (Agent_sdk.Completion_contract_id.to_string contract)
+  | Agent_sdk.Error.CompletionContractViolation { contract; violation_detail = None; _ } ->
     Printf.sprintf
       "completion_contract_violation:%s"
       (Agent_sdk.Completion_contract_id.to_string contract)
   | Agent_sdk.Error.MaxTurnsExceeded { turns; limit } ->
+    Printf.sprintf "agent_error_max_turns_exceeded:turns=%d,limit=%d" turns limit
+  | Agent_sdk.Error.AgentExecutionTimeout
+      { elapsed_sec; timeout_sec; turn_count; max_turns } ->
     Printf.sprintf
-      "agent_error_max_turns_exceeded:turns=%d,limit=%d"
-      turns limit
+      "agent_error_execution_timeout:elapsed_sec=%.1f,timeout_sec=%.1f,turn_count=%d,max_turns=%d"
+      elapsed_sec
+      timeout_sec
+      turn_count
+      max_turns
   | Agent_sdk.Error.ExitConditionMet { turn } ->
-    Printf.sprintf
-      "agent_error_exit_condition_met:turn=%d"
-      turn
+    Printf.sprintf "agent_error_exit_condition_met:turn=%d" turn
   | Agent_sdk.Error.UnrecognizedStopReason { reason } ->
-    Printf.sprintf
-      "agent_error_unrecognized_stop_reason:%s"
-      reason
+    Printf.sprintf "agent_error_unrecognized_stop_reason:%s" reason
   | Agent_sdk.Error.TokenBudgetExceeded { kind; used; limit } ->
     Printf.sprintf
       "agent_error_token_budget_exceeded:kind=%s,used=%d,limit=%d"
-      kind used limit
+      kind
+      used
+      limit
   | Agent_sdk.Error.CostBudgetExceeded { spent_usd; limit_usd } ->
     Printf.sprintf
       "agent_error_cost_budget_exceeded:spent_usd=%.2f,limit_usd=%.2f"
-      spent_usd limit_usd
+      spent_usd
+      limit_usd
+  | Agent_sdk.Error.CostBudgetUnenforceable { model_id = _; limit_usd } ->
+    Printf.sprintf
+      "agent_error_cost_budget_unenforceable:runtime=runtime,limit_usd=%.2f"
+      limit_usd
   | Agent_sdk.Error.IdleDetected { consecutive_idle_turns } ->
     Printf.sprintf
       "agent_error_idle_detected:consecutive_idle_turns=%d"
       consecutive_idle_turns
   | Agent_sdk.Error.ToolRetryExhausted { attempts; limit; detail = _ } ->
-    Printf.sprintf
-      "agent_error_tool_retry_exhausted:attempts=%d,limit=%d"
-      attempts limit
+    Printf.sprintf "agent_error_tool_retry_exhausted:attempts=%d,limit=%d" attempts limit
   | Agent_sdk.Error.GuardrailViolation { validator; reason = _ } ->
-    Printf.sprintf
-      "agent_error_guardrail_violation:validator=%s"
-      validator
+    Printf.sprintf "agent_error_guardrail_violation:validator=%s" validator
   | Agent_sdk.Error.TripwireViolation { tripwire; reason = _ } ->
+    Printf.sprintf "agent_error_tripwire_violation:tripwire=%s" tripwire
+  | Agent_sdk.Error.InputRequired { request_id; question = _; _ } ->
+    Printf.sprintf "agent_error_input_required:request_id=%s" request_id
+;;
+
+let network_error_kind_to_wire = function
+  | Llm_provider.Http_client.Connection_refused -> "connection_refused"
+  | Llm_provider.Http_client.Dns_failure -> "dns_failure"
+  | Llm_provider.Http_client.Tls_error -> "tls_error"
+  | Llm_provider.Http_client.Timeout -> "timeout"
+  | Llm_provider.Http_client.Local_resource_exhaustion -> "local_resource_exhaustion"
+  | Llm_provider.Http_client.End_of_file -> "end_of_file"
+  | Llm_provider.Http_client.Unknown -> "unknown"
+;;
+
+let provider_timeout_suffix = function
+  | None -> ""
+  | Some phase ->
+    ":" ^ Llm_provider.Http_client.timeout_phase_to_label phase
+;;
+
+let provider_error_terminal_reason_code = function
+  | Llm_provider.Error.MissingApiKey _ -> "provider_error_missing_api_key"
+  | Llm_provider.Error.InvalidConfig { field; _ } ->
+    Printf.sprintf "provider_error_invalid_config:%s" field
+  | Llm_provider.Error.ParseError _ -> "provider_error_parse"
+  | Llm_provider.Error.UnknownVariant { type_name; _ } ->
+    Printf.sprintf "provider_error_unknown_variant:%s" type_name
+  | Llm_provider.Error.ProviderUnavailable _ -> "provider_error_unavailable"
+  | Llm_provider.Error.RateLimit _ -> "provider_error_rate_limited"
+  | Llm_provider.Error.HardQuota _ -> "provider_error_hard_quota"
+  | Llm_provider.Error.CapacityExhausted { scope; _ } ->
     Printf.sprintf
-      "agent_error_tripwire_violation:tripwire=%s"
-      tripwire
+      "provider_error_capacity_backpressure:%s"
+      (Llm_provider.Error.capacity_scope_to_string scope)
+  | Llm_provider.Error.AuthError _ -> "provider_error_auth"
+  | Llm_provider.Error.ServerError { code; _ } ->
+    Printf.sprintf "provider_error_server:%d" code
+  | Llm_provider.Error.NetworkError { kind; timeout_phase; _ } ->
+    Printf.sprintf
+      "provider_error_network:%s%s"
+      (network_error_kind_to_wire kind)
+      (provider_timeout_suffix timeout_phase)
+  | Llm_provider.Error.Timeout { timeout_phase; _ } ->
+    "provider_error_timeout" ^ provider_timeout_suffix timeout_phase
+  | Llm_provider.Error.InvalidRequest _ -> "provider_error_invalid_request"
+  | Llm_provider.Error.NotFound _ -> "provider_error_not_found"
+  | Llm_provider.Error.ProviderTerminal { reason; _ } ->
+    Printf.sprintf "provider_error_terminal:%s" reason
+;;
 
 let terminal_reason_code_of_sdk_error = function
   | Agent_sdk.Error.Agent err -> agent_error_terminal_reason_code err
   | Agent_sdk.Error.Api err -> api_error_terminal_reason_code err
+  | Agent_sdk.Error.Provider err -> provider_error_terminal_reason_code err
   | Agent_sdk.Error.Mcp _ -> "mcp_error"
   | Agent_sdk.Error.Config _ -> "config_error"
   | Agent_sdk.Error.Serialization _ -> "serialization_error"
   | Agent_sdk.Error.Io _ -> "io_error"
   | Agent_sdk.Error.Orchestration _ -> "orchestration_error"
   | Agent_sdk.Error.A2a _ -> "a2a_error"
-  | Agent_sdk.Error.Internal _ -> "internal_error"
+  | Agent_sdk.Error.Internal msg -> (
+    match Cascade_error_classify.classify_masc_internal_error_of_string msg with
+    | Some err -> Cascade_error_classify.kind_of_masc_internal_error err
+    | None -> "internal_error")
+;;
 
-let receipt_outcome_kind_of_sdk_error = function
-  | Agent_sdk.Error.Api (Agent_sdk.Retry.Timeout _) -> `Cancelled
-  | Agent_sdk.Error.Agent (Agent_sdk.Error.MaxTurnsExceeded _) -> `Cancelled
-  | Agent_sdk.Error.Agent (Agent_sdk.Error.IdleDetected _) -> `Cancelled
-  | Agent_sdk.Error.Agent (Agent_sdk.Error.ExitConditionMet _) -> `Cancelled
-  | _ -> `Error
+(* RFC-0042 PR-2.5: typed bridge for SDK errors. The wire format is the
+   existing parametrised string (kept by [terminal_reason_code_of_sdk_error]
+   above) wrapped in [Keeper_turn_terminal_code.Sdk_error]. PR-3 swaps
+   [Keeper_turn_terminal.t.code] from [string] to [Keeper_turn_terminal_code.t]
+   and uses these typed accessors at every emit site. RFC §5.2 defers the
+   sub-sum split (per-variant constructors for [MaxTurnsExceeded] etc.) to
+   a follow-up RFC. *)
+let terminal_reason_code_of_sdk_error_typed err =
+  Keeper_turn_terminal_code.of_sdk_error_wire (terminal_reason_code_of_sdk_error err)
+;;
+
+let api_error_terminal_reason_code_typed err =
+  Keeper_turn_terminal_code.of_sdk_error_wire (api_error_terminal_reason_code err)
+;;
+
+let receipt_outcome_kind_of_sdk_error err =
+  match sdk_termination_semantics err with
+  | Provider_wall_clock_timeout
+  | Oas_agent_execution_timeout
+  | Oas_turn_budget_exhausted
+  | Oas_idle_budget_exhausted
+  | Oas_exit_condition_reached -> `Cancelled
+  | Oas_input_required -> `Cancelled
+  | Oas_token_budget_exhausted
+  | Oas_cost_budget_exhausted
+  | Oas_cost_budget_unenforceable
+  | Oas_contract_violation
+  | Oas_tool_retry_exhausted
+  | Oas_guardrail_violation
+  | Oas_tripwire_violation
+  | Sdk_error_failure -> `Error
+;;
 
 let checkpoint_persistence_error ~keeper_name ~detail =
   Agent_sdk.Error.Internal
     (Printf.sprintf
        "keeper_checkpoint_persist_failed: keeper=%s detail=%s"
-       keeper_name detail)
+       keeper_name
+       detail)
+;;
 
-let cascade_outcome_of_observation = function
-  | Some (obs : Oas_worker.cascade_observation) when obs.fallback_applied ->
-    "passed_to_next_model"
-  | Some _ -> "completed"
-  | None -> "not_observed"
+let cascade_outcome_of_observation
+    : _ -> Keeper_execution_receipt.cascade_outcome = function
+  | Some (obs : Cascade_observation.cascade_observation) when obs.fallback_applied ->
+    Keeper_execution_receipt.Cascade_passed_to_next_model
+  | Some _ -> Keeper_execution_receipt.Cascade_completed
+  | None -> Keeper_execution_receipt.Cascade_not_observed
+;;

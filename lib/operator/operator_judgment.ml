@@ -31,13 +31,9 @@ let target_type_to_string = function
   | Coord -> "root"
 
 let target_type_of_string = function
-  | "root" | "room" | "namespace" -> Some Coord
+  | "root" -> Some Coord
   | _ -> None
 
-let option_to_yojson = Json_util.option_to_yojson
-
-let ensure_dir path =
-  Fs_compat.mkdir_p path
 
 let operator_dir config =
   Filename.concat (Coord.masc_dir config) "operator"
@@ -64,7 +60,7 @@ let to_yojson (value : record) =
       ("judgment_id", `String value.judgment_id);
       ("surface", `String value.surface);
       ("target_type", `String (target_type_to_string value.target_type));
-      ("target_id", option_to_yojson (fun v -> `String v) value.target_id);
+      ("target_id", Json_util.option_to_yojson (fun v -> `String v) value.target_id);
       ("status", `String value.status);
       ("summary", `String value.summary);
       ("confidence", `Float value.confidence);
@@ -73,11 +69,11 @@ let to_yojson (value : record) =
       ("fresh_until", `String value.fresh_until);
       ("fresh_until_unix", `Float value.fresh_until_unix);
       ("keeper_name", `String value.keeper_name);
-      ("model_name", option_to_yojson (fun v -> `String v) value.model_name);
-      ("runtime_name", option_to_yojson (fun v -> `String v) value.runtime_name);
+      ("model_name", Json_util.option_to_yojson (fun v -> `String v) value.model_name);
+      ("runtime_name", Json_util.option_to_yojson (fun v -> `String v) value.runtime_name);
       ( "evidence_refs",
         `List (List.map (fun item -> `String item) value.evidence_refs) );
-      ("recommended_action", option_to_yojson (fun v -> v) value.recommended_action);
+      ("recommended_action", Json_util.option_to_yojson (fun v -> v) value.recommended_action);
       ("supersedes", `List (List.map (fun item -> `String item) value.supersedes));
       ("fallback_used", `Bool value.fallback_used);
       ("disagreement_with_truth", `Bool value.disagreement_with_truth);
@@ -158,18 +154,21 @@ let is_fresh ?(now = Unix.gettimeofday ()) value =
 
 let load_all config =
   let path = judgments_path config in
-  Fs_compat.load_jsonl path
-  |> List.filter_map (fun json ->
-         try
-           match of_yojson json with
-           | Ok value -> Some value
-           | Error _ -> None
-         with Eio.Cancel.Cancelled _ as e -> raise e | exn ->
-           Log.Governance.warn "operator judgment parse: %s" (Printexc.to_string exn);
-           None)
+  Fs_compat.fold_jsonl_lines
+    ~init:[]
+    ~f:(fun acc ~line_no:_ json ->
+      try
+        match of_yojson json with
+        | Ok value -> value :: acc
+        | Error _ -> acc
+      with Eio.Cancel.Cancelled _ as e -> raise e | exn ->
+        Log.Governance.warn "operator judgment parse: %s" (Printexc.to_string exn);
+        acc)
+    path
+  |> List.rev
 
 let append config values =
-  ensure_dir (operator_dir config);
+  Fs_compat.mkdir_p (operator_dir config);
   let path = judgments_path config in
   List.iter
     (fun value ->
@@ -192,11 +191,6 @@ let latest_by_key config =
 let latest_active config ~surface ~target_type ~target_id =
   let table = latest_by_key config in
   Hashtbl.find_opt table (key_of ~surface ~target_type ~target_id)
-
-let latest_active_json config ~surface ~target_type ~target_id =
-  match latest_active config ~surface ~target_type ~target_id with
-  | Some value -> Some (to_yojson value)
-  | None -> None
 
 let record config ~surface ~target_type ~target_id ~summary ~confidence
     ?model_name ?runtime_name ?recommended_action ?(evidence_refs = [])

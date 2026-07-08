@@ -13,7 +13,7 @@
     a [module Runtime = ...] alias inside
     [test/test_dashboard_cache].
 
-    External surface (13 entries):
+    External surface (15 entries + one test record type):
     - {b runtime resolution + HTTP routes}
       ({!runtime_resolution_json},
       {!dashboard_runtime_probe_http_json},
@@ -30,33 +30,33 @@
       {!clear_git_rev_parse_short_probe_hook_for_tests},
       {!clear_git_rev_parse_short_cache_for_tests},
       {!seed_git_rev_parse_short_cache_for_tests}).
+    - {b upstream tracking-ref test seams}
+      ({!git_upstream_status},
+      {!set_git_upstream_status_probe_hook_for_tests},
+      {!clear_git_upstream_status_probe_hook_for_tests}).
 
-    Internal helpers stay private at this boundary
-    (~57 internal lets — [contains_substring] / [take]
-    local helpers, [trim_to_option] / [list_hd_opt],
-    [path_descends_from] / [path_relative_to],
-    [dashboard_runtime_probe_*] cache state +
-    refresh-in-flight Atomic + runner hook ref +
-    [dashboard_runtime_probe_cache_ttl_sec] /
-    [dashboard_runtime_probe_force_min_refresh_sec] /
-    [dashboard_runtime_probe_timeout_sec] tuning,
-    [dashboard_runtime_probe_recent_value] /
-    [dashboard_runtime_probe_fresh_value] cache
-    accessors, [dashboard_runtime_probe_runner_hook] +
-    runner adapter, [git_rev_parse_short_*] cache state
-    (mutex, in-flight set, TTL, cached_lookup,
-    cached_any, try_begin_refresh), all the
-    [dashboard_*_json] sub-renderers consumed only
-    inside the surface entries above). *)
+    Internal helpers stay private at this boundary:
+    local string/list helpers, runtime probe cache state,
+    git rev-parse cache state, and JSON sub-renderers used
+    by the surface entries above.  The
+    {!dashboard_perf_http_json} implementation delegates to
+    [Server_dashboard_http_perf]. *)
 
 (** {1 Runtime resolution} *)
 
 val runtime_resolution_json : Coord.config -> Yojson.Safe.t
 (** Renders the runtime resolution envelope: build
     identity + workspace / base-path commit shas (via
-    {!git_rev_parse_short}) + base-path resolution
-    inputs.  Reached unqualified through the
+    {!git_rev_parse_short}) + server/workspace path
+    mismatch visibility + base-path resolution inputs.
+    Reached unqualified through the
     [Server_dashboard_http_core] cascade consumer. *)
+
+val light_runtime_resolution_json : Coord.config -> Yojson.Safe.t
+(** Renders the cheap runtime/fleet subset used by
+    [/api/v1/dashboard/shell?light=true].  This keeps the shell health strip
+    aligned with [/health] fleet safety without running git probes or other
+    heavy runtime-resolution checks on the header hot path. *)
 
 (** {1 Dashboard HTTP routes} *)
 
@@ -76,10 +76,16 @@ val dashboard_perf_http_json : Coord.config -> Yojson.Safe.t
     skew, etc). *)
 
 val dashboard_tools_http_json :
-  ?actor:string -> Coord.config -> Yojson.Safe.t
+  ?actor:string ->
+  ?timing:Server_timing.t ->
+  Coord.config ->
+  Yojson.Safe.t
 (** Renders the dashboard tools projection.  [?actor]
     selects the per-agent tool catalogue when present;
-    otherwise the full registry surface is returned. *)
+    otherwise the full registry surface is returned.  When [?timing] is
+    provided, internal phases (config_resolution, runtime_resolution,
+    tools_compute) are accumulated into the [Server_timing.t] for surfacing
+    via the [Server-Timing] response header. *)
 
 (** {1 Runtime-probe test seams} *)
 
@@ -137,3 +143,37 @@ val seed_git_rev_parse_short_cache_for_tests :
 (** Seeds the cache with [(dir, value, refreshed_at)]
     so the next {!git_rev_parse_short} call against
     [dir] reads the seeded value (subject to TTL). *)
+
+type git_upstream_status = {
+  branch : string option;
+  upstream_ref : string option;
+  upstream_head_commit : string option;
+  ahead_count : int option;
+  behind_count : int option;
+}
+(** Local tracking-ref status for the server checkout.  This deliberately
+    uses only already-fetched refs such as [@{upstream}] and does not perform
+    network access. *)
+
+val git_upstream_status : string -> git_upstream_status option
+(** Returns local tracking-ref status for [path].  Detached checkouts fall back
+    to [refs/remotes/origin/HEAD] when [@{upstream}] is unavailable, still
+    without fetching from the network.  Cached for 60 s per directory; stale
+    values are served while a background refresh is in flight. *)
+
+val set_git_upstream_status_probe_hook_for_tests :
+  (string -> git_upstream_status option) -> unit
+(** Installs a test-only hook for upstream tracking-ref probes. *)
+
+val clear_git_upstream_status_probe_hook_for_tests : unit -> unit
+(** Removes the hook installed by
+    {!set_git_upstream_status_probe_hook_for_tests}. *)
+
+val clear_git_upstream_status_cache_for_tests : unit -> unit
+(** Drops cached upstream-status lookups AND the in-flight refresh set under
+    the cache mutex. *)
+
+val seed_git_upstream_status_cache_for_tests :
+  string -> git_upstream_status option -> refreshed_at:float -> unit
+(** Seeds the upstream-status cache for [path] so tests can exercise stale-first
+    refresh behavior without waiting for wall-clock TTL expiry. *)

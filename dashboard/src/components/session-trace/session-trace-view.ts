@@ -16,9 +16,10 @@ import {
   getTraceSearchQuery,
   loadSessionTrace,
   closeSessionTrace,
-  _traceSlots,
+  traceSlots,
 } from './session-trace-state'
 import type { TraceSummary } from './session-trace-state'
+import { isOfflineStatus } from '../../lib/keeper-classifiers'
 
 // ── Summary bar ────────────────────────────────────────
 
@@ -106,8 +107,8 @@ export function SessionTraceView({ agentName, isKeeper, keeperStatus, keeperGene
     }
   }, [agentName, isKeeper])
 
-  // Subscribe to traceSlots changes for reactivity
-  void _traceSlots.value
+  // Subscribe to traceSlots changes for reactivity.
+  void traceSlots.value
 
   const loading = getTraceLoading(agentName)
   const error = getTraceError(agentName)
@@ -149,7 +150,7 @@ export function SessionTraceView({ agentName, isKeeper, keeperStatus, keeperGene
 
   // Empty state — contextual message based on keeper status
   if (events.length === 0) {
-    const isOffline = keeperStatus && ['offline', 'inactive', 'dead', 'crashed'].includes(keeperStatus)
+    const isOffline = keeperStatus && isOfflineStatus(keeperStatus)
     const msg = isOffline
       ? '키퍼가 오프라인입니다. 기동하면 활동이 기록됩니다.'
       : (keeperGeneration ?? 0) === 0

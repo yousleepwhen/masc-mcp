@@ -42,36 +42,6 @@ val preset_can_satisfy :
 val allows_workflow_for_preset : tool_preset -> bool
 val allows_shell_write_for_preset : tool_preset -> bool
 
-(** {1 Git Clone Config} *)
-
-val git_clone_allowed_orgs : unit -> string list option
-(** [None] if policy config has not been loaded; [Some []] if loaded
-    with an explicitly empty allowlist (any GitHub org is permitted);
-    [Some orgs] if specific orgs are configured. *)
-val git_clone_denied_repos : unit -> string list option
-(** [None] if policy config has not been loaded; [Some repos] otherwise
-    (empty list means no repos are denied). *)
-
-(** Numeric tool-policy accessors require [init_policy_config] to have
-    loaded [config/tool_policy.toml]. They raise [Invalid_argument] when
-    queried before policy initialization instead of silently using
-    permissive runtime defaults. Missing TOML keys still use the parser
-    defaults in {!Keeper_tool_policy_config} after the config is loaded. *)
-val clone_depth : unit -> int
-val clone_timeout_sec : unit -> float
-val push_timeout_sec : unit -> float
-val pr_create_timeout_sec : unit -> float
-
-(** {1 GH Cache Config} *)
-
-(** These accessors follow the same loaded-policy requirement as the
-    numeric git/gh timeout accessors above. *)
-val gh_cache_ttl_sec : unit -> float
-val gh_cache_fetch_page_size : unit -> int
-val gh_cache_fetch_timeout_sec : unit -> float
-val gh_cache_max_alternatives : unit -> int
-val gh_cache_max_output_bytes : unit -> int
-
 (** {1 MASC Schema Injection} *)
 
 (** Inline MCP-runtime tools that are safe for keepers without an MCP session
@@ -147,10 +117,23 @@ val keeper_default_model_tools : keeper_meta -> Masc_domain.tool_schema list
     Whitelist: [.masc/playground/], [.masc/decision_audit/], [.worktrees/]. *)
 val is_masc_write_allowed : string -> bool
 
-(** Recovery minimum tool names: non-removable shards only.
+(** Recovery minimum tool names: non-removable shards UNION essential MASC tools.
     Guaranteed non-empty (TLA+ ToolSetNeverEmpty).
-    Phase B2: used in Failing phase as recovery floor. *)
+    Phase B2: used in Failing phase as recovery floor.
+
+    Two layers:
+    - Shard floor: [removable=false] shards (currently [base] = local core).
+    - Essential MASC: coordination + web lookup so a Failing keeper can
+      check coordination state, look up information for recovery, and
+      defer to operator approval. Mirrors [masc.essential] in
+      [config/tool_policy.toml]. Sync regression in
+      [test_failing_minimum_essential]. *)
 val failing_minimum_tool_names : unit -> string list
+
+(** Essential MASC tool names included in Failing recovery floor.
+    SSOT: [config/tool_policy.toml] [masc.essential]. Exposed for
+    sync regression test. *)
+val essential_masc_minimum_names : string list
 
 (** Policy-filtered allowed tool names.
     Returns empty list when [write_done] is true.

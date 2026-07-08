@@ -36,10 +36,12 @@ let with_room f =
 let coord_ctx config : Tool_coord.context =
   { Tool_coord.config; agent_name = "planner" }
 
-let parse_json_result (result : Tool_coord.tool_result) =
-  match result with
-  | { success = true; message = body } -> Yojson.Safe.from_string body
-  | { success = false; message = body } -> fail body
+let parse_json_result (result : Tool_result.result) =
+  (* RFC-0062 Phase 4d-2: Tool_coord.tool_result alias deleted.
+     Callers now consume Tool_result.result directly. [message] preserves
+     the prior string body for backward-compatible parsing. *)
+  if (Tool_result.is_success result) then Yojson.Safe.from_string (Tool_result.message result)
+  else fail (Tool_result.message result)
 
 let principal_json ~kind ~id =
   `Assoc [ ("kind", `String kind); ("id", `String id) ]
@@ -83,6 +85,8 @@ let rewrite_goal_updated_at config ~goal_id ~updated_at =
   in
   Goal_store.write_state config { state with updated_at; goals }
 
+let test_cascade_name = "tier.test"
+
 let make_keeper_meta ~name ~goal_id =
   match
     Masc_test_deps.meta_of_json_fixture
@@ -92,22 +96,25 @@ let make_keeper_meta ~name ~goal_id =
           ("agent_name", `String (name ^ "-agent"));
           ("trace_id", `String ("trace-" ^ name));
           ("goal", `String "Goal-linked keeper");
-          ("cascade_name", `String Keeper_config.default_cascade_name);
+          ("cascade_name", `String test_cascade_name);
         ])
   with
   | Ok meta -> { meta with active_goal_ids = [ goal_id ] }
   | Error err -> fail ("meta_of_json failed: " ^ err)
 
-let append_keeper_receipt ?(outcome = "ok")
+let append_keeper_receipt
+    ?(outcome : Keeper_execution_receipt.outcome_kind = `Ok)
     ?(terminal_reason_code = "completed")
-    ?(requested_tools = [ "keeper_fs_read" ])
-    ?(reported_tools = [ "Read" ])
-    ?(observed_tools = [ "keeper_fs_read" ])
-    ?(canonical_tools = [ "keeper_fs_read" ])
-    ?(tools_used = [ "keeper_fs_read" ])
-    ?(tool_contract_result = "satisfied")
+    ?(requested_tools = [ "tool_read_file" ])
+    ?(reported_tools = [ "ReadFile" ])
+    ?(observed_tools = [ "tool_read_file" ])
+    ?(canonical_tools = [ "tool_read_file" ])
+    ?(tools_used = [ "tool_read_file" ])
+    ?(tool_contract_result : Keeper_execution_receipt.tool_contract_result =
+      Contract_satisfied_completion)
     ?(tool_requirement = Keeper_agent_tool_surface.Required)
-    ?(cascade_outcome = "completed") (config : Coord.config)
+    ?(cascade_outcome : Keeper_execution_receipt.cascade_outcome =
+      Cascade_completed) (config : Coord.config)
     (meta : Keeper_types.keeper_meta) =
   let started_at = Masc_domain.now_iso () in
   let ended_at = Masc_domain.now_iso () in
@@ -118,6 +125,9 @@ let append_keeper_receipt ?(outcome = "ok")
       trace_id = Keeper_id.Trace_id.to_string meta.runtime.trace_id;
       generation = meta.runtime.generation;
       turn_count = Some 7;
+      oas_turn_count = None;
+      oas_dispatch_mode = None;
+      oas_internal_cascade_disabled = false;
       current_task_id = None;
       goal_ids = meta.active_goal_ids;
       outcome;
@@ -133,21 +143,23 @@ let append_keeper_receipt ?(outcome = "ok")
       tool_contract_result;
       tool_surface =
         {
-          turn_lane = "tool";
-          tool_surface_class = "mixed";
+          turn_lane = Keeper_agent_tool_surface.Lane_tool_required;
+          tool_surface_class = Keeper_agent_tool_surface.Surface_mixed;
           tool_requirement;
           visible_tool_count = 1;
           tool_gate_enabled = true;
           tool_surface_fallback_used = false;
           required_tools = [];
+          required_tool_candidates = [];
           missing_required_tools = [];
+          materialized_tools = [];
         };
       sandbox_kind = Keeper_execution_receipt.sandbox_kind_of_meta meta;
       sandbox_root = Some config.base_path;
-      network_mode = Keeper_types.network_mode_to_string meta.network_mode;
+      network_mode = meta.network_mode;
       approval_profile = Some "trusted_local";
       approval_profile_derived = false;
-      cascade_name = Keeper_cascade_profile.Runtime_name meta.cascade_name;
+      cascade_name = Cascade_name.of_string_exn (Keeper_types.cascade_name_of_meta meta);
       cascade_selected_model = Some "openai:gpt-5.4";
       cascade_attempt_count = 1;
       cascade_fallback_applied = false;
@@ -156,11 +168,19 @@ let append_keeper_receipt ?(outcome = "ok")
       degraded_retry_cascade = None;
       fallback_reason = None;
       cascade_rotation_attempts = [];
-      stop_reason = Some terminal_reason_code;
+      stop_reason = Some Cascade_runner.Completed;
       error_kind = None;
       error_message = None;
       started_at;
       ended_at;
+      extra_system_context_digest = None;
+      extra_system_context_injected_size = None;
+      extra_system_context_computed_size = None;
+      pre_dispatch_compacted = false;
+      pre_dispatch_compaction_trigger = None;
+      pre_dispatch_compaction_before_tokens = None;
+      pre_dispatch_compaction_after_tokens = None;
+      oas_internal_cascade_allowed = false;
     }
   in
   Keeper_execution_receipt.append config receipt
@@ -168,7 +188,7 @@ let append_keeper_receipt ?(outcome = "ok")
 let append_keeper_decision_with_null_telemetry
     (config : Coord.config) (meta : Keeper_types.keeper_meta) =
   Fs_compat.append_jsonl
-    (Keeper_types.keeper_decision_log_path config meta.name)
+    (Keeper_types_support.keeper_decision_log_path config meta.name)
     (`Assoc
       [
         ("turn_id", `Int 9);
@@ -181,7 +201,7 @@ let append_keeper_decision_with_null_telemetry
 let append_keeper_decision_terminal_reason
     (config : Coord.config) (meta : Keeper_types.keeper_meta) =
   Fs_compat.append_jsonl
-    (Keeper_types.keeper_decision_log_path config meta.name)
+    (Keeper_types_support.keeper_decision_log_path config meta.name)
     (`Assoc
       [
         ("ts_unix", `Float (Unix.gettimeofday ()));
@@ -364,27 +384,79 @@ let test_cancelled_only_goal_is_at_risk () =
   check int "linkage warning count" 1
     (node |> member "linkage_warning_count" |> to_int)
 
-let test_title_marker_links_legacy_task () =
+let test_title_marker_does_not_link_task () =
   with_room @@ fun config ->
   let goal, _kind =
-    match Goal_store.upsert_goal config ~title:"Legacy marker goal" () with
+    match Goal_store.upsert_goal config ~title:"Title marker goal" () with
     | Ok payload -> payload
     | Error msg -> fail msg
   in
   ignore
     (Coord_task.add_task config
-       ~title:(Printf.sprintf "[goal:%s] Legacy task" goal.id)
-       ~priority:3 ~description:"legacy title marker");
+       ~title:(Printf.sprintf "[goal:%s] Title marker task" goal.id)
+       ~priority:3 ~description:"title marker only");
   let node = Dashboard_goals.dashboard_goals_tree_json ~config |> root_node in
-  let task =
-    match node |> member "tasks" |> to_list with
-    | task :: _ -> task
-    | [] -> fail "expected linked title-marker task"
-  in
-  check string "legacy linkage source" "title_tag"
-    (task |> member "linkage_source" |> to_string);
-  check string "node linkage source" "title_tag"
+  check int "title marker task not linked" 0
+    (node |> member "tasks" |> to_list |> List.length);
+  check string "node linkage source" "none"
     (node |> member "linkage_source" |> to_string)
+
+let test_goal_task_summary_counts_status_and_source () =
+  with_room @@ fun config ->
+  let goal, _kind =
+    match Goal_store.upsert_goal config ~title:"Task summary goal" () with
+    | Ok payload -> payload
+    | Error msg -> fail msg
+  in
+  create_done_task config ~goal_id:goal.id ~title:"Summary done task";
+  ignore
+    (Coord_task.add_task ~goal_id:goal.id config ~title:"Summary open task"
+       ~priority:3 ~description:"still open");
+  ignore
+    (Coord_task.add_task ~goal_id:goal.id config
+       ~title:"Summary cancelled task" ~priority:3 ~description:"cancelled");
+  let cancelled_task_id =
+    Coord.get_tasks_raw config
+    |> List.find_map (fun (task : Masc_domain.task) ->
+           if String.equal task.title "Summary cancelled task" then
+             Some task.id
+           else
+             None)
+    |> function
+    | Some task_id -> task_id
+    | None -> fail "cancelled task not found"
+  in
+  (match Coord.cancel_task_r config ~agent_name:"planner"
+           ~task_id:cancelled_task_id ~reason:"test cancellation" with
+   | Ok _ -> ()
+   | Error err -> fail (Masc_domain.masc_error_to_string err));
+  let node = Dashboard_goals.dashboard_goals_tree_json ~config |> root_node in
+  let summary = node |> member "task_summary" in
+  let completion_summary = node |> member "completion_summary" in
+  check int "summary total" 3 (summary |> member "total" |> to_int);
+  check int "summary done" 1 (summary |> member "done" |> to_int);
+  check int "summary open" 1 (summary |> member "open" |> to_int);
+  check int "summary terminal" 2 (summary |> member "terminal" |> to_int);
+  check int "summary cancelled" 1
+    (summary |> member "cancelled" |> to_int);
+  check int "summary completion pct" 33
+    (summary |> member "completion_pct" |> to_int);
+  check int "completed status count" 1
+    (summary |> member "by_status" |> member "completed" |> to_int);
+  check int "pending status count" 1
+    (summary |> member "by_status" |> member "pending" |> to_int);
+  check int "cancelled status count" 1
+    (summary |> member "by_status" |> member "cancelled" |> to_int);
+  check int "explicit linkage count" 3
+    (summary |> member "by_linkage_source" |> member "explicit" |> to_int);
+  check string "completion summary state" "in_progress"
+    (completion_summary |> member "state" |> to_string);
+  check int "completion summary pct" 33
+    (completion_summary |> member "pct" |> to_int);
+  check string "completion summary pct source" "attainment"
+    (completion_summary |> member "pct_source" |> to_string);
+  check int "completion summary open tasks" 1
+    (completion_summary |> member "task_open" |> to_int)
 
 let test_goal_attainment_projects_percent_target () =
   with_room @@ fun config ->
@@ -842,7 +914,7 @@ let test_goal_detail_uses_receipt_disposition_for_required_tool_failure () =
    | Ok () -> ()
    | Error err -> fail ("write_meta failed: " ^ err));
   append_keeper_receipt ~reported_tools:[] ~observed_tools:[] ~canonical_tools:[]
-    ~tools_used:[] ~tool_contract_result:"missing_required_tool_use" config meta;
+    ~tools_used:[] ~tool_contract_result:Contract_missing_required_tool_use config meta;
   match Dashboard_goals.goal_detail_json ~config ~goal_id:goal.id with
   | Error msg -> fail msg
   | Ok json ->
@@ -852,7 +924,7 @@ let test_goal_detail_uses_receipt_disposition_for_required_tool_failure () =
         | [] -> fail "expected linked keeper detail"
       in
       let runtime_trust = linked_keeper |> member "runtime_trust" in
-      check string "receipt-derived disposition pauses" "Pause"
+      check string "receipt-derived disposition blocks" "Blocked"
         (runtime_trust |> member "disposition" |> to_string);
       check string "receipt-derived reason surfaced"
         "tool_required_unsatisfied"
@@ -910,8 +982,9 @@ let test_goal_detail_does_not_promote_synthetic_blocker_over_receipt () =
       runtime =
         {
           base.runtime with
-          last_blocker = "turn timed out";
-          last_blocker_class = Some Keeper_types.Turn_timeout;
+          last_blocker =
+            Some (Keeper_types.blocker_info_of_class
+                    ~detail:"turn timed out" Keeper_types.Turn_timeout);
         };
     }
   in
@@ -969,8 +1042,9 @@ let test_goal_detail_promotes_newer_runtime_blocker_over_stale_receipt () =
               last_turn_ts = Unix.gettimeofday () +. 60.0;
             };
           last_blocker =
-            "Internal error: [masc_oas_error] {\"kind\":\"oas_timeout_budget\"}";
-          last_blocker_class = Some Keeper_types.Oas_timeout_budget;
+            Some (Keeper_types.blocker_info_of_class
+                    ~detail:"Internal error: [masc_oas_error] {\"kind\":\"oas_timeout_budget\"}"
+                    Keeper_types.Turn_timeout);
         };
     }
   in
@@ -994,14 +1068,14 @@ let test_goal_detail_promotes_newer_runtime_blocker_over_stale_receipt () =
       check string "newer blocker drives operator disposition"
         "alert_exhausted"
         (runtime_trust |> member "operator_disposition" |> to_string);
-      check string "timeout blocker keeps attention reason"
-        "timeout_budget_exhausted"
+      check string "legacy timeout blocker collapses to runtime attention"
+        "runtime_blocked"
         (runtime_trust |> member "attention_reason" |> to_string);
       check string "latest terminal reason comes from blocker"
         "runtime_blocker"
         (terminal_reason |> member "source" |> to_string);
-      check string "latest terminal reason is timeout budget"
-        "oas_timeout_budget"
+      check string "latest terminal reason is normalized wall-clock timeout"
+        "turn_wall_clock_timeout"
         (terminal_reason |> member "code" |> to_string);
       check string "latest causal event follows runtime blocker"
         "runtime_blocker"
@@ -1035,8 +1109,9 @@ let test_goal_detail_keeps_decision_terminal_reason_over_newer_blocker () =
               last_turn_ts = Unix.gettimeofday () +. 60.0;
             };
           last_blocker =
-            "Internal error: [masc_oas_error] {\"kind\":\"oas_timeout_budget\"}";
-          last_blocker_class = Some Keeper_types.Oas_timeout_budget;
+            Some (Keeper_types.blocker_info_of_class
+                    ~detail:"Internal error: [masc_oas_error] {\"kind\":\"oas_timeout_budget\"}"
+                    Keeper_types.Turn_timeout);
         };
     }
   in
@@ -1074,7 +1149,7 @@ let test_goal_detail_derives_attention_from_receipt_disposition () =
    | Ok () -> ()
    | Error err -> fail ("write_meta failed: " ^ err));
   append_keeper_receipt
-    ~tool_contract_result:"needs_execution_progress"
+    ~tool_contract_result:Contract_needs_execution_progress
     config meta;
   match Dashboard_goals.goal_detail_json ~config ~goal_id:goal.id with
   | Error msg -> fail msg
@@ -1088,7 +1163,7 @@ let test_goal_detail_derives_attention_from_receipt_disposition () =
       let terminal_reason =
         runtime_trust |> member "latest_terminal_reason"
       in
-      check string "receipt disposition pauses" "Pause"
+      check string "receipt disposition blocks" "Blocked"
         (runtime_trust |> member "disposition" |> to_string);
       check string "receipt disposition fills attention reason"
         "tool_required_unsatisfied"
@@ -1100,7 +1175,7 @@ let test_goal_detail_derives_attention_from_receipt_disposition () =
         "execution_receipt"
         (terminal_reason |> member "source" |> to_string);
       check string "next action follows terminal reason"
-        "inspect_provider_tool_contract"
+        "inspect_tool_contract_rejection"
         (runtime_trust |> member "next_human_action" |> to_string)
 
 let () =
@@ -1116,8 +1191,10 @@ let () =
             test_open_task_without_keeper_is_at_risk;
           test_case "cancelled-only goal is at risk" `Quick
             test_cancelled_only_goal_is_at_risk;
-          test_case "title marker links legacy task" `Quick
-            test_title_marker_links_legacy_task;
+          test_case "title marker does not link task" `Quick
+            test_title_marker_does_not_link_task;
+          test_case "goal task summary counts status and source" `Quick
+            test_goal_task_summary_counts_status_and_source;
           test_case "goal attainment projects percent targets" `Quick
             test_goal_attainment_projects_percent_target;
           test_case "goal attainment exports prometheus metric" `Quick
@@ -1150,7 +1227,7 @@ let () =
           test_case "goal detail surfaces keeper runtime trust and blockers"
             `Quick
             test_goal_detail_surfaces_keeper_runtime_trust_and_blockers;
-          test_case "goal detail pauses on required tool receipt failure"
+          test_case "goal detail blocks on required tool receipt failure"
             `Quick
             test_goal_detail_uses_receipt_disposition_for_required_tool_failure;
           test_case "goal tree tolerates null decision telemetry" `Quick

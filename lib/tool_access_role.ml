@@ -18,14 +18,12 @@ module Float = Stdlib.Float
 (** Tool_access_role — Role-based tool access policy builder.
 
     Derived mechanically from Tool_permission_map.permission_for_tool, which
-    already respects Tool_catalog-declared required_permission metadata before
-    falling back to legacy auth mappings.
+    reads Tool_catalog-declared required_permission metadata.
 
     Each tool's required permission determines which role tier it belongs to:
     - Worker tier: CanReadState, CanJoin, CanLeave, CanAddTask, CanClaimTask,
                    CanCompleteTask, CanBroadcast,
-                   CanOpenPortal, CanSendPortal, CanCreateWorktree,
-                   CanRemoveWorktree
+                   CanOpenPortal, CanSendPortal
     - Admin tier:  CanInit, CanReset, CanAdmin
 
     @since 2.204.0 *)
@@ -47,8 +45,6 @@ let required_role_of_permission = function
   | Masc_domain.CanBroadcast
   | Masc_domain.CanOpenPortal
   | Masc_domain.CanSendPortal
-  | Masc_domain.CanCreateWorktree
-  | Masc_domain.CanRemoveWorktree
   | Masc_domain.CanVote ->
       Worker_role
 
@@ -60,30 +56,60 @@ let tools_for_required_role required_role =
          | Some permission ->
              (=) (required_role_of_permission permission) required_role)
 
+(* ── Memoization rationale ─────────────────────────────────────────
+   [tools_for_required_role] sorts ~100 tool names via
+   [List.sort_uniq] then filters each through a [permission_for_tool]
+   Hashtbl lookup.  Inputs ([Tool_permission_map.known_tool_names],
+   permission metadata, catalog surfaces) are module-init-frozen, so
+   the result is constant for the program lifetime.
+
+   [policy_for_role Worker] is used by diagnostics and dashboard policy
+   views; rebuilding the same selector each call is pure waste.
+
+   [lazy] (instead of eager [let]) defers evaluation until first call,
+   so we read [Tool_permission_map.known_tool_names] *after* all module
+   init side effects have populated the catalog. *)
+
+let admin_only_tools_lazy = lazy (tools_for_required_role Admin_role)
+let worker_only_tools_lazy = lazy (tools_for_required_role Worker_role)
+
 (* ================================================================ *)
 (* Admin-only tools (CanInit + CanReset + CanAdmin)                 *)
 (* ================================================================ *)
 
-let admin_only_tools () = tools_for_required_role Admin_role
+let admin_only_tools () = Lazy.force admin_only_tools_lazy
 
 (* ================================================================ *)
 (* Worker-only tools (CanAddTask + CanClaimTask + CanCompleteTask + *)
-(*                    CanBroadcast + CanOpenPortal + CanSendPortal +*)
-(*                    CanCreateWorktree + CanRemoveWorktree + CanVote) *)
+(*                    CanBroadcast + CanOpenPortal + CanSendPortal + CanVote) *)
 (* ================================================================ *)
 
-let worker_only_tools () = tools_for_required_role Worker_role
+let worker_only_tools () = Lazy.force worker_only_tools_lazy
 
 (* ================================================================ *)
 (* Role → Policy                                                     *)
 (* ================================================================ *)
 
+let permissioned_tools_lazy =
+  lazy
+    (List.sort_uniq
+       String.compare
+       (Lazy.force admin_only_tools_lazy @ Lazy.force worker_only_tools_lazy))
+
+let admin_policy_lazy : Tool_access_policy.t Lazy.t =
+  lazy
+    {
+      Tool_access_policy.allow = Names (Lazy.force permissioned_tools_lazy);
+      deny = Empty;
+    }
+
+let worker_policy_lazy : Tool_access_policy.t Lazy.t =
+  lazy
+    {
+      Tool_access_policy.allow = Names (Lazy.force worker_only_tools_lazy);
+      deny = Empty;
+    }
+
 let policy_for_role : Masc_domain.agent_role -> Tool_access_policy.t = function
-  | Admin ->
-      { Tool_access_policy.allow = All; deny = Empty }
-  | Worker ->
-      {
-        allow =
-          Diff { base = All; exclude = Names (admin_only_tools ()) };
-        deny = Empty;
-      }
+  | Admin -> Lazy.force admin_policy_lazy
+  | Worker -> Lazy.force worker_policy_lazy

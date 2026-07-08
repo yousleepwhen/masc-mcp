@@ -14,194 +14,26 @@
 
     @since 0.137.0 *)
 
-(* ── Configuration ────────────────────────────── *)
-
-(** One-time deprecation warning for legacy OAS_CASCADE_* env vars.
-    The cascade routing layer was migrated from OAS to MASC in v0.149.0
-    (see docs/rfc/RFC-OAS-006-weighted-cascade-routing.md + follow-ups);
-    the env var prefix stayed [OAS_CASCADE_*] by drift.  We accept both
-    during the transition and emit a one-shot warning per deprecated
-    key so operators can update their deployment config. *)
-let deprecation_warned : (string, unit) Hashtbl.t = Hashtbl.create 4
-
-let getenv_with_alias ~primary ?deprecated () =
-  match Sys.getenv_opt primary with
-  | Some v -> Some v
-  | None ->
-    (match deprecated with
-     | None -> None
-     | Some dep ->
-       (match Sys.getenv_opt dep with
-        | Some _ as some ->
-          if not (Hashtbl.mem deprecation_warned dep) then begin
-            Hashtbl.add deprecation_warned dep ();
-            Log.Misc.warn
-              "env var %s is deprecated; use %s (same semantics)"
-              dep primary
-          end;
-          some
-        | None -> None))
-
-let read_float_setting ~primary ?deprecated ~default () =
-  match getenv_with_alias ~primary ?deprecated () with
-  | None -> default
-  | Some raw ->
-    let trimmed = String.trim raw in
-    if trimmed = "" then default
-    else
-      match Safe_ops.float_of_string_safe trimmed with
-      | Some value -> value
-      | None ->
-        Log.Misc.warn "Invalid float for %s=%S, using default %.1f"
-          primary raw default;
-        default
-
-let read_int_setting ~primary ?deprecated ~default () =
-  match getenv_with_alias ~primary ?deprecated () with
-  | None -> default
-  | Some raw ->
-    let trimmed = String.trim raw in
-    if trimmed = "" then default
-    else
-      match Safe_ops.int_of_string_safe trimmed with
-      | Some value -> value
-      | None ->
-        Log.Misc.warn "Invalid int for %s=%S, using default %d"
-          primary raw default;
-        default
-
-(** Rolling window duration in seconds.  Events older than this are
-    discarded on read.  Default: 300s (5 minutes), matching OpenRouter's
-    rolling percentile window. *)
-let window_sec =
-  read_float_setting
-    ~primary:"MASC_CASCADE_HEALTH_WINDOW_SEC"
-    ~deprecated:"OAS_CASCADE_HEALTH_WINDOW_SEC"
-    ~default:300.0
-    ()
-
-(** Number of consecutive failures before cooldown activates.
-    Default: 3, matching LiteLLM's [allowed_fails] concept. *)
-let cooldown_threshold =
-  read_int_setting
-    ~primary:"MASC_CASCADE_COOLDOWN_THRESHOLD"
-    ~deprecated:"OAS_CASCADE_COOLDOWN_THRESHOLD"
-    ~default:3
-    ()
-
-(** Cooldown duration in seconds.  During cooldown, the provider is
-    skipped (not attempted).  Default: 30s, matching the provider
-    circuit-breaker OPEN threshold used by the cascade.  Hard quota and
-    terminal provider errors use separate long cooldowns. *)
-let cooldown_sec =
-  read_float_setting
-    ~primary:"MASC_CASCADE_COOLDOWN_SEC"
-    ~deprecated:"OAS_CASCADE_COOLDOWN_SEC"
-    ~default:30.0
-    ()
-
-(** Cooldown duration for provider calls classified as hard-quota exhaustion
-    (account balance depleted, monthly quota reached, resource exhausted).
-    Unlike transient 429s, hard-quota errors will not recover within a short
-    window — retrying on the next cascade tick just wastes a turn.  This
-    cooldown is applied immediately on the first such error (no threshold)
-    and is significantly longer than {!cooldown_sec}.
-
-    Default: 3600s (1h), matching the typical granularity of quota/billing
-    reset cycles.  Override via [MASC_CASCADE_HARD_QUOTA_COOLDOWN_SEC] if
-    your provider's quota window is shorter (e.g. per-minute tier limits
-    that happen to trigger hard-quota indicator strings).
-
-    @since 0.161.0 *)
-let hard_quota_cooldown_sec =
-  read_float_setting
-    ~primary:"MASC_CASCADE_HARD_QUOTA_COOLDOWN_SEC"
-    ~deprecated:"OAS_CASCADE_HARD_QUOTA_COOLDOWN_SEC"
-    ~default:3600.0
-    ()
-
-(** Cooldown duration for provider calls classified as terminal structural
-    failures, where retrying the same provider on the next cascade tick is
-    expected to reproduce the same failure until operator/runtime state changes.
-    Examples: Kimi CLI reporting a resumable session conflict instead of
-    accepting a fresh non-interactive invocation.
-
-    This is separate from hard-quota so dashboards and future policy can
-    distinguish "account exhausted" from "adapter/session state is wedged",
-    while both use the same immediate long-cooldown behavior.
-
-    Default: 3600s (1h). *)
+let window_sec = Cascade_health_tracker_config.window_sec
+let cooldown_threshold = Cascade_health_tracker_config.cooldown_threshold
+let cooldown_sec = Cascade_health_tracker_config.cooldown_sec
+let hard_quota_cooldown_sec = Cascade_health_tracker_config.hard_quota_cooldown_sec
 let terminal_failure_cooldown_sec =
-  read_float_setting
-    ~primary:"MASC_CASCADE_TERMINAL_FAILURE_COOLDOWN_SEC"
-    ~deprecated:"OAS_CASCADE_TERMINAL_FAILURE_COOLDOWN_SEC"
-    ~default:3600.0
-    ()
+  Cascade_health_tracker_config.terminal_failure_cooldown_sec
 
-(** Default cooldown applied immediately on a transient HTTP 429.  See the
-    [.mli] for the design rationale; the short default (10s) is calibrated
-    so that a single 429 deprioritizes the provider for the remainder of
-    the current cascade cycle without locking it out long enough to disturb
-    the rolling success-rate window. *)
 let soft_rate_limit_cooldown_sec =
-  read_float_setting
-    ~primary:"MASC_CASCADE_SOFT_RATE_LIMIT_COOLDOWN_SEC"
-    ~default:10.0
-    ()
+  Cascade_health_tracker_config.soft_rate_limit_cooldown_sec
 
-(** Upper clamp for caller-supplied Retry-After.  Anything past 2 minutes
-    is "hard quota in disguise" and should be classified as such by the
-    caller — see {!record_soft_rate_limited}.  The clamp protects us from
-    silently honoring a 3600-second Retry-After that would otherwise
-    blackhole the provider for an hour under transient-error semantics. *)
 let soft_rate_limit_max_clamp_sec =
-  read_float_setting
-    ~primary:"MASC_CASCADE_SOFT_RATE_LIMIT_MAX_CLAMP_SEC"
-    ~default:120.0
-    ()
+  Cascade_health_tracker_config.soft_rate_limit_max_clamp_sec
 
-(** Per-provider ring buffer size for recent successful-call latency.
-    Default 100 — strategy decisions only need a "recent" sense of
-    response speed, not the full distribution.  Sort cost on every
-    [provider_info] read is O(n log n) on the populated portion of the
-    ring, which at n=100 is trivially small.
+let default_capacity_backpressure_backoff_sec =
+  Cascade_health_tracker_config.default_capacity_backpressure_backoff_sec
 
-    Negative or zero disables latency tracking entirely: the ring is
-    treated as size 0 (no allocation, no samples retained, [p50_latency_ms]
-    and [p95_latency_ms] always [None]).  Useful as an env-level kill
-    switch if downstream metric pressure ever surfaces.
-
-    Env: [MASC_CASCADE_LATENCY_RING_SIZE]. *)
-let latency_ring_size =
-  match Sys.getenv_opt "MASC_CASCADE_LATENCY_RING_SIZE" with
-  | None -> 100
-  | Some raw ->
-    let trimmed = String.trim raw in
-    if trimmed = "" then 100
-    else
-      match Safe_ops.int_of_string_safe trimmed with
-      | Some n -> n
-      | None ->
-        Log.Misc.warn
-          "Invalid int for MASC_CASCADE_LATENCY_RING_SIZE=%S, using default 100"
-          raw;
-        100
-
-
-let confidence_ring_size =
-  match Sys.getenv_opt "MASC_CASCADE_CONFIDENCE_RING_SIZE" with
-  | None -> 100
-  | Some raw ->
-    let trimmed = String.trim raw in
-    if trimmed = "" then 100
-    else
-      match Safe_ops.int_of_string_safe trimmed with
-      | Some n -> n
-      | None ->
-        Log.Misc.warn
-          "Invalid int for MASC_CASCADE_CONFIDENCE_RING_SIZE=%S, using default 100"
-          raw;
-        100
+let latency_ring_size = Cascade_health_tracker_config.latency_ring_size
+let confidence_ring_size = Cascade_health_tracker_config.confidence_ring_size
+let cost_ring_size = Cascade_health_tracker_config.cost_ring_size
+let cooldown_config_for = Cascade_health_tracker_config.cooldown_config_for
 
 
 (* ── Types ────────────────────────────────────── *)
@@ -220,10 +52,10 @@ let confidence_ring_size =
    [cooldown_threshold] does not apply because retry on the next cascade
    tick is pointless when the upstream account is out of credit. *)
 (* [Terminal_failure] represents structural provider/adapter failures that are
-   deterministic for the current runtime state.  A Kimi CLI resumable-session
-   conflict is the motivating case: fallback is correct for the current call,
-   but repeatedly attempting Kimi first on every later call only adds latency
-   and silently degrades cascade diversity. *)
+   deterministic for the current runtime state.  A provider CLI
+   resumable-session conflict is the motivating case: fallback is correct for
+   the current call, but repeatedly attempting the same provider first on every
+   later call only adds latency and silently degrades cascade diversity. *)
 (* [Soft_rate_limited] represents a transient HTTP 429 — provider is healthy
    but momentarily over its rate budget.  Distinct from [Failure] so a single
    event triggers an immediate (short) cooldown without waiting for the
@@ -236,6 +68,7 @@ type outcome =
   | Hard_quota
   | Terminal_failure
   | Soft_rate_limited
+  | Capacity_backpressure
 
 type event = {
   time: float;  (* Unix timestamp *)
@@ -267,6 +100,12 @@ type provider_state = {
   mutable confidence_ring: float array option;
   mutable confidence_count: int;
   mutable confidence_cursor: int;
+  (* Cost ring buffer for per-request inference cost (USD).  Mirrors the
+     latency ring pattern: lazy allocation, drop-oldest, bounded by
+     [cost_ring_size].  Values are non-negative USD amounts. *)
+  mutable cost_ring: float array option;
+  mutable cost_count: int;
+  mutable cost_cursor: int;
 }
 
 type t = {
@@ -278,6 +117,17 @@ type error_kind = Error_kind of string
 
 let error_kind_of_string value = Error_kind value
 let error_kind_to_string (Error_kind value) = value
+
+type provider_restore = {
+  restore_provider_key : string;
+  restore_consecutive_failures : int;
+  restore_cooldown_until : float option;
+  restore_last_failure_at : float option;
+  restore_top_fingerprints : (string * int) list;
+  restore_latency_ms : float option;
+  restore_confidence : float option;
+  restore_cost_usd : float option;
+}
 
 (* ── Constructor ──────────────────────────────── *)
 
@@ -328,9 +178,81 @@ let get_or_create_state t key =
       confidence_ring = None;
       confidence_count = 0;
       confidence_cursor = 0;
+      cost_ring = None;
+      cost_count = 0;
+      cost_cursor = 0;
     } in
     Hashtbl.replace t.providers key s;
     s
+
+let finite_positive = function
+  | Some value when Float.is_finite value && value > 0.0 -> Some value
+  | _ -> None
+
+let restore_latency_sample state = function
+  | Some lat_ms when latency_ring_size > 0
+                     && Float.is_finite lat_ms
+                     && lat_ms > 0.0 ->
+    let ring = Array.make latency_ring_size 0.0 in
+    ring.(0) <- lat_ms;
+    state.latency_ring <- Some ring;
+    state.latency_count <- 1;
+    state.latency_cursor <- (if latency_ring_size = 1 then 0 else 1)
+  | _ -> ()
+
+let restore_confidence_sample state = function
+  | Some confidence when confidence_ring_size > 0
+                         && Float.is_finite confidence ->
+    let ring = Array.make confidence_ring_size 0.0 in
+    ring.(0) <- confidence;
+    state.confidence_ring <- Some ring;
+    state.confidence_count <- 1;
+    state.confidence_cursor <- (if confidence_ring_size = 1 then 0 else 1)
+  | _ -> ()
+
+let restore_cost_sample state = function
+  | Some cost_usd when cost_ring_size > 0
+                       && Float.is_finite cost_usd
+                       && cost_usd >= 0.0 ->
+    let ring = Array.make cost_ring_size 0.0 in
+    ring.(0) <- cost_usd;
+    state.cost_ring <- Some ring;
+    state.cost_count <- 1;
+    state.cost_cursor <- (if cost_ring_size = 1 then 0 else 1)
+  | _ -> ()
+
+let restore_providers t providers =
+  with_lock t (fun () ->
+    let now = Unix.gettimeofday () in
+    List.fold_left
+      (fun restored row ->
+        let provider_key = String.trim row.restore_provider_key in
+        if String.equal provider_key ""
+        then restored
+        else (
+          let state = get_or_create_state t provider_key in
+          state.consecutive_failures <- max 0 row.restore_consecutive_failures;
+          state.cooldown_until
+          <- (match finite_positive row.restore_cooldown_until with
+              | Some ts when ts > now -> ts
+              | _ -> 0.0);
+          state.last_failure_at
+          <- (match finite_positive row.restore_last_failure_at with
+              | Some ts -> ts
+              | None -> 0.0);
+          Hashtbl.reset state.fingerprint_counts;
+          List.iter
+            (fun (fp, count) ->
+              let fp = String.trim fp in
+              if (not (String.equal fp "")) && count > 0
+              then Hashtbl.replace state.fingerprint_counts fp count)
+            row.restore_top_fingerprints;
+          restore_latency_sample state row.restore_latency_ms;
+          restore_confidence_sample state row.restore_confidence;
+          restore_cost_sample state row.restore_cost_usd;
+          restored + 1))
+      0
+      providers)
 
 (* Append [latency_ms] to the per-provider ring buffer.  Allocates the
    array lazily on first valid sample so providers that never report
@@ -377,6 +299,24 @@ let push_confidence state conf =
       state.confidence_count <- state.confidence_count + 1
   end
 
+let push_cost state cost =
+  if cost_ring_size <= 0 then ()
+  else if not (Float.is_finite cost) || cost < 0.0 then ()
+  else begin
+    let ring =
+      match state.cost_ring with
+      | Some r -> r
+      | None ->
+        let r = Array.make cost_ring_size 0.0 in
+        state.cost_ring <- Some r;
+        r
+    in
+    ring.(state.cost_cursor) <- cost;
+    state.cost_cursor <- (state.cost_cursor + 1) mod cost_ring_size;
+    if state.cost_count < cost_ring_size then
+      state.cost_count <- state.cost_count + 1
+  end
+
 (* Build a stable fingerprint from caller-provided classification.
    Format: "kind|hash8(reason)" — kind defaults to "unclassified",
    hash suffix is omitted when reason is absent or empty.  Hash is
@@ -417,7 +357,7 @@ let prune_old_events now events =
   List.filter (fun e -> e.time >= cutoff) events
 
 let record t ~provider_key ~outcome ?error_kind ?error_reason
-    ?retry_after_s ?latency_ms ?confidence ~now () =
+    ?retry_after_s ?latency_ms ?confidence ?cost_usd ~now () =
   with_lock t (fun () ->
     let state = get_or_create_state t provider_key in
     let event = { time = now; outcome } in
@@ -440,6 +380,9 @@ let record t ~provider_key ~outcome ?error_kind ?error_reason
        | None -> ());
       (match confidence with
        | Some c -> push_confidence state c
+       | None -> ());
+      (match cost_usd with
+       | Some c -> push_cost state c
        | None -> ())
     | Failure | Rejected ->
       (* Rejected responses indicate unusable output (gate reject, empty
@@ -450,12 +393,15 @@ let record t ~provider_key ~outcome ?error_kind ?error_reason
          [provider_info] can count Rejected separately for dashboards. *)
       state.consecutive_failures <- state.consecutive_failures + 1;
       bump_failure_fp ();
-      if state.consecutive_failures >= cooldown_threshold then begin
-        let new_until = now +. cooldown_sec in
+      let (threshold, cooldown_dur) = cooldown_config_for ~provider_key in
+      if state.consecutive_failures >= threshold then begin
+        let new_until = now +. cooldown_dur in
         if new_until > state.cooldown_until then begin
           state.cooldown_until <- new_until;
-          Prometheus.observe_histogram Prometheus.metric_keeper_provider_block_duration_sec
-            ~labels:[("provider", provider_key)] cooldown_sec
+          Cascade_metrics.on_provider_cooldown
+            ~provider:provider_key ~reason:"failure_threshold";
+          Prometheus.observe_histogram Keeper_metrics.(to_string ProviderBlockDurationSec)
+            ~labels:[("provider", provider_key)] cooldown_dur
         end
       end
     | Soft_rate_limited ->
@@ -479,7 +425,29 @@ let record t ~provider_key ~outcome ?error_kind ?error_reason
       let new_until = now +. cooldown_dur in
       if new_until > state.cooldown_until then begin
         state.cooldown_until <- new_until;
-        Prometheus.observe_histogram Prometheus.metric_keeper_provider_block_duration_sec
+        Cascade_metrics.on_provider_cooldown
+          ~provider:provider_key ~reason:"soft_rate_limit";
+        Prometheus.observe_histogram Keeper_metrics.(to_string ProviderBlockDurationSec)
+          ~labels:[("provider", provider_key)] cooldown_dur
+      end
+    | Capacity_backpressure ->
+      (* Capacity exhaustion is transient load, not persistent health
+         degradation.  Do NOT increment consecutive_failures.
+         Apply cooldown using the upstream retry_after hint when present,
+         or a synthetic default otherwise, so the fleet-level backoff
+         logic can detect all-provider-cooldown and wait for recovery
+         instead of thrashing through every provider every turn. *)
+      let cooldown_dur =
+        match retry_after_s with
+        | Some s when s > 0.0 -> Float.min s soft_rate_limit_max_clamp_sec
+        | _ -> default_capacity_backpressure_backoff_sec
+      in
+      let new_until = now +. cooldown_dur in
+      if new_until > state.cooldown_until then begin
+        state.cooldown_until <- new_until;
+        Cascade_metrics.on_provider_cooldown
+          ~provider:provider_key ~reason:"capacity_backpressure";
+        Prometheus.observe_histogram Keeper_metrics.(to_string ProviderBlockDurationSec)
           ~labels:[("provider", provider_key)] cooldown_dur
       end
     | Hard_quota ->
@@ -494,7 +462,9 @@ let record t ~provider_key ~outcome ?error_kind ?error_reason
       let new_until = now +. hard_quota_cooldown_sec in
       if new_until > state.cooldown_until then begin
         state.cooldown_until <- new_until;
-        Prometheus.observe_histogram Prometheus.metric_keeper_provider_block_duration_sec
+        Cascade_metrics.on_provider_cooldown
+          ~provider:provider_key ~reason:"hard_quota";
+        Prometheus.observe_histogram Keeper_metrics.(to_string ProviderBlockDurationSec)
           ~labels:[("provider", provider_key)] hard_quota_cooldown_sec
       end
     | Terminal_failure ->
@@ -510,12 +480,14 @@ let record t ~provider_key ~outcome ?error_kind ?error_reason
       let new_until = now +. terminal_failure_cooldown_sec in
       if new_until > state.cooldown_until then begin
         state.cooldown_until <- new_until;
-        Prometheus.observe_histogram Prometheus.metric_keeper_provider_block_duration_sec
+        Cascade_metrics.on_provider_cooldown
+          ~provider:provider_key ~reason:"terminal_failure";
+        Prometheus.observe_histogram Keeper_metrics.(to_string ProviderBlockDurationSec)
           ~labels:[("provider", provider_key)] terminal_failure_cooldown_sec
       end)
 
-let record_success t ~provider_key ?latency_ms ?confidence () =
-  record t ~provider_key ~outcome:Success ?latency_ms ?confidence
+let record_success t ~provider_key ?latency_ms ?confidence ?cost_usd () =
+  record t ~provider_key ~outcome:Success ?latency_ms ?confidence ?cost_usd
     ~now:(Unix.gettimeofday ()) ()
 
 let record_failure t ~provider_key ?error_kind ?error_reason () =
@@ -538,6 +510,11 @@ let record_soft_rate_limited t ~provider_key ?retry_after_s ?error_kind
     ?error_reason () =
   record t ~provider_key ~outcome:Soft_rate_limited ?error_kind ?error_reason
     ?retry_after_s ~now:(Unix.gettimeofday ()) ()
+
+let record_capacity_backpressure t ~provider_key ?retry_after_s ?error_kind
+    ?error_reason ~now () =
+  record t ~provider_key ~outcome:Capacity_backpressure ?error_kind ?error_reason
+    ?retry_after_s ~now ()
 
 (* ── Queries ──────────────────────────────────── *)
 
@@ -636,6 +613,9 @@ type provider_info = {
   latency_samples : int;
   avg_confidence : float option;
   confidence_samples : int;
+  avg_cost_usd : float option;
+  cost_samples : int;
+  health_score : float;
 }
 
 (* Compute the [pct]-th percentile (0.0–1.0) of the populated portion of
@@ -676,6 +656,37 @@ let avg_confidence_locked state =
     for i = 0 to n - 1 do sum := !sum +. ring.(i) done;
     Some (!sum /. float_of_int n)
 
+(* Average of populated cost ring values.  [None] when no samples. *)
+let avg_cost_locked state =
+  match state.cost_ring with
+  | None -> None
+  | Some ring when state.cost_count = 0 -> ignore ring; None
+  | Some ring ->
+    let n = state.cost_count in
+    let sum = ref 0.0 in
+    for i = 0 to n - 1 do sum := !sum +. ring.(i) done;
+    Some (!sum /. float_of_int n)
+
+(* Derive a cost score in [0.2, 1.0] from the average cost ring.
+   Lower average cost = higher score.  Banded thresholds:
+     avg < $0.01  → 1.0  (cheap)
+     avg < $0.05  → 0.8
+     avg < $0.10  → 0.6
+     avg < $0.25  → 0.4
+     otherwise    → 0.2  (expensive)
+   Returns [None] when no cost samples exist so the caller defaults to 1.0. *)
+let cost_score_of_avg = function
+  | None -> None
+  | Some avg ->
+    let score =
+      if avg < 0.01 then 1.0
+      else if avg < 0.05 then 0.8
+      else if avg < 0.10 then 0.6
+      else if avg < 0.25 then 0.4
+      else 0.2
+    in
+    Some score
+
 let take_first_n n lst =
   let rec loop k acc = function
     | [] -> List.rev acc
@@ -683,6 +694,31 @@ let take_first_n n lst =
     | x :: rest -> loop (k - 1) (x :: acc) rest
   in
   loop n [] lst
+
+(** Composite health score: success_rate * speed_score * cost_score.
+    - speed_score: p95 latency based. None = 1.0 (no penalty without data).
+    - cost_score: banded thresholds from {!cost_score_of_avg} over the
+      average cost ring populated by {!record_event} when [cost_usd]
+      is provided. None = 1.0 (no penalty until samples accumulate).
+
+    The function is total in the score arguments — callers receive the
+    multiplied score regardless of whether samples exist. Read together
+    with {!build_info_locked} which feeds [avg_cost_locked] through
+    [cost_score_of_avg]; the dashboard's per-provider cost banding is
+    therefore wired end-to-end (no longer a stub). *)
+let compute_health_score ~success_rate ~p95_latency_ms_opt ~cost_score_opt =
+  let speed_score =
+    match p95_latency_ms_opt with
+    | None -> 1.0
+    | Some p95 ->
+        if p95 <= 5000.0 then 1.0
+        else if p95 <= 15000.0 then 0.8
+        else if p95 <= 30000.0 then 0.6
+        else if p95 <= 60000.0 then 0.4
+        else 0.2
+  in
+  let cost_score = match cost_score_opt with None -> 1.0 | Some s -> s in
+  success_rate *. speed_score *. cost_score
 
 let build_info_locked ~now ~key state =
   let recent = prune_old_events now state.events in
@@ -708,6 +744,16 @@ let build_info_locked ~now ~key state =
   let p50_latency_ms = percentile_locked state 0.50 in
   let p95_latency_ms = percentile_locked state 0.95 in
   let avg_confidence = avg_confidence_locked state in
+  let avg_cost_usd = avg_cost_locked state in
+  let cost_score_opt = cost_score_of_avg avg_cost_usd in
+  let health_score =
+    compute_health_score ~success_rate:rate
+      ~p95_latency_ms_opt:p95_latency_ms
+      ~cost_score_opt
+  in
+  Prometheus.set_gauge Prometheus.metric_cascade_provider_health_score
+    ~labels:[ ("provider_key", key) ]
+    health_score;
   {
     provider_key = key;
     success_rate = rate;
@@ -723,6 +769,9 @@ let build_info_locked ~now ~key state =
     latency_samples = state.latency_count;
     avg_confidence;
     confidence_samples = state.confidence_count;
+    avg_cost_usd;
+    cost_samples = state.cost_count;
+    health_score;
   }
 
 let provider_info t ~provider_key =
@@ -775,16 +824,38 @@ type outcome_kind =
   | Outcome_hard_quota
   | Outcome_terminal_failure
   | Outcome_soft_rate_limited
+  | Outcome_capacity_backpressure
 
 let outcome_matches kind ev =
+  (* Enumerate every [outcome_kind] x [outcome] pair so the compiler
+     flags any new variant added to either type. Adding e.g. an
+     [Outcome_circuit_break] kind without a matching [Circuit_break]
+     outcome (or vice versa) would silently inherit [false] under the
+     previous [_, _ -> false] catch-all, masking a probable mismatch.
+     Same FSM Sparse Match anti-pattern as PRs #14716, #14762, #14790,
+     #14806. *)
   match kind, ev.outcome with
   | Outcome_success, Success
   | Outcome_failure, Failure
   | Outcome_rejected, Rejected
   | Outcome_hard_quota, Hard_quota
   | Outcome_terminal_failure, Terminal_failure
-  | Outcome_soft_rate_limited, Soft_rate_limited -> true
-  | _, _ -> false
+  | Outcome_soft_rate_limited, Soft_rate_limited
+  | Outcome_capacity_backpressure, Capacity_backpressure -> true
+  | Outcome_success,
+      (Failure | Rejected | Hard_quota | Terminal_failure | Soft_rate_limited | Capacity_backpressure)
+  | Outcome_failure,
+      (Success | Rejected | Hard_quota | Terminal_failure | Soft_rate_limited | Capacity_backpressure)
+  | Outcome_rejected,
+      (Success | Failure | Hard_quota | Terminal_failure | Soft_rate_limited | Capacity_backpressure)
+  | Outcome_hard_quota,
+      (Success | Failure | Rejected | Terminal_failure | Soft_rate_limited | Capacity_backpressure)
+  | Outcome_terminal_failure,
+      (Success | Failure | Rejected | Hard_quota | Soft_rate_limited | Capacity_backpressure)
+  | Outcome_soft_rate_limited,
+      (Success | Failure | Rejected | Hard_quota | Terminal_failure | Capacity_backpressure)
+  | Outcome_capacity_backpressure,
+      (Success | Failure | Rejected | Hard_quota | Terminal_failure | Soft_rate_limited) -> false
 
 (* Count [outcome] events recorded for [provider_key] within the last
    [window_s] seconds.  We piggyback on the same event ring used by

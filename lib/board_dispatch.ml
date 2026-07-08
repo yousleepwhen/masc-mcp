@@ -43,17 +43,14 @@ let sort_order_to_string = function
 
 let valid_sort_order_strings = List.map sort_order_to_string all_sort_orders
 
-(** Lenient parser: canonical names plus documented aliases that the
-    three pre-existing parsers (Tool_board.sort_order_of_string,
-    Tool_board.parse_sort_order, server_utils inline) all accept.
-    Aliases: new=Recent, active=Updated, comments=Discussed. *)
+(** Canonical parser shared by Tool_board and HTTP query-param handling. *)
 let sort_order_of_string_opt s =
   match String.lowercase_ascii (String.trim s) with
   | "hot" -> Some Hot
   | "trending" -> Some Trending
-  | "recent" | "new" -> Some Recent
-  | "updated" | "active" -> Some Updated
-  | "discussed" | "comments" -> Some Discussed
+  | "recent" -> Some Recent
+  | "updated" -> Some Updated
+  | "discussed" -> Some Discussed
   | _ -> None
 
 type board_backend =
@@ -86,6 +83,7 @@ type keeper_board_signal = {
   title : string;
   content : string;
   hearth : string option;
+  updated_at : float option;
 }
 
 type board_sse_event =
@@ -205,6 +203,10 @@ let ensure_flusher_actor store =
                 in
                 match exn with
                 | Invalid_argument msg when String.equal msg "Switch finished!" ->
+                    Prometheus.inc_counter
+                      Prometheus.metric_board_dispatch_flusher_start_outcomes
+                      ~labels:[ ("outcome", "switch_finished") ]
+                      ();
                     Log.BoardLog.warn
                       "Skipping board flusher actor startup on finished switch"
                 | _ -> raise exn
@@ -213,9 +215,14 @@ let ensure_flusher_actor store =
               sleep_flusher_start_backoff
                 ~attempt:(flusher_start_cas_retries - attempts_left);
               loop (attempts_left - 1)
-            end else
+            end else begin
+              Prometheus.inc_counter
+                Prometheus.metric_board_dispatch_flusher_start_outcomes
+                ~labels:[ ("outcome", "cas_exhausted") ]
+                ();
               Log.BoardLog.warn
                 "Board flusher actor startup CAS contention exhausted; retrying on next backend access"
+            end
       in
       loop flusher_start_cas_retries
 
@@ -314,8 +321,8 @@ let sort_posts_in_memory ~sort_by (posts : Board.post list) =
   | Trending ->
       let now = Time_compat.now () in
       List.sort (fun (a : Board.post) (b : Board.post) ->
-        let age_a = Stdlib.Float.max 1.0 ((now -. a.created_at) /. 3600.0) in
-        let age_b = Stdlib.Float.max 1.0 ((now -. b.created_at) /. 3600.0) in
+        let age_a = Stdlib.Float.max 1.0 ((now -. a.created_at) /. Masc_time_constants.hour) in
+        let age_b = Stdlib.Float.max 1.0 ((now -. b.created_at) /. Masc_time_constants.hour) in
         let score_a =
           Stdlib.Float.of_int (a.votes_up - a.votes_down + (a.reply_count * 2))
           /. (Stdlib.( **) age_a 0.5)
@@ -355,10 +362,10 @@ let create_post ~author ~content ?title ?body ~post_kind ?meta_json
   match backend () with
   | Jsonl store ->
       (match
-         Board.create_post store ~author ~content ?title ?body ~post_kind ?meta_json
-           ~visibility ~ttl_hours ?hearth ?thread_id ()
+         Board.create_post_with_outcome store ~author ~content ?title ?body
+           ~post_kind ?meta_json ~visibility ~ttl_hours ?hearth ?thread_id ()
        with
-      | Ok post as ok ->
+      | Ok (Board.Fresh_post post) ->
           let pid = Board.Post_id.to_string post.id in
           let auth = Board.Agent_id.to_string post.author in
           emit_keeper_board_signal
@@ -369,13 +376,15 @@ let create_post ~author ~content ?title ?body ~post_kind ?meta_json
               title = post.title;
               content = post.content;
               hearth = post.hearth;
+              updated_at = Some post.updated_at;
             };
           emit_board_sse_event
             (Post_created
                { post_id = pid; author = auth; title = post.title;
                  content = post.content; post_kind = post.post_kind;
                  hearth = post.hearth });
-          ok
+          Ok post
+      | Ok (Board.Dedup_hit post) | Ok (Board.Rolled_up_post post) -> Ok post
       | Error _ as err -> err)
 
 let get_post ~post_id =
@@ -462,8 +471,11 @@ let add_comment ~post_id ~author ~content ?parent_id
     ?(ttl_hours = Board.Limits.default_ttl_hours) () =
   match backend () with
   | Jsonl store ->
-      (match Board.add_comment store ~post_id ~author ~content ?parent_id ~ttl_hours () with
-      | Ok comment as ok ->
+      (match
+         Board.add_comment_with_status store ~post_id ~author ~content ?parent_id
+           ~ttl_hours ()
+       with
+      | Ok (comment, `Fresh) ->
           let cid = Board.Comment_id.to_string comment.id in
           let auth = Board.Agent_id.to_string comment.author in
           (match Board.get_post store ~post_id with
@@ -476,13 +488,15 @@ let add_comment ~post_id ~author ~content ?parent_id
                   title = post.title;
                   content;
                   hearth = post.hearth;
+                  updated_at = Some post.updated_at;
                 }
           | Error e ->
               Log.BoardLog.warn "board signal skipped: get_post failed for %s: %s"
                 post_id (Board_types.show_board_error e));
           emit_board_sse_event
             (Comment_added { post_id; comment_id = cid; author = auth });
-          ok
+          Ok comment
+      | Ok (comment, `Dedup) -> Ok comment
       | Error _ as err -> err)
 
 let current_vote_for_post ~voter ~post_id =
@@ -499,7 +513,12 @@ let vote ~voter ~post_id ~direction =
        emit_board_sse_event
          (Post_voted { post_id; voter; direction })
    | Error e ->
-       Log.BoardLog.warn
+       (match e with
+        | Board_types.Already_voted _ ->
+            Log.BoardLog.debug
+        | Board_types.Post_not_found _ | Board_types.Comment_not_found _ ->
+            Log.BoardLog.info
+        | _ -> Log.BoardLog.warn)
          "board vote failed: post_id=%s voter=%s: %s"
          post_id voter (Board_types.show_board_error e));
   result
@@ -518,7 +537,12 @@ let vote_comment ~voter ~comment_id ~direction =
        emit_board_sse_event
          (Comment_voted { comment_id; voter; direction })
    | Error e ->
-       Log.BoardLog.warn
+       (match e with
+        | Board_types.Already_voted _ ->
+            Log.BoardLog.debug
+        | Board_types.Post_not_found _ | Board_types.Comment_not_found _ ->
+            Log.BoardLog.info
+        | _ -> Log.BoardLog.warn)
          "board vote_comment failed: comment_id=%s voter=%s: %s"
          comment_id voter (Board_types.show_board_error e));
   result
@@ -541,7 +565,10 @@ let toggle_reaction ~target_type ~target_id ~user_id ~emoji =
               reacted = toggled.reacted;
             })
    | Error e ->
-       Log.BoardLog.warn
+       (match e with
+        | Board_types.Post_not_found _ | Board_types.Comment_not_found _ ->
+            Log.BoardLog.info
+        | _ -> Log.BoardLog.warn)
          "board reaction failed: target=%s:%s user=%s emoji=%s: %s"
          (Board.reaction_target_type_to_string target_type)
          target_id user_id emoji (Board_types.show_board_error e));
@@ -688,3 +715,7 @@ let list_sub_boards () =
 let delete_sub_board ~sub_board_id =
   match backend () with
   | Jsonl store -> Board.delete_sub_board store ~sub_board_id
+
+let update_sub_board ~sub_board_id ?name ?description ?members ?access () =
+  match backend () with
+  | Jsonl store -> Board.update_sub_board store ~sub_board_id ?name ?description ?members ?access ()

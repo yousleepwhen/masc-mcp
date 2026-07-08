@@ -1,6 +1,6 @@
 open Result.Syntax
 
-module SMap = Map.Make(String)
+module SMap = Set_util.StringMap
 
 let rec atomic_update atomic f =
   let old_val = Atomic.get atomic in
@@ -19,16 +19,9 @@ let mcp_profile_by_session : Server_mcp_transport_http_types.tool_profile SMap.t
 let default_base_path () =
   (* Match the launcher guard: a direct binary launch from a checkout with its
      own .masc must not silently inherit a stale parent MASC_BASE_PATH.
-     When no explicit base path is set, prefer HOME so runtime artifacts land
-     under ~/.masc instead of the current checkout. *)
-  let requested_path =
-    match Env_config_core.base_path_opt () with
-    | Some _ -> Sys.getcwd ()
-    | None -> (
-        match Env_config_core.home_dir_opt () with
-        | Some home -> home
-        | None -> Sys.getcwd ())
-  in
+     When no explicit base path is set, use the current checkout/cwd rather
+     than HOME so runtime artifacts stay under a visible base path. *)
+  let requested_path = Config_dir_resolver.current_working_dir () in
   Coord_utils_backend_setup.resolve_server_default_base_path requested_path
 
 let is_valid_protocol_version version =
@@ -37,6 +30,22 @@ let is_valid_protocol_version version =
 let remember_protocol_version session_id version =
   if is_valid_protocol_version version then
     atomic_update protocol_version_by_session (fun map -> SMap.add session_id version map)
+
+(** RFC-0100 PR-3 — Q3 default: known-session predicate.
+
+    A session is "known" once an [initialize] body has registered a
+    protocol version for its id (see [remember_protocol_version]). Use
+    this to distinguish the legitimate "fresh session, no header"
+    handshake (where the server mints an id) from a client echoing an
+    [Mcp-Session-Id] header that the server has no state for — the latter
+    is rejected with [404 Not Found] so the client must re-handshake
+    instead of silently riding on a phantom session.
+
+    [mcp_profile_by_session] is not consulted because it is populated on
+    every POST regardless of whether [initialize] has succeeded, so it
+    cannot distinguish the handshake transition. *)
+let is_known_session session_id =
+  SMap.mem session_id (Atomic.get protocol_version_by_session)
 
 let remember_mcp_profile session_id profile =
   atomic_update mcp_profile_by_session (fun map -> SMap.add session_id profile map)
@@ -157,23 +166,6 @@ let get_session_id_any (request : Httpun.Request.t) =
       match get_header_any_case request.headers "mcp-session-id" with
       | Some _ as id -> id
       | None -> get_cookie_value request "mcp-session-id")
-
-let legacy_messages_endpoint_url (request : Httpun.Request.t) session_id =
-  match Httpun.Headers.get request.headers "host" with
-  | Some host ->
-      let proto =
-        match Httpun.Headers.get request.headers "x-forwarded-proto" with
-        | Some p -> p
-        | None ->
-            (* Length-mismatched [String.sub host 0 17 = "masc.crying.pict"]
-               (17-char substring vs 16-char literal) was always false, so
-               tunnel hosts silently advertised http://. starts_with also
-               drops a per-request allocation. *)
-            if String.starts_with ~prefix:"masc.crying.pict" host then "https"
-            else "http"
-      in
-      Printf.sprintf "%s://%s/messages?session_id=%s" proto host session_id
-  | None -> Printf.sprintf "/messages?session_id=%s" session_id
 
 let get_protocol_version (request : Httpun.Request.t) =
   match get_header_any_case request.headers "mcp-protocol-version" with

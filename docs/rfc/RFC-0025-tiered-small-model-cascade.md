@@ -1,7 +1,7 @@
 # RFC-0025: Tiered Small-Model Cascade (4B → 9B → 70B+)
 
 - **Status**: Draft
-- **Author**: vincent (with Claude)
+- **Author**: vincent (with Agent-LLM-A)
 - **Created**: 2026-05-03
 - **Related**: RFC-0024 (Ollama integration), oas_worker_named_cascade.ml, cascade_fsm.ml, config/cascade.toml
 
@@ -12,9 +12,9 @@
 ## 2. Current Architecture
 
 ```
-keeper_turn → [big_three] → codex_cli → gemini_cli → kimi_cli → glm-coding → claude_code
+keeper_turn → [primary] → cli-tool-a → cli-tool-b → cli-tool-c → provider-k-coding → cli-tool-d
                                     ↓ timeout/error
-                              [keeper_diverse] → claude_code → gemini_cli → codex_cli
+                              [keeper_diverse] → cli-tool-d → cli-tool-b → cli-tool-a
 ```
 
 모든 요청이 동일 프로파일을 순차 순회. 태스크 복잡도에 따른 라우팅 없음.
@@ -40,7 +40,7 @@ let detect_complexity ~messages ~tools ~max_tokens =
 [routes]
 simple_task = "tier_small"
 moderate_task = "tier_medium"
-complex_task = "big_three"
+complex_task = "primary"
 
 [tier_small]
 comment = "4B-class local models for simple tasks. Cost ≈ $0."
@@ -56,13 +56,13 @@ fallback_cascade = "tier_medium"
 comment = "9B-class models. Cost optimized."
 models = [
   "ollama:llama3.2:8b",
-  "codex_cli:gpt-5.3-codex-spark",
+  "cli-tool-a:model-d-spark",
 ]
 temperature = 0.2
 max_tokens = 4096
-fallback_cascade = "big_three"
+fallback_cascade = "primary"
 
-# big_three stays as-is for complex tasks
+# primary stays as-is for complex tasks
 ```
 
 ### 3.3 Injection Point
@@ -78,7 +78,7 @@ request → detect_complexity → select tier profile → resolve_cascade_provid
 | # | Principle | Rationale |
 |---|-----------|-----------|
 | P1 | **Heuristic first, ML later.** | Context length + tool presence + max_tokens로 초기 분류. 정확도 측정 후 ML 분류기 도입 검토. |
-| P2 | **Always fallback up.** | tier_small 실패 → tier_medium → big_three. 하위 티어 실패 시 상위로. |
+| P2 | **Always fallback up.** | tier_small 실패 → tier_medium → primary. 하위 티어 실패 시 상위로. |
 | P3 | **Operator override.** | keeper가 명시적으로 `complex_task` 라우트를 요청하면 감지 스킵. |
 | P4 | **Metrics per tier.** | 각 티어의 성공률, 지연시간, 비용을 개별 추적. |
 
@@ -90,7 +90,6 @@ request → detect_complexity → select tier profile → resolve_cascade_provid
 | `config/cascade.toml` | `[tier_small]`, `[tier_medium]` 프로파일 | High |
 | `lib/cascade/cascade_config.ml` | Tier 설정 스키마 | Medium |
 | `lib/oas_worker_named.ml` | Tier metadata 전달 | Medium |
-| `lib/cascade/cascade_inventory.ml` | Tier-aware scoring | Low |
 
 ## 6. Validation
 

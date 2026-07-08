@@ -6,18 +6,20 @@ import { html } from 'htm/preact'
 import { signal } from '@preact/signals'
 import { get, post } from '../api/core'
 import {
-  normalizeCredentialsResponse,
+  fetchCredentials,
   type CredentialState,
   type CredentialType,
 } from '../api/credentials'
+import { fetchRepositoriesList } from '../api/repositories'
 import { createAsyncResource } from '../lib/async-state'
 import { showToast } from './common/toast'
 import { ErrorState, LoadingState } from './common/feedback-state'
+import { BTN_FILLED_BASE } from './common/button-filled-base'
 import {
   credentialStateBadgeClass,
   credentialStateLabel,
-  githubLoginCommand,
 } from './credential-settings'
+import { githubLoginCommand } from '../api/credentials'
 import type { Keeper } from '../types'
 
 // ── Types ────────────────────────────────────────────────
@@ -79,28 +81,16 @@ async function fetchKeepers(): Promise<Keeper[]> {
 }
 
 async function fetchRepositories(): Promise<RepositoryOption[]> {
-  const data = await get<unknown>('/api/v1/repositories')
-  const rows = Array.isArray(data)
-    ? data
-    : data && typeof data === 'object' && Array.isArray((data as Record<string, unknown>).repositories)
-      ? (data as Record<string, unknown>).repositories as unknown[]
-      : []
-  if (Array.isArray(rows)) {
-    return rows.map((row: unknown): RepositoryOption => {
-      const r = row as Record<string, unknown>
-      return {
-        id: String(r.id ?? ''),
-        name: String(r.name ?? r.id ?? ''),
-        url: r.url ? String(r.url) : undefined,
-      }
-    })
-  }
-  return []
+  const repos = await fetchRepositoriesList()
+  return repos.map(r => ({
+    id: r.id,
+    name: r.name,
+    url: r.url || undefined,
+  }))
 }
 
-async function fetchCredentials(): Promise<KeeperCredentialOption[]> {
-  const data = await get<unknown>('/api/v1/credentials')
-  return normalizeCredentialsResponse(data).filter(cred => cred.id !== '')
+async function fetchCredentialOptions(): Promise<KeeperCredentialOption[]> {
+  return (await fetchCredentials()).filter(cred => cred.id !== '')
 }
 
 async function fetchKeeperRepoMappings(): Promise<KeeperRepoMapping[]> {
@@ -236,7 +226,7 @@ export async function loadKeeperRepoMappings(options?: { force?: boolean }): Pro
   const loadCredentials = async () => {
     if (!force && credentialsState.value.status === 'loaded') return
     if (force) credentialsResource.reset()
-    await credentialsResource.load(() => fetchCredentials())
+    await credentialsResource.load(() => fetchCredentialOptions())
   }
 
   const loadMappings = async () => {
@@ -331,8 +321,6 @@ export function KeeperRepoMapping() {
   const mappings = mState.status === 'loaded' ? mState.data : []
   const mappingByKeeper = new Map(mappings.map(m => [m.keeper_id, m]))
 
-  const btnBase = 'py-1.5 px-4 rounded-[var(--r-1)] text-xs font-semibold cursor-pointer border-none'
-
   async function handleSave(keeperId: string) {
     const draft = draftMappings.value.get(keeperId)
     if (draft === undefined) return
@@ -387,7 +375,7 @@ export function KeeperRepoMapping() {
         <h2 class="text-sm font-bold text-text-strong">키퍼 저장소 매핑</h2>
         <button
           type="button"
-          class="${btnBase} bg-[var(--color-bg-hover)] text-text-body"
+          class="${BTN_FILLED_BASE} bg-[var(--color-bg-hover)] text-text-body"
           onClick=${() => loadKeeperRepoMappings({ force: true })}
         >
           새로고침
@@ -458,7 +446,7 @@ export function KeeperRepoMapping() {
                     ` : null}
                     <button
                       type="button"
-                      class="${btnBase} bg-[var(--color-status-ok)] text-[var(--color-fg-on-ok)] py-1 px-3 text-2xs"
+                      class="${BTN_FILLED_BASE} bg-[var(--color-status-ok)] text-[var(--color-fg-on-ok)] py-1 px-3 text-2xs"
                       onClick=${() => handleSave(keeperId)}
                       disabled=${isSaving || !changed}
                     >
@@ -471,7 +459,7 @@ export function KeeperRepoMapping() {
                   <div class="mb-3 rounded-[var(--r-1)] border border-card-border/40 bg-[var(--color-bg-surface)] px-2.5 py-2">
                     <div class="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
                       <label class="flex flex-col gap-1 min-w-0 md:min-w-[18rem]">
-                        <span class="text-2xs font-bold uppercase tracking-wide text-text-muted">GitHub credential</span>
+                        <span class="text-2xs font-bold uppercase tracking-wide text-text-muted">Repo credential</span>
                         <select
                           class="rounded-[var(--r-1)] border border-card-border/60 bg-card px-2 py-1.5 text-xs text-text-body outline-none focus:border-accent-fg"
                           value=${draftCredentialId ?? ''}

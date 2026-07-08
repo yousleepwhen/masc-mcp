@@ -1,47 +1,8 @@
 (** See cascade_state.mli for documentation. *)
 
-(* ── Sticky ─────────────────────────────────────────────────────── *)
-
-type sticky_entry = {
-  provider : string;
-  expires_at : float;
-}
-
-module Sticky_key = struct
-  type t = string * string
-  let compare (k1, c1) (k2, c2) =
-    let r = String.compare k1 k2 in
-    if r <> 0 then r else String.compare c1 c2
-end
-
-module Sticky_map = Map.Make (Sticky_key)
-
-let sticky_table : sticky_entry Sticky_map.t Atomic.t =
-  Atomic.make Sticky_map.empty
-
-let record_sticky_choice ~keeper ~cascade ~provider ~ttl_ms ~now =
-  if ttl_ms <= 0 then ()
-  else
-    let expires_at = now +. (float_of_int ttl_ms /. 1000.) in
-    let entry = { provider; expires_at } in
-    let key = (keeper, cascade) in
-    let rec loop () =
-      let cur = Atomic.get sticky_table in
-      let next = Sticky_map.add key entry cur in
-      if not (Atomic.compare_and_set sticky_table cur next) then loop ()
-    in
-    loop ()
-
-let lookup_sticky ~keeper ~cascade ~now =
-  match Sticky_map.find_opt (keeper, cascade) (Atomic.get sticky_table) with
-  | Some entry when now < entry.expires_at -> Some entry.provider
-  | _ -> None
-
-let clear_sticky () = Atomic.set sticky_table Sticky_map.empty
-
 (* ── Round-robin ────────────────────────────────────────────────── *)
 
-module String_map = Map.Make (String)
+module String_map = Set_util.StringMap
 
 let rr_table : int Atomic.t String_map.t Atomic.t =
   Atomic.make String_map.empty
@@ -85,5 +46,4 @@ let clear_round_robin () = Atomic.set rr_table String_map.empty
 (* ── Bulk ───────────────────────────────────────────────────────── *)
 
 let clear_all () =
-  clear_sticky ();
   clear_round_robin ()

@@ -53,6 +53,7 @@ end
 (** {1 Keeper supervisor} *)
 
 module KeeperSupervisor : sig
+  val domain_pool_enabled : bool
   val max_restarts : int
   val backoff_base_s : float
   val backoff_max_s : float
@@ -63,45 +64,51 @@ module KeeperSupervisor : sig
   val paused_cleanup_ttl_sec : float
   val auto_resume_initial_sec : float
   val auto_resume_max_sec : float
-  val liveness_recovery_enabled : bool
-  (** #12801 Whether the liveness recovery scan is enabled. *)
-  val liveness_recovery_min_dead_sec : float
-  (** Minimum seconds a keeper must have been Dead before recovery attempt. *)
-  val liveness_recovery_backoff_base_sec : float
-  (** Base backoff delay between liveness recovery attempts (seconds). *)
-  val liveness_recovery_backoff_max_sec : float
-  (** Maximum backoff delay cap for liveness recovery (seconds). *)
-  val liveness_recovery_max_attempts : int
-  (** Maximum total liveness recovery attempts per keeper. *)
 
-  val alive_but_stuck_enabled : bool
+  (** #12801 Whether the liveness recovery scan is enabled. *)
+  val liveness_recovery_enabled : bool
+
+  (** Minimum seconds a keeper must have been Dead before recovery attempt. *)
+  val liveness_recovery_min_dead_sec : float
+
+  (** Base backoff delay between liveness recovery attempts (seconds). *)
+  val liveness_recovery_backoff_base_sec : float
+
+  (** Maximum backoff delay cap for liveness recovery (seconds). *)
+  val liveness_recovery_backoff_max_sec : float
+
+  (** Maximum total liveness recovery attempts per keeper. *)
+  val liveness_recovery_max_attempts : int
+
   (** #12838 Scan for alive-but-stuck keepers
       (proactive_rt.last_ts frozen while autonomous turns advance).
       Default: true. *)
+  val alive_but_stuck_enabled : bool
 
-  val alive_but_stuck_recovery_enabled : bool
   (** Queue a bounded Event Layer wakeup for each deduped
       alive-but-stuck detection. Default: true. *)
+  val alive_but_stuck_recovery_enabled : bool
 
-  val alive_but_stuck_stall_multiplier : int
   (** Multiplier on the keeper's [proactive.cooldown_sec] before
       stalling is flagged. Default: 10. *)
+  val alive_but_stuck_stall_multiplier : int
 
-  val alive_but_stuck_stall_floor_sec : float
   (** Hard floor (seconds) for stall detection — guards against
       keepers with very small cooldowns being flagged after a few
       minutes of legitimate quiet. Default: 1800 (30 min). *)
+  val alive_but_stuck_stall_floor_sec : float
 
-  val alive_but_stuck_dedup_ttl_sec : float
   (** Per-keeper dedup window: counter increments at most once per
       window per keeper even when the sweep fires every 30s.
       Default: 3600 (1 hr). *)
+  val alive_but_stuck_dedup_ttl_sec : float
 end
 
 (** {1 Stale-turn watchdog} *)
 
 module KeeperWatchdog : sig
   val stale_threshold_sec : float
+  val progress_timeout_sec : float
   val poll_sec : float
   val noop_threshold : int
   val grace_period_sec : float
@@ -170,14 +177,21 @@ module KeeperKeepalive : sig
   val oas_max_turns_per_call : int
   val oas_max_turns_per_call_scheduled_autonomous : int
 
-  val oas_timeout_for_estimated_input_tokens_with_turn_budget :
-    estimated_input_tokens:int -> max_turns:int -> float
-
-  val oas_timeout_for_estimated_input_tokens :
-    estimated_input_tokens:int -> float
-
-  val oas_timeout_sec : float
+  val oas_call_timeout_sec : float
+  (** Resolved OAS-call timeout: [oas_timeout_sec_override] when set, otherwise
+      [turn_timeout_sec]. RFC-0156: no token- or turn-budget dependence. *)
   val stream_idle_timeout_sec : float
+
+  val body_timeout_sec_override : float option
+  (** Total HTTP body-consumption deadline for one OAS streaming call.
+      [None] (env unset) leaves the cascade builder wire untouched.
+      [Some s] forwards to [Builder.with_body_timeout]; on expiry
+      [Retry.Timeout] surfaces at the attempt boundary so cascade falls
+      forward to the next provider. Complements {!stream_idle_timeout_sec}
+      (inter-line silence cap) and [max_execution_time_s] (turn-total cap).
+
+      Env: [MASC_KEEPER_BODY_TIMEOUT_SEC]. Clamp range: [10, 600] s. *)
+
   val idle_skip_threshold : int
 end
 
@@ -203,11 +217,11 @@ end
 
 (** {1 Context ratio hard cap} *)
 
-val context_ratio_hard_cap : float
 (** Absolute ceiling for compaction ratio_gate / handoff threshold
     after multiplier adjustment.  Range: [\[0.80, 0.99\]].  Reached
     qualified ([Env_config_keeper.context_ratio_hard_cap]) by
     {!Keeper_memory_recall} guard sites. *)
+val context_ratio_hard_cap : float
 
 (** {1 Context compaction (OAS)} *)
 
@@ -231,39 +245,6 @@ module ContextCompact : sig
   val large_cloud_floor : int
 end
 
-(** {1 Docker playground} *)
-
-module DockerPlayground : sig
-  val enabled : bool
-  val container_name : string
-  val container_playground_root : string
-end
-
-(** {1 Keeper sandbox (alias layer over {!Env_config_sandbox})} *)
-
-module KeeperSandbox : sig
-  val hard_mode : unit -> bool
-  val docker_image : unit -> string
-  val preflight_enabled : unit -> bool
-  val pids_limit : unit -> int
-  val nofile_limit : unit -> int
-  val memory : unit -> string
-  val tmpfs_size : unit -> string
-  val relax_fs : unit -> bool
-  val read_only_rootfs_args : unit -> string list
-  val tmpfs_mount : unit -> string
-  val seccomp_profile : unit -> string
-  val require_rootless : unit -> bool
-  val require_userns : unit -> bool
-  val cleanup_enabled : unit -> bool
-  val cleanup_stale_after_sec : unit -> float
-  val cleanup_interval_sec : unit -> float
-  val with_git_dispatch_enabled : unit -> bool
-
-  val symmetric_read_containment : unit -> bool
-  val docker_read_routing : unit -> bool
-end
-
 (** {1 Dashboard health thresholds} *)
 
 module DashboardHealth : sig
@@ -280,6 +261,48 @@ module KeeperTelemetry : sig
   val payload_telemetry_enabled : unit -> bool
 end
 
+(** {1 Cascade Saturation Signal (RFC-0153 Phase A.2)} *)
+
+module CascadeSaturationSignal : sig
+  val enabled : unit -> bool
+  (** [MASC_CASCADE_SATURATION_SIGNAL_ENABLED] flag. Default false.
+
+      When true, {!Cascade_attempt_fsm} emits a Prometheus counter
+      ([masc_keeper_cascade_saturation_signal_total]) with a typed
+      [kind] label whenever a saturation event matching
+      {!Cascade_saturation_signal.t} is observed. Used to feed
+      Phase B (tier admission semaphore) and Phase C (adaptive
+      throttling) without altering any existing wire format,
+      string label, or control-flow path. *)
+end
+
+(** {1 Cascade Tier Admission (RFC-0153 Phase B.2)} *)
+
+module CascadeTierAdmission : sig
+  val enabled : unit -> bool
+  (** [MASC_CASCADE_TIER_ADMISSION_ENABLED] flag. Default true.
+
+      When true, the main keeper cascade path enforces per-tier inflight
+      admission before provider dispatch. Set false only as an emergency
+      rollback; it is intentionally independent from Phase A.2 metric
+      emission. *)
+end
+
+module CascadeTierWait : sig
+  val enabled : unit -> bool
+  (** [MASC_CASCADE_TIER_WAIT_ENABLED] flag. Default false.
+
+      When true, tier admission failures enter a bounded wait loop
+      with backoff instead of immediately returning [Capacity_full].
+      Requires [MASC_CASCADE_TIER_ADMISSION_ENABLED] to be true. *)
+
+  val timeout_s : unit -> float
+  (** [MASC_CASCADE_TIER_WAIT_TIMEOUT_S]. Default 30.0. *)
+
+  val max_retries : unit -> int option
+  (** [MASC_CASCADE_TIER_WAIT_MAX_RETRIES]. Default [None] (unlimited). *)
+end
+
 (** {1 Cascade runtime overrides} *)
 
 module KeeperCascade : sig
@@ -294,32 +317,4 @@ module KeeperRetryBackoff : sig
   val transient_backoff_cap_sec : unit -> float
   val transient_backoff_sec : int -> float
   val degraded_retry_slot_phase_budget_sec : float
-end
-
-(** {1 Cascade attempt liveness — RFC-0022 §9 rollout flag} *)
-
-module CascadeAttemptLiveness : sig
-  type mode =
-    | Off
-        (** No FSM driving, no counter, no kills. Equivalent to the
-            world before RFC-0022. *)
-
-    | Observe
-        (** FSM runs alongside the existing cascade attempt; would-be
-            kills are logged and counted ([masc_cascade_attempt_liveness_kill_total]),
-            but the cascade FSM never sees them. Default. *)
-
-    | Enforce
-        (** FSM runs and would-be kills are reported back to the
-            cascade FSM as [Failed_attempt], advancing to the next
-            provider. Reserved for PR-3+ once observation has produced
-            calibration data per §9 Phase B. *)
-
-  val mode : unit -> mode
-  (** Read [MASC_CASCADE_ATTEMPT_LIVENESS]. Unrecognised values fall
-      back to {!Observe} (with a one-time stderr warning). *)
-
-  val mode_label : mode -> string
-  (** Stable string label for telemetry / log output:
-      [off | observe | enforce]. *)
 end

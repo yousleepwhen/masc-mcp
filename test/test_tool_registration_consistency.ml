@@ -1,52 +1,13 @@
 module Types = Masc_domain
 
-(** Structural linter: verifies tool registration consistency.
-
-    1. Every tool referenced in Workflow_guide must exist in Config.all_tool_schemas.
-
-    This test catches registration drift when new tools are added to schemas
-    or when workflow_guide references stale tool names. *)
+(** Structural linter: verifies tool registration consistency. *)
 
 open Masc_mcp
-module WG = Masc_mcp__Workflow_guide
 
 (* ── All schema tool names ─────────────────────────────────────── *)
 
 let all_schema_names =
   List.map (fun (s : Masc_domain.tool_schema) -> s.name) Config.all_tool_schemas
-
-(* ── Test 1: Workflow guide references valid tools ────────────── *)
-
-let test_workflow_guide_tools_exist () =
-  let guide_tools = [
-    "masc_start"; "masc_join"; "masc_status";
-    "masc_claim"; "masc_claim_next"; "masc_transition";
-    "masc_add_task"; "masc_batch_add_tasks";
-    "masc_plan_set_task"; "masc_set_current_task";
-    "masc_heartbeat"; "masc_broadcast";
-    "masc_worktree_create"; "masc_init";
-    "masc_operator_digest";
-    "masc_operation_start"; "masc_dispatch_tick";
-    (* team session tools removed — team session cleanup *)
-  ] in
-  List.iter (fun tool_name ->
-    let g_ok = WG.next_steps ~tool_name ~success:true in
-    List.iter (fun (s : WG.step) ->
-      if not (List.mem s.tool all_schema_names) then
-        Alcotest.fail
-          (Printf.sprintf
-             "WG.next_steps(%s) references '%s' which is not in Config.all_tool_schemas"
-             tool_name s.tool)
-    ) g_ok.next_steps;
-    let g_fail = WG.next_steps ~tool_name ~success:false in
-    List.iter (fun (s : WG.step) ->
-      if not (List.mem s.tool all_schema_names) then
-        Alcotest.fail
-          (Printf.sprintf
-             "WG.next_steps(%s, fail) references '%s' which is not in Config.all_tool_schemas"
-             tool_name s.tool)
-    ) g_fail.next_steps
-  ) guide_tools
 
 let contains_substring haystack needle =
   let h_len = String.length haystack in
@@ -129,19 +90,64 @@ let doc_path name =
 let repo_path relative =
   Filename.concat (repo_root ()) relative
 
+let is_markdown_file name =
+  Filename.check_suffix name ".md"
+
+let live_root_doc_names () =
+  Sys.readdir (Filename.concat (repo_root ()) "docs")
+  |> Array.to_list
+  |> List.filter is_markdown_file
+
 let test_docs_do_not_reintroduce_ghost_claim_surface () =
-  let allowed_claim_docs = [ "MCP-SURFACE-AUDIT.md" ] in
+  let allowed_removed_alias_docs = [ "MCP-SURFACE-AUDIT.md" ] in
   [ "MCP-SURFACE-AUDIT.md"; "QUICK-START.md" ]
   |> List.iter (fun name ->
          let contents = read_file (doc_path name) in
          if contains_substring contents "masc_task_list" then
            Alcotest.failf "doc %s reintroduces ghost tool masc_task_list" name;
          if contains_token contents "masc_claim"
-            && not (List.mem name allowed_claim_docs)
+            && not (List.mem name allowed_removed_alias_docs)
          then
            Alcotest.failf
-             "doc %s reintroduces normative masc_claim usage outside compatibility docs"
-             name)
+             "doc %s reintroduces deprecated masc_claim alias"
+             name;
+         if contains_substring contents "keep if compatibility matters"
+            || contains_substring contents "Still callable for compatibility"
+         then
+           Alcotest.failf "doc %s preserves legacy compatibility criteria" name)
+
+let test_live_docs_do_not_reintroduce_game_view_alias_lane () =
+  if Sys.file_exists (doc_path "GAME-VIEW-PROTOCOL.md") then
+    Alcotest.fail
+      "docs/GAME-VIEW-PROTOCOL.md reintroduces retired game-view protocol";
+  live_root_doc_names ()
+  |> List.filter (fun name -> name <> "MCP-SURFACE-AUDIT.md")
+  |> List.iter (fun name ->
+         let contents = read_file (doc_path name) in
+         List.iter
+           (fun marker ->
+             if contains_substring contents marker then
+               Alcotest.failf
+                 "doc %s reintroduces retired game-view alias lane marker %s"
+                 name
+                 marker)
+           [ "decision.create"
+           ; "decision.propose"
+           ; "decision.score"
+           ; "decision.vote"
+           ; "decision.finalize"
+           ; "experiment.define"
+           ; "experiment.start"
+           ; "experiment.observe"
+           ; "experiment.stop"
+           ; "experiment.report"
+           ; "trpg.scene"
+           ; "trpg.action"
+           ; "trpg.roll"
+           ; "trpg.tick"
+           ; "experiment_start"
+           ; "masc_trpg"
+           ])
 
 let test_front_door_surfaces_do_not_reintroduce_claim_alias () =
   (* CP purge: dashboard/src/components/command/ directory deleted with the
@@ -183,18 +189,6 @@ let test_benchmark_scripts_follow_session_contract () =
     scripts
 
 let test_benchmark_scripts_only_reference_registered_tools () =
-  (* Post-pruning exceptions: benchmark scripts still exercise a few tool
-     names that were removed from the public registry during the
-     tool-registry-pruning sweep. They are known stale references and
-     will be cleaned up in a follow-up pass; allow them here so the
-     linter does not block unrelated PRs. *)
-  let pruned_benchmark_exceptions =
-    [
-      "masc_runtime_verify";
-      "masc_lock";
-      "masc_unlock";
-    ]
-  in
   let scripts =
     [ "benchmarks/quick-bench.sh"; "benchmarks/benchmark.sh" ]
   in
@@ -203,9 +197,7 @@ let test_benchmark_scripts_only_reference_registered_tools () =
       let contents = read_file (repo_path relative) in
       extract_masc_tokens contents
       |> List.iter (fun tool_name ->
-             if (not (List.mem tool_name all_schema_names))
-                && not (List.mem tool_name pruned_benchmark_exceptions)
-             then
+             if not (List.mem tool_name all_schema_names) then
                Alcotest.failf
                  "benchmark script %s references unregistered tool %s"
                  relative tool_name))
@@ -231,28 +223,11 @@ let test_docs_do_not_reintroduce_removed_mode_surface () =
             "masc_tool_disable" ])
     paths
 
-let test_admin_dispatched_keeper_tools_not_orphaned () =
-  (* #7696: keeper_board_cleanup/delete are dispatched by Keeper_exec_tools
-     but withheld from the visible/core set. The validator must recognise
-     them as runtime so the [optional] group in tool_policy.toml does not
-     trigger a false-positive "unknown tool names" WARN. *)
-  match Keeper_exec_tools.init_policy_config ~base_path:(repo_root ()) with
-  | Error msg ->
-      Alcotest.failf "failed to load tool policy config: %s" msg
-  | Ok () ->
-      let validation = Tool_registration_check.validate () in
-      List.iter (fun name ->
-        if List.mem name validation.Tool_registration_check.orphan_toml then
-          Alcotest.failf
-            "admin-dispatched keeper tool %s must not be reported as orphan_toml"
-            name)
-        [ "keeper_board_cleanup"; "keeper_board_delete" ]
-
-let test_keeper_schema_only_tools_not_orphaned () =
-  (* Keeper PR/preflight tools are model-schema tools, not public MCP tools.
+let test_unsharded_default_tools_not_orphaned () =
+  (* Unsharded default tools are model-schema tools, not public MCP tools.
      The startup validator must still recognise them as keeper runtime tools
      so live tool_policy.toml can grant them without noisy false positives. *)
-  match Keeper_exec_tools.init_policy_config ~base_path:(repo_root ()) with
+  match Agent_tool_dispatch_runtime.init_policy_config ~base_path:(repo_root ()) with
   | Error msg ->
       Alcotest.failf "failed to load tool policy config: %s" msg
   | Ok () ->
@@ -262,20 +237,14 @@ let test_keeper_schema_only_tools_not_orphaned () =
           Alcotest.failf
             "keeper schema tool %s must not be reported as orphan_toml"
             name)
-        [ "keeper_preflight_check"; "keeper_pr_list"; "keeper_pr_status";
-          "keeper_pr_create"; "keeper_pr_review_read";
-          "keeper_pr_review_comment"; "keeper_pr_review_reply" ]
+        [ "tool_execute" ]
 
 let test_tool_registration_check_does_not_depend_on_injected_masc_schemas () =
-  match Keeper_exec_tools.init_policy_config ~base_path:(repo_root ()) with
+  match Agent_tool_dispatch_runtime.init_policy_config ~base_path:(repo_root ()) with
   | Error msg ->
       Alcotest.failf "failed to load tool policy config: %s" msg
   | Ok () ->
-      let saved = !(Keeper_exec_tools.masc_schemas_ref) in
-      Fun.protect
-        ~finally:(fun () -> Keeper_exec_tools.masc_schemas_ref := saved)
-        (fun () ->
-          Keeper_exec_tools.masc_schemas_ref := [];
+      Agent_tool_dispatch_runtime.with_masc_schemas_for_test [] (fun () ->
           let validation = Tool_registration_check.validate () in
           let masc_orphans =
             validation.Tool_registration_check.orphan_toml
@@ -283,6 +252,23 @@ let test_tool_registration_check_does_not_depend_on_injected_masc_schemas () =
           in
           Alcotest.(check (list string))
             "no masc orphan_toml without injected schemas" [] masc_orphans)
+
+let test_judge_tool_schema_names_resolve () =
+  let requested =
+    [ "masc_status"; "masc_tasks"; "masc_agents"; "masc_agent_card";
+      "masc_board_list" ]
+  in
+  match Agent_tool_surfaces.local_worker_tool_schemas ~names:requested () with
+  | Error msg ->
+      Alcotest.failf "judge tool names must resolve: %s" msg
+  | Ok schemas ->
+      let names =
+        schemas
+        |> List.map (fun (schema : Masc_domain.tool_schema) -> schema.name)
+        |> List.sort String.compare
+      in
+      let expected = List.sort String.compare requested in
+      Alcotest.(check (list string)) "judge tool schemas" expected names
 
 (* ── Test 3: No duplicate tool names in schemas ──────────────── *)
 
@@ -316,16 +302,16 @@ let test_board_delete_tag_registered () =
 let test_board_read_only_metadata_registered () =
   ignore (Masc_mcp.Mcp_server_eio.create_state ~test_mode:true ~base_path:"/tmp/masc-pr5973-board-meta" ());
   let meta = Masc_mcp.Tool_catalog.metadata "masc_board_list" in
-  Alcotest.(check bool) "board list is read-only in dispatch"
-    true (Masc_mcp.Tool_dispatch.is_read_only "masc_board_list");
-  Alcotest.(check bool) "board list is idempotent in dispatch"
-    true (Masc_mcp.Tool_dispatch.is_idempotent "masc_board_list");
+  Alcotest.(check bool) "board list is read-only capability"
+    true (Masc_mcp.Tool_capability.has Masc_mcp.Tool_capability.Read_only "masc_board_list");
+  Alcotest.(check bool) "board list is idempotent capability"
+    true (Masc_mcp.Tool_capability.has Masc_mcp.Tool_capability.Idempotent "masc_board_list");
   Alcotest.(check (option bool)) "board list metadata readonly"
     (Some true) meta.readonly;
   Alcotest.(check (option bool)) "board list metadata idempotent"
     (Some true) meta.idempotent;
   Alcotest.(check bool) "board post stays mutable"
-    false (Masc_mcp.Tool_dispatch.is_read_only "masc_board_post")
+    false (Masc_mcp.Tool_capability.has Masc_mcp.Tool_capability.Read_only "masc_board_post")
 
 (* ── Test: keeper alias SSOT — capability_registry derives from surfaces ── *)
 
@@ -349,10 +335,10 @@ let test_keeper_alias_ssot_consistency () =
   Alcotest.(check string) "keeper_tasks_list quirk"
     "masc_tasks" (Capability_registry.keeper_backend_tool_name "keeper_tasks_list");
   (* Privileged native tools must remain identity *)
-  Alcotest.(check string) "keeper_bash identity"
-    "keeper_bash" (Capability_registry.keeper_backend_tool_name "keeper_bash");
-  Alcotest.(check string) "keeper_fs_edit identity"
-    "keeper_fs_edit" (Capability_registry.keeper_backend_tool_name "keeper_fs_edit");
+  Alcotest.(check string) "tool_execute identity"
+    "tool_execute" (Capability_registry.keeper_backend_tool_name "tool_execute");
+  Alcotest.(check string) "tool_edit_file identity"
+    "tool_edit_file" (Capability_registry.keeper_backend_tool_name "tool_edit_file");
   (* Arbitrary unknown name must pass through *)
   Alcotest.(check string) "unknown identity"
     "foobar" (Capability_registry.keeper_backend_tool_name "foobar")
@@ -364,10 +350,10 @@ let () =
     [
       ( "linter",
         [
-          Alcotest.test_case "workflow guide references valid tools" `Quick
-            test_workflow_guide_tools_exist;
           Alcotest.test_case "docs do not reintroduce ghost claim surface" `Quick
             test_docs_do_not_reintroduce_ghost_claim_surface;
+          Alcotest.test_case "live docs do not reintroduce game-view alias lane" `Quick
+            test_live_docs_do_not_reintroduce_game_view_alias_lane;
           Alcotest.test_case "front-door surfaces do not reintroduce claim alias" `Quick
             test_front_door_surfaces_do_not_reintroduce_claim_alias;
           Alcotest.test_case "benchmark scripts follow session contract" `Quick
@@ -386,14 +372,12 @@ let () =
             "tool registration check does not depend on injected masc schemas"
             `Quick
             test_tool_registration_check_does_not_depend_on_injected_masc_schemas;
+          Alcotest.test_case "judge tool schema names resolve" `Quick
+            test_judge_tool_schema_names_resolve;
           Alcotest.test_case
-            "admin-dispatched keeper tools not flagged as orphan_toml (#7696)"
+            "unsharded default tools not flagged as orphan_toml"
             `Quick
-            test_admin_dispatched_keeper_tools_not_orphaned;
-          Alcotest.test_case
-            "keeper schema-only tools not flagged as orphan_toml"
-            `Quick
-            test_keeper_schema_only_tools_not_orphaned;
+            test_unsharded_default_tools_not_orphaned;
           Alcotest.test_case "keeper_backend_tool_name matches keeper_internal_replacement" `Quick
             test_keeper_alias_ssot_consistency;
         ] );

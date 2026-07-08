@@ -7,8 +7,8 @@
 
 open Masc_domain
 
-module StringSet = Set.Make (String)
-module StringMap = Map.Make (String)
+module StringSet = Set_util.StringSet
+module StringMap = Set_util.StringMap
 
 type risk_class =
   | Safe
@@ -64,7 +64,6 @@ let risk_rank = function
 let max_risk left right =
   if risk_rank left >= risk_rank right then left else right
 
-let unique_preserve_order = Json_util.dedupe_keep_order
 
 let dedupe_schemas (schemas : Masc_domain.tool_schema list) =
   let _, results =
@@ -168,12 +167,13 @@ let local_worker_public_tool_names : string list =
 let local_worker_internal_schemas : Masc_domain.tool_schema list =
   Agent_tool_surfaces.local_worker_internal_schemas
 
-let privileged_public_tool_names : string list =
-  [ "masc_spawn"; "masc_worktree_create"; "masc_worktree_remove" ]
+(* RFC-0182: masc_spawn removed (dead). privileged_public_tool_names is
+   currently empty — no remaining public tool requires Privileged
+   risk_class. Kept as extension point. *)
+let privileged_public_tool_names : string list = []
 
 let privileged_keeper_tool_names : string list =
-  [ "keeper_bash"; "keeper_bash_kill"; "keeper_bash_output";
-    "keeper_fs_edit"; "masc_worktree_create" ]
+  [ "tool_execute"; "tool_edit_file"; "tool_write_file" ]
 
 (* Derived from Tool_catalog_surfaces.keeper_internal_replacement (SSOT).
    Returns the masc_* backend name for aliased tools, identity otherwise. *)
@@ -200,7 +200,7 @@ let public_projection_seeds_from (public_tool_source_schemas : Masc_domain.tool_
         Safe
     in
     let audiences =
-      unique_preserve_order
+      Json_util.dedupe_keep_order
         (External_mcp_client
          :: (if List.mem name spawned_agent_public_tool_names then [ Spawned_managed_agent ] else [])
          @ (if List.mem name local_worker_public_tool_names then [ Local_worker_agent ] else []))
@@ -302,7 +302,7 @@ let all_capabilities_from (public_tool_source_schemas : Masc_domain.tool_schema 
               {
                 capability_id = seed.capability_id;
                 risk_class = seed.risk_class;
-                audiences = unique_preserve_order seed.audiences;
+                audiences = Json_util.dedupe_keep_order seed.audiences;
                 supports_audit_evidence = seed.supports_audit_evidence;
                 supports_direct_user_discovery = seed.supports_direct_user_discovery;
                 projections = [ seed.projection ];
@@ -316,7 +316,7 @@ let all_capabilities_from (public_tool_source_schemas : Masc_domain.tool_schema 
                 capability_id = existing.capability_id;
                 risk_class = max_risk existing.risk_class seed.risk_class;
                 audiences =
-                  unique_preserve_order (existing.audiences @ seed.audiences);
+                  Json_util.dedupe_keep_order (existing.audiences @ seed.audiences);
                 supports_audit_evidence =
                   existing.supports_audit_evidence || seed.supports_audit_evidence;
                 supports_direct_user_discovery =
@@ -359,18 +359,27 @@ let public_raw_tool_schemas_from (public_tool_source_schemas : Masc_domain.tool_
    through here unchanged. The public MCP surface is now filtered at the profile
    level: [Mcp_server_eio_tool_profile.tool_schemas_for_profile] applies
    [Tool_catalog.is_public_mcp] to the Full profile, reducing tools/list to ~34.
-   Internal dispatch ([Tool_dispatch.dispatch]) remains unrestricted. *)
+
+   RFC-0084 §1.1 + §2.2 (PR-7) — Internal dispatch now flows through
+   [Tool_dispatch.guarded_dispatch] which wraps [dispatch_structured]
+   (pre-hook + handler + observer) with [Tool_telemetry.with_span].
+   The keeper turn loop in [agent_tool_remote_mcp_runtime.ml:164,218] routes through
+   the guarded entry so pre-hook chain ([governance_pipeline:203],
+   [tool_input_validation:217]) covers keeper-originated calls.
+   PR-8 wires the MCP server; PR-9 wires tag-dispatch fallback.
+   PR-11 removes the legacy [dispatch] and [dispatch_structured] entries
+   once all callers migrate. *)
 let public_tool_schemas_from (public_tool_source_schemas : Masc_domain.tool_schema list) :
     Masc_domain.tool_schema list =
   dedupe_schemas public_tool_source_schemas
   |> Tool_help_registry.canonicalize_schemas
 
 let visible_public_tool_schemas_from
-    ?(include_hidden = false) ?(include_deprecated = false)
+    ?(include_hidden = false)
     (public_tool_source_schemas : Masc_domain.tool_schema list) : Masc_domain.tool_schema list =
   public_tool_schemas_from public_tool_source_schemas
   |> List.filter (fun (schema : Masc_domain.tool_schema) ->
-         Tool_catalog.is_visible ~include_hidden ~include_deprecated schema.name)
+         Tool_catalog.is_visible ~include_hidden schema.name)
 
 let local_worker_tool_schemas ?names () :
     (Masc_domain.tool_schema list, string) result =
@@ -379,13 +388,13 @@ let local_worker_tool_schemas ?names () :
 let keeper_all_tool_names : string list =
   Tool_shard.keeper_model_tools
   |> List.map (fun tool -> tool.Masc_domain.name)
-  |> unique_preserve_order
+  |> Json_util.dedupe_keep_order
 
 let keeper_safe_tool_names : string list =
   Tool_shard.keeper_model_tools
   |> List.map (fun tool -> tool.Masc_domain.name)
   |> List.filter (fun name -> not (List.mem name privileged_keeper_tool_names))
-  |> unique_preserve_order
+  |> Json_util.dedupe_keep_order
 
 let keeper_privileged_tool_names : string list =
   privileged_keeper_tool_names
@@ -393,8 +402,6 @@ let keeper_privileged_tool_names : string list =
 let keeper_wrapped_server_tools : string list =
   [ "masc_board_post"; "masc_board_comment"; "masc_board_list";
     "masc_tasks"; "masc_broadcast";
-    "masc_worktree_create"; "masc_worktree_list";
-    "masc_code_search"; "masc_code_symbols"; "masc_code_read";
   ]
 
 let keeper_wrapped_internal_tools : string list =

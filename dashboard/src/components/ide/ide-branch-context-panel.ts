@@ -1,8 +1,25 @@
 import { html } from 'htm/preact'
 import { useEffect, useMemo, useState } from 'preact/hooks'
 import { fetchGitGraph, type GitGraphResponse } from '../../api/git-graph'
+import {
+  globalPresenceSnapshot,
+  presenceEntries,
+  type KeeperPresenceSnapshot,
+  type KeeperPresenceStatus,
+} from './keeper-presence-store'
+import { cursorOverlaySignal } from './keeper-cursor-overlay'
+import {
+  openIdeContextRouteLink,
+  routeLinksForContext,
+  type IdeContextRouteLink,
+} from './ide-context-lens'
+import { IDE_CONTEXT_BADGE_STYLE } from './context-badge-style'
+import { routeLinkLabels } from './ide-context-route-helpers'
+import { errorToString } from '../../lib/format-string'
 
 type BranchTone = 'current' | 'dirty' | 'conflict' | 'stale'
+
+const DETACHED_HEAD_BRANCH = 'detached' as const
 type PanelState = 'loading' | 'ready' | 'empty' | 'error'
 
 export interface IdeBranchChip {
@@ -18,6 +35,13 @@ export interface IdeWorktreeLane {
   readonly branch: string
   readonly path: string
   readonly color: string
+  /** Keeper identity owning this worktree, when known.
+      Used to match against presence/cursor stores (which are keyed by
+      keeper_id, not the worktree path that drives [id]). When undefined,
+      presence/cursor rendering for this lane degrades silently — the
+      upstream snapshot producer (lib/git_graph_snapshot.ml) is
+      responsible for populating this when it can. */
+  readonly keeperId?: string
 }
 
 export interface IdeBranchContextModel {
@@ -25,6 +49,7 @@ export interface IdeBranchContextModel {
   readonly repoRoot: string
   readonly currentBranch: string
   readonly head: string
+  readonly headRef: string | null
   readonly status: 'clean' | 'dirty' | 'conflict'
   readonly stats: {
     readonly branchCount: number
@@ -55,7 +80,7 @@ function shortSha(raw: string | null): string {
 function compactPath(path: string): string {
   const normalized = path.replace(/\\/g, '/')
   const parts = normalized.split('/').filter(Boolean)
-  if (parts.length <= 2) return normalized || 'workspace'
+  if (parts.length <= 2) return normalized || '(no path)'
   return `${parts[parts.length - 2]}/${parts[parts.length - 1]}`
 }
 
@@ -87,7 +112,7 @@ export function buildIdeBranchContextModel(
 
   if (!repo) return null
 
-  const currentBranch = repo.current_branch ?? 'detached'
+  const currentBranch = repo.current_branch ?? DETACHED_HEAD_BRANCH
   const repoNodes = graph.nodes.filter(node => node.repo_id === repo.id)
   const branches = repoNodes
     .filter(node => node.kind === 'branch')
@@ -109,9 +134,10 @@ export function buildIdeBranchContextModel(
     .map(agent => ({
       id: agent.id,
       label: agent.label,
-      branch: agent.branch ?? 'detached',
+      branch: agent.branch ?? DETACHED_HEAD_BRANCH,
       path: compactPath(agent.worktree_path),
       color: agent.color,
+      keeperId: keeperIdForAgentLane(agent),
     }))
     .slice(0, 4)
 
@@ -125,6 +151,7 @@ export function buildIdeBranchContextModel(
     repoRoot: repo.root,
     currentBranch,
     head: shortSha(repo.head),
+    headRef: repo.head,
     status,
     stats: {
       branchCount: repo.branch_count,
@@ -137,6 +164,11 @@ export function buildIdeBranchContextModel(
     lanes,
     warnings: graph.warnings,
   }
+}
+
+function keeperIdForAgentLane(agent: GitGraphResponse['agents'][number]): string {
+  const label = agent.label.trim()
+  return label || agent.id
 }
 
 function stateLabel(state: PanelState, model: IdeBranchContextModel | null): string {
@@ -188,6 +220,11 @@ export function IdeBranchContextPanel({
   const [model, setModel] = useState<IdeBranchContextModel | null>(null)
   const [state, setState] = useState<PanelState>('loading')
   const [error, setError] = useState<string | null>(null)
+  const [presence, setPresence] = useState(globalPresenceSnapshot.value)
+  const [overlay, setOverlay] = useState(cursorOverlaySignal.value)
+
+  useEffect(() => globalPresenceSnapshot.subscribe(v => setPresence(v)), [])
+  useEffect(() => cursorOverlaySignal.subscribe(v => setOverlay(v)), [])
 
   useEffect(() => {
     if (!subscribeActiveRepositoryId) return undefined
@@ -219,7 +256,7 @@ export function IdeBranchContextPanel({
         })
         .catch(err => {
           if (cancelled || controller.signal.aborted) return
-          setError(err instanceof Error ? err.message : String(err))
+          setError(errorToString(err))
           setState('error')
         })
     }
@@ -251,11 +288,7 @@ export function IdeBranchContextPanel({
       </header>
 
       ${model ? html`
-        <div class="ide-branch-repo-row">
-          <span class="ide-branch-repo">${model.repoLabel}</span>
-          <span class="ide-branch-current">${model.currentBranch}</span>
-          <span class="ide-branch-head">${model.head}</span>
-        </div>
+        <${BranchRepoRow} model=${model} />
         <${MiniBranchGraph} model=${model} />
         <div class="ide-branch-stat-row" aria-label=${branchSummary}>
           <span>${model.stats.branchCount} br</span>
@@ -267,14 +300,7 @@ export function IdeBranchContextPanel({
         </div>
         ${model.lanes.length > 0 ? html`
           <ol class="ide-branch-lanes" aria-label="Worktree lanes">
-            ${model.lanes.map(lane => html`
-              <li key=${lane.id}>
-                <span class="ide-branch-lane-color" style=${{ background: lane.color }} aria-hidden="true" />
-                <span class="ide-branch-lane-name">${lane.label}</span>
-                <span class="ide-branch-lane-branch">${lane.branch}</span>
-                <span class="ide-branch-lane-path">${lane.path}</span>
-              </li>
-            `)}
+            ${model.lanes.map(lane => LaneRow(lane, presence, overlay))}
           </ol>
         ` : null}
         ${model.warnings.length > 0 ? html`
@@ -292,5 +318,179 @@ export function IdeBranchContextPanel({
         </div>
       `}
     </section>
+  `
+}
+
+function BranchRepoRow({ model }: { readonly model: IdeBranchContextModel }) {
+  const branchLink = branchRepoGitLink(
+    model.currentBranch && model.currentBranch !== DETACHED_HEAD_BRANCH ? model.currentBranch : null,
+    `${model.repoLabel} current branch`,
+  )
+  const headLink = branchRepoGitLink(
+    model.headRef ?? (model.head !== 'unknown' ? model.head : null),
+    `${model.repoLabel} HEAD`,
+  )
+  return html`
+    <div class="ide-branch-repo-row">
+      <span class="ide-branch-repo">${model.repoLabel}</span>
+      <${BranchRepoRouteChip}
+        className="ide-branch-current"
+        label=${model.currentBranch}
+        routeLink=${branchLink}
+      />
+      <${BranchRepoRouteChip}
+        className="ide-branch-head"
+        label=${model.head}
+        routeLink=${headLink}
+      />
+    </div>
+  `
+}
+
+function branchRepoGitLink(ref: string | null, label: string): IdeContextRouteLink | null {
+  if (!ref) return null
+  return routeLinksForContext({
+    surface: 'Git',
+    label,
+    sourceId: `branch-context:${ref}`,
+    gitRef: ref,
+  }).find(link => link.label === 'Git') ?? null
+}
+
+function BranchRepoRouteChip({
+  className,
+  label,
+  routeLink,
+}: {
+  readonly className: string
+  readonly label: string
+  readonly routeLink: IdeContextRouteLink | null
+}) {
+  if (!routeLink) return html`<span class=${className}>${label}</span>`
+  return html`
+    <button
+      type="button"
+      class=${`${className} ide-branch-repo-route`}
+      title=${routeLink.evidence}
+      aria-label=${`Open ${routeLink.evidence}`}
+      onClick=${() => openIdeContextRouteLink(routeLink)}
+    >${label}</button>
+  `
+}
+
+const LANE_STATUS_DOT: Record<KeeperPresenceStatus, { color: string; label: string }> = {
+  active: { color: 'var(--color-status-ok)', label: 'ACTIVE' },
+  blocked: { color: 'var(--color-status-err)', label: 'BLOCKED' },
+  idle: { color: 'var(--color-fg-muted)', label: 'IDLE' },
+}
+
+function LaneRow(
+  lane: IdeWorktreeLane,
+  presence: KeeperPresenceSnapshot | null,
+  overlay: { readonly cursors: Map<string, { keeper_id: string; file_path: string; line: number }> },
+) {
+  // Lane.id is the worktree path; presence/cursor stores key on keeper_id.
+  // Prefer the explicit keeperId mapping when the snapshot supplies it,
+  // otherwise fall back to id and accept that the lookup may miss.
+  const presenceKey = lane.keeperId ?? lane.id
+  const entry = presenceEntries(presence).find(e => e.keeper_id === presenceKey)
+  const status = entry?.status
+  const cursor = overlay.cursors.get(presenceKey)
+  const focusFile = cursor?.file_path ? cursor.file_path.split('/').pop() : null
+  const dotStyle = status ? LANE_STATUS_DOT[status] : null
+  const routeLinks = laneRouteLinks(lane, presenceKey, cursor)
+  const routeLabels = routeLinkLabels(routeLinks)
+
+  return html`
+    <li key=${lane.id} style=${{ display: 'grid', gridTemplateColumns: '6px minmax(0, 1fr) auto auto', alignItems: 'center', gap: 'var(--sp-1)', padding: '2px 0' }}>
+      <span
+        aria-hidden="true"
+        style=${{
+          width: '5px',
+          height: '5px',
+          borderRadius: '50%',
+          background: dotStyle ? dotStyle.color : 'var(--color-fg-disabled)',
+          boxShadow: status === 'active' ? `0 0 4px ${dotStyle?.color ?? 'transparent'}` : 'none',
+          justifySelf: 'center',
+        }}
+      />
+      <div style=${{ display: 'flex', alignItems: 'center', gap: 'var(--sp-1)', minWidth: 0, overflow: 'hidden' }}>
+        <span class="ide-branch-lane-name">${lane.label}</span>
+        <span class="ide-branch-lane-branch">${lane.branch}</span>
+        <span class="ide-branch-lane-path">${lane.path}</span>
+        ${focusFile ? html`
+          <span
+            style=${{
+              fontSize: 'var(--fs-10)',
+              fontFamily: 'var(--font-mono)',
+              color: 'var(--color-accent-fg)',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+            title=${cursor?.file_path}
+          >${focusFile}:${cursor?.line}</span>
+        ` : null}
+      </div>
+      ${routeLinks.length > 0 ? html`
+        <div class="ide-branch-lane-links" aria-label=${`${lane.label} operational links`}>
+          <span
+            class="ide-branch-lane-context-badge"
+            data-context-route-count=${routeLinks.length}
+            title=${`Linked context: ${routeLabels}`}
+            aria-label=${`${lane.label} lane has ${routeLinks.length} linked context routes: ${routeLabels}`}
+            style=${IDE_CONTEXT_BADGE_STYLE}
+          >
+            CTX ${routeLinks.length}
+          </span>
+          ${routeLinks.map(link => BranchLaneRouteLink(link))}
+        </div>
+      ` : null}
+      ${dotStyle ? html`
+        <span
+          role="status"
+          aria-label=${`Keeper ${presenceKey}: ${dotStyle.label}`}
+          style=${{
+            fontSize: 'var(--fs-9)',
+            fontWeight: 600,
+            letterSpacing: '0.04em',
+            color: dotStyle.color,
+            whiteSpace: 'nowrap',
+          }}
+        >${dotStyle.label}</span>
+      ` : null}
+    </li>
+  `
+}
+
+function laneRouteLinks(
+  lane: IdeWorktreeLane,
+  keeperId: string,
+  cursor: { readonly file_path: string; readonly line: number } | undefined,
+): ReadonlyArray<IdeContextRouteLink> {
+  const branch = lane.branch.trim()
+  return routeLinksForContext({
+    filePath: cursor?.file_path,
+    line: cursor?.line,
+    surface: 'Git',
+    label: `${lane.label} ${branch}`,
+    sourceId: `branch-lane:${lane.id}`,
+    gitRef: branch && branch !== DETACHED_HEAD_BRANCH ? branch : undefined,
+    keeperId,
+  })
+}
+
+
+function BranchLaneRouteLink(link: IdeContextRouteLink) {
+  return html`
+    <button
+      key=${link.id}
+      type="button"
+      title=${link.evidence}
+      aria-label=${`Open ${link.evidence}`}
+      onClick=${() => openIdeContextRouteLink(link)}
+    >
+      ${link.label}
+    </button>
   `
 }

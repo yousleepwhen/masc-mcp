@@ -21,10 +21,8 @@
       are parsed into variants with [Unknown] fallback. Unknown tags
       are preserved, not rejected, so forward compat with OAS is
       automatic.
-    - Legacy reader: [Dashboard_harness_health] previously wrote to
-      [{base_path}/data/harness-pre-compact/*.jsonl]; that path is
-      read as a fallback so existing dashboards keep working during
-      the transition. New writes go only to the new path. *)
+    - Reads and writes use only the paired audit store. Historical
+      [harness-pre-compact/] rows are not projected into this API. *)
 
 (** {1 Types} *)
 
@@ -97,10 +95,8 @@ type row =
   | Start    of start_record
   | Complete of complete_record
 
-(** Read events from both the new [harness-compact/] path and the
-    legacy [harness-pre-compact/] path (Start rows only, since the
-    legacy format had no post event). Results merged and sorted by
-    [ts_unix] ascending. *)
+(** Read events from the [harness-compact/] paired audit path. Results
+    are sorted by [ts_unix] ascending. *)
 val read_events
   :  base_path:string
   -> since:float
@@ -118,6 +114,29 @@ type pair_result =
 
 (** Pair Start and Complete rows by [compaction_id]. *)
 val pair_events : row list -> pair_result list
+
+(** Test-only hooks for the in-memory pending-start cache. *)
+module For_testing : sig
+  val clear_pending : unit -> unit
+
+  val evict_pending_older_than
+    :  max_age_s:float
+    -> now:float
+    -> (string * string * float) list
+
+  val handle_event_at
+    :  received_ts:float
+    -> base_path:string
+    -> retention_days:int
+    -> Agent_sdk.Event_bus.event
+    -> unit
+
+  (** Resolve [MASC_COMPACTION_AUDIT_RETENTION_DAYS] without side effects,
+      returning the typed outcome. Reads from process env at call time. *)
+  val resolve_retention_outcome
+    :  default:int
+    -> Keeper_compact_audit_retention_outcome.t
+end
 
 (** {1 Subscriber wireup} *)
 

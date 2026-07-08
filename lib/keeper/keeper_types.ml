@@ -1,5 +1,5 @@
-(** Keeper_types - public compatibility facade for keeper contracts,
-    meta codecs, store helpers, path utilities, and health types. *)
+(** Keeper_types - public keeper contract facade for profile, meta codec/store,
+    and health types. *)
 
 (* Utility functions, canonical helpers, profile defaults, and dir helpers
    extracted to Keeper_types_profile *)
@@ -10,39 +10,16 @@ include Keeper_types_profile
    compatibility. *)
 include Keeper_meta_contract
 
-let reject_legacy_model_args ~tool_name (args : Yojson.Safe.t) =
-  let present =
-    keeper_legacy_model_arg_names
-    |> List.filter (fun key ->
-      match Yojson.Safe.Util.member key args with
-      | `Null -> false
-      | _ -> true)
-  in
-  match present with
-  | [] -> Ok ()
-  | fields ->
-    Error
-      (Printf.sprintf
-         "legacy keeper model args removed for %s: %s. Keepers now use cascade_name and \
-          last_model_used only."
-         tool_name
-         (String.concat ", " fields))
-;;
-
 (* JSON scrubbing, serialization, and parsing is factored out so this facade
-   can focus on keeper meta store I/O and the public compatibility surface. *)
+   can focus on keeper meta store I/O and the public contract surface. *)
 include Keeper_meta_json
-
-(* Model selection, path utilities, and JSONL helpers
-   extracted to Keeper_types_support *)
-include Keeper_types_support
 
 (* Durable meta store I/O and CAS write helpers. *)
 include Keeper_meta_store
 
 (** Fiber-level health for keeper supervisor monitoring.
     Defined here (not in Keeper_supervisor) to avoid circular
-    dependencies between keeper_exec_status and the keeper supervisor. *)
+    dependencies between keeper_status_runtime and the keeper supervisor. *)
 type fiber_health =
   | Fiber_alive (** Fiber running, promise unresolved *)
   | Fiber_zombie (** Registry entry exists but fiber terminated *)
@@ -51,7 +28,7 @@ type fiber_health =
 
 (** Keeper-level health state — derived from agent status, keepalive
     fiber, and supervisor monitoring. Serialized to string at JSON
-    boundaries only. Defined here (not in Keeper_exec_status) so
+    boundaries only. Defined here (not in Keeper_status_runtime) so
     operator_control_snapshot can parse JSON into the same type. *)
 type keeper_health =
   | KH_healthy (** Keepalive alive, recent turns, no quiet_reason *)
@@ -87,17 +64,7 @@ type working_context =
   ; max_tokens : int
   }
 
-type checkpoint =
-  { checkpoint_id : string
-  ; timestamp : float
-  ; generation : int
-  ; message_count : int
-  ; token_count : int
-  ; serialized : string
-  }
-
 type session_context =
   { session_id : string
   ; session_dir : string
-  ; mutable checkpoints : checkpoint list
   }

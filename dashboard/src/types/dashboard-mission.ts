@@ -330,23 +330,6 @@ export interface OperatorNamespaceSnapshot {
   paused_at?: string | null
 }
 
-export interface OperatorLinkedAutoresearch {
-  loop_id?: string | null
-  session_id?: string | null
-  status?: string | null
-  current_cycle?: number
-  best_score?: number | null
-  last_decision?: string | null
-  target_file?: string | null
-  workdir?: string | null
-  source_workdir?: string | null
-  program_note?: string | null
-  operation_id?: string | null
-  queued_hypothesis?: string | null
-  warnings?: string[]
-  error?: string | null
-}
-
 export interface OperatorSessionSnapshot {
   session_id: string
   status?: string
@@ -360,7 +343,6 @@ export interface OperatorSessionSnapshot {
   orchestration_state?: Record<string, unknown>
   cascade_metrics?: Record<string, unknown>
   report_paths?: Record<string, string>
-  linked_autoresearch?: OperatorLinkedAutoresearch | null
   session?: Record<string, unknown>
   recent_events?: Record<string, unknown>[]
 }
@@ -368,6 +350,9 @@ export interface OperatorSessionSnapshot {
 export interface OperatorKeeperSnapshot {
   name: string
   runtime_class?: 'keeper'
+  phase?: string | null
+  pipeline_stage?: string | null
+  paused?: boolean | null
   registered?: boolean
   agent_name?: string
   status?: string

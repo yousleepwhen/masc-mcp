@@ -1,11 +1,7 @@
-(** Unit tests for Cascade_model_resolve.resolve_auto_model_id.
+(** Unit tests for generic cascade model resolution.
 
-    Focus: "auto" → concrete model ID translation for cloud providers.
-    2026-04-20 regression guard — `gemini_cli:auto` used to fall
-    through to the wildcard tail and reach OAS as the literal string
-    "auto". OAS transport_gemini_cli.build_args then omits --model,
-    letting the Gemini CLI choose its own default (gemini-3.1-pro-preview)
-    whose quota 429'd the fleet. *)
+    These tests install a synthetic OAS provider catalog so MASC verifies the
+    boundary contract without pinning real vendor model catalogs. *)
 
 open Alcotest
 module R = Masc_mcp.Cascade_model_resolve
@@ -13,350 +9,433 @@ module C = Masc_mcp.Cascade_config
 module State = Masc_mcp.Cascade_state
 module H = Masc_mcp.Cascade_health_tracker
 
+let synthetic_catalog_json =
+  {|
+{
+  "schema_version": 1,
+  "providers": [
+    {
+      "id": "synthetic-api",
+      "aliases": ["synthetic_api"],
+      "kind": "openai_compat",
+      "transport": "http",
+      "base_url": "https://synthetic.example/v1",
+      "request_path": "/chat/completions",
+      "auth": {"type": "api_key_env", "env": "SYNTHETIC_API_KEY"},
+      "default_model": "api-default",
+      "capabilities_base": "openai_chat",
+      "capabilities": {
+        "supported_models": ["api-a", "api-b", "api-c"]
+      },
+      "non_interactive": true,
+      "interactive_required": false,
+      "daemon_safe": true
+    },
+    {
+      "id": "synthetic-cli",
+      "aliases": ["synthetic_cli"],
+      "kind": "cli_tool_a",
+      "transport": "cli",
+      "command": "synthetic-cli",
+      "auth": {"type": "cli_cached_login"},
+      "capabilities_base": "cli_tool_a",
+      "non_interactive": true,
+      "interactive_required": false,
+      "daemon_safe": true
+    },
+    {
+      "id": "synthetic-direct",
+      "aliases": ["synthetic_direct"],
+      "kind": "openai_compat",
+      "transport": "http",
+      "base_url": "https://direct.example/v1",
+      "request_path": "/chat/completions",
+      "auth": {"type": "api_key_env", "env": "SYNTHETIC_DIRECT_KEY"},
+      "capabilities_base": "openai_chat",
+      "non_interactive": true,
+      "interactive_required": false,
+      "daemon_safe": true
+    },
+    {
+      "id": "synthetic-local",
+      "aliases": ["synthetic_local"],
+      "kind": "openai_compat",
+      "transport": "http",
+      "base_url": "http://127.0.0.1:8123",
+      "request_path": "/v1/chat/completions",
+      "auth": {"type": "none"},
+      "capabilities_base": "openai_chat",
+      "non_interactive": true,
+      "interactive_required": false,
+      "daemon_safe": true
+    }
+  ]
+}
+|}
+;;
+
+let install_synthetic_catalog () =
+  match Llm_provider.Provider_catalog.of_json (Yojson.Safe.from_string synthetic_catalog_json) with
+  | Error msg -> fail msg
+  | Ok catalog -> Llm_provider.Provider_catalog.set_global catalog
+;;
+
 let unset_env k =
-  try Unix.putenv k "" with _ -> ()
+  try Unix.putenv k "" with
+  | _ -> ()
+;;
 
 let with_clean_env f =
-  List.iter unset_env [
-    "ZAI_CODING_DEFAULT_MODEL";
-    "ZAI_CODING_AUTO_MODELS";
-    "GEMINI_DEFAULT_MODEL";
-    "ANTHROPIC_DEFAULT_MODEL";
-    "OPENAI_DEFAULT_MODEL";
-    "OPENROUTER_DEFAULT_MODEL";
-    "OLLAMA_DEFAULT_MODEL";
-    "MASC_GEMINI_CLI_AUTO_MODELS";
-    "MASC_CODEX_CLI_AUTO_MODELS";
-    "MASC_CLAUDE_CODE_AUTO_MODELS";
-    "MASC_KIMI_CLI_AUTO_MODELS";
-  ];
+  List.iter
+    unset_env
+    [ "SYNTHETIC_API_DEFAULT_MODEL"
+    ; "SYNTHETIC_CLI_DEFAULT_MODEL"
+    ; "SYNTHETIC_DIRECT_DEFAULT_MODEL"
+    ; "SYNTHETIC_LOCAL_DEFAULT_MODEL"
+    ; "MASC_SYNTHETIC_API_AUTO_MODELS"
+    ; "MASC_SYNTHETIC_CLI_AUTO_MODELS"
+    ; "MASC_SYNTHETIC_DIRECT_AUTO_MODELS"
+    ];
   f ()
+;;
 
-let test_gemini_auto_maps_to_flash_preview () =
+let prefixed provider model = provider ^ ":" ^ model
+
+let auto_models_for pid =
+  let prefix = pid ^ ":" in
+  let prefix_len = String.length prefix in
+  C.expand_auto_models [ prefix ^ "auto" ]
+  |> List.filter_map (fun spec ->
+    if String.length spec >= prefix_len
+       && String.equal (String.sub spec 0 prefix_len) prefix
+    then Some (String.sub spec prefix_len (String.length spec - prefix_len))
+    else None)
+;;
+
+let require_first_model label = function
+  | first :: _ -> first
+  | [] -> fail (label ^ " produced no models")
+;;
+
+let require_second_model label = function
+  | _ :: second :: _ -> second
+  | _ -> fail (label ^ " produced fewer than two models")
+;;
+
+let test_api_auto_uses_binding_default () =
   with_clean_env (fun () ->
-    let resolved = R.resolve_auto_model_id "gemini" "auto" in
-    check string "gemini:auto → gemini-3-flash-preview"
-      "gemini-3-flash-preview" resolved)
+    let resolved = R.resolve_auto_model_id "synthetic-api" "auto" in
+    check string "auto uses binding default" "api-default" resolved)
+;;
 
-let test_gemini_cli_auto_maps_to_flash_preview () =
+let test_api_env_default_provenance () =
+  let getenv = function
+    | "SYNTHETIC_API_DEFAULT_MODEL" -> Some "operator-model"
+    | _ -> None
+  in
+  let resolved =
+    R.resolve_auto_model
+      ~getenv
+      "synthetic-api"
+      (R.model_selector_of_string "auto")
+  in
+  check string "env default wins" "operator-model" resolved.resolved_model_id;
+  check
+    bool
+    "env provenance"
+    true
+    (resolved.provenance = R.Env_default "SYNTHETIC_API_DEFAULT_MODEL")
+;;
+
+let test_cli_auto_delegates_without_catalog_models () =
   with_clean_env (fun () ->
-    let resolved = R.resolve_auto_model_id "gemini_cli" "auto" in
-    check string "gemini_cli:auto → gemini-3-flash-preview"
-      "gemini-3-flash-preview" resolved)
+    check
+      string
+      "cli auto delegates"
+      "auto"
+      (R.resolve_auto_model_id "synthetic-cli" "auto");
+    check
+      (list string)
+      "cli auto expands to delegation token"
+      [ "auto" ]
+      (auto_models_for "synthetic-cli"))
+;;
 
-let test_gemini_cli_explicit_model_passthrough () =
+let test_explicit_model_passthrough_trims_result () =
+  with_clean_env (fun () ->
+    let resolved = R.resolve_auto_model_id "synthetic-api" " explicit-model " in
+    check string "explicit model trimmed" "explicit-model" resolved)
+;;
+
+let test_unsupported_provider_auto_is_unresolved () =
   with_clean_env (fun () ->
     let resolved =
-      R.resolve_auto_model_id "gemini_cli" "gemini-2.5-flash"
+      R.resolve_auto_model
+        ~getenv:(fun _ -> None)
+        "unknown-provider"
+        (R.model_selector_of_string "auto")
     in
-    check string "explicit model untouched"
-      "gemini-2.5-flash" resolved)
+    check string "unknown auto remains auto" "auto" resolved.resolved_model_id;
+    check bool "unresolved provenance" true (resolved.provenance = R.Unresolved_auto))
+;;
 
-let test_gemini_env_override () =
-  Unix.putenv "GEMINI_DEFAULT_MODEL" "gemini-2.5-flash";
-  let resolved_gemini = R.resolve_auto_model_id "gemini" "auto" in
-  let resolved_cli = R.resolve_auto_model_id "gemini_cli" "auto" in
-  Unix.putenv "GEMINI_DEFAULT_MODEL" "";
-  check string "gemini respects env override"
-    "gemini-2.5-flash" resolved_gemini;
-    check string "gemini_cli respects same env override"
-    "gemini-2.5-flash" resolved_cli
-
-let test_glm_coding_auto_maps_to_glm_5_1 () =
+let test_supported_models_expand_from_binding () =
   with_clean_env (fun () ->
-    let resolved = R.resolve_auto_model_id "glm-coding" "auto" in
-    check string "glm-coding:auto → glm-5.1"
-      "glm-5.1" resolved)
+    check
+      (list string)
+      "supported models from OAS binding"
+      [ "api-a"; "api-b"; "api-c" ]
+      (auto_models_for "synthetic-api"))
+;;
 
-let test_glm_coding_auto_models_default_order () =
+let test_auto_models_env_override () =
   with_clean_env (fun () ->
-    check (list string) "glm-coding:auto expands to coding-plan order"
-      [
-        "glm-5-code";
-        "glm-5.1";
-        "glm-5";
-        "glm-5-turbo";
-        "glm-4.7";
-        "glm-4.5-air";
-      ]
-      (R.glm_coding_auto_models ()))
+    Unix.putenv "MASC_SYNTHETIC_API_AUTO_MODELS" "override-a, override-b,, override-c ";
+    let models = auto_models_for "synthetic-api" in
+    Unix.putenv "MASC_SYNTHETIC_API_AUTO_MODELS" "";
+    check
+      (list string)
+      "operator override trims blanks"
+      [ "override-a"; "override-b"; "override-c" ]
+      models)
+;;
 
-let test_gemini_cli_auto_models_default_rotation_order () =
+let test_direct_api_without_supported_models_does_not_expand () =
   with_clean_env (fun () ->
-    check (list string) "gemini_cli:auto expands to quota-aware rotation"
-      [
-        "gemini-3-flash-preview";
-        "gemini-3.1-flash-lite-preview";
-        "gemini-2.5-flash";
-        "gemini-2.5-flash-lite";
-        "gemini-3.1-pro-preview";
-        "gemini-2.5-pro";
-      ]
-      (R.gemini_cli_auto_models ()))
-
-let test_gemini_cli_auto_models_env_override () =
-  Unix.putenv "MASC_GEMINI_CLI_AUTO_MODELS"
-    "gemini-a, gemini-b,, gemini-c ";
-  let models = R.gemini_cli_auto_models () in
-  Unix.putenv "MASC_GEMINI_CLI_AUTO_MODELS" "";
-  check (list string) "operator override trims blanks"
-    [ "gemini-a"; "gemini-b"; "gemini-c" ] models
-
-let test_codex_and_claude_cli_auto_models_env_override () =
-  with_clean_env (fun () ->
-    check (list string) "codex default keeps Codex-supported models only"
-      [
-        "gpt-5.2";
-        "gpt-5.3-codex-spark";
-        "gpt-5.3-codex";
-        "gpt-5.4-mini";
-        "gpt-5.4";
-        "gpt-5.5";
-      ]
-      (R.codex_cli_auto_models ());
-    check (list string) "claude default delegates to CLI"
-      [ "auto" ] (R.claude_code_auto_models ());
-    Unix.putenv "MASC_CODEX_CLI_AUTO_MODELS" "gpt-a,gpt-b";
-    Unix.putenv "MASC_CLAUDE_CODE_AUTO_MODELS" "sonnet,opus";
-    let codex = R.codex_cli_auto_models () in
-    let claude = R.claude_code_auto_models () in
-    Unix.putenv "MASC_CODEX_CLI_AUTO_MODELS" "";
-    Unix.putenv "MASC_CLAUDE_CODE_AUTO_MODELS" "";
-    check (list string) "codex operator rotation"
-      [ "gpt-a"; "gpt-b" ] codex;
-    check (list string) "claude operator rotation"
-      [ "sonnet"; "opus" ] claude)
-
-let test_kimi_cli_auto_model_policy () =
-  with_clean_env (fun () ->
-    check string "kimi_cli:auto resolves to concrete CLI default"
-      "kimi-for-coding"
-      (R.resolve_auto_model_id "kimi_cli" "auto");
-    check (list string) "kimi_cli:auto expands to declared default"
-      [ "kimi-for-coding" ]
-      (R.kimi_cli_auto_models ());
-    Unix.putenv "MASC_KIMI_CLI_AUTO_MODELS" "kimi-a,kimi-b";
-    let models = R.kimi_cli_auto_models () in
-    Unix.putenv "MASC_KIMI_CLI_AUTO_MODELS" "";
-    check (list string) "kimi cli operator rotation"
-      [ "kimi-a"; "kimi-b" ] models)
-
-let test_expand_auto_models_includes_cli_auto_specs () =
-  with_clean_env (fun () ->
-    let expanded =
-      C.expand_auto_models
-        [ "gemini_cli:auto"; "codex_cli:auto"; "claude_code:auto"; "kimi_cli:auto" ]
-    in
-    check (list string) "CLI auto specs expand in-place"
-      [
-        "gemini_cli:gemini-3-flash-preview";
-        "gemini_cli:gemini-3.1-flash-lite-preview";
-        "gemini_cli:gemini-2.5-flash";
-        "gemini_cli:gemini-2.5-flash-lite";
-        "gemini_cli:gemini-3.1-pro-preview";
-        "gemini_cli:gemini-2.5-pro";
-        "codex_cli:gpt-5.2";
-        "codex_cli:gpt-5.3-codex-spark";
-        "codex_cli:gpt-5.3-codex";
-        "codex_cli:gpt-5.4-mini";
-        "codex_cli:gpt-5.4";
-        "codex_cli:gpt-5.5";
-        "claude_code:auto";
-        "kimi_cli:kimi-for-coding";
-      ]
-      expanded)
+    check (list string) "no generic direct expansion" [ "auto" ] (auto_models_for "synthetic-direct");
+    check
+      string
+      "runtime default remains delegated"
+      "auto"
+      (R.resolve_auto_model_id "synthetic-direct" "auto"))
+;;
 
 let test_expand_model_strings_for_execution_matches_auto_expansion () =
   with_clean_env (fun () ->
-    let items = [ "glm-coding:auto"; "gemini_cli:auto" ] in
-    check (list string) "execution expansion matches auto expansion"
+    let items = [ "synthetic-api:auto"; "synthetic-cli:auto" ] in
+    check
+      (list string)
+      "execution expansion matches auto expansion"
       (C.expand_auto_models items)
       (C.expand_model_strings_for_execution items))
+;;
+
+let test_expand_model_strings_for_execution_dedupe_stable_repeated_inputs () =
+  with_clean_env (fun () ->
+    let items =
+      [ "test-provider:model-a"
+      ; "synthetic-api:api-a"
+      ; "test-provider:model-a"
+      ; "synthetic-api:api-a"
+      ; "test-provider:model-a"
+      ]
+    in
+    check
+      (list string)
+      "first occurrence wins, order preserved"
+      [ "test-provider:model-a"; "synthetic-api:api-a" ]
+      (C.expand_model_strings_for_execution items))
+;;
+
+let test_expand_model_strings_for_execution_dedupe_explicit_and_auto () =
+  with_clean_env (fun () ->
+    let first_model = require_first_model "synthetic-api catalog" (auto_models_for "synthetic-api") in
+    let explicit = prefixed "synthetic-api" first_model in
+    let items = [ explicit; "synthetic-api:auto" ] in
+    let expanded = C.expand_model_strings_for_execution items in
+    check string "explicit first occurrence retained at head" explicit (List.hd expanded);
+    let occurrences = List.filter (String.equal explicit) expanded |> List.length in
+    check int "no duplicate of explicit name" 1 occurrences;
+    check bool "auto-expanded siblings present" true (List.length expanded > 1))
+;;
 
 let test_expand_model_strings_for_execution_rotation_scope_rotates () =
   with_clean_env (fun () ->
+    let models = auto_models_for "synthetic-api" in
+    let first_model = require_first_model "synthetic-api catalog" models in
+    let second_model = require_second_model "synthetic-api catalog" models in
     State.clear_all ();
     let first =
       C.expand_model_strings_for_execution
-        ~rotation_scope:"big_three"
-        [ "gemini_cli:auto" ]
+        ~rotation_scope:"primary"
+        [ "synthetic-api:auto" ]
     in
     let second =
       C.expand_model_strings_for_execution
-        ~rotation_scope:"big_three"
-        [ "gemini_cli:auto" ]
+        ~rotation_scope:"primary"
+        [ "synthetic-api:auto" ]
     in
     let other_scope =
       C.expand_model_strings_for_execution
-        ~rotation_scope:"tool_rerank"
-        [ "gemini_cli:auto" ]
+        ~rotation_scope:"scoring"
+        [ "synthetic-api:auto" ]
     in
-    check string "first scoped call starts at default head"
-      "gemini_cli:gemini-3-flash-preview"
+    check
+      string
+      "first scoped call starts at default head"
+      (prefixed "synthetic-api" first_model)
       (List.hd first);
-    check string "second scoped call advances head"
-      "gemini_cli:gemini-3.1-flash-lite-preview"
+    check
+      string
+      "second scoped call advances head"
+      (prefixed "synthetic-api" second_model)
       (List.hd second);
-    check string "different scope has its own cursor"
-      "gemini_cli:gemini-3-flash-preview"
+    check
+      string
+      "different scope has its own cursor"
+      (prefixed "synthetic-api" first_model)
       (List.hd other_scope))
+;;
 
 let test_order_weighted_entries_rotation_scope_rotates_generically () =
   with_clean_env (fun () ->
+    let models = auto_models_for "synthetic-api" in
+    let first_model = require_first_model "synthetic-api catalog" models in
+    let second_model = require_second_model "synthetic-api catalog" models in
     State.clear_all ();
     let entry model =
-      {
-        Masc_mcp.Cascade_config_loader.model = model;
-        weight = 1;
-        supports_tool_choice = None;
-        secondary = None;
-        secondary_supports_tool_choice = None;
+      { Masc_mcp.Cascade_config_loader.model
+      ; weight = 1
+      ; supports_tool_choice = None
+      ; secondary = None
+      ; secondary_supports_tool_choice = None
       }
     in
     let first =
-      C.order_weighted_entries
-        ~rotation_scope:"big_three"
-        [ entry "codex_cli:auto" ]
-      |> List.map (fun (e : Masc_mcp.Cascade_config_loader.weighted_entry) ->
-             e.model)
+      C.order_weighted_entries ~rotation_scope:"primary" [ entry "synthetic-api:auto" ]
+      |> List.map (fun (e : Masc_mcp.Cascade_config_loader.weighted_entry) -> e.model)
     in
     let second =
-      C.order_weighted_entries
-        ~rotation_scope:"big_three"
-        [ entry "codex_cli:auto" ]
-      |> List.map (fun (e : Masc_mcp.Cascade_config_loader.weighted_entry) ->
-             e.model)
+      C.order_weighted_entries ~rotation_scope:"primary" [ entry "synthetic-api:auto" ]
+      |> List.map (fun (e : Masc_mcp.Cascade_config_loader.weighted_entry) -> e.model)
     in
     let other_scope =
-      C.order_weighted_entries
-        ~rotation_scope:"tool_rerank"
-        [ entry "codex_cli:auto" ]
-      |> List.map (fun (e : Masc_mcp.Cascade_config_loader.weighted_entry) ->
-             e.model)
+      C.order_weighted_entries ~rotation_scope:"scoring" [ entry "synthetic-api:auto" ]
+      |> List.map (fun (e : Masc_mcp.Cascade_config_loader.weighted_entry) -> e.model)
     in
-    check string "weighted first call keeps default head"
-      "codex_cli:gpt-5.2"
+    check
+      string
+      "weighted first call keeps default head"
+      (prefixed "synthetic-api" first_model)
       (List.hd first);
-    check string "weighted second call advances head"
-      "codex_cli:gpt-5.3-codex-spark"
+    check
+      string
+      "weighted second call advances head"
+      (prefixed "synthetic-api" second_model)
       (List.hd second);
-    check string "weighted rotation is scoped"
-      "codex_cli:gpt-5.2"
+    check
+      string
+      "weighted rotation is scoped"
+      (prefixed "synthetic-api" first_model)
       (List.hd other_scope))
+;;
 
 let test_order_weighted_entries_rotation_scope_rotates_top_level_providers () =
   with_clean_env (fun () ->
     State.clear_all ();
     let entry model =
-      {
-        Masc_mcp.Cascade_config_loader.model = model;
-        weight = 1;
-        supports_tool_choice = None;
-        secondary = None;
-        secondary_supports_tool_choice = None;
+      { Masc_mcp.Cascade_config_loader.model
+      ; weight = 1
+      ; supports_tool_choice = None
+      ; secondary = None
+      ; secondary_supports_tool_choice = None
       }
     in
     let entries =
-      [
-        entry "claude_code:auto";
-        entry "codex_cli:auto";
-        entry "gemini_cli:auto";
-      ]
+      [ entry "provider-a:model"; entry "provider-b:model"; entry "provider-c:model" ]
     in
     let first =
-      C.order_weighted_entries ~rotation_scope:"big_three" entries
-      |> List.map (fun (e : Masc_mcp.Cascade_config_loader.weighted_entry) ->
-             e.model)
+      C.order_weighted_entries ~rotation_scope:"primary" entries
+      |> List.map (fun (e : Masc_mcp.Cascade_config_loader.weighted_entry) -> e.model)
     in
     let second =
-      C.order_weighted_entries ~rotation_scope:"big_three" entries
-      |> List.map (fun (e : Masc_mcp.Cascade_config_loader.weighted_entry) ->
-             e.model)
+      C.order_weighted_entries ~rotation_scope:"primary" entries
+      |> List.map (fun (e : Masc_mcp.Cascade_config_loader.weighted_entry) -> e.model)
     in
     let third =
-      C.order_weighted_entries ~rotation_scope:"big_three" entries
-      |> List.map (fun (e : Masc_mcp.Cascade_config_loader.weighted_entry) ->
-             e.model)
+      C.order_weighted_entries ~rotation_scope:"primary" entries
+      |> List.map (fun (e : Masc_mcp.Cascade_config_loader.weighted_entry) -> e.model)
     in
     let other_scope =
-      C.order_weighted_entries ~rotation_scope:"tool_rerank" entries
-      |> List.map (fun (e : Masc_mcp.Cascade_config_loader.weighted_entry) ->
-             e.model)
+      C.order_weighted_entries ~rotation_scope:"scoring" entries
+      |> List.map (fun (e : Masc_mcp.Cascade_config_loader.weighted_entry) -> e.model)
     in
-    check string "first call starts with declared provider"
-      "claude_code:auto"
-      (List.hd first);
-    check string "second call rotates to codex provider"
-      "codex_cli:gpt-5.3-codex-spark"
-      (List.hd second);
-    check string "third call rotates to gemini provider"
-      "gemini_cli:gemini-2.5-flash"
-      (List.hd third);
-    check string "different scope restarts top-level provider order"
-      "claude_code:auto"
+    check string "first call starts with declared provider" "provider-a:model" (List.hd first);
+    check string "second call rotates to next provider" "provider-b:model" (List.hd second);
+    check string "third call rotates to third provider" "provider-c:model" (List.hd third);
+    check
+      string
+      "different scope restarts top-level provider order"
+      "provider-a:model"
       (List.hd other_scope))
+;;
 
 let test_order_weighted_entries_cooldown_is_provider_scoped () =
   with_clean_env (fun () ->
     let entry model =
-      {
-        Masc_mcp.Cascade_config_loader.model = model;
-        weight = 100;
-        supports_tool_choice = None;
-        secondary = None;
-        secondary_supports_tool_choice = None;
+      { Masc_mcp.Cascade_config_loader.model
+      ; weight = 100
+      ; supports_tool_choice = None
+      ; secondary = None
+      ; secondary_supports_tool_choice = None
       }
     in
     H.record_failure H.global ~provider_key:"test-provider" ();
     H.record_failure H.global ~provider_key:"test-provider" ();
     H.record_failure H.global ~provider_key:"test-provider" ();
     let ordered =
-      C.order_weighted_entries ~rand_int:(fun _ -> 0)
-        [
-          entry "test-provider:model-a";
-          entry "other-provider:model-a";
-        ]
-      |> List.map (fun (e : Masc_mcp.Cascade_config_loader.weighted_entry) ->
-             e.model)
+      C.order_weighted_entries
+        ~rand_int:(fun _ -> 0)
+        [ entry "test-provider:model-a"; entry "other-provider:model-a" ]
+      |> List.map (fun (e : Masc_mcp.Cascade_config_loader.weighted_entry) -> e.model)
     in
-    check string "cooled provider model is skipped"
-      "other-provider:model-a" (List.hd ordered))
+    check string "cooled provider model is skipped" "other-provider:model-a" (List.hd ordered))
+;;
 
 let () =
-  run "Cascade_model_resolve" [
-    "gemini auto", [
-      test_case "glm-coding:auto"
-        `Quick test_glm_coding_auto_maps_to_glm_5_1;
-      test_case "glm-coding:auto model list"
-        `Quick test_glm_coding_auto_models_default_order;
-      test_case "gemini:auto"
-        `Quick test_gemini_auto_maps_to_flash_preview;
-      test_case "gemini_cli:auto (regression 2026-04-20)"
-        `Quick test_gemini_cli_auto_maps_to_flash_preview;
-      test_case "gemini_cli explicit"
-        `Quick test_gemini_cli_explicit_model_passthrough;
-      test_case "GEMINI_DEFAULT_MODEL env override"
-        `Quick test_gemini_env_override;
-      test_case "gemini_cli:auto model list"
-        `Quick test_gemini_cli_auto_models_default_rotation_order;
-      test_case "gemini_cli:auto env list override"
-        `Quick test_gemini_cli_auto_models_env_override;
-      test_case "codex/claude cli auto env list override"
-        `Quick test_codex_and_claude_cli_auto_models_env_override;
-      test_case "kimi_cli:auto policy"
-        `Quick test_kimi_cli_auto_model_policy;
-      test_case "expand_auto_models covers CLI auto"
-        `Quick test_expand_auto_models_includes_cli_auto_specs;
-      test_case "execution expansion matches auto expansion"
-        `Quick test_expand_model_strings_for_execution_matches_auto_expansion;
-      test_case "execution expansion can rotate by scope"
-        `Quick test_expand_model_strings_for_execution_rotation_scope_rotates;
-      test_case "weighted ordering rotates auto by scope"
-        `Quick test_order_weighted_entries_rotation_scope_rotates_generically;
-      test_case "weighted ordering rotates provider order by scope"
-        `Quick
-        test_order_weighted_entries_rotation_scope_rotates_top_level_providers;
-      test_case "weighted ordering cooldown is provider scoped" `Quick
-        test_order_weighted_entries_cooldown_is_provider_scoped;
-    ];
-  ]
+  install_synthetic_catalog ();
+  run
+    "Cascade_model_resolve"
+    [ ( "generic auto"
+      , [ test_case "api auto binding default" `Quick test_api_auto_uses_binding_default
+        ; test_case "api env default provenance" `Quick test_api_env_default_provenance
+        ; test_case "cli auto delegates by default" `Quick test_cli_auto_delegates_without_catalog_models
+        ; test_case "explicit model passthrough" `Quick test_explicit_model_passthrough_trims_result
+        ; test_case "unknown auto unresolved" `Quick test_unsupported_provider_auto_is_unresolved
+        ; test_case "supported model expansion" `Quick test_supported_models_expand_from_binding
+        ; test_case "auto model env override" `Quick test_auto_models_env_override
+        ; test_case
+            "direct api without supported models"
+            `Quick
+            test_direct_api_without_supported_models_does_not_expand
+        ; test_case
+            "execution expansion matches auto expansion"
+            `Quick
+            test_expand_model_strings_for_execution_matches_auto_expansion
+        ; test_case
+            "dedupe_stable: first wins on repeats"
+            `Quick
+            test_expand_model_strings_for_execution_dedupe_stable_repeated_inputs
+        ; test_case
+            "dedupe_stable: explicit beats auto-expansion"
+            `Quick
+            test_expand_model_strings_for_execution_dedupe_explicit_and_auto
+        ; test_case
+            "execution expansion can rotate by scope"
+            `Quick
+            test_expand_model_strings_for_execution_rotation_scope_rotates
+        ; test_case
+            "weighted ordering rotates auto by scope"
+            `Quick
+            test_order_weighted_entries_rotation_scope_rotates_generically
+        ; test_case
+            "weighted ordering rotates provider order by scope"
+            `Quick
+            test_order_weighted_entries_rotation_scope_rotates_top_level_providers
+        ; test_case
+            "weighted ordering cooldown is provider scoped"
+            `Quick
+            test_order_weighted_entries_cooldown_is_provider_scoped
+        ] )
+    ]
+;;

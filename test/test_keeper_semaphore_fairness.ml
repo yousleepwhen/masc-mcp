@@ -161,6 +161,48 @@ let test_autonomous_slot_released_when_body_raises () =
   Alcotest.(check (list string)) "autonomous queue drained" []
     (KK.autonomous_waiter_snapshot_for_test ())
 
+let test_autonomous_queue_middle_drop_preserves_fifo () =
+  let alpha = KK.enqueue_autonomous_waiter_for_test "alpha" in
+  let beta = KK.enqueue_autonomous_waiter_for_test "beta" in
+  let gamma = KK.enqueue_autonomous_waiter_for_test "gamma" in
+  KK.drop_autonomous_waiter_for_test beta;
+  Alcotest.(check (list string)) "middle drop leaves active FIFO"
+    [ "alpha"; "gamma" ]
+    (KK.autonomous_waiter_snapshot_for_test ());
+  KK.drop_autonomous_waiter_for_test beta;
+  Alcotest.(check (list string)) "second drop is idempotent"
+    [ "alpha"; "gamma" ]
+    (KK.autonomous_waiter_snapshot_for_test ());
+  KK.drop_autonomous_waiter_for_test alpha;
+  Alcotest.(check (list string)) "head tombstone pruned"
+    [ "gamma" ]
+    (KK.autonomous_waiter_snapshot_for_test ());
+  KK.drop_autonomous_waiter_for_test gamma;
+  Alcotest.(check (list string)) "queue drained" []
+    (KK.autonomous_waiter_snapshot_for_test ())
+
+let read_file path =
+  let ic = open_in path in
+  Fun.protect
+    ~finally:(fun () -> close_in_noerr ic)
+    (fun () ->
+       really_input_string ic (in_channel_length ic))
+
+let contains_substring haystack needle =
+  let haystack_len = String.length haystack in
+  let needle_len = String.length needle in
+  let rec loop idx =
+    idx + needle_len <= haystack_len
+    && (String.sub haystack idx needle_len = needle || loop (idx + 1))
+  in
+  needle_len = 0 || loop 0
+
+let test_autonomous_queue_source_avoids_list_append_under_lock () =
+  let source = read_file "lib/keeper/keeper_turn_slot.ml" in
+  Alcotest.(check bool) "enqueue does not list-append waiter"
+    false
+    (contains_substring source "@ [{ ticket; keeper_name }]")
+
 let test_in_turn_liveness_pulse_stops_when_body_raises env =
   Eio.Switch.run @@ fun sw ->
   let clock = Eio.Stdenv.clock env in
@@ -186,6 +228,45 @@ let test_in_turn_liveness_pulse_stops_when_body_raises env =
   Eio.Time.sleep clock 0.04;
   Alcotest.(check int) "pulse stopped after body raised" ticks_after_raise
     (Atomic.get ticks)
+
+let test_in_turn_liveness_pulse_returns_before_first_sleep env =
+  Eio.Switch.run @@ fun sw ->
+  let clock = Eio.Stdenv.clock env in
+  let returned =
+    try
+      Eio.Time.with_timeout_exn clock 0.05 (fun () ->
+        KK.with_in_turn_liveness_pulse_for_test
+          ~sw
+          ~clock
+          ~interval_sec:60.0
+          ~tick:(fun () -> Alcotest.fail "pulse should not tick after body returns")
+          (fun () -> true))
+    with
+    | Eio.Time.Timeout -> false
+  in
+  Alcotest.(check bool) "wrapper returns before first pulse sleep" true returned
+
+let test_in_turn_liveness_pulse_cancels_blocked_tick env =
+  Eio.Switch.run @@ fun sw ->
+  let clock = Eio.Stdenv.clock env in
+  let tick_entered, wake_tick = Eio.Promise.create () in
+  let returned =
+    try
+      Eio.Time.with_timeout_exn clock 0.1 (fun () ->
+        KK.with_in_turn_liveness_pulse_for_test
+          ~sw
+          ~clock
+          ~interval_sec:0.001
+          ~tick:(fun () ->
+            Eio.Promise.resolve wake_tick ();
+            Eio.Time.sleep clock 60.0)
+          (fun () ->
+            Eio.Promise.await tick_entered;
+            true))
+    with
+    | Eio.Time.Timeout -> false
+  in
+  Alcotest.(check bool) "blocked pulse tick is cancelled on body return" true returned
 
 let () =
   Alcotest.run "Keeper_semaphore_fairness"
@@ -216,9 +297,20 @@ let () =
           Alcotest.test_case "autonomous slot released when body raises" `Quick
             (with_fresh_state test_autonomous_slot_released_when_body_raises);
         ] );
+      ( "autonomous_queue",
+        [
+          Alcotest.test_case "middle drop preserves FIFO" `Quick
+            (with_fresh_state test_autonomous_queue_middle_drop_preserves_fifo);
+          Alcotest.test_case "source avoids list append under lock" `Quick
+            test_autonomous_queue_source_avoids_list_append_under_lock;
+        ] );
       ( "in_turn_liveness",
         [
           Alcotest.test_case "pulse stops when body raises" `Quick
             (with_fresh_state_env test_in_turn_liveness_pulse_stops_when_body_raises);
+          Alcotest.test_case "pulse returns before first sleep" `Quick
+            (with_fresh_state_env test_in_turn_liveness_pulse_returns_before_first_sleep);
+          Alcotest.test_case "pulse cancels blocked tick" `Quick
+            (with_fresh_state_env test_in_turn_liveness_pulse_cancels_blocked_tick);
         ] );
     ]

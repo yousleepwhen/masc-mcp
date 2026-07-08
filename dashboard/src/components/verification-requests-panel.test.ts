@@ -33,18 +33,15 @@ vi.mock('../api/dashboard', () => ({
 // ── Mock UI primitives (real Preact components) ───────
 
 vi.mock('./common/card', () => ({
-  Card: ({ title, children }: any) => html`
-    <div data-testid="card"><h3>${title}</h3>${children}</div>
-  `,
-}))
-
-vi.mock('./common/empty-state', () => ({
-  EmptyState: ({ children }: any) => html`
-    <div data-testid="empty-state">${children}</div>
+  SectionCard: ({ label, children }: any) => html`
+    <div data-testid="card"><h3>${label}</h3>${children}</div>
   `,
 }))
 
 vi.mock('./common/feedback-state', () => ({
+  EmptyState: ({ children }: any) => html`
+    <div data-testid="empty-state">${children}</div>
+  `,
   ErrorState: ({ message }: any) => html`
     <div data-testid="error-state">${message}</div>
   `,
@@ -281,4 +278,3 @@ describe('VerificationRequestsPanel', () => {
 })
 
 // ── filterVerificationRequests pure helper ─────────────
-

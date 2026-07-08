@@ -14,24 +14,24 @@
 
 open Yojson.Safe.Util
 
-type mode = Disabled | Spawn | Model
+type mode = Disabled | Model
 
 let get_mode () =
   match Env_config_core.auto_respond_opt () with
-  | Some "true" | Some "1" | Some "yes" | Some "spawn" -> Spawn
-  | Some "model" | Some "fast" -> Model
+  | Some "true" | Some "1" | Some "yes" | Some "model" | Some "fast" -> Model
   | _ -> Disabled
 
 let is_enabled () = get_mode () <> Disabled
 
 let activity_log_file () =
-  match Env_config.base_path_opt () with
+  match (Host_config.from_env ()).base_path with
   | Some root -> Filename.concat (Common.masc_dir_from_base_path ~base_path:root) (Filename.concat "logs" "auto-responder.log")
-  | None -> "/tmp/auto-responder.log"
+  | None -> Filename.concat (Host_config.host ()).log_dir "auto-responder.log"
 
 let debug_log msg =
   let line = Printf.sprintf "[%f] %s\n" (Time_compat.now ()) msg in
-  try Fs_compat.append_file "/tmp/auto_debug.log" line
+  let path = Filename.concat (Host_config.host ()).log_dir "auto_debug.log" in
+  try Fs_compat.append_file path line
   with Sys_error _ | Unix.Unix_error _ -> ()
 
 let activity_log ~mode ~from_agent ~mention ~status ~detail =
@@ -46,7 +46,7 @@ let activity_log ~mode ~from_agent ~mention ~status ~detail =
       time.Unix.tm_min
       time.Unix.tm_sec
   in
-  let mode_str = match mode with Disabled -> "OFF" | Spawn -> "SPAWN" | Model -> "MODEL" in
+  let mode_str = match mode with Disabled -> "OFF" | Model -> "MODEL" in
   let line = Printf.sprintf "[%s] [%s] %s → @%s | %s | %s\n"
     timestamp mode_str from_agent mention status detail in
   try Fs_compat.append_file log_file line
@@ -96,63 +96,6 @@ let should_throttle ~agent_type =
 
 let agent_type_of_mention = Mention.agent_type_of_mention
 
-let is_spawnable mention =
-  let base = agent_type_of_mention mention in
-  Provider_adapter.resolve_spawn_key base <> None
-
-(* --- CLI spawn (Spawn mode) --- *)
-
-let build_response_prompt ~from_agent ~content ~mention =
-  Printf.sprintf {|You received a mention in the MASC room from %s.
-
-Message: "%s"
-
-Quick response protocol:
-1. Call mcp__masc__masc_join(agent_name="%s")
-   → Read the response to get your assigned nickname (e.g., "gemini-rare-beaver")
-2. Call mcp__masc__masc_broadcast using YOUR ASSIGNED NICKNAME from step 1:
-   mcp__masc__masc_broadcast(agent_name="<your-assigned-nickname>", message="[your concise response]")
-   IMPORTANT: Do NOT use "%s" - use the full nickname from the join response!
-3. Call mcp__masc__masc_leave()
-
-Respond in 1-2 sentences. Be helpful and concise.|}
-    from_agent content mention mention
-
-let cli_argv_of_agent_type (agent_type : string) : string list =
-  match Spawn.get_config agent_type with
-  | Some config ->
-    String.split_on_char ' ' config.command
-    |> List.filter (fun s -> s <> "")
-  | None -> [agent_type]
-
-let run_cli_agent ~agent_type ~prompt =
-  if Provider_adapter.is_bare_ollama_label agent_type then
-    debug_log (Provider_adapter.bare_ollama_migration_message ())
-  else
-    let base = cli_argv_of_agent_type agent_type in
-    let argv = base in
-    let raw_source = String.concat " " (List.map Filename.quote argv) in
-    debug_log (Printf.sprintf "SPAWN argv=%s" (String.concat " " (List.map Filename.quote argv)));
-    let (status, output) =
-      Masc_exec.Exec_gate.run_argv_with_stdin_and_status
-        ~actor:"system/auto_responder"
-        ~raw_source
-        ~summary:"auto responder cli spawn"
-        ~timeout_sec:(Env_config_exec_timeout.timeout_sec ~caller:Auto_responder ())
-        ~stdin_content:prompt
-        argv
-    in
-    let status_s = match status with
-      | Unix.WEXITED n -> Printf.sprintf "exit=%d" n
-      | Unix.WSIGNALED n -> Printf.sprintf "signaled=%d" n
-      | Unix.WSTOPPED n -> Printf.sprintf "stopped=%d" n
-    in
-    let preview =
-      let s = String.trim output in
-      String_util.utf8_safe ~max_bytes:203 ~suffix:"..." s |> String_util.to_string
-    in
-    debug_log (Printf.sprintf "SPAWN_DONE %s output=%s" status_s preview)
-
 (* --- MODEL mode: shared cascade + in-process MASC HTTP tools/call --- *)
 
 let cascade_name_for_agent_type _agent_type =
@@ -162,10 +105,10 @@ let cascade_name_for_agent_type _agent_type =
 (** Validate model response using structural fields, not text heuristics.
     Guardrail principle: accept unless there is a clear structural reason to reject.
     Permissive by default: any non-empty content with any stop_reason is valid.
-    Invariant: API errors are caught upstream by Oas_worker.run_named returning Error;
+    Invariant: API errors are caught upstream by Keeper_turn_driver.run_named returning Error;
     the accept callback only receives responses where the API call succeeded. *)
-let model_response_is_valid (resp : Oas_response.api_response) =
-  let text = String.trim (Oas_response.text_of_response resp) in
+let model_response_is_valid (resp : Agent_sdk_response.api_response) =
+  let text = String.trim (Agent_sdk_response.text_of_response resp) in
   String.length text > 0
   && (match resp.stop_reason with
       | Agent_sdk.Types.EndTurn | Agent_sdk.Types.MaxTokens
@@ -178,7 +121,7 @@ let call_model_direct_sync ~agent_type ~prompt =
     match
       Masc_oas_bridge.run_with_caller
         ~caller:Env_config_oas_bridge.Auto_responder (fun () ->
-        Oas_worker.run_named ~cascade_name
+        Keeper_turn_driver.run_named ~cascade_name
           ~goal:prompt ~max_turns:1
           ~accept:model_response_is_valid ~max_tokens:500
           ~approval:Approval_callbacks.auto_approve
@@ -186,8 +129,8 @@ let call_model_direct_sync ~agent_type ~prompt =
       )
     with
     | Ok result ->
-        let resp = result.Oas_worker.response in
-        let text = Oas_response.text_of_response resp in
+        let resp = result.Cascade_runner.response in
+        let text = Agent_sdk_response.text_of_response resp in
         debug_log
           (Printf.sprintf "MODEL_USED %s for agent_type=%s"
              resp.model agent_type);
@@ -215,31 +158,28 @@ let masc_call ~sw:_ ~tool_name ~(args : Yojson.Safe.t) : (string, string) result
     ]
     |> Yojson.Safe.to_string
   in
-  match Eio_context.get_net_opt () with
-  | None -> Error "Eio net not initialized"
-  | Some net ->
-      let headers = [
-        ("Content-Type", "application/json");
-        ("Accept", "application/json, text/event-stream");
-      ] in
-      (match Masc_http_client.post_sync ~net ~url:(Uri.to_string uri)
+  let headers = [
+    ("Content-Type", "application/json");
+    ("Accept", "application/json, text/event-stream");
+  ] in
+  match Masc_http_client.post_sync ~url:(Uri.to_string uri)
           ~headers ~body () with
-      | Error e -> Error e
-      | Ok (code, body_str) ->
-        if not (Cohttp.Code.is_success code) then
-          Error (Printf.sprintf "MASC HTTP %d" code)
-        else
-          (* Extract MCP tool text: result.content[0].text *)
-          try
-            let json = Yojson.Safe.from_string body_str in
-            match json |> member "result" |> member "content" |> to_list with
-            | item :: _ -> Ok (item |> member "text" |> to_string)
-            | [] -> Error "empty content list"
-          with
-          | Eio.Cancel.Cancelled _ as e -> raise e
-          | exn ->
-            Log.Misc.warn "auto_responder: MCP response parse failed: %s" (Printexc.to_string exn);
-            Ok body_str)
+  | Error e -> Error e
+  | Ok (code, body_str) ->
+    if not (Cohttp.Code.is_success code) then
+      Error (Printf.sprintf "MASC HTTP %d" code)
+    else
+      (* Extract MCP tool text: result.content[0].text *)
+      try
+        let json = Yojson.Safe.from_string body_str in
+        match json |> member "result" |> member "content" |> to_list with
+        | item :: _ -> Ok (item |> member "text" |> to_string)
+        | [] -> Error "empty content list"
+      with
+      | Eio.Cancel.Cancelled _ as e -> raise e
+      | exn ->
+        Log.Misc.warn "auto_responder: MCP response parse failed: %s" (Printexc.to_string exn);
+        Ok body_str
 
 let extract_nickname (response_text : string) : string option =
   let prefix = "Nickname:" in
@@ -315,7 +255,7 @@ let call_model_and_broadcast ~sw ~agent_type ~prompt ~mention =
 
 let maybe_respond ~sw ~base_path:_ ~from_agent ~content ~mention =
   let mode = get_mode () in
-  let mode_str = match mode with Disabled -> "Disabled" | Spawn -> "Spawn" | Model -> "Model" in
+  let mode_str = match mode with Disabled -> "Disabled" | Model -> "Model" in
   debug_log (Printf.sprintf "CALLED: from=%s mention=%s mode=%s enabled=%b"
     from_agent (match mention with Some m -> m | None -> "NONE") mode_str (is_enabled ()));
   match mention with
@@ -330,15 +270,10 @@ let maybe_respond ~sw ~base_path:_ ~from_agent ~content ~mention =
   | Some m ->
       let from_base = agent_type_of_mention from_agent in
       let mention_base = agent_type_of_mention m in
-      debug_log (Printf.sprintf "CHECK: from_base=%s mention_base=%s spawnable=%b" from_base mention_base (is_spawnable m));
+      debug_log (Printf.sprintf "CHECK: from_base=%s mention_base=%s" from_base mention_base);
       if from_base = mention_base then (
         debug_log "EXIT: Self-mention";
         Log.AutoResponder.info "Skip self-mention @%s from %s" m from_agent;
-        None
-      ) else if not (is_spawnable m) then (
-        debug_log "EXIT: Not spawnable";
-        activity_log ~mode ~from_agent ~mention:m ~status:"SKIP" ~detail:"Not spawnable agent type";
-        Log.AutoResponder.info "@%s not spawnable" m;
         None
       ) else if should_throttle ~agent_type:mention_base then (
         debug_log "EXIT: Throttled";
@@ -353,7 +288,7 @@ let maybe_respond ~sw ~base_path:_ ~from_agent ~content ~mention =
         in
         debug_log (Printf.sprintf "DISPATCH: mode=%s task_id=%s" mode_str task_id);
         activity_log ~mode ~from_agent ~mention:m
-          ~status:(match mode with Spawn -> "SPAWN" | Model -> "MODEL" | Disabled -> "OFF")
+          ~status:(match mode with Model -> "MODEL" | Disabled -> "OFF")
           ~detail:task_id;
         Eio.Fiber.fork ~sw (fun () ->
           try
@@ -362,10 +297,6 @@ let maybe_respond ~sw ~base_path:_ ~from_agent ~content ~mention =
             | Model ->
                 Log.AutoResponder.info "Calling %s for @%s" mention_base m;
                 call_model_and_broadcast ~sw ~agent_type:mention_base ~prompt:content ~mention:from_agent
-            | Spawn ->
-                let prompt = build_response_prompt ~from_agent ~content ~mention:m in
-                Log.AutoResponder.info "Spawning %s for @%s from %s" mention_base m from_agent;
-                run_cli_agent ~agent_type:mention_base ~prompt
           with
           | Eio.Cancel.Cancelled _ as e -> raise e
           | exn ->

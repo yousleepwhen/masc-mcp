@@ -3,16 +3,27 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/pr
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import '@testing-library/jest-dom'
 
-vi.mock('../../router', () => ({
-  navigate: vi.fn(),
-}))
+const routerMock = vi.hoisted(() => {
+  const route = { value: { params: {} as Record<string, string> } }
+  const replaceRoute = vi.fn((_tab: string, params?: Record<string, string>) => {
+    route.value = { params: params ?? {} }
+  })
+  return {
+    route,
+    navigate: vi.fn(),
+    replaceRoute,
+  }
+})
+
+vi.mock('../../router', () => routerMock)
 
 vi.mock('../../keeper-message', () => ({
   stripStateBlocks: (value: string) => value,
 }))
 
 vi.mock('../common/card', () => ({
-  Card: ({ children }: { children?: any }) => h('div', {}, children),
+  SectionCard: ({ children }: { children?: any }) => h('div', {}, children),
+  SurfaceCard: ({ children }: { children?: any }) => h('div', {}, children),
 }))
 
 vi.mock('../common/time-ago', () => ({
@@ -27,12 +38,14 @@ vi.mock('../common/toast', () => ({
   showToast: vi.fn(),
 }))
 
-vi.mock('../common/empty-state', () => ({
+vi.mock('../common/feedback-state', () => ({
   EmptyState: ({ message }: { message: string }) => h('div', {}, message),
 }))
 
 vi.mock('../../api/board', () => ({
   fetchBoardReactions: vi.fn().mockResolvedValue([]),
+  votePost: vi.fn().mockResolvedValue(undefined),
+  voteComment: vi.fn().mockResolvedValue(undefined),
   toggleReaction: vi.fn().mockResolvedValue({
     target_type: 'comment',
     target_id: 'c1',
@@ -68,9 +81,13 @@ vi.mock('./board-state', () => ({
   kindLabel: (kind: string) => (kind === 'direct' ? '직접' : kind),
   visibilityLabel: () => '',
   visibilityBadgeColor: () => '',
+  postVisibilityAuditLabel: (post: any) => {
+    const visibility = post.visibility === 'internal' ? '내부' : '공개'
+    const score = post.vote_blind ? '점수 투표 후 공개' : `점수 ${post.votes ?? 0}`
+    const updated = post.updated_at !== post.created_at ? '최근 갱신됨' : '원본 작성 시각 기준'
+    return `표시 중 · ${visibility} · 댓글 ${post.comment_count ?? 0}개 · ${score} · ${updated}`
+  },
   boardPostKind: () => 'direct',
-  votePost: vi.fn(),
-  voteComment: vi.fn().mockResolvedValue(undefined),
   refreshBoard: vi.fn(),
 }))
 
@@ -81,13 +98,15 @@ import {
   countCommentDescendants,
   filterCommentTree,
 } from './post-detail'
-import { voteComment, votePost } from './board-state'
-import { toggleReaction } from '../../api/board'
+import { detailComments } from './board-state'
+import { toggleReaction, voteComment, votePost } from '../../api/board'
 import type { BoardComment } from '../../types/core'
 
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
+  routerMock.route.value = { params: {} }
+  detailComments.value = []
 })
 
 describe('CommentThread', () => {
@@ -332,6 +351,43 @@ describe('CommentThread', () => {
       expect(toggleReaction).toHaveBeenCalledWith('comment', 'c1', '🚀')
     })
   })
+
+  it('surfaces an older root comment when it is route-focused', () => {
+    const comments = Array.from({ length: 7 }, (_, index) => ({
+      id: `c${index + 1}`,
+      post_id: 'post-1',
+      parent_id: null,
+      author: 'agent',
+      content: index === 0 ? 'old focused comment' : `visible comment ${index + 1}`,
+      created_at: `2026-04-02T00:0${index}:00Z`,
+    })) as any
+
+    render(h(CommentThread, { comments, postId: 'post-1', focusedCommentId: 'c1' }))
+
+    expect(screen.getByText('old focused comment')).toBeInTheDocument()
+    expect(document.querySelector('[data-route-focused-comment="c1"]')).not.toBeNull()
+    expect(screen.queryByRole('button', { name: /이전 댓글/ })).not.toBeInTheDocument()
+  })
+
+  it('expands a busy reply branch when a hidden reply is route-focused', () => {
+    const comments = [
+      { id: 'c1', post_id: 'post-1', parent_id: null, author: 'root-agent', content: 'root comment', created_at: '2026-04-02T00:00:00Z' },
+      ...Array.from({ length: 7 }, (_, index) => ({
+        id: `c${index + 2}`,
+        post_id: 'post-1',
+        parent_id: 'c1',
+        author: 'child-agent',
+        content: `sibling reply ${index + 1}`,
+        created_at: `2026-04-02T00:0${index + 1}:00Z`,
+      })),
+    ] as any
+
+    render(h(CommentThread, { comments, postId: 'post-1', focusedCommentId: 'c8' }))
+
+    expect(screen.getByText('sibling reply 7')).toBeInTheDocument()
+    expect(document.querySelector('[data-route-focused-comment="c8"]')).not.toBeNull()
+    expect(screen.queryByRole('button', { name: /답글 2개 더 보기/ })).not.toBeInTheDocument()
+  })
 })
 
 describe('filterCommentTree', () => {
@@ -459,6 +515,11 @@ describe('PostDetail', () => {
       classification_reason: 'Direct board post without automation provenance.',
       report_count: 1,
       moderation_status: 'approved',
+      contributor_quality: {
+        score: 0.91,
+        band: 'excellent',
+        source: 'agent_reputation',
+      },
       comments: [],
     } as any
 
@@ -468,6 +529,33 @@ describe('PostDetail', () => {
     expect(screen.getByText(/Direct board post without automation provenance/)).toBeInTheDocument()
     expect(screen.getByText('직접')).toBeInTheDocument()
     expect(screen.getByLabelText('게시글 moderation 승인됨 1건')).toHaveTextContent('승인됨 1')
+    expect(screen.getByLabelText('기여자 품질 91점 · 우수')).toHaveTextContent('품질 91')
+  })
+
+  it('renders contributor quality when it is the only detail badge', () => {
+    const post = {
+      id: 'post-quality',
+      author: 'sleepers',
+      title: 'Post',
+      body: 'Body',
+      content: 'Body',
+      created_at: '2026-04-02T00:00:00Z',
+      updated_at: '2026-04-02T00:00:00Z',
+      votes: 0,
+      comment_count: 0,
+      post_kind: 'direct',
+      moderation_status: 'none',
+      contributor_quality: {
+        score: 0.42,
+        band: 'watch',
+        source: 'agent_reputation',
+      },
+      comments: [],
+    } as any
+
+    render(h(PostDetail, { post }))
+
+    expect(screen.getByLabelText('기여자 품질 42점 · 관찰')).toHaveTextContent('품질 42')
   })
 
   it('marks the current post vote as pressed', async () => {
@@ -522,5 +610,74 @@ describe('PostDetail', () => {
     render(h(PostDetail, { post }))
 
     expect(screen.getByLabelText('게시글 점수 투표 후 공개')).toHaveTextContent('투표 후 공개')
+  })
+
+  it('renders board visibility audit details on post detail', () => {
+    const post = {
+      id: 'post-1',
+      author: 'sleepers',
+      title: 'Post',
+      body: 'Body',
+      content: 'Body',
+      created_at: '2026-04-02T00:00:00Z',
+      updated_at: '2026-04-02T01:00:00Z',
+      votes: null,
+      vote_balance: null,
+      vote_blind: true,
+      comment_count: 5,
+      visibility: 'internal',
+      post_kind: 'direct',
+      comments: [],
+    } as any
+
+    render(h(PostDetail, { post }))
+
+    const audit = screen.getByLabelText(/게시글 표시 감사:/)
+    expect(audit).toHaveTextContent('표시 감사: 표시 중 · 내부 · 댓글 5개 · 점수 투표 후 공개 · 최근 갱신됨')
+    expect(audit).toHaveTextContent('목록 정렬/필터에 따라 위치가 바뀔 수 있습니다.')
+  })
+
+  it('renders and clears the board comment route focus receipt', () => {
+    const post = {
+      id: 'post-1',
+      author: 'sleepers',
+      title: 'Post',
+      body: 'Body',
+      content: 'Body',
+      created_at: '2026-04-02T00:00:00Z',
+      updated_at: '2026-04-02T00:00:00Z',
+      votes: 0,
+      comment_count: 1,
+      post_kind: 'direct',
+      comments: [],
+    } as any
+    detailComments.value = [
+      {
+        id: 'comment-1',
+        post_id: 'post-1',
+        parent_id: null,
+        author: 'keeper-alpha',
+        content: 'focused route comment',
+        created_at: '2026-04-02T00:00:00Z',
+      },
+    ] as any
+    routerMock.route.value = {
+      params: { section: 'board', post: 'post-1', comment: 'comment-1', focus: 'curation' },
+    }
+
+    render(h(PostDetail, { post }))
+
+    expect(screen.getByTestId('board-comment-route-focus')).toBeInTheDocument()
+    expect(screen.getByText('COMMENT comment-1')).toBeInTheDocument()
+    expect(screen.getByText('author keeper-alpha')).toBeInTheDocument()
+    expect(document.querySelector('[data-route-focused-comment="comment-1"]')).not.toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'CLEAR' }))
+
+    expect(routerMock.route.value.params).toEqual({
+      section: 'board',
+      post: 'post-1',
+      focus: 'curation',
+    })
   })
 })

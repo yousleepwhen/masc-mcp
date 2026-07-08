@@ -1,13 +1,14 @@
 (** Server_dashboard_http — Dashboard HTTP handlers (facade).
 
-    Cascade-includes 4 sub-modules so callers reach the
+    Cascade-includes 5 sub-modules so callers reach the
     dashboard surface through a single namespace:
     - {!Server_dashboard_http_core}
     - {!Server_dashboard_http_runtime_info}
     - {!Server_dashboard_http_execution_surfaces}
     - {!Server_dashboard_http_namespace_truth}
+    - {!Server_dashboard_http_memory_subsystems}
 
-    Plus 18 own helpers + 1 type — board / memory /
+    Plus 21 own helpers + 1 type — board / memory /
     governance / verification / planning / goals /
     keeper composite / fleet composite / operator
     action+confirm HTTP route entries.
@@ -47,6 +48,7 @@ val approval_resolve_http_error_to_string :
 (** {1 Board / memory / governance HTTP entries} *)
 
 val dashboard_board_json :
+  ?config:Coord.config ->
   ?hearth:string ->
   ?author_filter:string ->
   ?sort_by:Board_dispatch.sort_order ->
@@ -60,7 +62,7 @@ val dashboard_board_json :
   Yojson.Safe.t
 
 val dashboard_memory_http_json :
-  Httpun.Request.t -> Yojson.Safe.t
+  ?config:Coord.config -> Httpun.Request.t -> Yojson.Safe.t
 
 val dashboard_memory_subsystems_include_entries :
   Httpun.Request.t -> bool
@@ -76,6 +78,9 @@ val dashboard_governance_http_json :
 
 val dashboard_governance_tool_events_http_json :
   Httpun.Request.t -> Yojson.Safe.t
+
+val dashboard_proof_http_json :
+  config:Coord.config -> Httpun.Request.t -> Yojson.Safe.t
 
 val dashboard_governance_approval_resolve_http_json :
   base_path:string ->

@@ -2,7 +2,7 @@ module Types = Masc_domain
 
 (** Tests for smart heartbeat integration in keeper_keepalive.
 
-    Verifies that the Heartbeat_smart module decisions correctly map
+    Verifies that the Keeper_heartbeat_smart module decisions correctly map
     to Masc_domain.agent_status based on keeper_meta fields (current_task_id,
     paused), and that the env-config feature flag controls activation.
 
@@ -10,7 +10,7 @@ module Types = Masc_domain
     loop integration tests (which require Eio fibers + Coord I/O). *)
 
 open Alcotest
-module HS = Masc_mcp.Heartbeat_smart
+module HS = Masc_mcp.Keeper_heartbeat_smart
 
 (* ── agent_status derivation from keeper_meta fields ─── *)
 
@@ -42,7 +42,7 @@ let test_status_inactive_when_paused_no_task () =
   check string "inactive when paused, no task" (Masc_domain.show_agent_status Masc_domain.Inactive)
     (Masc_domain.show_agent_status status)
 
-(* ── Heartbeat_smart decision tests with keeper-derived statuses ─── *)
+(* ── Keeper_heartbeat_smart decision tests with keeper-derived statuses ─── *)
 
 let test_skip_busy_with_task () =
   let config = HS.default_config in
@@ -145,6 +145,53 @@ let test_cycle_pauses_on_skip_idle () =
   let next = Unix.gettimeofday () +. 60.0 in
   check bool "Skip_idle pauses cycle" false
     (KK.smart_heartbeat_cycle_continues (HS.Skip_idle next))
+
+let test_visibility_gate_delays_unobserved_idle_emit () =
+  let now = 1_000.0 in
+  match
+    KK.visibility_gate_decision
+      ~visible_consumers:0
+      ~has_pending_signal:false
+      ~now
+      ~last_heartbeat_cycle_ts:(now -. 60.0)
+      HS.Emit
+  with
+  | HS.Skip_idle next ->
+    check bool "next heartbeat stays bounded" true (next > now)
+  | HS.Emit | HS.Skip_busy -> fail "expected unobserved emit to become Skip_idle"
+
+let test_visibility_gate_allows_pending_signal () =
+  let decision =
+    KK.visibility_gate_decision
+      ~visible_consumers:0
+      ~has_pending_signal:true
+      ~now:1_000.0
+      ~last_heartbeat_cycle_ts:940.0
+      HS.Emit
+  in
+  check bool "pending signal keeps emit" true (decision = HS.Emit)
+
+let test_visibility_gate_allows_visible_consumer () =
+  let decision =
+    KK.visibility_gate_decision
+      ~visible_consumers:1
+      ~has_pending_signal:false
+      ~now:1_000.0
+      ~last_heartbeat_cycle_ts:940.0
+      HS.Emit
+  in
+  check bool "visible consumer keeps emit" true (decision = HS.Emit)
+
+let test_visibility_gate_preserves_busy () =
+  let decision =
+    KK.visibility_gate_decision
+      ~visible_consumers:0
+      ~has_pending_signal:false
+      ~now:1_000.0
+      ~last_heartbeat_cycle_ts:940.0
+      HS.Skip_busy
+  in
+  check bool "busy keeps cycle path" true (decision = HS.Skip_busy)
 
 (* ── MissedWakeup gap regression guard (KeeperHeartbeat.tla) ───────
    Skip_idle + Woken must promote the gate to [true]. Without this,
@@ -283,13 +330,13 @@ let test_skip_idle_wake_resumed_metric_registered () =
   let labels = [ ("keeper", "test_keeper_a") ] in
   let before =
     Prom.metric_value_or_zero
-      Prom.metric_keeper_skip_idle_wake_resumed ~labels ()
+      Masc_mcp.Keeper_metrics.(to_string SkipIdleWakeResumed) ~labels ()
   in
   Prom.inc_counter
-    Prom.metric_keeper_skip_idle_wake_resumed ~labels ();
+    Masc_mcp.Keeper_metrics.(to_string SkipIdleWakeResumed) ~labels ();
   let after =
     Prom.metric_value_or_zero
-      Prom.metric_keeper_skip_idle_wake_resumed ~labels ()
+      Masc_mcp.Keeper_metrics.(to_string SkipIdleWakeResumed) ~labels ()
   in
   check (float 0.001) "counter increments by 1" 1.0 (after -. before)
 
@@ -301,15 +348,15 @@ let test_skip_idle_wake_resumed_label_isolation () =
   let lb = [ ("keeper", "test_keeper_iso_b") ] in
   let b_before =
     Prom.metric_value_or_zero
-      Prom.metric_keeper_skip_idle_wake_resumed ~labels:lb ()
+      Masc_mcp.Keeper_metrics.(to_string SkipIdleWakeResumed) ~labels:lb ()
   in
   Prom.inc_counter
-    Prom.metric_keeper_skip_idle_wake_resumed ~labels:la ();
+    Masc_mcp.Keeper_metrics.(to_string SkipIdleWakeResumed) ~labels:la ();
   Prom.inc_counter
-    Prom.metric_keeper_skip_idle_wake_resumed ~labels:la ();
+    Masc_mcp.Keeper_metrics.(to_string SkipIdleWakeResumed) ~labels:la ();
   let b_after =
     Prom.metric_value_or_zero
-      Prom.metric_keeper_skip_idle_wake_resumed ~labels:lb ()
+      Masc_mcp.Keeper_metrics.(to_string SkipIdleWakeResumed) ~labels:lb ()
   in
   check (float 0.001) "keeper_b counter unchanged" 0.0
     (b_after -. b_before)
@@ -363,6 +410,15 @@ let () =
         `Quick test_cycle_continues_on_skip_busy;
       test_case "Emit -> cycle continues" `Quick test_cycle_continues_on_emit;
       test_case "Skip_idle -> cycle pauses" `Quick test_cycle_pauses_on_skip_idle;
+    ];
+    "visibility_gate", [
+      test_case "unobserved idle emit delays dispatch" `Quick
+        test_visibility_gate_delays_unobserved_idle_emit;
+      test_case "pending signal bypasses no-consumer delay" `Quick
+        test_visibility_gate_allows_pending_signal;
+      test_case "visible consumer bypasses delay" `Quick
+        test_visibility_gate_allows_visible_consumer;
+      test_case "busy decision is preserved" `Quick test_visibility_gate_preserves_busy;
     ];
     "board_wakeup_selection", [
       test_case "generic board activity is capped"

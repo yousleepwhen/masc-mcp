@@ -5,6 +5,10 @@ type auth_change =
   | Auth_enabled
   | Require_token_enabled
 
+type token_lifetime =
+  | With_expiry
+  | Long_lived
+
 type t = {
   base_path : string;
   auth_config_path : string;
@@ -16,24 +20,7 @@ type t = {
   dashboard_url : string;
   mcp_url : string;
   mcp_token_env_var : string;
-  codex_server_name : string;
-  codex_token_env_var : string;
-  codex_login_supported : bool;
 }
-
-let codex_server_name = "masc"
-
-let codex_token_env_var = "MASC_MCP_TOKEN"
-
-let mcp_token_env_var_for_agent = function
-  | "claude" -> "MASC_CLAUDE_MCP_TOKEN"
-  | "gemini" -> "MASC_GEMINI_MCP_TOKEN"
-  | "codex" | "codex-mcp-client" -> codex_token_env_var
-  | _ -> codex_token_env_var
-
-let is_local_mcp_client_agent = function
-  | "claude" | "gemini" | "codex" | "codex-mcp-client" -> true
-  | _ -> false
 
 let rng_initialized = Atomic.make false
 
@@ -87,18 +74,18 @@ let ensure_required_bearer_auth ~base_path ~agent_name =
     Auth.save_auth_config base_path { cfg with require_token = true };
     Ok Require_token_enabled)
 
-let mint ~base_path ~host ~port ~agent_name ~role () =
+let create_token_for_lifetime = function
+  | With_expiry -> Auth.create_token
+  | Long_lived -> Auth.create_token_without_expiry
+
+let mint ~base_path ~host ~port ~agent_name ~role ~token_env_var
+    ~token_lifetime () =
   ensure_rng_initialized ();
   let base_path = normalize_base_path base_path in
   match ensure_required_bearer_auth ~base_path ~agent_name with
   | Error err -> Error err
   | Ok auth_change -> (
-      let create_token =
-        if is_local_mcp_client_agent agent_name then
-          Auth.create_token_without_expiry
-        else
-          Auth.create_token
-      in
+      let create_token = create_token_for_lifetime token_lifetime in
       match create_token base_path ~agent_name ~role with
       | Error err -> Error err
       | Ok (bearer_token, cred) ->
@@ -123,16 +110,12 @@ let mint ~base_path ~host ~port ~agent_name ~role () =
               raw_token_file;
               dashboard_url;
               mcp_url;
-              mcp_token_env_var = mcp_token_env_var_for_agent cred.agent_name;
-              codex_server_name;
-              codex_token_env_var;
-              codex_login_supported = false;
+              mcp_token_env_var = token_env_var;
             })
 
 let to_yojson report =
-  `Assoc
+  Tool_args.ok_assoc
     [
-      ("status", `String "ok");
       ("base_path", `String report.base_path);
       ("auth_config_path", `String report.auth_config_path);
       ("auth_change", `String (auth_change_to_string report.auth_change));
@@ -145,21 +128,10 @@ let to_yojson report =
       ( "mcp_client",
         `Assoc
           [
-            ("server_name", `String report.codex_server_name);
+            ("server_name", `String "masc");
             ("agent_name", `String report.agent_name);
             ("auth_model", `String "bearer_token_env");
             ("token_env_var", `String report.mcp_token_env_var);
-          ] );
-      ( "codex_mcp",
-        `Assoc
-          [
-            ("server_name", `String report.codex_server_name);
-            ("auth_model", `String "bearer_token_env");
-            ("token_env_var", `String report.codex_token_env_var);
-            ("login_supported", `Bool report.codex_login_supported);
-            ( "login_note",
-              `String
-                "`codex mcp login` is OAuth-only; masc-mcp uses bearer token auth." );
           ] );
     ]
 
@@ -195,15 +167,8 @@ let render_text report =
       render_shell report;
       "";
       "mcp_client:";
-      Printf.sprintf "- server_name: %s" report.codex_server_name;
+      Printf.sprintf "- server_name: %s" "masc";
       Printf.sprintf "- agent_name: %s" report.agent_name;
       Printf.sprintf "- token_env_var: %s" report.mcp_token_env_var;
       "- auth_model: bearer_token_env";
-      "";
-      "codex_mcp:";
-      Printf.sprintf "- server_name: %s" report.codex_server_name;
-      Printf.sprintf "- token_env_var: %s" report.codex_token_env_var;
-      "- auth_model: bearer_token_env";
-      "- login_supported: no";
-      "- note: `codex mcp login` is OAuth-only; use the exported bearer token instead.";
     ]

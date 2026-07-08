@@ -40,17 +40,22 @@ module Tempo : sig
   val default_interval_seconds : float
 end
 
-(** {1 Decision TTL} *)
-
-module Decision : sig
-  val ttl_seconds : float
-end
-
 (** {1 Cache} *)
 
 module Cache : sig
   val max_entry_size : int
   val max_entries : int
+end
+
+(** {1 Executor / Domain Pool} *)
+
+module Executor : sig
+  val domain_count_override : unit -> int option
+  (** Optional override for the shared Eio executor domain count.
+
+      Reads [MASC_EXECUTOR_DOMAIN_COUNT].  Unset, non-integer, zero, and
+      negative values return [None], letting {!Domain_pool} choose its
+      recommended count. *)
 end
 
 (** {1 Task claim} *)
@@ -75,10 +80,6 @@ module Relay : sig
   val target_agent : string
 end
 
-module Cli : sig
-  val default_agent : string
-end
-
 (** {1 Spawn} *)
 
 module Spawn : sig
@@ -97,16 +98,9 @@ module Local_runtime : sig
   val mcp_url : unit -> string
 end
 
-module Llama = Local_runtime
-(** Backward-compatible alias for {!Local_runtime}. *)
-
 module Ollama : sig
   val server_url : string
   val default_model : string
-end
-
-module Glm : sig
-  val server_url : string
 end
 
 (** {1 Cancellation tokens} *)
@@ -122,12 +116,6 @@ module Voice : sig
   val default_port : int
   val http_request_timeout_sec : float
   val audio_test_tone_timeout_sec : float
-end
-
-(** {1 Subsystem timeout defaults} *)
-
-module Timeout : sig
-  val gcloud_auth_sec : float
 end
 
 (** {1 Message GC} *)
@@ -194,11 +182,37 @@ end
 module Goal_janitor : sig
   val enabled : unit -> bool
   val interval_seconds : float
+  val auto_stagnant_days : unit -> int
+  (** [auto_stagnant_days ()] = [MASC_GOAL_JANITOR_AUTO_STAGNATE_DAYS]
+      or default [7].  Drops auto-generated Active goals (title suffix
+      [" (auto)"]) sooner than the 30-day manual threshold. *)
 end
 
 module Approval_janitor : sig
   val enabled : unit -> bool
   val interval_seconds : float
+end
+
+(** {1 Keeper max-turn watchdog (RFC-0109 P4)} *)
+
+module Keeper_max_turn_watchdog : sig
+  val timeout_sec_opt : unit -> float option
+  (** [timeout_sec_opt ()] returns the keeper-level max-turn wall-clock
+      budget when [MASC_KEEPER_MAX_TURN_WATCHDOG_TIMEOUT_SEC] is set to
+      a positive number, or [None] when the env var is unset / zero /
+      negative.
+
+      When [Some t] is returned, the supervisor races each keeper's
+      [Keeper_keepalive.run_heartbeat_loop] against
+      [Eio.Time.sleep ctx.clock t] via [Eio.Fiber.first]. Timer expiry
+      cancels the keepalive fiber and stamps [Stale_turn_timeout
+      "max_turn_watchdog"] on the registry so [sweep_and_recover]
+      restarts the keeper instead of treating the cancellation as a
+      clean stop.
+
+      Default: [None] (disabled). Recommended live value: [600.0]
+      (10 minutes). Set lower for aggressive sangsu-style stuck
+      recovery, higher for long-running research keepers. *)
 end
 
 (** {1 Slot scheduling} *)
@@ -237,7 +251,8 @@ end
 (** {1 Tool surface} *)
 
 module Tools : sig
-  val dispatch_v2_enabled : bool
+  (* RFC-0084 host-config-cleanup-J — [val dispatch_v2_enabled : bool]
+     removed alongside the [MASC_DISPATCH_V2] feature flag. *)
   val full_surface_enabled : unit -> bool
   val list_page_size : unit -> int
   val timeout_default_sec : unit -> float
@@ -263,17 +278,6 @@ module Rate_bucket : sig
   (** Per-agent requests per second ([MASC_AGENT_RATE_LIMIT], default [20.0]). *)
   val agent_burst : int
   (** Per-agent burst capacity ([MASC_AGENT_RATE_BURST], default [50]). *)
-end
-
-(** {1 Per-agent rate limit bucket}
-
-    Lower-rate token bucket applied per bearer token.  Configured via
-    [MASC_AGENT_RATE_LIMIT] (req/s, default 30) and [MASC_AGENT_RATE_BURST]
-    (burst, default 60). *)
-
-module Agent_rate_bucket : sig
-  val rate : float
-  val burst : int
 end
 
 (** {1 Worker / local runtime} *)
@@ -323,6 +327,8 @@ module Dashboard : sig
   val shell_timeout_sec : float
   val shell_light_timeout_sec : float
   val render_timeout_sec : float
+  val full_health_refresh_timeout_sec : float
+  val full_health_critical_failure_threshold : int
 end
 
 (** {1 Internal timers / cache TTLs} *)

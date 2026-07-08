@@ -109,10 +109,10 @@ let strict_unknown_tool_denial_count ~agent_name ~tool_class =
 
 let keeper_strict_auth_regression_tools =
   [
-    "keeper_shell";
-    "keeper_bash";
+    "tool_search_files";
+    "tool_execute";
     "keeper_task_claim";
-    "keeper_fs_read";
+    "tool_read_file";
     "keeper_board_search";
     "keeper_tools_list";
   ]
@@ -184,11 +184,11 @@ let test_auth_config_saved_private () =
 
 let test_create_credential () =
   let dir = setup_test_room () in
-  let result = Auth.create_token dir ~agent_name:"claude" ~role:Masc_domain.Worker in
+  let result = Auth.create_token dir ~agent_name:"agent_llm_a" ~role:Masc_domain.Worker in
   cleanup_test_room dir;
   match result with
   | Ok (raw_token, cred) ->
-      check string "agent_name matches" "claude" cred.agent_name;
+      check string "agent_name matches" "agent_llm_a" cred.agent_name;
       check bool "role is Worker" true (cred.role = Masc_domain.Worker);
       check int "raw token is 64 chars" 64 (String.length raw_token);
       check int "stored token is 64 chars" 64 (String.length cred.token)
@@ -200,10 +200,10 @@ let test_credential_saved_private () =
   Fun.protect
     ~finally:(fun () -> cleanup_test_room dir)
     (fun () ->
-      match Auth.create_token dir ~agent_name:"claude" ~role:Masc_domain.Worker with
+      match Auth.create_token dir ~agent_name:"agent_llm_a" ~role:Masc_domain.Worker with
       | Ok _ ->
           check int "credential mode 0600" 0o600
-            (permission_bits (Auth.credential_file dir "claude"))
+            (permission_bits (Auth.credential_file dir "agent_llm_a"))
       | Error e ->
           fail
             (Printf.sprintf "create_token should succeed: %s"
@@ -220,15 +220,15 @@ let test_room_secret_saved_private () =
 
 let test_verify_token () =
   let dir = setup_test_room () in
-  let create_result = Auth.create_token dir ~agent_name:"claude" ~role:Masc_domain.Admin in
+  let create_result = Auth.create_token dir ~agent_name:"agent_llm_a" ~role:Masc_domain.Admin in
   let verify_result = match create_result with
-    | Ok (raw_token, _) -> Auth.verify_token dir ~agent_name:"claude" ~token:raw_token
+    | Ok (raw_token, _) -> Auth.verify_token dir ~agent_name:"agent_llm_a" ~token:raw_token
     | Error e -> Error e
   in
   cleanup_test_room dir;
   match create_result, verify_result with
   | Ok _, Ok cred ->
-      check string "verified agent matches" "claude" cred.agent_name;
+      check string "verified agent matches" "agent_llm_a" cred.agent_name;
       check bool "verified role matches" true (cred.role = Masc_domain.Admin)
   | Ok _, Error e ->
       fail (Printf.sprintf "verify_token should succeed: %s" (Masc_domain.masc_error_to_string e))
@@ -237,9 +237,9 @@ let test_verify_token () =
 
 let test_verify_wrong_token () =
   let dir = setup_test_room () in
-  let create_result = Auth.create_token dir ~agent_name:"claude" ~role:Masc_domain.Worker in
+  let create_result = Auth.create_token dir ~agent_name:"agent_llm_a" ~role:Masc_domain.Worker in
   let verify_result = match create_result with
-    | Ok _ -> Auth.verify_token dir ~agent_name:"claude" ~token:"wrongtoken"
+    | Ok _ -> Auth.verify_token dir ~agent_name:"agent_llm_a" ~token:"wrongtoken"
     | Error e -> Error e
   in
   cleanup_test_room dir;
@@ -256,10 +256,10 @@ let test_verify_wrong_token () =
 
 let test_verify_token_reports_token_owner_on_agent_mismatch () =
   let dir = setup_test_room () in
-  let create_result = Auth.create_token dir ~agent_name:"codex" ~role:Masc_domain.Worker in
+  let create_result = Auth.create_token dir ~agent_name:"agent_code" ~role:Masc_domain.Worker in
   let verify_result =
     match create_result with
-    | Ok (raw_token, _) -> Auth.verify_token dir ~agent_name:"gemini" ~token:raw_token
+    | Ok (raw_token, _) -> Auth.verify_token dir ~agent_name:"provider_f" ~token:raw_token
     | Error e -> Error e
   in
   cleanup_test_room dir;
@@ -268,10 +268,10 @@ let test_verify_token_reports_token_owner_on_agent_mismatch () =
       let rendered = Masc_domain.masc_error_to_string (Masc_domain.Auth (Masc_domain.Auth_error.Unauthorized msg)) in
       check bool "mismatch message names token owner" true
         (String.contains rendered '('
-         && contains_substring rendered "bearer token belongs to codex");
+         && contains_substring rendered "bearer token belongs to agent_code");
       check bool "mismatch message explains fix" true
         (contains_substring rendered
-           "masc-mcp login --agent gemini --role worker --shell")
+           "masc-mcp login --agent provider_f --role worker --shell")
   | Ok _, Ok _ ->
       fail "verify_token should fail when token owner and requested agent differ"
   | Ok _, Error e ->
@@ -317,17 +317,17 @@ let test_resolve_agent_from_token () =
 
 let test_list_credentials () =
   let dir = setup_test_room () in
-  let _ = Auth.create_token dir ~agent_name:"claude" ~role:Masc_domain.Admin in
-  let _ = Auth.create_token dir ~agent_name:"gemini" ~role:Masc_domain.Worker in
-  let _ = Auth.create_token dir ~agent_name:"codex" ~role:Masc_domain.Worker in
+  let _ = Auth.create_token dir ~agent_name:"agent_llm_a" ~role:Masc_domain.Admin in
+  let _ = Auth.create_token dir ~agent_name:"provider_f" ~role:Masc_domain.Worker in
+  let _ = Auth.create_token dir ~agent_name:"agent_code" ~role:Masc_domain.Worker in
   let creds = Auth.list_credentials dir in
   cleanup_test_room dir;
   check int "3 credentials" 3 (List.length creds)
 
 let test_delete_credential () =
   let dir = setup_test_room () in
-  let _ = Auth.create_token dir ~agent_name:"claude" ~role:Masc_domain.Worker in
-  Auth.delete_credential dir "claude";
+  let _ = Auth.create_token dir ~agent_name:"agent_llm_a" ~role:Masc_domain.Worker in
+  Auth.delete_credential dir "agent_llm_a";
   let creds = Auth.list_credentials dir in
   cleanup_test_room dir;
   check int "0 credentials after delete" 0 (List.length creds)
@@ -521,7 +521,7 @@ let test_load_credential_missing_keeper_alias_stays_quiet () =
   check string "missing keeper alias emits no parse noise" ""
     (String.trim stderr_output)
 
-let test_verify_token_dashboard_legacy_alias_fallback () =
+let test_verify_token_rejects_dashboard_dev_legacy_alias () =
   let dir = setup_test_room () in
   let result =
     match Auth.create_token dir ~agent_name:"dashboard-dev" ~role:Masc_domain.Admin with
@@ -531,13 +531,11 @@ let test_verify_token_dashboard_legacy_alias_fallback () =
   in
   cleanup_test_room dir;
   match result with
-  | Ok cred ->
-      check string "legacy dashboard token owner" "dashboard-dev" cred.agent_name
+  | Ok cred -> fail (Printf.sprintf "unexpected credential owner: %s" cred.agent_name)
   | Error e ->
-      fail
-        (Printf.sprintf
-           "dashboard should accept legacy dashboard-dev credential: %s"
-           (Masc_domain.masc_error_to_string e))
+      let rendered = Masc_domain.masc_error_to_string e in
+      check bool "legacy dashboard-dev bearer rejected for dashboard" true
+        (contains_substring rendered "bearer token belongs to dashboard-dev")
 
 let test_save_raw_token_credential_uses_provided_token () =
   let dir = setup_test_room () in
@@ -562,6 +560,27 @@ let test_save_raw_token_credential_uses_provided_token () =
         (Printf.sprintf
            "provided raw token should verify after save_raw_token_credential: %s"
            (Masc_domain.masc_error_to_string e))
+
+let test_save_raw_token_credential_in_eio_runtime () =
+  let dir = setup_test_room () in
+  let raw_token = "runtime-admin-token" in
+  Fun.protect
+    ~finally:(fun () -> cleanup_test_room dir)
+    (fun () ->
+      with_eio_runtime (fun () ->
+        match
+          Auth.save_raw_token_credential dir ~agent_name:"bootstrap-admin"
+            ~role:Masc_domain.Admin ~raw_token
+        with
+        | Ok cred ->
+            check string "saved credential owner" "bootstrap-admin" cred.agent_name;
+            check int "credential mode 0600" 0o600
+              (permission_bits (Auth.credential_file dir "bootstrap-admin"))
+        | Error e ->
+            fail
+              (Printf.sprintf
+                 "save_raw_token_credential should work inside Eio runtime: %s"
+                 (Masc_domain.masc_error_to_string e))))
 
 let test_ensure_keeper_credential_uses_per_keeper_token () =
   let dir = setup_test_room () in
@@ -674,12 +693,11 @@ let test_ensure_keeper_credential_archives_dual_identity_bare () =
       check bool "canonical credential remains" true
         (Sys.file_exists canonical_path))
 
-(* PR-3b2: bare-form file may also be a redirect stub (PR #10440
-   pattern -- {"redirect_to": "<uuid>.json"}) rather than a direct
-   credential. After PR-3b1 starvation, even redirect stubs are dead
-   references. The generalised archive_bare_for_canonical archives
-   them too. This is the production shape for all 8 keepers in
-   ~/.masc/auth/agents/ as of 2026-04-27. *)
+(* PR-3b2: a bare-form file that is a redirect stub aiming at a UUID
+   *different* from the canonical credential's UUID is an orphan and
+   must be archived. Under γ (ping-pong fix 2026-05-14) this case is
+   still archived; only the alive-alias case
+   (test_archive_bare_skips_alive_alias) survives. *)
 let test_ensure_keeper_credential_archives_redirect_stub_bare () =
   let dir = setup_test_room () in
   Fun.protect
@@ -723,6 +741,331 @@ let test_ensure_keeper_credential_no_archive_when_no_bare () =
       check bool "no archive directory created on clean state" false
         (Sys.file_exists archive))
 
+(* γ regression guard (ping-pong fix 2026-05-14): when the bare-form
+   file is a legitimate short-form alias written by
+   ensure_credential_alias (#10440) -- i.e. a redirect stub pointing
+   to the *same* UUID file as the canonical credential -- the boot
+   sweep must keep it. Without this, every boot archives the alias
+   and the alias writer immediately re-creates it, producing the
+   331-epoch .archive/ accumulation observed on prod 2026-05-14. *)
+let test_archive_bare_skips_alive_alias () =
+  let dir = setup_test_room () in
+  Fun.protect
+    ~finally:(fun () -> cleanup_test_room dir)
+    (fun () ->
+      ignore
+        (Auth.enable_auth dir ~require_token:true
+           ~agent_name:"bootstrap-admin");
+      (match
+         Auth.ensure_keeper_credential dir
+           ~agent_name:"keeper-sangsu-agent"
+       with
+       | Ok _ -> ()
+       | Error e -> fail (Masc_domain.masc_error_to_string e));
+      (match
+         Auth.ensure_credential_alias dir
+           ~canonical_name:"keeper-sangsu-agent"
+           ~alias_name:"sangsu"
+       with
+       | Ok () -> ()
+       | Error e -> fail (Masc_domain.masc_error_to_string e));
+      let bare_path = Auth.credential_file dir "sangsu" in
+      check bool "alias written by ensure_credential_alias" true
+        (Sys.file_exists bare_path);
+      (match
+         Auth.ensure_keeper_credential dir
+           ~agent_name:"keeper-sangsu-agent"
+       with
+       | Ok _ -> ()
+       | Error e -> fail (Masc_domain.masc_error_to_string e));
+      check bool "alive alias survives second boot" true
+        (Sys.file_exists bare_path);
+      check bool "alive alias NOT archived" false
+        (archive_contains dir "sangsu.json"))
+
+let test_prune_archive_retains_recent_and_drops_old () =
+  let dir = setup_test_room () in
+  Fun.protect
+    ~finally:(fun () -> cleanup_test_room dir)
+    (fun () ->
+      let archive_root = Filename.concat (Auth.auth_dir dir) ".archive" in
+      Fs_compat.mkdir_p archive_root;
+      let now = int_of_float (Unix.gettimeofday ()) in
+      let make_epoch epoch =
+        let path = Filename.concat archive_root (string_of_int epoch) in
+        Fs_compat.mkdir_p path;
+        Auth.save_private_text_file
+          (Filename.concat path "victim.json") "{}";
+        path
+      in
+      let recent = make_epoch (now - (2 * 86400)) in
+      let aged = make_epoch (now - (60 * 86400)) in
+      let kept, pruned =
+        Auth.prune_archive ~base_path:dir ~retention_days:30 ~min_keep:1
+      in
+      check bool "recent epoch dir survives" true (Sys.file_exists recent);
+      check bool "aged epoch dir pruned" false (Sys.file_exists aged);
+      check int "kept count" 1 kept;
+      check int "pruned count" 1 pruned)
+
+(* Direct repeatability guard for the 331-epoch ping-pong: simulate
+   five boot cycles (ensure_keeper_credential + ensure_credential_alias)
+   and assert the .archive/ directory never materialises. A regression
+   that re-introduces unconditional archiving would create one epoch
+   dir per loop iteration and fail this test deterministically. *)
+let test_no_ping_pong_across_repeated_boots () =
+  let dir = setup_test_room () in
+  Fun.protect
+    ~finally:(fun () -> cleanup_test_room dir)
+    (fun () ->
+      ignore
+        (Auth.enable_auth dir ~require_token:true
+           ~agent_name:"bootstrap-admin");
+      for _ = 1 to 5 do
+        (match
+           Auth.ensure_keeper_credential dir
+             ~agent_name:"keeper-sangsu-agent"
+         with
+         | Ok _ -> ()
+         | Error e -> fail (Masc_domain.masc_error_to_string e));
+        (match
+           Auth.ensure_credential_alias dir
+             ~canonical_name:"keeper-sangsu-agent"
+             ~alias_name:"sangsu"
+         with
+         | Ok () -> ()
+         | Error e -> fail (Masc_domain.masc_error_to_string e))
+      done;
+      let bare_path = Auth.credential_file dir "sangsu" in
+      check bool "alias survives 5 boot cycles" true
+        (Sys.file_exists bare_path);
+      check bool ".archive/ never created" false
+        (Sys.file_exists (archive_dir_of dir));
+      let audit =
+        Auth.bare_alias_audit
+          ~base_path:dir
+          ~canonical_names:["keeper-sangsu-agent"]
+      in
+      check int "audit alive_aliases=1" 1 audit.alive_aliases;
+      check int "audit dead_bares=0" 0 audit.dead_bares;
+      check int "audit no_bares=0" 0 audit.no_bares)
+
+(* Surface assertion: [bare_alias_audit] mirrors counts into the
+   Prometheus gauges so every scrape (not only the boot INFO line)
+   exposes the current alive/dead/no_bare split. A regression that
+   stops emitting the gauges fails this test even if the in-process
+   return value is still correct. *)
+let test_bare_alias_audit_emits_prometheus_gauges () =
+  let dir = setup_test_room () in
+  Fun.protect
+    ~finally:(fun () -> cleanup_test_room dir)
+    (fun () ->
+      ignore
+        (Auth.enable_auth dir ~require_token:true
+           ~agent_name:"bootstrap-admin");
+      (match
+         Auth.ensure_keeper_credential dir
+           ~agent_name:"keeper-sangsu-agent"
+       with
+       | Ok _ -> ()
+       | Error e -> fail (Masc_domain.masc_error_to_string e));
+      (match
+         Auth.ensure_credential_alias dir
+           ~canonical_name:"keeper-sangsu-agent" ~alias_name:"sangsu"
+       with
+       | Ok () -> ()
+       | Error e -> fail (Masc_domain.masc_error_to_string e));
+      let _ : Auth.bare_alias_audit_result =
+        Auth.bare_alias_audit ~base_path:dir
+          ~canonical_names:["keeper-sangsu-agent"]
+      in
+      let read state =
+        Masc_mcp.Prometheus.metric_value_or_zero
+          Masc_mcp.Prometheus.metric_auth_bare_alias
+          ~labels:[("state", state)]
+          ()
+      in
+      check (float 0.0001) "alive gauge = 1" 1.0 (read "alive");
+      check (float 0.0001) "dead gauge = 0" 0.0 (read "dead");
+      check (float 0.0001) "no_bare gauge = 0" 0.0 (read "no_bare"))
+
+let test_bare_alias_audit_classifies_states () =
+  let dir = setup_test_room () in
+  Fun.protect
+    ~finally:(fun () -> cleanup_test_room dir)
+    (fun () ->
+      ignore
+        (Auth.enable_auth dir ~require_token:true
+           ~agent_name:"bootstrap-admin");
+      (* alive: canonical minted + alias written *)
+      (match
+         Auth.ensure_keeper_credential dir
+           ~agent_name:"keeper-alive-agent"
+       with
+       | Ok _ -> ()
+       | Error e -> fail (Masc_domain.masc_error_to_string e));
+      (match
+         Auth.ensure_credential_alias dir
+           ~canonical_name:"keeper-alive-agent" ~alias_name:"alive"
+       with
+       | Ok () -> ()
+       | Error e -> fail (Masc_domain.masc_error_to_string e));
+      (* dead: canonical exists but bare points to a stale UUID *)
+      (match
+         Auth.ensure_keeper_credential dir
+           ~agent_name:"keeper-dead-agent"
+       with
+       | Ok _ -> ()
+       | Error e -> fail (Masc_domain.masc_error_to_string e));
+      Auth.save_private_text_file
+        (Auth.credential_file dir "dead")
+        {|{ "redirect_to": "stale-uuid.json" }|};
+      (* no_bare: canonical exists, no bare file written *)
+      (match
+         Auth.ensure_keeper_credential dir
+           ~agent_name:"keeper-orphan-agent"
+       with
+       | Ok _ -> ()
+       | Error e -> fail (Masc_domain.masc_error_to_string e));
+      let audit =
+        Auth.bare_alias_audit ~base_path:dir
+          ~canonical_names:
+            [ "keeper-alive-agent"
+            ; "keeper-dead-agent"
+            ; "keeper-orphan-agent"
+            ]
+      in
+      check int "alive=1" 1 audit.alive_aliases;
+      check int "dead=1" 1 audit.dead_bares;
+      check int "no_bare=1" 1 audit.no_bares)
+
+let test_prune_archive_honors_min_keep () =
+  let dir = setup_test_room () in
+  Fun.protect
+    ~finally:(fun () -> cleanup_test_room dir)
+    (fun () ->
+      let archive_root = Filename.concat (Auth.auth_dir dir) ".archive" in
+      Fs_compat.mkdir_p archive_root;
+      let now = int_of_float (Unix.gettimeofday ()) in
+      let aged_paths =
+        List.init 3 (fun i ->
+          let epoch = now - (60 * 86400) - i in
+          let path = Filename.concat archive_root (string_of_int epoch) in
+          Fs_compat.mkdir_p path;
+          path)
+      in
+      let kept, pruned =
+        Auth.prune_archive ~base_path:dir ~retention_days:30 ~min_keep:5
+      in
+      List.iter
+        (fun p ->
+          check bool "aged dir retained because of min_keep" true
+            (Sys.file_exists p))
+        aged_paths;
+      check int "all aged kept (under min_keep)" 3 kept;
+      check int "nothing pruned" 0 pruned)
+
+(* Audit-derived HOLE A close: each archive_bare_for_canonical dispatch
+   branch increments masc_auth_bare_alias_outcome_total with the matching
+   outcome label. Without this counter the boot snapshot gauge cannot show
+   per-call archive frequency, only end-state. *)
+let test_archive_bare_outcome_counter_increments_per_branch () =
+  let dir = setup_test_room () in
+  Fun.protect
+    ~finally:(fun () -> cleanup_test_room dir)
+    (fun () ->
+      ignore
+        (Auth.enable_auth dir ~require_token:true
+           ~agent_name:"bootstrap-admin");
+      let read outcome =
+        Masc_mcp.Prometheus.metric_value_or_zero
+          Masc_mcp.Prometheus.metric_auth_bare_alias_outcome_total
+          ~labels:[("outcome", outcome)]
+          ()
+      in
+      let ensure name =
+        match Auth.ensure_keeper_credential dir ~agent_name:name with
+        | Ok _ -> ()
+        | Error e -> fail (Masc_domain.masc_error_to_string e)
+      in
+      (* absent branch — first boot of a clean keeper *)
+      let absent_before = read "absent" in
+      ensure "keeper-gamma-agent";
+      check (float 0.0001) "absent += 1"
+        (absent_before +. 1.0) (read "absent");
+      (* alive_skip branch — alias written, then re-boot *)
+      ensure "keeper-alpha-agent";
+      (match
+         Auth.ensure_credential_alias dir
+           ~canonical_name:"keeper-alpha-agent" ~alias_name:"alpha"
+       with
+       | Ok () -> ()
+       | Error e -> fail (Masc_domain.masc_error_to_string e));
+      let alive_before = read "alive_skip" in
+      ensure "keeper-alpha-agent";
+      check (float 0.0001) "alive_skip += 1"
+        (alive_before +. 1.0) (read "alive_skip");
+      (* dead_archive branch — bare stub aimed at stale UUID *)
+      ensure "keeper-beta-agent";
+      Auth.save_private_text_file
+        (Auth.credential_file dir "beta")
+        {|{ "redirect_to": "stale-uuid.json" }|};
+      let dead_before = read "dead_archive" in
+      ensure "keeper-beta-agent";
+      check (float 0.0001) "dead_archive += 1"
+        (dead_before +. 1.0) (read "dead_archive"))
+
+(* Audit-derived HOLE B close: the periodic audit fiber increments
+   masc_auth_bare_alias_audit_ticks_total once per tick. Injecting a 50ms
+   interval lets us prove the heartbeat exists without a 60s wait. *)
+let test_bare_alias_audit_fiber_emits_heartbeat () =
+  let dir = setup_test_room () in
+  Fun.protect
+    ~finally:(fun () ->
+      Unix.putenv "MASC_AUTH_BARE_ALIAS_AUDIT_INTERVAL_S" "";
+      cleanup_test_room dir)
+    (fun () ->
+      Unix.putenv "MASC_AUTH_BARE_ALIAS_AUDIT_INTERVAL_S" "0.05";
+      ignore
+        (Auth.enable_auth dir ~require_token:true
+           ~agent_name:"bootstrap-admin");
+      (match
+         Auth.ensure_keeper_credential dir
+           ~agent_name:"keeper-heartbeat-agent"
+       with
+       | Ok _ -> ()
+       | Error e -> fail (Masc_domain.masc_error_to_string e));
+      let read () =
+        Masc_mcp.Prometheus.metric_value_or_zero
+          Masc_mcp.Prometheus.metric_auth_bare_alias_audit_ticks_total
+          ()
+      in
+      let baseline = read () in
+      Eio_main.run (fun env ->
+        let clock = Eio.Stdenv.clock env in
+        match
+          Eio.Time.with_timeout clock 0.3 (fun () ->
+            Eio.Switch.run (fun sw ->
+              Auth.start_bare_alias_audit_fiber
+                ~sw
+                ~clock
+                ~base_path:dir
+                ~canonical_names_fn:(fun () ->
+                  ["keeper-heartbeat-agent"]);
+              (* sleep longer than the outer timeout so the timeout
+                 cancels the switch (and thus the periodic fiber). *)
+              Eio.Time.sleep clock 1.0;
+              Ok ())
+          )
+        with
+        | Ok () -> ()
+        | Error `Timeout -> ());
+      let observed = read () -. baseline in
+      check bool
+        (Printf.sprintf "fiber emitted >= 3 ticks (observed=%.0f)" observed)
+        true
+        (observed >= 3.0))
+
 let test_ensure_keeper_credential_reuses_persisted_raw_token_when_env_mismatched () =
   let dir = setup_test_room () in
   Fun.protect
@@ -735,9 +1078,9 @@ let test_ensure_keeper_credential_reuses_persisted_raw_token_when_env_mismatched
       let raw_token_path =
         Filename.concat (Auth.auth_dir dir) "keeper-masc-improver-agent.token"
       in
-      let shared_raw_token = "shared-codex-token" in
+      let shared_raw_token = "shared-agent_code-token" in
       let _ =
-        Auth.save_raw_token_credential dir ~agent_name:"codex-mcp-client"
+        Auth.save_raw_token_credential dir ~agent_name:"agent_code-mcp-client"
           ~role:Masc_domain.Admin ~raw_token:shared_raw_token
       in
       let reused_result =
@@ -836,7 +1179,7 @@ let test_auth_disabled_allows_all () =
 let test_auth_enabled_requires_token () =
   let dir = setup_test_room () in
   let _ = Auth.enable_auth dir ~require_token:true ~agent_name:"test-admin" in
-  let result = Auth.check_permission dir ~agent_name:"claude" ~token:None ~permission:Masc_domain.CanClaimTask in
+  let result = Auth.check_permission dir ~agent_name:"agent_llm_a" ~token:None ~permission:Masc_domain.CanClaimTask in
   cleanup_test_room dir;
   match result with
   | Ok () -> fail "should require token"
@@ -846,10 +1189,10 @@ let test_auth_enabled_requires_token () =
 let test_auth_enabled_with_valid_token () =
   let dir = setup_test_room () in
   let _ = Auth.enable_auth dir ~require_token:true ~agent_name:"test-admin" in
-  let create_result = Auth.create_token dir ~agent_name:"claude" ~role:Masc_domain.Worker in
+  let create_result = Auth.create_token dir ~agent_name:"agent_llm_a" ~role:Masc_domain.Worker in
   let check_result = match create_result with
     | Ok (raw_token, _) ->
-        Auth.check_permission dir ~agent_name:"claude" ~token:(Some raw_token) ~permission:Masc_domain.CanClaimTask
+        Auth.check_permission dir ~agent_name:"agent_llm_a" ~token:(Some raw_token) ~permission:Masc_domain.CanClaimTask
     | Error e -> Error e
   in
   cleanup_test_room dir;
@@ -879,9 +1222,8 @@ let test_authorize_unknown_masc_tool_strict_worker_allowed () =
   let result =
     match create_result with
     | Ok (raw_token, _) ->
-        with_env "MASC_TOOL_AUTH_STRICT" "1" (fun () ->
-            Auth.authorize_tool dir ~agent_name:"worker_agent" ~token:(Some raw_token)
-              ~tool_name:"masc_unknown_tool")
+        Auth.authorize_tool dir ~agent_name:"worker_agent" ~token:(Some raw_token)
+          ~tool_name:"masc_unknown_tool"
     | Error e -> Error e
   in
   cleanup_test_room dir;
@@ -900,9 +1242,8 @@ let test_authorize_unknown_non_masc_tool_strict_denied () =
   let result =
     match create_result with
     | Ok (raw_token, _) ->
-        with_env "MASC_TOOL_AUTH_STRICT" "1" (fun () ->
-            Auth.authorize_tool dir ~agent_name:"worker_agent" ~token:(Some raw_token)
-              ~tool_name:"external_unknown_tool")
+        Auth.authorize_tool dir ~agent_name:"worker_agent" ~token:(Some raw_token)
+          ~tool_name:"external_unknown_tool"
     | Error e -> Error e
   in
   cleanup_test_room dir;
@@ -915,33 +1256,57 @@ let test_authorize_unknown_non_masc_tool_strict_denied () =
            ~agent_name:"worker_agent" ~tool_class:"external")
   | Error e -> fail (Printf.sprintf "wrong error: %s" (Masc_domain.masc_error_to_string e))
 
-let test_authorize_unknown_canonical_tool_strict_worker_allowed () =
-  (* #10205 finding 1: lock the [internal_tool_prefixes] vocabulary
-     (masc_, decision., experiment., client.) so a future refactor
-     that drops one silently is caught here.  Each prefix's
-     unmapped tool must pass strict-mode check for a Worker. *)
-  let prefixes_with_unlisted_tool = [
-    "masc_unlisted_tool";
-    "decision.unlisted_tool";
-    "experiment.unlisted_tool";
-    "client.unlisted_tool";
-  ] in
+let test_authorize_unknown_masc_prefix_strict_worker_allowed () =
+  let prefixes_with_unlisted_tool = [ "masc_unlisted_tool" ] in
   let dir = setup_test_room () in
   let _ = Auth.enable_auth dir ~require_token:true ~agent_name:"test-admin" in
   let create_result = Auth.create_token dir ~agent_name:"worker_agent" ~role:Masc_domain.Worker in
   let result =
     match create_result with
     | Ok (raw_token, _) ->
-        with_env "MASC_TOOL_AUTH_STRICT" "1" (fun () ->
-            List.fold_left
-              (fun acc tool_name ->
-                 match acc with
-                 | Error _ as e -> e
-                 | Ok () ->
-                     Auth.authorize_tool dir ~agent_name:"worker_agent"
-                       ~token:(Some raw_token) ~tool_name)
-              (Ok ())
-              prefixes_with_unlisted_tool)
+        List.fold_left
+          (fun acc tool_name ->
+             match acc with
+             | Error _ as e -> e
+             | Ok () ->
+                 Auth.authorize_tool dir ~agent_name:"worker_agent"
+                   ~token:(Some raw_token) ~tool_name)
+          (Ok ())
+          prefixes_with_unlisted_tool
+    | Error e -> Error e
+  in
+  cleanup_test_room dir;
+  match result with
+  | Ok () -> ()
+  | Error e -> fail (Masc_domain.masc_error_to_string e)
+
+let test_authorize_retired_dotted_tool_prefixes_strict_denied () =
+  let retired_unlisted_tools =
+    [ "decision.unlisted_tool"; "experiment.unlisted_tool"; "client.unlisted_tool" ]
+  in
+  let dir = setup_test_room () in
+  let _ = Auth.enable_auth dir ~require_token:true ~agent_name:"test-admin" in
+  let create_result = Auth.create_token dir ~agent_name:"worker_agent" ~role:Masc_domain.Worker in
+  let result =
+    match create_result with
+    | Ok (raw_token, _) ->
+        List.fold_left
+          (fun acc tool_name ->
+             match acc with
+             | Error _ as e -> e
+             | Ok () ->
+               (match
+                  Auth.authorize_tool
+                    dir
+                    ~agent_name:"worker_agent"
+                    ~token:(Some raw_token)
+                    ~tool_name
+                with
+                | Error (Masc_domain.Auth (Masc_domain.Auth_error.Forbidden _)) -> Ok ()
+                | Ok () -> fail ("unexpected allow: " ^ tool_name)
+                | Error e -> Error e))
+          (Ok ())
+          retired_unlisted_tools
     | Error e -> Error e
   in
   cleanup_test_room dir;
@@ -958,15 +1323,14 @@ let test_authorize_known_keeper_tool_strict_worker_allowed () =
   let result =
     match create_result with
     | Ok (raw_token, _) ->
-        with_env "MASC_TOOL_AUTH_STRICT" "1" (fun () ->
-            List.fold_left
-              (fun acc tool_name ->
-                 match acc with
-                 | Error _ as e -> e
-                 | Ok () ->
-                     Auth.authorize_tool dir ~agent_name:"keeper-analyst-agent"
-                       ~token:(Some raw_token) ~tool_name)
-              (Ok ()) keeper_strict_auth_regression_tools)
+        List.fold_left
+          (fun acc tool_name ->
+             match acc with
+             | Error _ as e -> e
+             | Ok () ->
+                 Auth.authorize_tool dir ~agent_name:"keeper-analyst-agent"
+                   ~token:(Some raw_token) ~tool_name)
+          (Ok ()) keeper_strict_auth_regression_tools
     | Error e -> Error e
   in
   cleanup_test_room dir;
@@ -976,15 +1340,23 @@ let test_authorize_known_keeper_tool_strict_worker_allowed () =
 
 let test_authorize_tool_v2_known_keeper_tool_strict_worker_allowed () =
   let result =
-    with_env "MASC_TOOL_AUTH_STRICT" "1" (fun () ->
-        List.fold_left
-          (fun acc tool_name ->
-             match acc with
-             | Error _ as e -> e
-             | Ok () ->
-                 Auth.authorize_tool_for_role ~agent_name:"keeper-analyst-agent"
-                   ~role:Masc_domain.Worker ~tool_name)
-          (Ok ()) keeper_strict_auth_regression_tools)
+    List.fold_left
+      (fun acc tool_name ->
+         match acc with
+         | Error _ as e -> e
+         | Ok () ->
+             Auth.authorize_tool_for_role ~agent_name:"keeper-analyst-agent"
+               ~role:Masc_domain.Worker ~tool_name)
+      (Ok ()) keeper_strict_auth_regression_tools
+  in
+  match result with
+  | Ok () -> ()
+  | Error e -> fail (Masc_domain.masc_error_to_string e)
+
+let test_authorize_tool_v2_unknown_internal_worker_allowed () =
+  let result =
+    Auth.authorize_tool_for_role ~agent_name:"worker_agent"
+      ~role:Masc_domain.Worker ~tool_name:"masc_unlisted_tool"
   in
   match result with
   | Ok () -> ()
@@ -992,12 +1364,24 @@ let test_authorize_tool_v2_known_keeper_tool_strict_worker_allowed () =
 
 let test_authorize_tool_v2_unknown_keeper_prefix_strict_denied () =
   let result =
-    with_env "MASC_TOOL_AUTH_STRICT" "1" (fun () ->
-        Auth.authorize_tool_for_role ~agent_name:"keeper-analyst-agent"
-          ~role:Masc_domain.Worker ~tool_name:"keeper_totally_fake")
+    Auth.authorize_tool_for_role ~agent_name:"keeper-analyst-agent"
+      ~role:Masc_domain.Worker ~tool_name:"keeper_totally_fake"
   in
   match result with
   | Ok () -> fail "unknown keeper_* prefix should not bypass strict auth"
+  | Error (Masc_domain.Auth (Masc_domain.Auth_error.Forbidden _)) -> ()
+  | Error e -> fail (Printf.sprintf "wrong error: %s" (Masc_domain.masc_error_to_string e))
+
+let test_tool_auth_strict_env_cannot_disable_fail_closed () =
+  let result =
+    with_env "MASC_TOOL_AUTH_STRICT" "0" (fun () ->
+        check bool "strict mode remains enabled" true
+          (Auth.is_tool_auth_strict_enabled ());
+        Auth.authorize_tool_for_role ~agent_name:"worker"
+          ~role:Masc_domain.Worker ~tool_name:"external_totally_fake")
+  in
+  match result with
+  | Ok () -> fail "MASC_TOOL_AUTH_STRICT=0 must deny unknown external tools"
   | Error (Masc_domain.Auth (Masc_domain.Auth_error.Forbidden _)) -> ()
   | Error e -> fail (Printf.sprintf "wrong error: %s" (Masc_domain.masc_error_to_string e))
 
@@ -1079,20 +1463,42 @@ let () =
         test_verify_token_keeper_alias_archives_dual_identity_bare;
       test_case "load_credential missing keeper alias stays quiet" `Quick
         test_load_credential_missing_keeper_alias_stays_quiet;
-      test_case "verify_token dashboard legacy alias fallback" `Quick
-        test_verify_token_dashboard_legacy_alias_fallback;
+      test_case "verify_token rejects dashboard-dev legacy alias" `Quick
+        test_verify_token_rejects_dashboard_dev_legacy_alias;
       test_case "save_raw_token_credential uses provided token" `Quick
         test_save_raw_token_credential_uses_provided_token;
+      test_case "save_raw_token_credential works in eio runtime" `Quick
+        test_save_raw_token_credential_in_eio_runtime;
       test_case "ensure_keeper_credential uses per-keeper token" `Quick
         test_ensure_keeper_credential_uses_per_keeper_token;
       test_case "ensure_keeper_credential reuses uuid" `Quick
         test_ensure_keeper_credential_reuses_uuid;
+      test_case
+        "ensure_keeper_credential reuses persisted raw token when env mismatched"
+        `Quick
+        test_ensure_keeper_credential_reuses_persisted_raw_token_when_env_mismatched;
       test_case "ensure_keeper_credential archives dual-identity bare" `Quick
         test_ensure_keeper_credential_archives_dual_identity_bare;
       test_case "ensure_keeper_credential archives redirect stub bare" `Quick
         test_ensure_keeper_credential_archives_redirect_stub_bare;
       test_case "ensure_keeper_credential no archive on clean state" `Quick
         test_ensure_keeper_credential_no_archive_when_no_bare;
+      test_case "archive_bare skips alive alias (γ)" `Quick
+        test_archive_bare_skips_alive_alias;
+      test_case "no ping-pong across repeated boots" `Quick
+        test_no_ping_pong_across_repeated_boots;
+      test_case "bare_alias_audit classifies states" `Quick
+        test_bare_alias_audit_classifies_states;
+      test_case "bare_alias_audit emits Prometheus gauges" `Quick
+        test_bare_alias_audit_emits_prometheus_gauges;
+      test_case "prune_archive drops aged epoch dirs" `Quick
+        test_prune_archive_retains_recent_and_drops_old;
+      test_case "prune_archive honors min_keep" `Quick
+        test_prune_archive_honors_min_keep;
+      test_case "archive_bare outcome counter per branch" `Quick
+        test_archive_bare_outcome_counter_increments_per_branch;
+      test_case "bare_alias_audit fiber emits heartbeat" `Quick
+        test_bare_alias_audit_fiber_emits_heartbeat;
     ];
     "permissions", [
       test_case "worker permissions" `Quick test_worker_permissions;
@@ -1108,14 +1514,20 @@ let () =
         `Quick test_authorize_unknown_masc_tool_strict_worker_allowed;
       test_case "strict unknown non-masc tool denied"
         `Quick test_authorize_unknown_non_masc_tool_strict_denied;
-      test_case "strict unknown canonical tool allows worker"
-        `Quick test_authorize_unknown_canonical_tool_strict_worker_allowed;
+      test_case "strict unknown masc prefix allows worker"
+        `Quick test_authorize_unknown_masc_prefix_strict_worker_allowed;
+      test_case "strict retired dotted tool prefixes denied"
+        `Quick test_authorize_retired_dotted_tool_prefixes_strict_denied;
       test_case "strict known keeper tool allows worker"
         `Quick test_authorize_known_keeper_tool_strict_worker_allowed;
       test_case "strict v2 known keeper tool allows worker"
         `Quick test_authorize_tool_v2_known_keeper_tool_strict_worker_allowed;
+      test_case "strict v2 unknown internal tool allows worker"
+        `Quick test_authorize_tool_v2_unknown_internal_worker_allowed;
       test_case "strict v2 fake keeper prefix denied"
         `Quick test_authorize_tool_v2_unknown_keeper_prefix_strict_denied;
+      test_case "tool auth strict env cannot disable fail-closed"
+        `Quick test_tool_auth_strict_env_cannot_disable_fail_closed;
       test_case "declared tool permission from Tool_spec"
         `Quick test_declared_tool_permission_from_tool_spec;
     ];

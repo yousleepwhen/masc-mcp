@@ -22,7 +22,7 @@ type token_source =
   | Per_keeper_token_file
       (** [<base_path>/.masc/auth/<agent_name>.token] raw token; used as
           a fallback when [MASC_MCP_TOKEN] is unset (e.g. CLI subprocesses
-          like codex_cli/gemini_cli/kimi_cli that callback into masc-mcp
+          like cli_tool_a/cli_tool_b/cli_tool_c that callback into masc-mcp
           but do not inherit the parent process env). Phase A F1. *)
   | Provider_api_key_env of { var_name : string }
       (** Provider-specific HTTPS API key, e.g.
@@ -62,10 +62,10 @@ val resolve :
     2. If [provider_kind] is an HTTP variant with a default api-key
        env, resolve from that env.  Missing env yields
        [Api_key_env_unset].
-    3. If [provider_kind] is [Codex_cli] AND
+    3. If [provider_kind] is [Cli_tool_a] AND
        [policy_requires_runtime_mcp = false] (a degenerate combo we
        still classify), yield [Bound_actor_provider_mismatch].
-    4. CLI providers (Claude_code/Gemini_cli/Kimi_cli) without a
+    4. CLI providers (Cli_tool_d/Cli_tool_b/Cli_tool_c) without a
        runtime-mcp policy fall through to [MASC_MCP_TOKEN] env. *)
 
 val emit_resolution_trace :

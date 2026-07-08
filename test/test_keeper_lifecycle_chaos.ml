@@ -43,18 +43,32 @@ let get_phase name =
   | None -> Alcotest.fail ("keeper not found: " ^ name)
   | Some e -> e.phase
 
+let paired_lifecycle_origin = function
+  | KSM.Compaction_started
+  | KSM.Compaction_completed _
+  | KSM.Compaction_failed _
+  | KSM.Handoff_started
+  | KSM.Handoff_completed _
+  | KSM.Handoff_failed _ -> R.Post_turn_lifecycle
+  | _ -> R.Generic_dispatch
+
 let dispatch name event =
-  match R.dispatch_event ~base_path:bp name event with
+  match R.dispatch_event ~base_path:bp ~origin:(paired_lifecycle_origin event) name event with
   | Ok tr -> tr
   | Error e -> Alcotest.fail (KSM.transition_error_to_string e)
 
 let dispatch_expect_rejected name event =
-  match R.dispatch_event ~base_path:bp name event with
+  match R.dispatch_event ~base_path:bp ~origin:(paired_lifecycle_origin event) name event with
   | Ok _ -> Alcotest.fail "expected rejected transition"
-  (* R.dispatch_event returns a closed transition_error type:
-     rejected terminal keepers yield either Terminal_state or Invalid_transition. *)
+  (* R.dispatch_event returns a closed transition_error type.  Terminal
+     keepers always yield Terminal_state (apply_event guards on
+     terminal phase before invoking check_event_precondition).  This
+     helper is also reused for non-terminal rejection-path tests
+     elsewhere — accept Invalid_transition / Precondition_violation
+     so a single helper covers both regimes. *)
   | Error (KSM.Terminal_state _) -> ()
   | Error (KSM.Invalid_transition _) -> ()
+  | Error (KSM.Precondition_violation _) -> ()
 
 let setup name =
   R.clear ();
@@ -64,7 +78,7 @@ let setup name =
 let crash_keeper name =
   let tr = dispatch name (KSM.Heartbeat_failed { consecutive = 5; max_allowed = 5 }) in
   check phase_t "failing" KSM.Failing tr.new_phase;
-  let tr = dispatch name (KSM.Fiber_terminated { outcome = "crash" }) in
+  let tr = dispatch name (KSM.Fiber_terminated { outcome = "crash"; provider_id = None; http_status = None }) in
   check phase_t "crashed" KSM.Crashed tr.new_phase
 
 let restart_keeper name ~attempt =
@@ -89,7 +103,7 @@ let test_heartbeat_failure_cascade () =
   check phase_t "2nd failure → failing" KSM.Failing tr.new_phase;
 
   let tr = dispatch "hb-fail"
-    (KSM.Fiber_terminated { outcome = "heartbeat exceeded max" }) in
+    (KSM.Fiber_terminated { outcome = "heartbeat exceeded max"; provider_id = None; http_status = None }) in
   check phase_t "fiber death → crashed" KSM.Crashed tr.new_phase
 
 let test_supervisor_restart_cycle () =
@@ -126,7 +140,7 @@ let test_compaction_crash_recovery () =
   check phase_t "2nd compact → running" KSM.Running tr.new_phase;
 
   let tr = dispatch "compact"
-    (KSM.Fiber_terminated { outcome = "cascading OOM" }) in
+    (KSM.Fiber_terminated { outcome = "cascading OOM"; provider_id = None; http_status = None }) in
   check phase_t "fiber death → crashed" KSM.Crashed tr.new_phase;
   restart_keeper "compact" ~attempt:1
 
@@ -183,7 +197,7 @@ let test_full_chaos_sequence () =
     (KSM.Handoff_completed { new_trace_id = "trace-fail"; generation = 1 }) in
   check phase_t "handoff complete → running" KSM.Running tr.new_phase;
   let tr = dispatch "chaos"
-    (KSM.Fiber_terminated { outcome = "handoff target unreachable" }) in
+    (KSM.Fiber_terminated { outcome = "handoff target unreachable"; provider_id = None; http_status = None }) in
   check phase_t "post-handoff crash" KSM.Crashed tr.new_phase;
 
   restart_keeper "chaos" ~attempt:1;

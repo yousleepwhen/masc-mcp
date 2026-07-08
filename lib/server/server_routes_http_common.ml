@@ -69,9 +69,6 @@ let get_cookie_value = Server_mcp_transport_http.get_cookie_value
 
 let get_session_id_any = Server_mcp_transport_http.get_session_id_any
 
-let legacy_messages_endpoint_url =
-  Server_mcp_transport_http.legacy_messages_endpoint_url
-
 let get_protocol_version = Server_mcp_transport_http.get_protocol_version
 
 let get_protocol_version_for_session =
@@ -102,10 +99,6 @@ let state_net_opt = function
       | None -> Eio_context.get_net_opt ())
   | None -> Eio_context.get_net_opt ()
 
-let contains_substring ~needle haystack =
-  (* Empty needle returns false (unlike String_util's Re-compatible
-     empty=true).  Guard preserves the prior caller contract. *)
-  String.length needle > 0 && String_util.contains_substring haystack needle
 
 let host_header_has_forbidden_authority_chars value =
   let has_forbidden_char =
@@ -115,7 +108,7 @@ let host_header_has_forbidden_authority_chars value =
         | _ -> false)
       value
   in
-  has_forbidden_char || contains_substring ~needle:"://" value
+  has_forbidden_char || String_util.contains_substring value "://"
 
 let parse_host_port host_header default_host default_port =
   match host_header with
@@ -132,9 +125,6 @@ let parse_host_port host_header default_host default_port =
           (host, port)
         with Eio.Cancel.Cancelled _ as e -> raise e | _ -> (default_host, default_port))
 
-(** Utility: string prefix check *)
-let starts_with ~prefix s = String.starts_with ~prefix s
-
 (** Allowed origins for DNS rebinding protection.
     SSOT: [Masc_network_defaults.allowed_origins]. *)
 let allowed_origins = Masc_network_defaults.allowed_origins
@@ -144,7 +134,7 @@ let validate_origin (request : Httpun.Request.t) =
   match Httpun.Headers.get request.headers "origin" with
   | None -> true
   | Some origin ->
-      List.exists (fun prefix -> starts_with ~prefix origin) allowed_origins
+      List.exists (fun prefix -> String.starts_with ~prefix origin) allowed_origins
 
 (** Check if client accepts SSE *)
 let accepts_sse (request : Httpun.Request.t) =
@@ -159,15 +149,7 @@ let accepts_streamable_mcp (request : Httpun.Request.t) =
 let request_force_json_response =
   Server_mcp_transport_http.request_force_json_response
 
-let allow_legacy_accept = Server_mcp_transport_http.allow_legacy_accept
-
 let classify_mcp_accept = Server_mcp_transport_http.classify_mcp_accept
-
-let legacy_accept_warning_headers =
-  Server_mcp_transport_http.legacy_accept_warning_headers
-
-let legacy_transport_deprecation_headers =
-  Server_mcp_transport_http.legacy_transport_deprecation_headers
 
 let force_json_response = Server_mcp_transport_http.force_json_response
 
@@ -244,18 +226,14 @@ let stop_sse_session = Server_mcp_transport_http.stop_sse_session
 let close_all_sse_connections =
   Server_mcp_transport_http.close_all_sse_connections
 
-let handle_get_mcp ?legacy_messages_endpoint
-    ?(profile = Server_mcp_transport_http.Full) ?sse_kind request reqd =
+let handle_get_mcp ?(profile = Server_mcp_transport_http.Full) ?sse_kind
+    request reqd =
   Server_mcp_transport_http.handle_get_mcp ~deps:(mcp_transport_http_deps ())
-    ?legacy_messages_endpoint ~profile ?sse_kind request reqd
+    ~profile ?sse_kind request reqd
 
 let handle_get_operator_mcp request reqd =
   Server_mcp_transport_http.handle_get_operator_mcp
     ~deps:(mcp_transport_http_deps ()) request reqd
-
-let handle_post_messages request reqd =
-  Server_mcp_transport_http.handle_post_messages ~deps:(mcp_transport_http_deps ())
-    request reqd
 
 let handle_post_mcp ?(profile = Server_mcp_transport_http.Full) request reqd =
   Server_mcp_transport_http.handle_post_mcp ~deps:(mcp_transport_http_deps ())

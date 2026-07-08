@@ -12,13 +12,16 @@ import {
   updateKeeperCascade,
   type CascadeInvalidProfile,
 } from '../api/dashboard'
-import type { KeeperConfigUpdatePayload } from '../api/dashboard'
+import type { KeeperConfigUpdatePayload, SandboxProfile, SandboxNetworkMode, SharedMemoryScope } from '../api/dashboard'
 import type { GoalTreeNode, KeeperConfig, KeeperHookSlot } from '../types'
 import type { KeeperConfigLoadStatus } from './keeper-detail-source'
 import { formatTokens, formatPct, formatCost } from '../lib/format-number'
 import { isVerifierRoleKeeper } from '../lib/keeper-utils'
+import { MISSING_DATA_DASH } from '../lib/format-string'
 import { showToast } from './common/toast'
 import { ErrorState, LoadingState } from './common/feedback-state'
+import { BTN_FILLED_BASE } from './common/button-filled-base'
+import { FIELD_STYLE_BASE } from './common/field-style-base'
 import { KeeperToolAccessSummary } from './keeper-tool-access'
 import { createAsyncResource, loaded } from '../lib/async-state'
 import { SetupGuideCard } from './setup-guide-card'
@@ -123,9 +126,6 @@ function buildPayload(draft: EditDraft, orig: KeeperConfig): KeeperConfigUpdateP
 }
 
 // Runtime config draft for sandbox/proactive/compaction/handoff inline editing
-export type SandboxProfile = 'local' | 'docker'
-export type SandboxNetworkMode = 'none' | 'inherit'
-export type SharedMemoryScope = 'disabled' | 'room'
 
 export type RuntimeDraft = {
   sandbox_profile: SandboxProfile
@@ -338,7 +338,7 @@ function BoolRow({ label, value }: { label: string; value: boolean }) {
 }
 
 function formatSeconds(value: number): string {
-  if (!Number.isFinite(value)) return '--'
+  if (!Number.isFinite(value)) return MISSING_DATA_DASH
   return value >= 60 ? `${(value / 60).toFixed(1)}m` : `${value.toFixed(value % 1 === 0 ? 0 : 1)}s`
 }
 
@@ -390,10 +390,10 @@ function BoolBadge({ value }: { value: boolean }) {
 
 function formatHookDestructiveTools(value: string[] | string): string {
   if (Array.isArray(value)) {
-    return value.length > 0 ? value.join(', ') : '--'
+    return value.length > 0 ? value.join(', ') : MISSING_DATA_DASH
   }
   const text = value.trim()
-  return text !== '' ? text : '--'
+  return text !== '' ? text : MISSING_DATA_DASH
 }
 
 function ModelList({ models }: { models: string[] }) {
@@ -401,6 +401,15 @@ function ModelList({ models }: { models: string[] }) {
   return html`
     <div class="flex flex-wrap gap-1.5">
       ${models.map(m => html`<span class="inline-flex items-center py-1 px-2.5 rounded-[var(--r-1)] text-2xs font-semibold bg-[var(--accent-10)] text-accent-fg border border-[var(--accent-20)] shadow-1 hover:bg-[var(--accent-20)] transition-colors cursor-default">${m}</span>`)}
+    </div>
+  `
+}
+
+function RuntimeList({ runtimes }: { runtimes: string[] }) {
+  if (runtimes.length === 0) return html`<span class="text-2xs text-text-muted italic">none</span>`
+  return html`
+    <div class="flex flex-wrap gap-1.5">
+      ${runtimes.map((_runtime, index) => html`<span class="inline-flex items-center py-1 px-2.5 rounded-[var(--r-1)] text-2xs font-semibold bg-[var(--accent-10)] text-accent-fg border border-[var(--accent-20)] shadow-1 hover:bg-[var(--accent-20)] transition-colors cursor-default">runtime ${index + 1}</span>`)}
     </div>
   `
 }
@@ -444,8 +453,6 @@ function PromptBlock({
     </div>
   `
 }
-
-const fieldStyle = 'w-full bg-card/60 backdrop-blur-sm text-text-strong text-sm border border-card-border rounded-[var(--r-1)] py-2 px-3 font-sans focus:outline-none focus:border-accent-fg/50 focus:ring-1 focus:ring-accent-fg/50 transition-[border-color,box-shadow] duration-[var(--t-med)] shadow-inset'
 
 // ── Inline editing components for runtime config ────────
 
@@ -534,7 +541,7 @@ function EditTextarea({ field, label, rows = 3 }: { field: keyof EditDraft; labe
       <div class="text-2xs font-semibold uppercase tracking-wider text-text-muted mb-1.5">${label}</div>
       <textarea
         aria-label=${label}
-        class="${fieldStyle} resize-y custom-scrollbar"
+        class="${FIELD_STYLE_BASE} resize-y custom-scrollbar"
         rows=${rows}
         value=${val}
         onInput=${(e: Event) => updateDraft(field, (e.target as HTMLTextAreaElement).value)}
@@ -544,8 +551,8 @@ function EditTextarea({ field, label, rows = 3 }: { field: keyof EditDraft; labe
 }
 
 function sandboxAnchorText(c: KeeperConfig): string {
-  const basePath = c.sandbox_environment?.base_path ?? '--'
-  const projectRoot = c.sandbox_environment?.project_root ?? '--'
+  const basePath = c.sandbox_environment?.base_path ?? MISSING_DATA_DASH
+  const projectRoot = c.sandbox_environment?.project_root ?? MISSING_DATA_DASH
   return `상대 allowed_paths는 project root ${projectRoot} 기준으로 해석됩니다. config base path는 ${basePath} 입니다.`
 }
 
@@ -560,14 +567,14 @@ function cascadeCatalogSourceLabel(c: KeeperConfig): string {
     case 'toml':
       return 'cascade.toml (authoring SSOT)'
     case 'json':
-      return 'cascade.json (direct runtime edit)'
+      return 'retired json source'
     default:
-      return '--'
+      return MISSING_DATA_DASH
   }
 }
 
 function cascadeSelectionSummary(c: KeeperConfig): string {
-  const selected = c.execution.selected_cascade_name || '--'
+  const selected = c.execution.selected_cascade_name || MISSING_DATA_DASH
   const canonical = c.execution.selected_cascade_canonical || selected
   const manifest = c.sources.default_manifest_path
   const catalog = c.sources.cascade_catalog_source_path
@@ -699,27 +706,26 @@ export function KeeperConfigPanel({ keeperName }: { keeperName: string }) {
     }
   }
 
-  const btnBase = 'py-1.5 px-4 rounded-[var(--r-1)] text-xs font-semibold cursor-pointer border-none'
-
   // --- Toolbar ---
   const toolbar = html`
     <div class="flex gap-2 items-center mb-3">
       ${isEditing ? html`
         <button type="button"
-          class="${btnBase} bg-[var(--color-status-ok)] text-[var(--color-fg-on-ok)]"
+          class="${BTN_FILLED_BASE} bg-[var(--color-status-ok)] text-[var(--color-fg-on-ok)]"
           onClick=${saveConfig}
           disabled=${isSaving}
         >${isSaving ? '저장 중...' : '저장'}</button>
         <button type="button"
-          class="${btnBase} bg-[var(--color-bg-hover)] text-[var(--color-fg-secondary)]"
+          class="${BTN_FILLED_BASE} bg-[var(--color-bg-hover)] text-[var(--color-fg-secondary)]"
           onClick=${cancelEdit}
           disabled=${isSaving}
         >취소</button>
       ` : html`
         <button type="button"
-          class="${btnBase} bg-[var(--purple)] text-[var(--color-bg-0)]"
+          class="${BTN_FILLED_BASE} bg-[var(--purple)] text-[var(--color-bg-0)]"
+          title="편집: 프롬프트 편집 모드로 진입합니다"
           onClick=${enterEditMode}
-        >편집</button>
+        >편집하기</button>
       `}
       ${saveError.value ? html`<span class="text-xs text-[var(--color-status-err)]" role="alert">${saveError.value}</span>` : null}
     </div>
@@ -798,7 +804,7 @@ export function KeeperConfigPanel({ keeperName }: { keeperName: string }) {
 
       <${Callout}
         title="편집 가능 범위"
-        body="여기서 저장되는 값은 keeper 프롬프트와 live override 계층입니다. 활성 모델은 keeper별 설정이 아니라 resolved config root의 cascade.json 해석 결과로 결정됩니다."
+        body="여기서 저장되는 값은 keeper 프롬프트와 live override 계층입니다. 활성 런타임은 keeper별 설정이 아니라 resolved config root의 cascade.toml 해석 결과로 결정됩니다."
       />
 
       ${promptSection}
@@ -853,8 +859,8 @@ export function KeeperConfigPanel({ keeperName }: { keeperName: string }) {
             </label>
           `
         : null}
-      <${ConfigRow} label="기본 소스" value=${c.sources.default_source_kind || '--'} />
-      <${ConfigRow} label="선택 cascade" value=${c.execution.selected_cascade_name || '--'} />
+      <${ConfigRow} label="기본 소스" value=${c.sources.default_source_kind || MISSING_DATA_DASH} />
+      <${ConfigRow} label="선택 cascade" value=${c.execution.selected_cascade_name || MISSING_DATA_DASH} />
       ${c.execution.selected_cascade_canonical
         && c.execution.selected_cascade_canonical !== c.execution.selected_cascade_name
         ? html`<${ConfigRow}
@@ -874,11 +880,6 @@ export function KeeperConfigPanel({ keeperName }: { keeperName: string }) {
         <${SectionHeader} size="xs" class="mt-2 mb-0.5">캐스케이드 카탈로그 출처</${SectionHeader}>
         <${LongText} text=${c.sources.cascade_catalog_source_path} />
       ` : null}
-      ${c.sources.cascade_runtime_json_path ? html`
-        <${SectionHeader} size="xs" class="mt-2 mb-0.5">생성된 런타임 JSON</${SectionHeader}>
-        <${LongText} text=${c.sources.cascade_runtime_json_path} />
-      ` : null}
-      <${BoolRow} label="cascade.json 직접 수정 가능" value=${c.sources.cascade_runtime_json_editable} />
       <div class="mt-1.5">
         <${SectionHeader} size="xs" class="mb-1">우선순위</${SectionHeader}>
         <${ModelList} models=${c.sources.precedence} />
@@ -889,19 +890,19 @@ export function KeeperConfigPanel({ keeperName }: { keeperName: string }) {
       </div>
 
       <${MajorSectionHeader} title="실행" />
-      <${ConfigRow} label="활성 모델" value=${c.execution.active_model || '--'} />
-      <${ConfigRow} label="provider timeout" value=${perProviderTimeoutLabel(c.execution)} />
+      <${ConfigRow} label="활성 런타임" value=${c.execution.active_model ? 'runtime' : MISSING_DATA_DASH} />
+      <${ConfigRow} label="runtime timeout" value=${perProviderTimeoutLabel(c.execution)} />
       <div class="mb-1.5 rounded-[var(--r-1)] border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-2 text-2xs leading-relaxed text-[var(--color-fg-muted)]">
-        cascade fallback 중 마지막 provider를 제외한 provider들에만 적용됩니다.
+        cascade fallback 중 마지막 runtime을 제외한 runtime들에만 적용됩니다.
       </div>
       <${BoolRow} label="검증" value=${c.execution.verify} />
       <div class="mt-1.5">
-        <${SectionHeader} size="xs" class="mb-1">모델</${SectionHeader}>
-        <${ModelList} models=${c.execution.models} />
+        <${SectionHeader} size="xs" class="mb-1">런타임 후보</${SectionHeader}>
+        <${RuntimeList} runtimes=${c.execution.models} />
       </div>
 
       <${SectionHeader} title="컴팩션" />
-      <${ConfigRow} label="프로필" value=${c.compaction.profile || '--'} />
+      <${ConfigRow} label="프로필" value=${c.compaction.profile || MISSING_DATA_DASH} />
       ${rd ? html`
         <${InlineNumberRow} label="비율 게이트 (%)" value=${Math.round(rd.compaction_ratio_gate * 100)}
           onChange=${(v: number) => updateRuntimeDraft('compaction_ratio_gate', v / 100)}
@@ -965,25 +966,25 @@ export function KeeperConfigPanel({ keeperName }: { keeperName: string }) {
         <${ConfigRow} label="sandbox_profile" value=${c.sandbox_profile ?? 'local'} />
         <${ConfigRow} label="network_mode" value=${c.network_mode ?? 'inherit'} />
 
-        <${ConfigRow} label="effective_sandbox_image" value=${c.effective_sandbox_image || '--'} />
+        <${ConfigRow} label="effective_sandbox_image" value=${c.effective_sandbox_image || MISSING_DATA_DASH} />
         <${ConfigRow} label="allowed_paths" value=${(c.allowed_paths ?? []).join(', ') || '(computed default)'} />
         <${ConfigRow} label="effective_paths" value=${(c.effective_allowed_paths ?? []).join(', ') || '(전체 허용)'} />
-        <${ConfigRow} label="private_workspace_root" value=${c.private_workspace_root || '--'} />
+        <${ConfigRow} label="private_workspace_root" value=${c.private_workspace_root || MISSING_DATA_DASH} />
       `}
 
       ${c.sandbox_environment ? html`
         <${SectionHeader} title="샌드박스 환경" />
         <${ConfigRow} label="docker_status" value=${dockerStatusLabel(c)} />
-        <${ConfigRow} label="config_base_path" value=${c.sandbox_environment.base_path || '--'} />
-        <${ConfigRow} label="project_root" value=${c.sandbox_environment.project_root || '--'} />
+        <${ConfigRow} label="config_base_path" value=${c.sandbox_environment.base_path || MISSING_DATA_DASH} />
+        <${ConfigRow} label="project_root" value=${c.sandbox_environment.project_root || MISSING_DATA_DASH} />
         <${BoolRow} label="docker_playground" value=${c.sandbox_environment.docker_playground_enabled} />
-        <${ConfigRow} label="docker_container" value=${c.sandbox_environment.docker_container_name || '--'} />
-        <${ConfigRow} label="container_playground_root" value=${c.sandbox_environment.container_playground_root || '--'} />
-        <${ConfigRow} label="sandbox_docker_image" value=${c.sandbox_environment.docker_image || '--'} />
-        <${ConfigRow} label="sandbox_memory" value=${c.sandbox_environment.memory || '--'} />
-        <${ConfigRow} label="sandbox_pids_limit" value=${String(c.sandbox_environment.pids_limit ?? '--')} />
-        <${ConfigRow} label="sandbox_tmpfs_size" value=${c.sandbox_environment.tmpfs_size || '--'} />
-        <${ConfigRow} label="sandbox_seccomp_profile" value=${c.sandbox_environment.seccomp_profile || '--'} />
+        <${ConfigRow} label="docker_container" value=${c.sandbox_environment.docker_container_name || MISSING_DATA_DASH} />
+        <${ConfigRow} label="container_playground_root" value=${c.sandbox_environment.container_playground_root || MISSING_DATA_DASH} />
+        <${ConfigRow} label="sandbox_docker_image" value=${c.sandbox_environment.docker_image || MISSING_DATA_DASH} />
+        <${ConfigRow} label="sandbox_memory" value=${c.sandbox_environment.memory || MISSING_DATA_DASH} />
+        <${ConfigRow} label="sandbox_pids_limit" value=${String(c.sandbox_environment.pids_limit ?? MISSING_DATA_DASH)} />
+        <${ConfigRow} label="sandbox_tmpfs_size" value=${c.sandbox_environment.tmpfs_size || MISSING_DATA_DASH} />
+        <${ConfigRow} label="sandbox_seccomp_profile" value=${c.sandbox_environment.seccomp_profile || MISSING_DATA_DASH} />
         <${BoolRow} label="require_rootless" value=${c.sandbox_environment.require_rootless} />
         <${BoolRow} label="require_userns" value=${c.sandbox_environment.require_userns} />
         ${c.sandbox_last_error ? html`
@@ -1015,8 +1016,8 @@ export function KeeperConfigPanel({ keeperName }: { keeperName: string }) {
       <${BoolRow} label="일시정지" value=${c.runtime.paused} />
       <${BoolRow} label="자동 부팅 등록" value=${c.runtime.registered} />
       <${BoolRow} label="킵얼라이브 실행" value=${c.runtime.keepalive_running} />
-      <${ConfigRow} label="레지스트리 상태" value=${c.runtime.registry_state || '--'} />
-      <${ConfigRow} label="파이버 상태" value=${c.runtime.fiber_health || '--'} />
+      <${ConfigRow} label="레지스트리 상태" value=${c.runtime.registry_state || MISSING_DATA_DASH} />
+      <${ConfigRow} label="파이버 상태" value=${c.runtime.fiber_health || MISSING_DATA_DASH} />
       <${BoolRow} label="프레즌스 킵얼라이브" value=${c.runtime.presence_keepalive} />
       <${ConfigRow} label="프레즌스 간격" value=${c.runtime.presence_keepalive_sec + 's'} />
 
@@ -1098,14 +1099,15 @@ export function KeeperConfigPanel({ keeperName }: { keeperName: string }) {
       ${runtimeHasChanges ? html`
         <div class="flex gap-2 items-center mt-4 mb-2 p-3 rounded-[var(--r-1)] border border-[var(--accent-30)] bg-[var(--accent-5)]">
           <button type="button"
-            class="${btnBase} bg-[var(--color-status-ok)] text-[var(--color-fg-on-ok)]"
+            class="${BTN_FILLED_BASE} bg-[var(--color-status-ok)] text-[var(--color-fg-on-ok)]"
             onClick=${saveRuntimeConfig}
             disabled=${runtimeSaving.value}
           >${runtimeSaving.value ? '저장 중...' : '런타임 설정 저장'}</button>
           <button type="button"
-            class="${btnBase} bg-[var(--color-bg-hover)] text-[var(--color-fg-secondary)]"
+            class="${BTN_FILLED_BASE} bg-[var(--color-bg-hover)] text-[var(--color-fg-secondary)]"
+            title="초기화: 변경한 런타임 설정 draft 를 서버 값으로 되돌립니다"
             onClick=${resetRuntimeDraft}
-          >초기화</button>
+          >초기화하기</button>
           <span class="text-3xs text-accent-fg">변경된 설정이 있습니다</span>
         </div>
       ` : null}

@@ -39,7 +39,7 @@ type attention_context = Dashboard_mission_assembly.attention_context = {
 
 let dedup_strings items =
   List.sort_uniq String.compare
-    (List.filter_map trim_to_option items)
+    (List.filter_map String_util.trim_to_option items)
 
 let top_item items =
   match items with
@@ -66,12 +66,15 @@ let session_communication_json session_json =
 let session_status_string session_json =
   let summary = session_summary_json session_json in
   let meta = session_meta_json session_json in
-  match trim_to_option (string_field "status" summary) with
+  match String_util.trim_to_option (string_field "status" summary) with
   | Some value -> value
   | None -> (
-      match trim_to_option (string_field "status" meta) with
+      match String_util.trim_to_option (string_field "status" meta) with
       | Some value -> value
-      | None -> trim_to_option (string_field "status" session_json) |> Option.value ~default:"unknown")
+      | None ->
+          String_util.trim_to_option (string_field "status" session_json)
+          |> Option.value
+               ~default:"<missing status field in summary / meta / session>")
 
 let session_recent_events session_json =
   list_field "recent_events" session_json
@@ -82,23 +85,23 @@ let event_detail_json event_json =
 let event_summary event_json =
   let detail = event_detail_json event_json in
   let event_type =
-    trim_to_option (string_field "event_type" event_json)
+    String_util.trim_to_option (string_field "event_type" event_json)
     |> Option.value ~default:"event"
   in
   let actor =
-    match trim_to_option (string_field "actor" detail) with
+    match String_util.trim_to_option (string_field "actor" detail) with
     | Some value -> Some value
-    | None -> trim_to_option (string_field "agent" detail)
+    | None -> String_util.trim_to_option (string_field "agent" detail)
   in
   let task_title =
-    match trim_to_option (string_field "task_title" detail) with
+    match String_util.trim_to_option (string_field "task_title" detail) with
     | Some value -> Some value
-    | None -> trim_to_option (string_field "title" detail)
+    | None -> String_util.trim_to_option (string_field "title" detail)
   in
-  let result = trim_to_option (compact_text (string_field "result" detail)) in
-  let reason = trim_to_option (compact_text (string_field "reason" detail)) in
+  let result = String_util.trim_to_option (compact_text (string_field "result" detail)) in
+  let reason = String_util.trim_to_option (compact_text (string_field "reason" detail)) in
   let output_preview =
-    trim_to_option (compact_text (string_field "output_preview" detail))
+    String_util.trim_to_option (compact_text (string_field "output_preview" detail))
   in
   match task_title, result, reason, output_preview with
   | Some title, _, _, _ ->
@@ -125,174 +128,25 @@ let creator_looks_system created_by =
 
 let session_origin_kind session_meta =
   let created_by =
-    trim_to_option (string_field "created_by" session_meta)
-    |> Option.value ~default:"unknown"
+    String_util.trim_to_option (string_field "created_by" session_meta)
+    |> Option.value ~default:"<missing created_by field>"
   in
-  trim_to_option (string_field "origin_kind" session_meta)
+  String_util.trim_to_option (string_field "origin_kind" session_meta)
   |> Option.value
        ~default:
          (match
-            trim_to_option (string_field "orchestration_mode" session_meta)
+            String_util.trim_to_option (string_field "orchestration_mode" session_meta)
             |> Option.map String.lowercase_ascii
           with
          | Some "auto" -> "system"
          | _ -> if creator_looks_system created_by then "system" else "human")
 
-let _build_session_context session_json _cards =
-  let session_id = string_field "session_id" session_json in
-  if session_id = "" then None
-  else
-    let meta = session_meta_json session_json in
-    let summary = session_summary_json session_json in
-    let team_health = session_team_health_json session_json in
-    let communication = session_communication_json session_json in
-    let recent_events = session_recent_events session_json in
-    let last_event =
-      recent_events
-      |> List.sort (fun a b ->
-             let left =
-               parse_iso_opt (trim_to_option (string_field "ts_iso" b))
-               |> Option.value ~default:0.0
-             in
-             let right =
-               parse_iso_opt (trim_to_option (string_field "ts_iso" a))
-               |> Option.value ~default:0.0
-             in
-             Float.compare left right)
-      |> function
-      | item :: _ -> Some item
-      | [] -> None
-    in
-    let session_card = None in
-    let top_attention =
-      match session_card with
-      | Some card -> (
-          match member_assoc "top_attention" card with
-          | `Null -> None
-          | value -> Some value)
-      | None -> None
-    in
-    let top_recommendation =
-      match session_card with
-      | Some card -> (
-          match member_assoc "top_recommendation" card with
-          | `Null -> None
-          | value -> Some value)
-      | None -> None
-    in
-    let operation_id = trim_to_option (string_field "operation_id" meta) in
-    let mode =
-      trim_to_option (string_field "mode" communication)
-      |> Option.value ~default:"mode n/a"
-    in
-    let broadcast_count = int_field "broadcast_count" communication in
-    let portal_count = int_field "portal_count" communication in
-    let member_names =
-      dedup_strings
-        (string_list_of_json (member_assoc "agent_names" meta)
-        @ string_list_of_json (member_assoc "active_agents" summary)
-        @ string_list_of_json (member_assoc "planned_participants" summary))
-    in
-    let seen_count = int_field "seen_agents_count" summary in
-    let planned_count =
-      let planned = string_list_of_json (member_assoc "planned_participants" summary) in
-      let explicit = List.length planned in
-      if explicit > 0 then explicit else List.length member_names
-    in
-    let counts_basis =
-      if string_list_of_json (member_assoc "planned_participants" summary) <> [] then
-        "live=recent_turns · planned=planned_participants"
-      else
-        "live=recent_turns · planned=known_members"
-    in
-    let status =
-      Dashboard_utils.session_lifecycle_of_string
-        (session_status_string session_json)
-    in
-    let is_terminal = match status with
-      | Dashboard_utils.SL_completed | SL_interrupted | SL_cancelled | SL_expired -> true
-      | SL_active | SL_running | SL_paused | SL_failed | SL_stopped | SL_unknown -> false
-    in
-    let blocker_summary =
-      if is_terminal then
-        (* Terminal sessions cannot be blocked — suppress stale blockers *)
-        None
-      else
-        match top_attention with
-        | Some attention ->
-            trim_to_option (string_field "summary" attention)
-        | None ->
-            if int_field "active_agents_count" team_health < int_field ~default:1 "required_agents" team_health
-            then
-              Some
-                (Printf.sprintf "active %d / required %d"
-                   (int_field "active_agents_count" team_health)
-                   (int_field ~default:1 "required_agents" team_health))
-            else
-              Option.bind top_recommendation (fun action ->
-                  trim_to_option (string_field "reason" action))
-    in
-    Some
-      {
-        session_id;
-        goal =
-          trim_to_option (string_field "goal" meta)
-          |> Option.value ~default:session_id;
-        created_by = trim_to_option (string_field "created_by" meta);
-        origin_kind = session_origin_kind meta;
-        namespace =
-          (match trim_to_option (string_field "project" meta) with
-           | Some _ as value -> value
-           | None -> trim_to_option (string_field "room_id" meta));
-        status;
-        health =
-          (if is_terminal then
-             (* Terminal sessions get neutral health — no false alarms *)
-             Dashboard_utils.HL_ok
-           else
-             let raw =
-               match session_card with
-               | Some card ->
-                   trim_to_option (string_field "health" card)
-                   |> Option.value ~default:"ok"
-               | None ->
-                   trim_to_option (string_field "status" team_health)
-                   |> Option.value ~default:"ok"
-             in
-             Dashboard_utils.health_level_of_string raw);
-        member_names;
-        started_at = trim_to_option (string_field "created_at_iso" meta);
-        elapsed_sec =
-          (match member_assoc "elapsed_sec" summary with
-          | `Int value -> Some value
-          | `Float value -> Some (int_of_float value)
-          | _ -> None);
-        operation_id;
-        blocker_summary;
-        last_event_at =
-          Option.bind last_event (fun json -> trim_to_option (string_field "ts_iso" json));
-        last_event_ts =
-          Option.bind last_event (fun json -> parse_iso_opt (trim_to_option (string_field "ts_iso" json)))
-          |> Option.value ~default:0.0;
-        last_event_summary =
-          (match last_event with Some value -> event_summary value | None -> "최근 session event가 없습니다.");
-        communication_summary =
-          Printf.sprintf "%s · broadcast %d · portal %d" mode broadcast_count
-            portal_count;
-        active_count = int_field "active_agents_count" team_health;
-        seen_count;
-        planned_count;
-        required_count = int_field ~default:1 "required_agents" team_health;
-        counts_basis;
-        top_attention;
-        top_recommendation;
-      }
 
 let matching_action target_type target_id actions =
   List.find_opt
     (fun action ->
       let action_target_type = string_field "target_type" action in
-      let action_target_id = trim_to_option (string_field "target_id" action) in
+      let action_target_id = String_util.trim_to_option (string_field "target_id" action) in
       String.equal action_target_type target_type
       &&
       match target_id, action_target_id with
@@ -303,15 +157,15 @@ let matching_action target_type target_id actions =
 
 let incident_action_types kind =
   match kind with
-  | "spawn_failure_present" -> [ "team_task_inject" ]
+  | "spawn_failure_present" -> [ "task_inject" ]
   | "detached_actor_present"
   | "empty_note_turn_present"
   | "low_confidence_routing"
   | "routing_escalation_present" ->
-      [ "team_note" ]
-  | "planned_worker_without_turn" -> [ "team_worker_spawn_batch"; "team_note" ]
-  | "local64_role_gap" -> [ "team_worker_spawn_batch" ]
-  | "stalled_session" -> [ "team_stop" ]
+      [ "broadcast" ]
+  | "planned_worker_without_turn" -> [ "task_inject"; "broadcast" ]
+  | "local64_role_gap" -> [ "task_inject" ]
+  | "stalled_session" -> [ "namespace_pause" ]
   | "command_issue_pressure"
   | "command_routing_confidence"
   | "command_quality_per_token"
@@ -327,9 +181,9 @@ let incident_action_types kind =
 
 let action_matches_incident incident action =
   let target_type = string_field "target_type" incident in
-  let target_id = trim_to_option (string_field "target_id" incident) in
+  let target_id = String_util.trim_to_option (string_field "target_id" incident) in
   let action_target_type = string_field "target_type" action in
-  let action_target_id = trim_to_option (string_field "target_id" action) in
+  let action_target_id = String_util.trim_to_option (string_field "target_id" action) in
   let same_target =
     String.equal action_target_type target_type
     &&
@@ -353,12 +207,12 @@ let action_matches_incident incident action =
 
 let matching_action_for_incident incident actions =
   let target_type = string_field "target_type" incident in
-  let target_id = trim_to_option (string_field "target_id" incident) in
+  let target_id = String_util.trim_to_option (string_field "target_id" incident) in
   let candidates =
     actions
     |> List.filter (fun action ->
            let action_target_type = string_field "target_type" action in
-           let action_target_id = trim_to_option (string_field "target_id" action) in
+           let action_target_id = String_util.trim_to_option (string_field "target_id" action) in
            String.equal action_target_type target_type
            &&
            match target_id, action_target_id with
@@ -381,22 +235,19 @@ let rec evidence_preview_strings json =
       fields |> List.map snd |> List.concat_map evidence_preview_strings |> dedup_strings |> take 4
   | _ -> []
 
-(* Issue #8395: [Operator_digest] canonicalizes root-level attention to
-   [target_type="root"] but also accepts the aliases "namespace" and
-   "room" via [Operator_digest_types.is_root_alias]. This predicate
-   previously compared only to the literal "room", so root-level
-   incidents (the canonical form) fell through to the public queue.
-   Delegate to the shared alias check so every root variant is treated
-   as internal attention — identical to [Dashboard_mission_assembly]. *)
+(* Issue #8395: root-level attention uses [target_type="root"].  This
+   predicate previously compared only to the literal "room", so the
+   canonical form fell through to the public queue.  Delegate to the
+   shared canonical target check used by [Dashboard_mission_assembly]. *)
 let is_internal_attention incident =
-  Operator_digest_types.is_root_alias (string_field "target_type" incident)
+  Operator_digest_types.is_root_target_type (string_field "target_type" incident)
 
 let related_sessions_for_attention incident sessions =
   let direct_session =
     ignore incident;
     []
   in
-  let actor = trim_to_option (string_field "actor" incident) in
+  let actor = String_util.trim_to_option (string_field "actor" incident) in
   let by_actor =
     match actor with
     | None -> []
@@ -424,7 +275,7 @@ let build_attention_queue incidents actions sessions =
          if kind = "" || summary = "" then None
          else
            let target_type = string_field "target_type" incident in
-           let target_id = trim_to_option (string_field "target_id" incident) in
+           let target_id = String_util.trim_to_option (string_field "target_id" incident) in
            let related_session_ids = related_sessions_for_attention incident sessions in
            let related_agent_names =
              let from_sessions =
@@ -435,7 +286,7 @@ let build_attention_queue incidents actions sessions =
              dedup_strings
                (from_sessions
                @
-               match trim_to_option (string_field "actor" incident) with
+               match String_util.trim_to_option (string_field "actor" incident) with
                | Some actor -> [ actor ]
                | None -> [])
            in
@@ -448,8 +299,8 @@ let build_attention_queue incidents actions sessions =
                     | None -> None)
              |> List.sort (fun left right ->
                     Float.compare
-                      (parse_iso_opt (Some right) |> Option.value ~default:0.0)
-                      (parse_iso_opt (Some left) |> Option.value ~default:0.0))
+                      (Dashboard_utils.parse_iso_opt (Some right) |> Option.value ~default:0.0)
+                      (Dashboard_utils.parse_iso_opt (Some left) |> Option.value ~default:0.0))
              |> function
              | value :: _ -> Some value
              | [] -> None
@@ -463,7 +314,7 @@ let build_attention_queue incidents actions sessions =
                severity;
                has_action = Option.is_some top_action;
                last_seen_ts =
-                 parse_iso_opt last_seen_at |> Option.value ~default:0.0;
+                 Dashboard_utils.parse_iso_opt last_seen_at |> Option.value ~default:0.0;
                related_session_ids;
                related_agent_names;
                json =
@@ -475,7 +326,7 @@ let build_attention_queue incidents actions sessions =
                      ("summary", `String summary);
                      ("target_type", `String target_type);
                      ("target_id", json_string_option target_id);
-                     ("top_action", option_to_json (fun value -> value) top_action);
+                     ("top_action", Json_util.option_to_yojson (fun value -> value) top_action);
                      ("related_session_ids", `List (List.map (fun value -> `String value) related_session_ids));
                      ("related_agent_names", `List (List.map (fun value -> `String value) related_agent_names));
                      ("evidence_preview", `List (List.map (fun value -> `String value) (evidence_preview_strings (member_assoc "evidence" incident))));
@@ -490,72 +341,6 @@ let build_attention_queue incidents actions sessions =
            if by_action <> 0 then by_action
            else Float.compare right.last_seen_ts left.last_seen_ts)
 
-let _build_briefs_from_sessions sessions attention_queue actions =
-  let attention_for_session session_id =
-    attention_queue
-    |> List.filter (fun attention -> List.mem session_id attention.related_session_ids)
-  in
-  sessions
-  |> List.map (fun (session : session_context) ->
-         let related_attentions = attention_for_session session.session_id in
-         let top_attention_json =
-           match related_attentions with
-           | attention :: _ -> Some (member_assoc "severity" attention.json |> ignore; attention.json)
-           | [] -> session.top_attention
-         in
-         let top_recommendation_json =
-           match session.top_recommendation with
-           | Some value -> Some value
-           | None -> (
-               match top_attention_json with
-               | Some attention -> matching_action_for_incident attention actions
-               | None -> matching_action "namespace" None actions)
-         in
-         let health_tone =
-           match top_attention_json with
-           | Some attention ->
-               string_field
-                 ~default:(Dashboard_utils.string_of_health_level session.health)
-                 "severity" attention
-           | None -> Dashboard_utils.string_of_health_level session.health
-         in
-         let related_attention_count = List.length related_attentions in
-         let sort_severity = severity_rank health_tone in
-         ( sort_severity,
-           related_attention_count,
-           session.last_event_ts,
-           `Assoc
-             [
-               ("session_id", `String session.session_id);
-               ("goal", `String session.goal);
-               ("created_by", json_string_option session.created_by);
-               ("namespace", json_string_option session.namespace);
-               ("status", `String (Dashboard_utils.string_of_session_lifecycle session.status));
-               ("health", `String (Dashboard_utils.string_of_health_level session.health));
-               ("member_names", `List (List.map (fun value -> `String value) session.member_names));
-               ("started_at", json_string_option session.started_at);
-               ("elapsed_sec", option_to_json (fun value -> `Int value) session.elapsed_sec);
-               ("operation_id", json_string_option session.operation_id);
-               ("blocker_summary", json_string_option session.blocker_summary);
-               ("last_event_at", json_string_option session.last_event_at);
-               ("last_event_summary", `String session.last_event_summary);
-               ("communication_summary", `String session.communication_summary);
-               ("active_count", `Int session.active_count);
-               ("seen_count", `Int session.seen_count);
-               ("planned_count", `Int session.planned_count);
-               ("required_count", `Int session.required_count);
-               ("counts_basis", `String session.counts_basis);
-               ("related_attention_count", `Int related_attention_count);
-               ("top_attention", option_to_json (fun value -> value) top_attention_json);
-               ("top_recommendation", option_to_json (fun value -> value) top_recommendation_json);
-             ] ) )
-  |> List.sort (fun (left_sev, left_count, left_ts, _) (right_sev, right_count, right_ts, _) ->
-         let by_count = Int.compare right_count left_count in
-         if by_count <> 0 then by_count
-         else
-           let by_severity = Int.compare right_sev left_sev in
-           if by_severity <> 0 then by_severity else Float.compare right_ts left_ts)
-  |> List.map (fun (_, _, _, json) -> json)
 
 type mission_projection = {
   generated_at : string;
@@ -733,7 +518,6 @@ let session_json ?actor ~session_id ~config ~sw
       projection.sessions
   in
   let worker_runs_json =
-    (* Team_session_store + Team_session_engine_eio removed *)
     ignore (config, session_id);
     `Null
   in
@@ -758,7 +542,7 @@ let session_json ?actor ~session_id ~config ~sw
     [
       ("generated_at", `String projection.generated_at);
       ("session_id", `String session_id);
-      ("session", option_to_json (fun value -> value) session_row_json);
+      ("session", Json_util.option_to_yojson (fun value -> value) session_row_json);
       ( "timeline",
         `List
           (match session_source_json with

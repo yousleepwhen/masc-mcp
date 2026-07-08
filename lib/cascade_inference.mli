@@ -1,12 +1,16 @@
 (** Per-cascade inference parameters — thin delegation to MASC Cascade_config.
 
     Delegates to MASC [Cascade_config.resolve_inference_params].
-    JSON caching and field extraction are handled by the local cascade module.
+    TOML rendering, caching, and field extraction are handled by the local
+    cascade module.
 
     Resolution order:
-    1. cascade.json "{name}_temperature" / "{name}_max_tokens"
-    2. cascade.json "default_temperature" / "default_max_tokens"
+    1. cascade.toml "{name}_temperature" / "{name}_max_tokens"
+    2. cascade.toml "default_temperature" / "default_max_tokens"
     3. Caller-provided fallback
+
+    max_tokens values above the resolved cascade output ceiling are reduced to
+    that ceiling with a WARN.
 
     @since v2.128.0
     @since v2.149.0 — delegated to MASC Cascade_config *)
@@ -34,24 +38,71 @@ val for_json : name:string -> Yojson.Safe.t -> t
 (** Resolve a temperature value with cascade config priority.
     Returns cascade config value if present, otherwise calls [fallback]. *)
 val resolve_temperature :
-  cascade_name:Keeper_cascade_profile.runtime_name ->
+  cascade_name:Cascade_name.t ->
   fallback:(unit -> float) ->
   float
 
 (** Resolve a max_tokens value with cascade config priority.
-    Returns cascade config value if present, otherwise calls [fallback]. *)
+    Returns cascade config value if present, otherwise calls [fallback].
+    Both cascade config values and fallback values are bounded to the
+    resolved cascade's narrowest output ceiling when one is available;
+    silent reductions emit a deduplicated WARN per
+    (cascade, source, requested, ceiling) tuple. *)
 val resolve_max_tokens :
-  cascade_name:Keeper_cascade_profile.runtime_name ->
+  cascade_name:Cascade_name.t ->
   fallback:(unit -> int) ->
   int
 
-(** Clamp max_tokens to provider ceiling.
+(** Cap a max_tokens value to the resolved cascade's narrowest output ceiling.
+
+    Use this for internally supplied runtime overrides that bypass
+    {!resolve_max_tokens}. [source] is emitted in the deduplicated WARN and
+    metric context so operators can distinguish [cascade_config], [fallback],
+    and [caller_override] clamps. *)
+val cap_max_tokens_to_cascade_ceiling :
+  cascade_name:Cascade_name.t ->
+  source:string ->
+  int ->
+  int
+
+(** Validate max_tokens against the provider ceiling before dispatch.
 
     If [provider_ceiling] is [Some ceiling] and [max_tokens > ceiling],
-    returns [ceiling]. Otherwise returns [max_tokens] unchanged.
+    returns [Ok ceiling] and emits the same WARN/metric as resolution-time
+    clamping. Still rejects non-positive [max_tokens] and non-positive provider
+    ceilings.
 
-    Clamping strategy: a smaller response is better than no response.
-    Mirrors TLA+ KeeperCoreTriad.CapabilityGate action.
+    Cascade-config, fallback, and keeper runtime override values are clamped
+    upstream by {!resolve_max_tokens} or
+    {!cap_max_tokens_to_cascade_ceiling}, so a violation here indicates
+    either a non-positive budget, an invalid provider ceiling, or a cascade
+    reload between resolve and validate.
 
-    @since Core Triad *)
-val clamp_max_tokens_to_ceiling : provider_ceiling:int option -> int -> int
+    @since DD-020. *)
+val validate_max_tokens_within_ceiling :
+  cascade_name:Cascade_name.t ->
+  provider_ceiling:int option ->
+  int ->
+  (int, Cascade_error_classify.masc_internal_error) result
+
+module For_testing : sig
+  val reset_auto_max_tokens_clamp_warnings : unit -> unit
+
+  val should_log_auto_max_tokens_clamp :
+    cascade_name:Cascade_name.t ->
+    source:string ->
+    max_tokens:int ->
+    ceiling:int ->
+    bool
+
+  (** Pure clamp helper with an explicit ceiling — bypasses
+      [Cascade_runtime.max_output_tokens_ceiling_of_cascade_name] so unit
+      tests do not need a live cascade.toml on disk. Same arithmetic and
+      same WARN dedup behavior as [resolve_max_tokens]'s internal clamp. *)
+  val clamp_with_ceiling :
+    cascade_name:Cascade_name.t ->
+    source:string ->
+    ceiling:int option ->
+    int ->
+    int
+end

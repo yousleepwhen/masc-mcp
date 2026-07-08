@@ -16,7 +16,6 @@ type keeper_snapshot = {
 
 module Decision = Dashboard_keeper_decision_log_proof
 module Failure = Dashboard_keeper_tool_failure_proof
-module Git_pr = Dashboard_keeper_git_pr_proof
 
 let status_to_string = function
   | Pass -> "pass"
@@ -34,9 +33,6 @@ let overall_status statuses =
   else Pass
 
 let clamp_float ~low ~high value = max low (min high value)
-
-let json_string_list values =
-  `List (List.map (fun value -> `String value) values)
 
 let evidence_ref ~kind ~id ~value =
   `Assoc [
@@ -153,8 +149,8 @@ let meta_feature_json
      `Assoc [
        ("keeper_count", `Int (keeper_count snapshots));
        ("meta_count", `Int (count_meta snapshots));
-       ("observed_keepers", json_string_list observed_keepers);
-       ("missing_keepers", json_string_list missing_keepers);
+       ("observed_keepers", Json_util.json_string_list observed_keepers);
+       ("missing_keepers", Json_util.json_string_list missing_keepers);
        ("read_errors", `List (keeper_read_errors snapshots));
      ]);
     ("evidence_refs", `List evidence_refs);
@@ -279,15 +275,15 @@ let persistent_turn_exchange_feature ~config ~now snapshots =
          `Float Decision.persistent_turn_window_hours );
        ( "max_latest_age_hours",
          `Float Decision.recent_turn_max_age_hours );
-       ("observed_keepers", json_string_list observed);
-       ("missing_keepers", json_string_list missing);
+       ("observed_keepers", Json_util.json_string_list observed);
+       ("missing_keepers", Json_util.json_string_list missing);
        ("read_errors", `List (keeper_read_errors snapshots));
        ("per_keeper", `List per_keeper);
      ]);
     ( "evidence_refs",
       `List [
         evidence_ref ~kind:"store" ~id:"keeper_decision_log"
-          ~value:"Keeper_types.keeper_decision_log_path";
+          ~value:"Keeper_types_support.keeper_decision_log_path";
         route_evidence "/api/v1/dashboard/execution";
       ] );
     ( "next_action",
@@ -304,7 +300,7 @@ let autonomous_tool_feature snapshots =
        meta.Keeper_types.runtime.autonomous_action_count > 0
        && meta.Keeper_types.runtime.autonomous_tool_turn_count > 0)
     ~summary_label:"keepers have autonomous action and tool-turn counters"
-    ~evidence_refs:[keeper_meta_evidence; route_evidence "/api/v1/dashboard/safe-autonomy"]
+    ~evidence_refs:[keeper_meta_evidence]
     ~next_action:
       "Run or repair keepers until each active keeper records autonomous tool-turn counters."
 
@@ -335,7 +331,7 @@ let timestamp_within_window ?window_hours ~now ts =
        top-level [json] helper clamps callers' inputs to a sane domain;
        this keeps internal logic robust if a caller bypasses the boundary. *)
     true
-  | Some hours -> now -. ts <= hours *. 3600.0
+  | Some hours -> now -. ts <= hours *. Masc_time_constants.hour
 
 let scheduled_proactive_feature ~config ?window_hours ~now snapshots =
   let decision_stats =
@@ -454,8 +450,8 @@ let scheduled_proactive_feature ~config ?window_hours ~now snapshots =
      `Assoc [
        ("keeper_count", `Int (keeper_count enabled));
        ("meta_count", `Int (count_meta enabled));
-       ("observed_keepers", json_string_list observed);
-       ("missing_keepers", json_string_list missing);
+       ("observed_keepers", Json_util.json_string_list observed);
+       ("missing_keepers", Json_util.json_string_list missing);
        ("read_errors", `List (keeper_read_errors enabled));
        ("per_keeper", `List per_keeper);
      ]);
@@ -463,7 +459,7 @@ let scheduled_proactive_feature ~config ?window_hours ~now snapshots =
       `List [
         keeper_meta_evidence;
         evidence_ref ~kind:"store" ~id:"keeper_decision_log"
-          ~value:"Keeper_types.keeper_decision_log_path";
+          ~value:"Keeper_types_support.keeper_decision_log_path";
         route_evidence "/api/v1/dashboard/execution";
       ] );
     ( "next_action",
@@ -517,7 +513,7 @@ let tool_feature_json
            else "")
           (List.length weak)
           (List.length missing)));
-    ("required_tools", json_string_list spec.required_tools);
+    ("required_tools", Json_util.json_string_list spec.required_tools);
     ("passing_tools", `List (List.map tool_stat_json passing));
     ( "weak_tools",
       `List
@@ -527,7 +523,7 @@ let tool_feature_json
                 ~failure_classes:(Failure.classes_json failure_table stat.name)
                 stat)
            weak) );
-    ("missing_tools", json_string_list missing);
+    ("missing_tools", Json_util.json_string_list missing);
     ( "keeper_evidence",
       Failure.keeper_evidence_json tool_stats
         ~keeper_names ~required_tools:spec.required_tools );
@@ -604,7 +600,6 @@ let json
       autonomous_tool_feature snapshots;
       board_reactive_feature snapshots;
       scheduled_proactive_feature ~config ?window_hours ~now snapshots;
-      Git_pr.json ~n ?window_hours ~keeper_names ();
     ]
     @ List.map
         (tool_feature_json ~success_threshold_pct ~keeper_names failure_table
@@ -660,7 +655,6 @@ let json
     ("evidence_refs",
      `List [
        route_evidence "/api/v1/dashboard/tool-quality";
-       route_evidence "/api/v1/dashboard/safe-autonomy";
        route_evidence "/api/v1/dashboard/execution";
        keeper_meta_evidence;
      ]);

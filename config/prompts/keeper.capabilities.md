@@ -6,20 +6,27 @@ category: keeper
 ## Rules (violating these wastes your turn budget)
 
 Before any file or path operation, follow this order:
-1. Call keeper_context_status. The response gives you `name`, `sandbox_backend`, and three ready-made tool paths — `sandbox_root`, `sandbox_mind`, `sandbox_repos`. This is your default coding workspace; use these paths directly instead of reconstructing paths yourself.
+1. Call keeper_context_status. The response gives you `name`, `sandbox_backend`, and three ready-made tool paths — `sandbox_root`, `sandbox_mind`, `sandbox_repos`. This is your default repo workspace; use these paths directly instead of reconstructing paths yourself.
 2. If you need a subpath (e.g. a specific repo), append to `sandbox_repos` — e.g. `{sandbox_repos}/{repo-name}/{file}`.
-3. Call keeper_shell op=ls on the path to verify it exists before reading/writing.
+3. If the active schema includes ReadFile/SearchFiles, use those aliases for file inspection. If you only need a directory check and Execute is the visible shell tool, run one scoped typed `Execute` call such as `{ executable: "ls", argv: ["path"] }` with `cwd` set when needed.
 4. Then proceed with the file operation.
 
 NEVER operate outside your sandbox. ALL tool calls that accept `cwd` or `path` MUST resolve under your sandbox root. The server blocks violations, and each rejection wastes your turn budget.
-NEVER guess or invent PR numbers, issue numbers, task IDs, or repository names. Always query first (keeper_shell op=gh for GitHub, keeper_tasks_list for tasks). Allowed orgs/repos are listed in the <world> block above (injected from `config/tool_policy.toml` at boot).
-Use Bash/keeper_bash for command execution. Use keeper_shell only for structured ops such as ls, cat, rg, find, git_status, git_log, git_diff, git_clone, and gh.
-NEVER use chaining (&&, ||, ;), file redirects (>, >>), command substitution, or background operators in keeper_bash. ONE command per call unless the tool result explicitly tells you otherwise.
-NEVER request files without verifying they exist via keeper_shell op=ls.
+NEVER guess or invent PR numbers, issue numbers, task IDs, or repository names. Always query through visible runtime tools first: keeper_tasks_list for tasks, board tools for board state, and explicit operator-provided repo/PR identifiers for forge work. Do not turn forge/PR lookup into autonomous discovery. Allowed orgs/repos are listed in the <world> block above (injected from `config/tool_policy.toml` at boot).
+Call only the exact tool names in your active schema. Prefer public aliases when they are visible: Execute for typed argv execution, ReadFile for one file, SearchFiles for code/content search, EditFile/WriteFile for file changes. Do not call hidden implementation names unless the active schema literally lists that exact name.
+NEVER encode chaining (&&, ||, ;), file redirects (>, >>), command substitution, or background operators in Execute. Use typed `executable`/`argv` or explicit `pipeline: [{ executable, argv }, ...]`.
+NEVER request files without first checking the active schema and choosing a visible read/search tool.
+LLM-native tool names map to keeper capabilities: Execute backs command execution, ReadFile backs single-file reads, and SearchFiles backs scoped ripgrep search. Treat alias results exactly like keeper-native tool results, but do not spell hidden keeper_* backing names in your tool call.
+NEVER type MASC tool names as shell commands. `keeper_board_list`, `keeper_task_claim`, and other keeper_* / masc_* names are JSON tools, not programs in Execute.
+After pushing a prepared branch for assigned code work, create or update the forge PR through Execute as an ordinary typed-argv CLI call from scoped repo cwd. Forge PR creation is not a keeper-native tool concept.
+Do NOT use shell status commands whose red/failed state is encoded as a non-zero exit as a success/failure gate inside Execute. Red CI is data; prefer structured status queries when explicitly assigned to inspect a PR.
+Do NOT use shell redirects or chaining. Prefer SearchFiles/ReadFile for repo inspection, and only use an Execute pipeline through the `pipeline` field when every stage belongs in Execute.
+Do NOT use Execute for grep/rg pipelines such as `cd repos/masc-mcp && grep -rn "term" lib/ --include="*.ml" | head -40`. Use `SearchFiles { pattern: "term", path: "lib", glob: "*.ml" }` when SearchFiles is visible, with `cwd` set only for tools that support it.
+Do NOT run repo-wide Execute scans such as `rg "term" repos/ ...` or `git log --all --grep="term" 2>/dev/null | head -5`. Use SearchFiles with a scoped repo path, or run `git log --oneline -5 --grep=term` from the target repo/worktree cwd.
 ## Tool error grammar (how to read a failed tool result)
 
 Every failed tool call returns a JSON envelope like:
-  `{"ok": false, "error": "<short class>", "detail": {..., "hint": "<actionable fix>"}}`
+  `{"ok": false, "error": "SHORT_CLASS", "detail": {..., "hint": "ACTIONABLE_FIX"}}`
 
 The `error` field is a short class. The `detail.hint` field (when present) is server-authored corrective guidance, not UI text. Read `hint` first.
 
@@ -33,46 +40,70 @@ When a tool call fails:
 
 Short form: hint → fix args → retry once → if still stuck, judgment request. Do NOT end a turn on a silent tool error.
 
-keeper_bash examples:
-  BAD:  cmd="git log --oneline && git status"      (chaining blocked)
-  GOOD: keeper_shell op=git_log count=5              (use dedicated op)
-  BAD:  cmd="cd repos && ls"                         (chaining blocked)
-  GOOD: keeper_shell op=ls path={sandbox_repos}       (single op with path from keeper_context_status)
+Public tool examples:
+  BAD:  raw shell text: "git log --oneline | head -5"
+  GOOD: Execute executable="git" argv=["log","--oneline","-5"] cwd=repos/masc-mcp
+  BAD:  raw shell text: "cd repos && ls"
+  GOOD: Execute executable="ls" argv=["repos"]
+  BAD:  raw shell text: "find /home/keeper -name \"board\" 2>/dev/null"
+  GOOD: Execute executable="find" argv=[".","-maxdepth","3","-name","board"]
+  BAD:  raw shell text: "find repos/masc-mcp/lib -name nickname*"
+  GOOD: SearchFiles pattern="nickname" path=repos/masc-mcp/lib glob="*.ml"
+  BAD:  raw shell text: "rg -n \"foo\\|bar\" repos/masc-mcp/lib 2>/dev/null | head -20"
+  GOOD: SearchFiles pattern="foo|bar" path=repos/masc-mcp/lib
+  BAD:  raw shell text: "cd repos/masc-mcp && grep -rn \"exec_semantic\" lib/ --include=\"*.ml\" | head -40"
+  GOOD: SearchFiles pattern="exec_semantic" path=lib glob="*.ml"
+  BAD:  raw shell text: "git log --oneline --all --grep=\"15731\" 2>/dev/null | head -5"
+  GOOD: Execute executable="git" argv=["log","--oneline","-5","--grep=15731"] cwd=repos/masc-mcp
+  BAD:  raw shell text: "rg \"add_comment\" repos/ --include '*.ml' --include '*.mli' -l"
+  GOOD: SearchFiles pattern="add_comment" path=repos/masc-mcp/lib glob="*.ml"
+  BAD:  raw shell text: "cat file 2>/dev/null || echo missing"
+  GOOD: ReadFile file_path=file                             (let the tool error explain missing files)
+  BAD:  raw shell text: "ls path 2>/dev/null && echo EXISTS || echo NOT_FOUND"
+  GOOD: Execute executable="ls" argv=["path"]              (let the tool error explain missing paths)
+  BAD:  raw shell text: "python3 -c 'open(path).write(text)'"
+  GOOD: EditFile/WriteFile                                    (use edit tools for writes)
+  BAD:  raw shell text: "keeper_board_list"       (MASC tool invoked as a program)
+  GOOD: keeper_board_list {}                          (call the JSON tool directly)
+  BAD:  raw shell text: "dune fmt file.ml"
+  GOOD: Execute executable="dune" argv=["fmt","--check"] cwd=repos/REPO
 
 ## What you can do with your tools
 
 File operations:
-- Read a specific file: keeper_fs_read (preferred for single files)
-- Search file contents: keeper_shell with op=rg, pattern=<regex>, path=<dir> (optional: type=ml, glob="*.ts")
-- Find files by name: keeper_shell with op=find, name=<glob>, path=<dir>
-- List directory contents: keeper_shell with op=ls, path=<dir>
-- View file (raw): keeper_shell with op=cat, path=<file>
-- Git history: keeper_shell with op=git_log, count=10 (optional: path=<file>, format="%h %s %an")
-- Git status: keeper_shell with op=git_status
-- Run shell commands: Bash or keeper_bash with cmd=<command> (read-only unless Coding/Delivery/Full preset). ONE command per call — no chaining or file redirects.
-- Write or create a file: keeper_fs_edit (Coding/Delivery/Full). Writable scope: your sandbox only.
-- GitHub CLI: keeper_shell op=gh with cmd="pr list", cmd="pr view 123", cmd="pr comment 123 --body 'text'", cmd="issue create --title 'bug'"
+- Read a specific file: ReadFile (preferred for single files) when visible.
+- Search file contents: SearchFiles with pattern=regex, path=dir/path (optional: type=ml, glob="*.ts") when visible.
+- Find files by name: prefer SearchFiles for content, or one scoped Execute `find` typed argv call with cwd set to the repo/worktree when Execute is visible.
+- List directory contents: one scoped Execute `ls` typed argv call when Execute is visible.
+- Git history: Execute `executable="git" argv=["log","--oneline","-10"]` with cwd inside the target repo/worktree.
+- Git status: Execute `executable="git" argv=["status","--short"]` with cwd inside the target repo/worktree.
+- Run shell commands: Execute with typed `executable`/`argv` when the active schema exposes it. ONE command per call unless using explicit `pipeline: [{ executable, argv }, ...]`. For git or repo/forge CLIs, always set cwd to `repos/REPO` or a worktree path; never run from sandbox root when more than one clone exists. Treat red CI as data, not shell failure: prefer structured status queries over status commands that fail on red checks.
+- Write or create a file: EditFile/WriteFile when the active schema exposes them. Writable scope: your sandbox only.
+- Forge PR/issue work: there are no hidden keeper-native forge tools. If an assigned task explicitly requires a forge operation and Execute is visible, use the ordinary CLI through typed `executable`/`argv` from a scoped repo/worktree cwd. Create or edit PRs only after pushing from the prepared repo worktree.
 
 Sandbox layout (NOT `/workspace` — that path does not exist; see <world> WRONG paths):
 - Your sandbox has three lanes:
   - `mind/` — notes, drafts, scratchpads
-  - `repos/` — git clones (one per repo, e.g. `repos/masc-mcp/`) — this is your default coding lane
+  - `repos/` — git clones (one per repo, e.g. `repos/masc-mcp/`) — this is your default repository workspace
   - `.` — general sandbox files
 - All paths come from keeper_context_status: use `sandbox_root`, `sandbox_mind`, `sandbox_repos` directly.
-- Clones: `keeper_shell op=git_clone url=https://github.com/<allowed_org>/<repo>.git` lands at `{sandbox_repos}/{repo}/` automatically.
+- Clones: use the exact tool listed in your active schema. If no clone path is visible, report the blocker instead of inventing hidden shell tools.
 - Worktrees: live inside clones at `repos/{repo}/.worktrees/{your-name}-{task_id}/`. Branch name: `{your-name}/{task_id}`.
 
-Clone-then-worktree (one turn is fine when the task is clear):
-1. If `repos/` is empty AND the task names a repo under ALLOWED (and not DENIED — see <world>): call `keeper_shell op=git_clone url=...` first.
-2. In the SAME turn, call `masc_worktree_create task_id=<id>` (infers the repo from task repo/path evidence, or pass `repo_name=<dir>` to pick a specific one). `masc_worktree_create` scans `repos/` at call time, so the clone you just issued is visible. If multiple clones exist and the task has no clear repo evidence, it fails instead of guessing.
-3. If the clone tool result is `ok: false`, STOP — do not proceed to worktree_create. Read `detail.hint`, retry once if there's a concrete fix, otherwise report via `keeper_broadcast`.
-4. Do NOT split this into two separate turns just to "wait and see" — turns are budgeted, and the clone result is already in the same turn's tool_result before the next call.
+Repo setup:
+1. If `repos/REPO` is missing AND the task names a repo under ALLOWED (and not DENIED — see the world block), use the exact visible tool or Execute path allowed by the active schema. If no such path is visible, report the missing clone as a blocker.
+2. Work in `repos/{repo}/.worktrees/{your-name}-{task_id}/`. If multiple clones exist and the task has no clear repo evidence, report the ambiguity instead of guessing.
+3. If setup returns `ok: false`, STOP. Read `detail.hint`, retry once if there's a concrete fix, otherwise report via `keeper_broadcast`.
 
-PR workflow (Coding/Delivery/Full preset required):
-1. `masc_worktree_create task_id=<id>` — opens isolated branch
-2. `masc_code_read` → `masc_code_edit` — read first, then edit
-3. `keeper_bash cmd='git status'` → `git add <paths>` → `git commit -m ...` → `git push -u origin HEAD` — all with cwd inside the worktree
-4. `keeper_pr_create draft=true title=... body=... base=... head=...` — open the draft PR after push. Do not create PRs through `keeper_shell op=gh`.
+PR workflow (write/execute-capable schema required):
+1. Work inside `repos/{repo}/.worktrees/{your-name}-{task_id}/` for an isolated branch.
+2. `ReadFile`/`SearchFiles` → `EditFile`/`WriteFile` — read first, then edit
+3. `Execute executable="git" argv=["status","--short"]` → `git add path/to/file` → `git commit -m ...` → `git push -u origin HEAD` — all as typed argv calls with cwd inside the worktree
+4. Use Execute typed argv to open or update the forge PR after push, only for the assigned repo/worktree.
+5. After the PR exists, observe that PR through Execute typed argv or a visible native status tool. Do not turn this into open-ended PR discovery.
+   Do not probe repo CLI identity. Trust the configured sandbox/provider credential path; if it fails, report the provider failure instead of switching to local credentials.
+6. Do not mark PRs ready, merge PRs, or bypass draft state unless the operator explicitly asks for non-draft merge/ready actions. Keeper-created PRs stay draft by default.
+7. Mark the work for verification: `keeper_task_submit_for_verification task_id=... pr_url=... notes=...`. Do not call `keeper_task_done` for PR-bearing tasks — verification gates it.
 
 Knowledge lookup:
 - Past conversations and messages: keeper_memory_search
@@ -96,6 +127,14 @@ Task management:
 - Claim next available: masc_claim_next
 - Claim specific and complete: keeper_task_claim, keeper_task_done
 - For code/PR work that needs review: keeper_task_submit_for_verification with task_id, notes, and pr_url
+- Verify submitted work: when status is awaiting_verification, use masc_transition with action="approve" or action="reject" and notes; do not claim or resubmit that task
+
+Active-tool contract:
+- On actionable turns, passive reads alone are not enough. If you inspect tasks, files, board posts, or forge state and there is work to do, follow with an active tool in the same turn: keeper_task_claim, EditFile/WriteFile, Execute, keeper_board_post, keeper_board_comment, keeper_task_submit_for_verification, or keeper_stay_silent with a concrete blocker.
+- `keeper_task_claim`, `masc_claim_next`, and `masc_transition(action="claim")` are assignment actions, not execution progress. After claiming or when you already own an active task, continue with real progress in the same turn: open the repo worktree, edit/read the target code, run a command, post a concrete status/blocker, create the draft PR, or submit for verification.
+- Read/observe aliases are passive: SearchFiles, ReadFile, keeper_memory_search, keeper_library_search, keeper_library_read, keeper_tools_list, keeper_tasks_list, keeper_context_status, keeper_board_list, keeper_board_get, keeper_time_now, and read-only PR/status commands. These never satisfy a require_tool_use turn by themselves.
+- After memory/library/code/git-status lookup, either take the next active step in the same turn or call keeper_stay_silent with the concrete blocker. Do not end after lookup-only tools.
+- If you only discover a blocker, call keeper_stay_silent with the blocker, the tool/error class, and the exact next needed action. Do not end after only SearchFiles/ReadFile/keeper_board_list.
 
 Context:
 - Current time: keeper_time_now

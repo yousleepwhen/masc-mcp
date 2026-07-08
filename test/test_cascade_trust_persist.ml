@@ -147,14 +147,30 @@ let test_snapshot_provider_record_shape () =
           ; "in_cooldown"
           ; "events_in_window"
           ; "rejected_in_window"
+          ; "p50_latency_ms"
+          ; "p95_latency_ms"
+          ; "latency_samples"
+          ; "avg_confidence"
+          ; "confidence_samples"
+          ; "avg_cost_usd"
+          ; "cost_samples"
+          ; "health_score"
           ; "top_fingerprints"
           ; "last_failure_at"
+          ]
+        in
+        let nullable_fields =
+          [ "last_failure_at"
+          ; "p50_latency_ms"
+          ; "p95_latency_ms"
+          ; "avg_confidence"
+          ; "avg_cost_usd"
           ]
         in
         List.iter
           (fun field ->
             match member field p with
-            | `Null when field = "last_failure_at" -> ()
+            | `Null when List.mem field nullable_fields -> ()
             | `Null -> fail (Printf.sprintf "field %s missing" field)
             | _ -> ())
           required_fields;
@@ -169,6 +185,30 @@ let test_snapshot_provider_record_shape () =
             (String.length fp_str >= String.length "timeout"
              && String.sub fp_str 0 (String.length "timeout") = "timeout")
         | [] -> fail "unreachable")
+
+let test_hydrate_latest_restores_latency_hint_from_snapshot () =
+  with_temp_base (fun dir ->
+    let key = "test_hydrate_latency:" ^ string_of_int (Random.bits ()) in
+    H.record_success H.global ~provider_key:key ~latency_ms:8000.0 ();
+    P.snapshot_now ~base_path:dir;
+    for _ = 1 to 20 do
+      H.record_success H.global ~provider_key:key ~latency_ms:10.0 ()
+    done;
+    let warm_p50 =
+      match H.provider_info H.global ~provider_key:key with
+      | Some info -> info.p50_latency_ms
+      | None -> None
+    in
+    check (option (float 0.001)) "fast samples warm p50 latency"
+      (Some 10.0)
+      warm_p50;
+    let restored = P.hydrate_latest ~base_path:dir in
+    check bool "hydrate applied at least one row" true (restored > 0);
+    match H.provider_info H.global ~provider_key:key with
+    | None -> fail "missing hydrated provider"
+    | Some info ->
+      check (option (float 0.001)) "restored p50 latency"
+        (Some 8000.0) info.p50_latency_ms)
 
 let test_two_snapshots_produce_two_records () =
   with_temp_base (fun dir ->
@@ -187,6 +227,35 @@ let test_snapshot_does_not_throw_on_empty_tracker () =
     | [] -> fail "expected at least one record"
     | _ -> ())
 
+let test_hydrate_latest_restores_cooldown_from_snapshot () =
+  with_temp_base (fun dir ->
+    let key = "test_hydrate:" ^ string_of_int (Random.bits ()) in
+    H.record_failure H.global ~provider_key:key
+      ~error_kind:(kind "timeout") ~error_reason:"deadline" ();
+    H.record_failure H.global ~provider_key:key
+      ~error_kind:(kind "timeout") ~error_reason:"deadline" ();
+    H.record_failure H.global ~provider_key:key
+      ~error_kind:(kind "timeout") ~error_reason:"deadline" ();
+    check bool "provider entered cooldown before snapshot" true
+      (H.is_in_cooldown H.global ~provider_key:key);
+    P.snapshot_now ~base_path:dir;
+    H.record_success H.global ~provider_key:key ();
+    check bool "success clears cooldown before hydrate" false
+      (H.is_in_cooldown H.global ~provider_key:key);
+    let restored = P.hydrate_latest ~base_path:dir in
+    check bool "hydrate applied at least one row" true (restored > 0);
+    check bool "hydrate reinstates cooldown" true
+      (H.is_in_cooldown H.global ~provider_key:key);
+    match H.provider_info H.global ~provider_key:key with
+    | None -> fail "missing hydrated provider"
+    | Some info ->
+      check int "restored failure count" 3 info.consecutive_failures;
+      check bool "fingerprint survives hydrate" true
+        (List.exists
+           (fun (fp, count) ->
+             String.starts_with ~prefix:"timeout" fp && count = 3)
+           info.top_fingerprints))
+
 let () =
   Random.self_init ();
   run "cascade_trust_persist"
@@ -199,9 +268,13 @@ let () =
             test_snapshot_includes_recorded_provider
         ; test_case "provider record has expected shape" `Quick
             test_snapshot_provider_record_shape
+        ; test_case "hydrate restores latency hint" `Quick
+            test_hydrate_latest_restores_latency_hint_from_snapshot
         ; test_case "two calls → two records" `Quick
             test_two_snapshots_produce_two_records
         ; test_case "no throw on empty tracker" `Quick
             test_snapshot_does_not_throw_on_empty_tracker
+        ; test_case "hydrate restores cooldown from snapshot" `Quick
+            test_hydrate_latest_restores_cooldown_from_snapshot
         ] )
     ]

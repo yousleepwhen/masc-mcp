@@ -29,7 +29,7 @@ let read_meta_file_path path : (keeper_meta option, string) result =
        | Ok meta -> Ok (Some meta)
        | Error e ->
          Prometheus.inc_counter
-           Prometheus.metric_keeper_meta_read_failures
+           Keeper_metrics.(to_string MetaReadFailures)
            ~labels:[("keeper", "aggregate"); ("site", "meta_parse")]
            ();
          Log.Keeper.warn "keeper meta parse failed for %s: %s" path e;
@@ -62,7 +62,7 @@ let persisted_keeper_names config =
   match Safe_ops.list_dir_safe dir with
   | Error e ->
     Prometheus.inc_counter
-      Prometheus.metric_keeper_meta_read_failures
+      Keeper_metrics.(to_string MetaReadFailures)
       ~labels:[("keeper", "aggregate"); ("site", "persisted_listdir")]
       ();
     Log.Keeper.warn "persisted_keeper_names: failed to list directory %s: %s" dir e;
@@ -97,11 +97,19 @@ let declarative_autoboot_enabled_by_default name =
   | Some true | None -> true
 ;;
 
+let effective_autoboot_enabled name meta =
+  match (load_keeper_profile_defaults name).autoboot_enabled with
+  | Some value -> value
+  | None -> meta.autoboot_enabled
+;;
+
 let keepalive_keeper_names config =
   configured_keeper_names config
   |> List.filter_map (fun name ->
     match read_meta_file_path (keeper_meta_path config name) with
-    | Ok (Some meta) when (not meta.paused) && meta.autoboot_enabled -> Some meta.name
+    | Ok (Some meta)
+      when (not meta.paused) && effective_autoboot_enabled name meta ->
+        Some meta.name
     | Ok (Some _) -> None
     | Ok None -> if declarative_autoboot_enabled_by_default name then Some name else None
     | Error msg ->
@@ -111,7 +119,7 @@ let keepalive_keeper_names config =
          hiding the operational issue. Now logs and excludes so the
          degraded state is operator-visible. *)
       Prometheus.inc_counter
-        Prometheus.metric_keeper_meta_read_failures
+        Keeper_metrics.(to_string MetaReadFailures)
         ~labels:[("keeper", name); ("site", "keepalive_read")]
         ();
       Log.Keeper.warn
@@ -132,7 +140,9 @@ let persistent_agent_names config =
   configured_keeper_names config
   |> List.filter_map (fun name ->
     match read_meta_file_path (keeper_meta_path config name) with
-    | Ok (Some meta) when (not meta.paused) && meta.autoboot_enabled -> Some meta.name
+    | Ok (Some meta)
+      when (not meta.paused) && effective_autoboot_enabled name meta ->
+        Some meta.name
     | Ok (Some _) -> None
     | Ok None -> None
     | Error msg ->
@@ -141,7 +151,7 @@ let persistent_agent_names config =
          distinguish "keeper intentionally not persistent" from
          "meta file is corrupt and we couldn't read it". *)
       Prometheus.inc_counter
-        Prometheus.metric_keeper_meta_read_failures
+        Keeper_metrics.(to_string MetaReadFailures)
         ~labels:[("keeper", name); ("site", "persistent_read")]
         ();
       Log.Keeper.warn
@@ -151,46 +161,13 @@ let persistent_agent_names config =
       None)
 ;;
 
-let keeper_name_from_agent_name = Keeper_identity.keeper_name_from_agent_name
-
-let canonical_keeper_name_from_agent_name =
-  Keeper_identity.canonical_keeper_name_from_agent_name
-;;
-
-let canonical_keeper_name = Keeper_identity.canonical_keeper_name
-
-let separator_alias_variants name =
-  let map_sep ~from_ch ~to_ch value =
-    String.map (fun c -> if c = from_ch then to_ch else c) value
-  in
-  Json_util.dedupe_keep_order
-    [ name; map_sep ~from_ch:'_' ~to_ch:'-' name; map_sep ~from_ch:'-' ~to_ch:'_' name ]
-;;
-
 let read_meta_resolved config name : ((string * keeper_meta) option, string) result =
   let requested_name = String.trim name in
-  let read_candidate candidate =
-    read_meta_file_path (keeper_meta_path config candidate)
-    |> Result.map (Option.map (fun meta -> candidate, meta))
-  in
-  let rec read_first = function
-    | [] -> Ok None
-    | candidate :: rest ->
-      (match read_candidate candidate with
-       | Ok None -> read_first rest
-       | Ok (Some _) as ok -> ok
-       | Error _ as err -> err)
-  in
   if requested_name = ""
   then Ok None
-  else (
-    let alias_candidates =
-      match keeper_name_from_agent_name requested_name with
-      | Some alias_name when not (String.equal alias_name requested_name) ->
-        separator_alias_variants alias_name
-      | _ -> []
-    in
-    read_first (separator_alias_variants requested_name @ alias_candidates))
+  else
+    read_meta_file_path (keeper_meta_path config requested_name)
+    |> Result.map (Option.map (fun meta -> requested_name, meta))
 ;;
 
 let read_meta config name : (keeper_meta option, string) result =
@@ -230,7 +207,7 @@ let read_meta_if_changed config name ~(last_mtime : float) : (keeper_meta * floa
               read/parse failure as "no change". Now logs so an
               operator can correlate stale UI with bad meta JSON. *)
            Prometheus.inc_counter
-             Prometheus.metric_keeper_meta_read_failures
+             Keeper_metrics.(to_string MetaReadFailures)
              ~labels:[("keeper", "aggregate"); ("site", "changed_parse")]
              ();
            Log.Keeper.warn
@@ -241,13 +218,7 @@ let read_meta_if_changed config name ~(last_mtime : float) : (keeper_meta * floa
            None)
       | _ -> None)
   in
-  match read_candidate requested_name with
-  | Some _ as changed -> changed
-  | None ->
-    (match keeper_name_from_agent_name requested_name with
-     | Some alias_name when not (String.equal alias_name requested_name) ->
-       read_candidate alias_name
-     | _ -> None)
+  read_candidate requested_name
 ;;
 
 let current_utc_timestamp () =
@@ -290,7 +261,7 @@ let refresh_progress_updated_line config name =
   | exn when is_missing_progress_file_error exn -> ()
   | exn ->
     Prometheus.inc_counter
-      Prometheus.metric_keeper_progress_updated_line_failures
+      Keeper_metrics.(to_string ProgressUpdatedLineFailures)
       ~labels:[("keeper", name)]
       ();
     Log.Keeper.warn
@@ -311,12 +282,6 @@ let persist_meta config path persisted =
 ;;
 
 let write_meta ?(force = false) config (m : keeper_meta) : (unit, string) result =
-  (* Assign UUID on first write for legacy keepers lacking keeper_id. *)
-  let m =
-    match m.keeper_id with
-    | Some _ -> m
-    | None -> { m with keeper_id = Some (Keeper_id.Uid.generate ()) }
-  in
   let path = keeper_meta_path config m.name in
   if force
   then (
@@ -353,61 +318,9 @@ let is_version_conflict_error msg =
   | Not_found -> false
 ;;
 
-(* #9764/#9733/#9769: cycle-completion writes lose data when a heartbeat or
-   supervisor fiber bumps meta_version between the cycle's read and its
-   write. Bounded retry that re-reads the latest disk version, lifts the
-   caller's payload onto it, and writes again.
-
-   Trade-off: the caller's payload wins at the field level. Concurrent
-   updates from heartbeat (last_seen, cursor) are overwritten. This is
-   acceptable for cycle completion because (a) heartbeat fields are
-   ephemeral and resync on the next heartbeat tick, while (b) cycle
-   payload (usage tokens, trace_history, generation) is non-recoverable.
-   Heartbeat itself must NOT use this helper (it would cause the inverse
-   problem). *)
-let write_meta_with_retry ?(max_retries = 3) config (m : keeper_meta)
-  : (unit, string) result
-  =
-  let path = keeper_meta_path config m.name in
-  let rec attempt n m =
-    match write_meta config m with
-    | Ok () -> Ok ()
-    | Error msg when n >= max_retries -> Error msg
-    | Error msg when not (is_version_conflict_error msg) -> Error msg
-    | Error _ ->
-      (* Version conflict: read latest disk state, lift caller's payload
-         onto its version, and try again. *)
-      (match read_meta_file_path path with
-       | Ok (Some latest) ->
-         Prometheus.inc_counter
-           Prometheus.metric_keeper_write_meta_failures
-           ~labels:[("keeper", m.name); ("phase", "cas_retry")]
-           ();
-         Prometheus.inc_counter
-           Prometheus.metric_write_meta_cas_retry_total
-           ~labels:[("keeper_name", m.name)]
-           ();
-         Log.Keeper.warn
-           "write_meta CAS retry %d/%d for %s (caller had %d, disk %d)"
-           (n + 1)
-           max_retries
-           m.name
-           m.meta_version
-           latest.meta_version;
-         attempt (n + 1) { m with meta_version = latest.meta_version }
-       | Ok None ->
-         (* Disk file vanished between attempts; fall back to fresh write. *)
-         attempt (n + 1) { m with meta_version = 0 }
-       | Error read_msg ->
-         Error (Printf.sprintf "write_meta retry: failed to re-read for CAS: %s" read_msg))
-  in
-  attempt 0 m
-;;
-
-(* #9769 root fix: like [write_meta_with_retry], but lets the caller
-   declare field ownership via [merge]. The turn-failure/cycle path
-   uses [Keeper_meta_merge.heartbeat_fields_from_disk] so its retry
-   does not clobber heartbeat-owned fields ([joined_room_ids],
+(* #9769 root fix: CAS retry with explicit field ownership. The
+   turn-failure/cycle path uses [Keeper_meta_merge.heartbeat_fields_from_disk]
+   so its retry does not clobber heartbeat-owned fields ([joined_room_ids],
    [last_seen_seq_by_room]). *)
 let write_meta_with_merge
       ?(max_retries = 3)
@@ -426,14 +339,10 @@ let write_meta_with_merge
       (match read_meta_file_path path with
        | Ok (Some latest) ->
          Prometheus.inc_counter
-           Prometheus.metric_keeper_write_meta_failures
-           ~labels:[("keeper", caller.name); ("phase", "cas_retry_merge")]
-           ();
-         Prometheus.inc_counter
            Prometheus.metric_write_meta_cas_retry_total
            ~labels:[("keeper_name", caller.name)]
            ();
-         Log.Keeper.warn
+         Log.Keeper.info
            "write_meta CAS retry %d/%d for %s (caller had %d, disk %d; field-level merge)"
            (n + 1)
            max_retries

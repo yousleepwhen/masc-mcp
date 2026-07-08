@@ -13,6 +13,7 @@ module Types = Masc_domain
 open Alcotest
 
 module Http_transport = Masc_mcp.Server_mcp_transport_http
+module Actor_injection = Masc_mcp.Server_mcp_actor_injection
 module Auth = Masc_mcp.Auth
 
 let setup_test_room () =
@@ -168,27 +169,27 @@ let test_inject_agent_name_adds_internal_actor_when_missing () =
     {|{"jsonrpc":"2.0","method":"tools/call","params":{"name":"masc_status","arguments":{"days":7}},"id":1}|}
   in
   let args =
-    Http_transport.inject_agent_name_into_body ~agent_name:"codex" body
+    Http_transport.inject_agent_name_into_body ~agent_name:"agent_code" body
     |> tool_arguments_of_body
   in
   let open Yojson.Safe.Util in
-  check (option string) "injects _agent_name" (Some "codex")
+  check (option string) "injects _agent_name" (Some "agent_code")
     (member "_agent_name" args |> to_string_option);
   check (option int) "keeps other args" (Some 7)
     (member "days" args |> to_int_option)
 
-let test_inject_agent_name_preserves_legacy_target_by_default () =
+let test_inject_agent_name_preserves_tool_target_by_default () =
   let body =
     {|{"jsonrpc":"2.0","method":"tools/call","params":{"name":"masc_agent_fitness","arguments":{"agent_name":"target-keeper","days":7}},"id":1}|}
   in
   let args =
-    Http_transport.inject_agent_name_into_body ~agent_name:"codex" body
+    Http_transport.inject_agent_name_into_body ~agent_name:"agent_code" body
     |> tool_arguments_of_body
   in
   let open Yojson.Safe.Util in
   check (option string) "does not add _agent_name" None
     (member "_agent_name" args |> to_string_option);
-  check (option string) "keeps legacy agent_name" (Some "target-keeper")
+  check (option string) "keeps tool target agent_name" (Some "target-keeper")
     (member "agent_name" args |> to_string_option)
 
 let test_inject_agent_name_rewrites_internal_actor_only () =
@@ -197,23 +198,46 @@ let test_inject_agent_name_rewrites_internal_actor_only () =
   in
   let args =
     Http_transport.inject_agent_name_into_body
-      ~rewrite_existing:true ~agent_name:"codex" body
+      ~rewrite_existing:true ~agent_name:"agent_code" body
     |> tool_arguments_of_body
   in
   let open Yojson.Safe.Util in
-  check (option string) "rewrites _agent_name" (Some "codex")
+  check (option string) "rewrites _agent_name" (Some "agent_code")
     (member "_agent_name" args |> to_string_option);
   check (option string) "preserves target agent_name" (Some "target-keeper")
     (member "agent_name" args |> to_string_option)
+
+let test_actor_injection_reducer_skips_absent_actor () =
+  let body =
+    {|{"jsonrpc":"2.0","method":"tools/call","params":{"name":"masc_status","arguments":{"days":7}},"id":1}|}
+  in
+  check string "body unchanged without actor" body
+    (Actor_injection.reduce ~actor:None ~auth_token:(Some "token") body)
+
+let test_actor_injection_reducer_rewrites_with_http_auth () =
+  let body =
+    {|{"jsonrpc":"2.0","method":"tools/call","params":{"name":"masc_keeper_status","arguments":{"_agent_name":"dashboard","token":"stale-token","name":"sangsu"}},"id":1}|}
+  in
+  let args =
+    Actor_injection.reduce ~actor:(Some "agent_code") ~auth_token:(Some "token") body
+    |> tool_arguments_of_body
+  in
+  let open Yojson.Safe.Util in
+  check (option string) "actor reducer rewrites _agent_name" (Some "agent_code")
+    (member "_agent_name" args |> to_string_option);
+  check (option string) "actor reducer strips stale token" None
+    (member "token" args |> to_string_option);
+  check (option string) "actor reducer preserves target name" (Some "sangsu")
+    (member "name" args |> to_string_option)
 
 let test_body_with_canonical_http_actor_uses_token_owner () =
   let dir = setup_test_room () in
   Fun.protect
     ~finally:(fun () -> cleanup_test_room dir)
     (fun () ->
-      let raw_token = "codex-token" in
+      let raw_token = "agent_code-token" in
       (match
-         Auth.save_raw_token_credential dir ~agent_name:"codex"
+         Auth.save_raw_token_credential dir ~agent_name:"agent_code"
            ~role:Masc_domain.Worker ~raw_token
        with
        | Ok _ -> ()
@@ -225,7 +249,7 @@ let test_body_with_canonical_http_actor_uses_token_owner () =
             ("x-masc-agent", "dashboard");
           ]
       in
-      let request = Httpun.Request.create ~headers `POST "/messages" in
+      let request = Httpun.Request.create ~headers `POST "/mcp" in
       let body =
         {|{"jsonrpc":"2.0","method":"tools/call","params":{"name":"masc_keeper_status","arguments":{"_agent_name":"dashboard","token":"stale-token","name":"sangsu"}},"id":1}|}
       in
@@ -236,7 +260,7 @@ let test_body_with_canonical_http_actor_uses_token_owner () =
       in
       let open Yojson.Safe.Util in
       check (option string) "token owner rewrites stale dashboard actor"
-        (Some "codex")
+        (Some "agent_code")
         (member "_agent_name" args |> to_string_option);
       check (option string) "http auth strips stale argument token" None
         (member "token" args |> to_string_option);
@@ -362,10 +386,14 @@ let () =
     "inject_agent_name", [
       test_case "adds internal actor when missing" `Quick
         test_inject_agent_name_adds_internal_actor_when_missing;
-      test_case "preserves legacy target by default" `Quick
-        test_inject_agent_name_preserves_legacy_target_by_default;
+      test_case "preserves tool target by default" `Quick
+        test_inject_agent_name_preserves_tool_target_by_default;
       test_case "rewrite_existing only rewrites _agent_name" `Quick
         test_inject_agent_name_rewrites_internal_actor_only;
+      test_case "reducer skips absent actor" `Quick
+        test_actor_injection_reducer_skips_absent_actor;
+      test_case "reducer rewrites actor and strips token with http auth" `Quick
+        test_actor_injection_reducer_rewrites_with_http_auth;
       test_case "canonical http actor uses token owner" `Quick
         test_body_with_canonical_http_actor_uses_token_owner;
     ];

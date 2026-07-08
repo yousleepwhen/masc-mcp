@@ -7,7 +7,6 @@ import {
   normalizeText,
   isPlaceholderModel,
   normalizeModelText,
-  firstNonEmptyString,
   uniqueStrings,
   successClass,
   fleetBand,
@@ -21,13 +20,16 @@ import {
   formatActivity,
   formatActivitySignal,
   numericAge,
+  sourceDetail,
   toneForToolSuccess,
   toneForPressure,
   toolSummary,
   summaryCounts,
+  toolTelemetryCoverageDetail,
   buildToolQualityMap,
   buildFleetRows,
   buildRuntimeWarnings,
+  EMPTY_TOOL_QUALITY,
   emptyState,
   type FleetRow,
 } from './fleet-telemetry-utils'
@@ -66,6 +68,8 @@ function makeRow(overrides: Partial<FleetRow> = {}): FleetRow {
     effective_sandbox_image: null,
     decision_required: false,
     budget_source: null,
+    provider_health_status: null,
+    provider_health_label: null,
     ...overrides,
   }
 }
@@ -99,9 +103,9 @@ describe('isPlaceholderModel', () => {
   })
 
   it('returns false for real model names', () => {
-    expect(isPlaceholderModel('claude-sonnet-4-6')).toBe(false)
-    expect(isPlaceholderModel('gpt-4o')).toBe(false)
-    expect(isPlaceholderModel('claude_code:auto')).toBe(false)
+    expect(isPlaceholderModel('model-a-sonnet')).toBe(false)
+    expect(isPlaceholderModel('model-d')).toBe(false)
+    expect(isPlaceholderModel('cli-tool-d:auto')).toBe(false)
   })
 
   it('is case-insensitive', () => {
@@ -119,23 +123,47 @@ describe('normalizeModelText', () => {
   })
 
   it('returns trimmed text for valid models', () => {
-    expect(normalizeModelText(' claude-sonnet-4-6 ')).toBe('claude-sonnet-4-6')
+    expect(normalizeModelText(' model-a-sonnet ')).toBe('model-a-sonnet')
+  })
+})
+
+describe('sourceDetail', () => {
+  it('includes telemetry source provenance and freshness metadata', () => {
+    const detail = sourceDetail({
+      source: 'tool_metric',
+      entry_count: 7,
+      exists: true,
+      latest_age_s: 42,
+      health: 'stale',
+      stale_reason: 'freshness_slo_exceeded',
+      freshness_slo_s: 300,
+      producer: 'Telemetry_unified.summary_json',
+      durable_store: '.masc/tool_metrics/YYYY-MM/DD.jsonl',
+      dashboard_surface: '/api/v1/dashboard/telemetry/summary',
+    })
+
+    expect(detail).toContain('last 42s ago')
+    expect(detail).toContain('stale: freshness_slo_exceeded')
+    expect(detail).toContain('SLO 5m 0s')
+    expect(detail).toContain('producer Telemetry_unified.summary_json')
+    expect(detail).toContain('store .masc/tool_metrics/YYYY-MM/DD.jsonl')
+    expect(detail).toContain('surface /api/v1/dashboard/telemetry/summary')
   })
 })
 
 describe('buildFleetRows runtime labels', () => {
-  it('surfaces cascade, provider, and fallback labels from keeper telemetry', () => {
+  it('redacts model/provider identity while keeping lane outcome evidence', () => {
     const [row] = buildFleetRows([
       {
         name: 'cascade-keeper',
         status: 'active',
         keepalive_running: true,
         cascade_name: 'oas-keeper_unified',
-        cascade_canonical: 'big_three',
-        active_model_label: 'codex_cli:auto',
+        cascade_canonical: 'primary',
+        active_model_label: 'cli-tool-a:auto',
         trust: {
           execution_summary: {
-            provider_selected_model: 'anthropic:claude-sonnet-4-6',
+            provider_selected_model: 'provider-a:model-a-sonnet',
             provider_attempt_count: 2,
             provider_fallback_applied: true,
             cascade_outcome: 'passed_to_next_model',
@@ -154,28 +182,28 @@ describe('buildFleetRows runtime labels', () => {
             is_compaction: false,
             compaction_saved_tokens: 0,
             compaction_trigger: null,
-            model_used: 'anthropic:claude-sonnet-4-6',
+            model_used: 'provider-a:model-a-sonnet',
             cost_usd: 0,
             handoff_to_model: null,
             handoff_new_generation: null,
             prompt_fingerprint: null,
             prompt_metrics: null,
-            timeout_budget: null,
+            provider_timeout_plan: null,
             ctx_composition: null,
             input_tokens: null,
             output_tokens: null,
             total_tokens: null,
             wall_tokens_per_second: null,
             inference_telemetry: null,
-            cascade_name: 'big_three',
-            cascade_selected_model: 'anthropic:claude-sonnet-4-6',
+            cascade_name: 'primary',
+            cascade_selected_model: 'provider-a:model-a-sonnet',
             cascade_attempt_count: 2,
             cascade_outcome: 'passed_to_next_model',
             cascade_strategy: 'round_robin',
             fallback_applied: true,
             fallback_hops: 1,
-            fallback_from: 'openai:gpt-5.4',
-            fallback_to: 'anthropic:claude-sonnet-4-6',
+            fallback_from: 'provider-d:gpt-5.4',
+            fallback_to: 'provider-a:model-a-sonnet',
             fallback_reason: 'turn_timeout',
           },
         ],
@@ -192,21 +220,35 @@ describe('buildFleetRows runtime labels', () => {
     })
 
     expect(row).toMatchObject({
-      model: 'codex_cli:auto',
-      cascade_label: 'oas-keeper_unified -> big_three',
-      provider_label: 'anthropic:claude-sonnet-4-6 · 2 attempts · fallback',
-      fallback_label: 'openai:gpt-5.4 -> anthropic:claude-sonnet-4-6 · turn_timeout · 1 hops',
+      model: 'runtime',
+      cascade_label: 'oas-keeper_unified -> primary',
+      provider_label: 'passed_to_next_model · 2 attempts · fallback',
+      fallback_label: 'fallback · turn_timeout · 1 hops',
     })
   })
-})
 
-describe('firstNonEmptyString', () => {
-  it('returns first non-null trimmed string', () => {
-    expect(firstNonEmptyString(null, '  ', 'hello', 'world')).toBe('hello')
-  })
+  it('projects the keeper stop_cause into fleet rows', () => {
+    const [row] = buildFleetRows([
+      {
+        name: 'blocked-keeper',
+        status: 'active',
+        keepalive_running: true,
+        stop_cause: {
+          code: 'no_tool_capable_provider',
+          source: 'runtime_blocker_class',
+          label: 'no tool capable provider',
+          summary: 'no provider can satisfy required tools',
+          severity: 'warn',
+          next_action: 'inspect_provider_tool_contract',
+        },
+      },
+    ], EMPTY_TOOL_QUALITY)
 
-  it('returns null when all are empty', () => {
-    expect(firstNonEmptyString(null, undefined, '  ')).toBeNull()
+    expect(row?.stop_cause).toMatchObject({
+      code: 'no_tool_capable_provider',
+      source: 'runtime_blocker_class',
+      summary: 'no provider can satisfy required tools',
+    })
   })
 })
 
@@ -251,6 +293,21 @@ describe('fleetBand', () => {
     expect(fleetBand(makeRow({ status: 'dead' }))).toBe('offline')
     expect(fleetBand(makeRow({ status: 'stopped' }))).toBe('offline')
     expect(fleetBand(makeRow({ status: 'crashed' }))).toBe('offline')
+  })
+
+  // Lock the remaining offline-trigger status strings in fleetBand's
+  // production code. `'offline'` has an active producer
+  // (dashboard_governance_judge.ml:164, dashboard_mission_agents.ml:206,
+  // keeper_status_runtime.ml:276/353); `'unbooted'` is defensive (no
+  // current OCaml producer, but the production check is load-bearing
+  // for non-OCaml producers or future runtime states). Per
+  // feedback_dead_defensive_cleanup_must_check_test_lock memory, lock
+  // the defensive arm explicitly rather than treating it as dead.
+  it.each([
+    'offline',
+    'unbooted',
+  ])('classifies offline for status=%s', (status) => {
+    expect(fleetBand(makeRow({ status }))).toBe('offline')
   })
 
   it('classifies paused', () => {
@@ -349,6 +406,19 @@ describe('statusClass', () => {
   it('returns bad-light for offline/stopped', () => {
     expect(statusClass(makeRow({ keepalive_running: false }))).toContain('var(--bad-light)')
     expect(statusClass(makeRow({ status: 'stopped' }))).toContain('var(--bad-light)')
+  })
+
+  // Lock the remaining offline-trigger status strings in statusClass.
+  // Mirrors the fleetBand offline-trigger set (5 statuses); the
+  // 'unbooted' arm is defensive (no current OCaml producer) per the
+  // feedback_dead_defensive_cleanup_must_check_test_lock memory pattern.
+  it.each([
+    'offline',
+    'unbooted',
+    'dead',
+    'crashed',
+  ])('returns bad-light for status=%s', (status) => {
+    expect(statusClass(makeRow({ status }))).toContain('var(--bad-light)')
   })
 
   it('returns warn for runtime blocker', () => {
@@ -484,13 +554,38 @@ describe('summaryCounts', () => {
   it('counts live, hot, warn, stale correctly', () => {
     const rows = [
       makeRow({ name: 'a', keepalive_running: true, context_ratio: 0.1, last_activity_ago_s: 60, tool_calls: 1 }),
-      makeRow({ name: 'b', keepalive_running: true, context_ratio: PRESSURE_HOT_RATIO, last_activity_ago_s: 60, tool_calls: 0, recent_tools: [] }),
-      makeRow({ name: 'c', keepalive_running: false, context_ratio: 0.1, last_activity_ago_s: null, tool_calls: 0, recent_tools: [] }),
+      makeRow({ name: 'b', keepalive_running: true, context_ratio: PRESSURE_HOT_RATIO, last_activity_ago_s: 60, tool_calls: 0, recent_tools: [], tool_activity_known: false }),
+      makeRow({ name: 'c', keepalive_running: false, context_ratio: 0.1, last_activity_ago_s: null, tool_calls: 0, recent_tools: [], tool_activity_known: false }),
     ]
     const counts = summaryCounts(rows)
     expect(counts.live).toBe(2)
     expect(counts.hot).toBe(1)
-    expect(counts.toolCovered).toBe(1)
+    expect(counts.toolTelemetryCovered).toBe(1)
+    expect(counts.toolActive).toBe(1)
+    expect(counts.toolQuiet).toBe(0)
+    expect(counts.toolUnknown).toBe(2)
+  })
+
+  it('counts known quiet tool telemetry as covered, not active', () => {
+    const counts = summaryCounts([
+      makeRow({ name: 'quiet', tool_calls: 0, recent_tools: [], tool_activity_known: true }),
+      makeRow({ name: 'unknown', tool_calls: 0, recent_tools: [], tool_activity_known: false }),
+    ])
+
+    expect(counts.toolTelemetryCovered).toBe(1)
+    expect(counts.toolActive).toBe(0)
+    expect(counts.toolQuiet).toBe(1)
+    expect(counts.toolUnknown).toBe(1)
+  })
+
+  it('formats tool telemetry coverage detail for operator summaries', () => {
+    const counts = summaryCounts([
+      makeRow({ name: 'active', tool_calls: 2, recent_tools: ['masc_status'], tool_activity_known: true }),
+      makeRow({ name: 'quiet', tool_calls: 0, recent_tools: [], tool_activity_known: true }),
+      makeRow({ name: 'unknown', tool_calls: 0, recent_tools: [], tool_activity_known: false }),
+    ])
+
+    expect(toolTelemetryCoverageDetail(counts, 3)).toBe('도구 telemetry 확인 2/3 · 활동 1 · 기록 없음 1 · 미확인 1')
   })
 })
 
@@ -539,7 +634,7 @@ describe('buildRuntimeWarnings', () => {
     const rows = [makeRow({ runtime_blocker_class: 'admission_queue_wait_timeout' })]
     const warnings = buildRuntimeWarnings(rows)
     expect(warnings.length).toBe(1)
-    expect(warnings[0]).toContain('admission queue')
+    expect(warnings[0]).toContain('keeper admission FIFO')
   })
 
   it('warns about slot blockage', () => {

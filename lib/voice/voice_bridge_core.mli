@@ -2,7 +2,7 @@
     and TTS helper utilities shared by {!Voice_bridge}.
 
     Internal helpers ([log_prefix], [split_path_env],
-    [find_executable_in_path], [local_playback_argv],
+    [find_executable_in_path], [local_playback_argvs],
     [record_playback], the dedup [last_playback] state, the playback
     mutex, the [elevenlabs_voice_ids] constant table, [trim_opt],
     [resolved_base_path_opt], [strip_provider_metadata], and
@@ -32,8 +32,8 @@ val load_voice_config : unit -> (Voice_config.t, string) result
 (** Cached load of the voice configuration JSON. *)
 
 val default_agent_voices : unit -> (string * string) list
-(** [agent_id -> voice_id] pairs from the {!Provider_adapter}
-    registry, used as a fallback when the JSON config is missing. *)
+(** [agent_id -> voice_id] pairs from {!Voice_runtime_overlay}, used as a
+    fallback when the JSON config is missing. *)
 
 val agent_voices : unit -> (string * string) list
 (** Effective [agent_id -> voice_id] pairs from the loaded config,
@@ -69,23 +69,18 @@ val voice_health_uri : unit -> Uri.t
 val voice_mcp_host : unit -> string
 val voice_mcp_port : unit -> int
 
-(** {1 HTTP client construction} *)
-
-val client_for_uri :
-  sw:Eio.Switch.t ->
-  net:_ Eio.Net.t ->
-  Uri.t ->
-  (Cohttp_eio.Client.t, string) result
-
-val client_for_uri_result :
-  sw:Eio.Switch.t ->
-  net:_ Eio.Net.t ->
-  Uri.t ->
-  (Cohttp_eio.Client.t, string) result
-(** [client_for_uri] wrapped to convert exceptions into
-    [Error msg]; cancellation re-raises. *)
+(* RFC-0107 Phase D.2c bis-2 — [client_for_uri] / [client_for_uri_result]
+   removed.  Voice HTTP callers now route through [Masc_http_client]
+   {[post_sync]/[get_sync]/[get_response_sync]} which delegate to the
+   per-process piaf pool.  See voice_bridge_core.ml for the in-place
+   note explaining the migration. *)
 
 (** {1 Local playback} *)
+
+val with_voice_output_turn : agent_id:string -> (unit -> 'a) -> 'a
+(** Serialize a speaking turn for transports whose call includes audible output.
+    Direct TTS generation should stay outside this helper; local playback is
+    already serialized by {!run_local_playback}. *)
 
 val is_dedup_hit : agent_id:string -> message:string -> bool
 (** [true] iff [(agent_id, hash message)] matches the most recent
@@ -100,16 +95,18 @@ val run_local_playback :
   ?message:string ->
   audio_file:string ->
   unit ->
-  [ `Dedup_hit | `Played of float option ]
+  [ `Dedup_hit | `Played of float | `Skipped of string | `Failed of string ]
 (** Mutex-protected local audio playback with a 30s dedup window
     keyed on [(agent_id, hash message)]. Returns:
 
     - [`Dedup_hit] — another fiber already played this same message
       recently (check happens inside the playback mutex to close the
       check-then-act race);
-    - [`Played None] — playback was disabled, no executable available,
-      or the player exited non-zero;
-    - [`Played (Some duration_seconds)] — playback succeeded.
+    - [`Skipped reason] — playback was intentionally skipped, for example
+      because local playback is disabled for the agent;
+    - [`Failed reason] — local playback was requested but no candidate player
+      succeeded;
+    - [`Played duration_seconds] — playback succeeded.
 
     When [message] is omitted the dedup re-check is skipped (legacy
     callers that do not propagate the message string). *)

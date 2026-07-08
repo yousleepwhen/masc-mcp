@@ -26,6 +26,9 @@ let write_file path content =
 let read_file path =
   In_channel.with_open_bin path In_channel.input_all
 
+let repo_cascade_toml = "# repo cascade seed\n"
+let local_cascade_toml = "# local cascade seed\n"
+
 let contains_substring haystack needle =
   let haystack_len = String.length haystack in
   let needle_len = String.length needle in
@@ -94,7 +97,7 @@ let make_config_root root =
   mkdir_p (Filename.concat config "prompts");
   mkdir_p (Filename.concat config "keepers");
   mkdir_p (Filename.concat config "personas");
-  write_file (Filename.concat config "cascade.json") "{\"seed\":\"repo\"}";
+  write_file (Filename.concat config "cascade.toml") repo_cascade_toml;
   write_file (Filename.concat config "tool_policy.toml")
     "[groups.base]\ntools = [\"keeper_time_now\"]\n[presets.minimal]\ngroups = [\"base\"]\n";
   write_file (Filename.concat config "prompts/keeper.unified.system.md") "prompt";
@@ -428,41 +431,108 @@ let wait_for_startup_phase ~pid ~port ~timeout_s expected_phase =
 let write_invalid_local_only_cascade base_path =
   let config_root = Filename.concat base_path ".masc/config" in
   mkdir_p config_root;
-  let toml_path = Filename.concat config_root "cascade.toml" in
-  if Sys.file_exists toml_path then Sys.remove toml_path;
   write_file
-    (Filename.concat config_root "cascade.json")
-    {|{
-  "local_only_models": ["ollama:qwen3.6:35b-a3b-mlx-bf16"]
-}|}
+    (Filename.concat config_root "cascade.toml")
+    {|[providers.ollama]
+protocol = "ollama-http"
+endpoint = "http://localhost:11434"
+
+[models.provider_h]
+api-name = "qwen3.6:35b-a3b-mlx-bf16"
+max-context = 32768
+tools-support = false
+
+[tier.invalid_local_lane]
+members = ["missing_provider.provider_h"]
+
+[tier-group.invalid_local_lane]
+tiers = ["invalid_local_lane"]
+
+[routes.keeper_turn]
+target = "tier-group.invalid_local_lane"
+|}
+
+let split_custom_model_spec spec =
+  let after_scheme =
+    match String.index_opt spec ':' with
+    | Some idx -> String.sub spec (idx + 1) (String.length spec - idx - 1)
+    | None -> spec
+  in
+  match String.index_opt after_scheme '@' with
+  | Some idx ->
+      ( String.sub after_scheme 0 idx,
+        String.sub after_scheme (idx + 1) (String.length after_scheme - idx - 1) )
+  | None -> after_scheme, "http://127.0.0.1:9/v1"
 
 let write_partially_invalid_cascade ~base_path ~valid_model =
   let config_root = Filename.concat base_path ".masc/config" in
   mkdir_p config_root;
-  let toml_path = Filename.concat config_root "cascade.toml" in
-  if Sys.file_exists toml_path then Sys.remove toml_path;
+  let model_id, endpoint = split_custom_model_spec valid_model in
   write_file
-    (Filename.concat config_root "cascade.json")
+    (Filename.concat config_root "cascade.toml")
     (Printf.sprintf
-       {|{
-  "big_three_models": ["%s"],
-  "broken_profile_models": ["__nonexistent_provider_sentinel__:fake"]
-}|}
-       valid_model)
+       {|[providers.custom]
+protocol = "provider_d-http"
+endpoint = %S
+
+[models.stable]
+api-name = %S
+max-context = 128000
+tools-support = true
+
+[custom.stable]
+
+[tier.primary_profile]
+members = ["custom.stable"]
+
+[tier-group.primary_profile]
+tiers = ["primary_profile"]
+
+[tier.broken_profile]
+members = ["missing_provider.fake"]
+
+[tier-group.broken_profile]
+tiers = ["broken_profile"]
+
+[routes.keeper_turn]
+target = "tier-group.primary_profile"
+|}
+       endpoint model_id)
 
 let write_partially_invalid_default_cascade ~base_path ~valid_model =
   let config_root = Filename.concat base_path ".masc/config" in
   mkdir_p config_root;
-  let toml_path = Filename.concat config_root "cascade.toml" in
-  if Sys.file_exists toml_path then Sys.remove toml_path;
+  let model_id, endpoint = split_custom_model_spec valid_model in
   write_file
-    (Filename.concat config_root "cascade.json")
+    (Filename.concat config_root "cascade.toml")
     (Printf.sprintf
-       {|{
-  "big_three_models": ["__nonexistent_provider_sentinel__:fake"],
-  "tool_rerank_models": ["%s"]
-}|}
-       valid_model)
+       {|[providers.custom]
+protocol = "provider_d-http"
+endpoint = %S
+
+[models.stable]
+api-name = %S
+max-context = 128000
+tools-support = true
+
+[custom.stable]
+
+[tier.primary_profile]
+members = ["missing_provider.fake"]
+
+[tier-group.primary_profile]
+tiers = ["primary_profile"]
+
+[tier.secondary_profile]
+members = ["custom.stable"]
+
+[tier-group.secondary_profile]
+tiers = ["secondary_profile"]
+
+[routes.keeper_turn]
+target = "tier-group.primary_profile"
+|}
+       endpoint model_id)
 
 let stop_process pid =
   (try Unix.kill pid Sys.sigterm with _ -> ());
@@ -517,20 +587,6 @@ let test_storage_enforcement_fallback_reason () =
     "MASC_STORAGE_TYPE=memory requested; filesystem-only bootstrap enforced as filesystem"
     (Yojson.Safe.Util.(json |> member "fallback_reason" |> to_string))
 
-let test_default_oas_cascade_timeout_tracks_keeper_timeout () =
-  with_env "OAS_CASCADE_MODEL_TIMEOUT_SEC" None @@ fun () ->
-  with_env "MASC_KEEPER_OAS_TIMEOUT_SEC" (Some "300") @@ fun () ->
-  Server_runtime_bootstrap.ensure_default_oas_cascade_timeout_env ();
-  Alcotest.(check string) "derived timeout reserves room for fallbacks" "60"
-    (Sys.getenv "OAS_CASCADE_MODEL_TIMEOUT_SEC")
-
-let test_default_oas_cascade_timeout_keeps_explicit_override () =
-  with_env "OAS_CASCADE_MODEL_TIMEOUT_SEC" (Some "45") @@ fun () ->
-  with_env "MASC_KEEPER_OAS_TIMEOUT_SEC" (Some "300") @@ fun () ->
-  Server_runtime_bootstrap.ensure_default_oas_cascade_timeout_env ();
-  Alcotest.(check string) "explicit override wins" "45"
-    (Sys.getenv "OAS_CASCADE_MODEL_TIMEOUT_SEC")
-
 let test_bootstrap_base_path_config_root_copies_shared_seed_but_not_keepers () =
   with_temp_dir "startup-config-bootstrap" (fun dir ->
       let repo = Filename.concat dir "repo" in
@@ -543,8 +599,8 @@ let test_bootstrap_base_path_config_root_copies_shared_seed_but_not_keepers () =
       Server_runtime_bootstrap.bootstrap_base_path_config_root ~base_path;
       let config_root = Filename.concat base_path ".masc/config" in
       Alcotest.(check bool) "config root created" true (Sys.is_directory config_root);
-      Alcotest.(check string) "cascade copied" "{\"seed\":\"repo\"}"
-        (read_file (Filename.concat config_root "cascade.json"));
+      Alcotest.(check string) "cascade copied" repo_cascade_toml
+        (read_file (Filename.concat config_root "cascade.toml"));
       Alcotest.(check bool) "tool policy copied" true
         (Sys.file_exists (Filename.concat config_root "tool_policy.toml"));
       Alcotest.(check bool) "prompt copied" true
@@ -555,7 +611,7 @@ let test_bootstrap_base_path_config_root_copies_shared_seed_but_not_keepers () =
       Alcotest.(check bool) "repo keeper TOML not copied" false
         (Sys.file_exists (Filename.concat config_root "keepers/example.toml")))
 
-let test_bootstrap_base_path_config_root_preserves_existing_root_without_refill () =
+let test_bootstrap_base_path_config_root_backfills_missing_prompts_only () =
   with_temp_dir "startup-config-preserve" (fun dir ->
       let repo = Filename.concat dir "repo" in
       mkdir_p repo;
@@ -563,22 +619,26 @@ let test_bootstrap_base_path_config_root_preserves_existing_root_without_refill 
       let base_path = Filename.concat dir "base" in
       let config_root = Filename.concat base_path ".masc/config" in
       mkdir_p config_root;
-      write_file (Filename.concat config_root "cascade.json") "{\"seed\":\"local\"}";
+      write_file (Filename.concat config_root "cascade.toml") local_cascade_toml;
       mkdir_p (Filename.concat config_root "personas");
       with_env "MASC_CONFIG_DIR" None @@ fun () ->
       with_cwd repo @@ fun () ->
       Server_runtime_bootstrap.bootstrap_base_path_config_root ~base_path;
-      Alcotest.(check string) "existing cascade preserved" "{\"seed\":\"local\"}"
-        (read_file (Filename.concat config_root "cascade.json"));
+      Alcotest.(check string) "existing cascade preserved" local_cascade_toml
+        (read_file (Filename.concat config_root "cascade.toml"));
       Alcotest.(check bool) "keepers dir scaffolded" true
         (Sys.is_directory (Filename.concat config_root "keepers"));
       Alcotest.(check bool) "prompts dir scaffolded" true
         (Sys.is_directory (Filename.concat config_root "prompts"));
       Alcotest.(check bool) "versioned keeper not resurrected" false
         (Sys.file_exists (Filename.concat config_root "keepers/example.toml"));
-      Alcotest.(check bool) "versioned prompt not resurrected" false
+      Alcotest.(check bool) "versioned prompt backfilled" true
         (Sys.file_exists
            (Filename.concat config_root "prompts/keeper.unified.system.md"));
+      Alcotest.(check string) "backfilled prompt content" "prompt"
+        (read_file (Filename.concat config_root "prompts/keeper.unified.system.md"));
+      Alcotest.(check bool) "versioned persona not resurrected" false
+        (Sys.file_exists (Filename.concat config_root "personas/example.txt"));
       Alcotest.(check bool) "tool policy not backfilled" false
         (Sys.file_exists (Filename.concat config_root "tool_policy.toml")))
 
@@ -604,7 +664,7 @@ let test_startup_config_resolution_defaults_to_bootstrapped_root () =
       mkdir_p (Filename.concat config_root "prompts");
       mkdir_p (Filename.concat config_root "keepers");
       mkdir_p (Filename.concat config_root "personas");
-      write_file (Filename.concat config_root "cascade.json") "{}";
+      write_file (Filename.concat config_root "cascade.toml") "";
       write_file (Filename.concat config_root "tool_policy.toml")
         "[groups.base]\ntools = [\"keeper_time_now\"]\n[presets.minimal]\ngroups = [\"base\"]\n";
       with_env "MASC_CONFIG_DIR" None @@ fun () ->
@@ -615,7 +675,7 @@ let test_startup_config_resolution_defaults_to_bootstrapped_root () =
       Alcotest.(check string) "returns base-path config root" expected
         resolution.Config_dir_resolver.config_root.path;
       Alcotest.(check (option string)) "env remains effectively unset" None
-        (Env_config_core.config_dir_opt ()))
+        ((Host_config.from_env ()).config_dir))
 
 let test_startup_config_resolution_preserves_explicit_override () =
   with_temp_dir "startup-config-activate-explicit" (fun dir ->
@@ -644,10 +704,10 @@ let test_bootstrap_base_path_config_root_collapses_masc_input () =
       Server_runtime_bootstrap.bootstrap_base_path_config_root
         ~base_path:(Filename.concat base_path Common.masc_dirname);
       Alcotest.(check bool) "config root created under parent .masc" true
-        (Sys.file_exists (Filename.concat base_path ".masc/config/cascade.json"));
+        (Sys.file_exists (Filename.concat base_path ".masc/config/cascade.toml"));
       Alcotest.(check bool) "nested .masc/.masc config not created" false
         (Sys.file_exists
-           (Filename.concat base_path ".masc/.masc/config/cascade.json")))
+           (Filename.concat base_path ".masc/.masc/config/cascade.toml")))
 let test_config_bootstrap_mode_parses_env () =
   let check expected value =
     with_env "MASC_CONFIG_BOOTSTRAP" value @@ fun () ->
@@ -684,7 +744,7 @@ let test_bootstrap_empty_mode_creates_scaffold_without_files () =
       Alcotest.(check bool) "prompts dir scaffolded" true
         (Sys.is_directory (Filename.concat config_root "prompts"));
       Alcotest.(check bool) "cascade not copied" false
-        (Sys.file_exists (Filename.concat config_root "cascade.json"));
+        (Sys.file_exists (Filename.concat config_root "cascade.toml"));
       Alcotest.(check bool) "tool policy not copied" false
         (Sys.file_exists (Filename.concat config_root "tool_policy.toml"));
       Alcotest.(check bool) "keeper not copied" false
@@ -841,13 +901,656 @@ let make_keeper_meta_json ?(name = "sangsu")
           ("agent_name", `String ("keeper-" ^ name ^ "-agent"));
           ("trace_id", `String trace_id);
           ("goal", `String ("goal-" ^ name));
-          ("cascade_name", `String Masc_mcp.Keeper_config.default_cascade_name);
+          ("cascade_name", `String Masc_mcp.(Keeper_config.default_cascade_name ()));
           ("updated_at", `String updated_at);
           ("last_model_used", `String "llama:auto");
         ])
   with
   | Ok meta -> Keeper_types.meta_to_json meta |> Yojson.Safe.pretty_to_string
   | Error err -> Alcotest.fail ("meta_of_json failed: " ^ err)
+
+let make_keeper_meta ?(paused = false) ?(name = "sangsu")
+    ?(trace_id = "trace-sangsu-live")
+    ?(updated_at = "2026-03-29T10:36:57Z") () =
+  match
+    Masc_test_deps.meta_of_json_fixture
+      (`Assoc
+        [
+          ("name", `String name);
+          ("agent_name", `String ("keeper-" ^ name ^ "-agent"));
+          ("trace_id", `String trace_id);
+          ("goal", `String ("goal-" ^ name));
+          ("cascade_name", `String Masc_mcp.(Keeper_config.default_cascade_name ()));
+          ("updated_at", `String updated_at);
+          ("last_model_used", `String "llama:auto");
+        ])
+  with
+  | Ok meta ->
+      {
+        meta with
+        paused;
+        auto_resume_after_sec = (if paused then Some 3600.0 else None);
+      }
+  | Error err -> Alcotest.fail ("meta_of_json failed: " ^ err)
+
+let write_keeper_meta_exn config meta =
+  match Keeper_types.write_meta config meta with
+  | Ok () -> ()
+  | Error err -> Alcotest.fail ("keeper meta write failed: " ^ err)
+
+let with_running_keeper_metas config metas f =
+  let base_path = config.Coord.base_path in
+  List.iter
+    (fun (meta : Keeper_types.keeper_meta) ->
+      Keeper_registry.unregister ~base_path meta.name;
+      ignore (Keeper_registry.register ~base_path meta.name meta))
+    metas;
+  Fun.protect
+    ~finally:(fun () ->
+      List.iter
+        (fun (meta : Keeper_types.keeper_meta) ->
+          Keeper_registry.unregister ~base_path meta.name)
+        metas)
+    f
+
+let mark_keeper_failing config (meta : Keeper_types.keeper_meta) =
+  match
+    Keeper_registry.dispatch_event
+      ~base_path:config.Coord.base_path
+      meta.name
+      (Keeper_state_machine.Turn_failed { consecutive = 1; max_allowed = 10 })
+  with
+  | Ok _ -> ()
+  | Error err ->
+    Alcotest.fail
+      ("keeper failing transition failed: "
+       ^ Keeper_state_machine.transition_error_to_string err)
+
+let test_health_json_surfaces_durable_paused_keepers () =
+  with_temp_dir "health-durable-paused-keepers" (fun dir ->
+      let config_root = make_config_root dir in
+      with_env "MASC_CONFIG_DIR" (Some config_root) @@ fun () ->
+      let previous_state = !Server_auth.server_state in
+      Config_dir_resolver.reset ();
+      Fun.protect
+        ~finally:(fun () ->
+          Server_auth.server_state := previous_state;
+          Config_dir_resolver.reset ())
+        (fun () ->
+          let state = Mcp_server.create_state ~base_path:dir in
+          Server_auth.server_state := Some state;
+          let config = state.Mcp_server.room_config in
+          write_keeper_meta_exn config
+            (make_keeper_meta ~name:"durable-paused" ~trace_id:"trace-paused"
+               ~paused:true ());
+          write_keeper_meta_exn config
+            (make_keeper_meta ~name:"durable-active" ~trace_id:"trace-active"
+               ~paused:false ());
+          let ledger_stimulus : Keeper_event_queue.stimulus =
+            { post_id = "health-post-1"
+            ; urgency = Immediate
+            ; arrived_at = 1234.5
+            ; payload =
+                Yojson.Safe.to_string
+                  (`Assoc
+                     [ "source", `String "board_signal"
+                     ; "kind", `String "post_created"
+                     ; "post_id", `String "health-post-1"
+                     ])
+            }
+          in
+          Keeper_reaction_ledger.record_event_queue_stimulus
+            ~base_path:dir
+            ~keeper_name:"durable-active"
+            ledger_stimulus;
+          let request = Httpun.Request.create `GET "/health" in
+          let json = Server_routes_http_runtime.make_health_json request in
+          let open Yojson.Safe.Util in
+          let paused = json |> member "paused_keepers" in
+          let fd_pressure = json |> member "keeper_fd_pressure" in
+          let fd_accountant = json |> member "fd_accountant" in
+          let runtime_truth = json |> member "runtime_truth" in
+          let fleet_safety = json |> member "keeper_fleet_safety" in
+          let reaction_ledger = json |> member "keeper_reaction_ledger" in
+          let durable_names =
+            paused |> member "durable_names" |> to_list |> List.map to_string
+          in
+          let names = paused |> member "names" |> to_list |> List.map to_string in
+          Alcotest.(check int) "durable paused count" 1
+            (paused |> member "durable_count" |> to_int);
+          Alcotest.(check (list string)) "durable paused names"
+            [ "durable-paused" ] durable_names;
+          Alcotest.(check int) "durable paused autoboot count" 1
+            (paused |> member "autoboot_enabled_count" |> to_int);
+          Alcotest.(check (list string)) "durable paused autoboot names"
+            [ "durable-paused" ]
+            (paused |> member "autoboot_enabled_names" |> to_list
+             |> List.map to_string);
+          let paused_details = paused |> member "details" |> to_list in
+          let durable_paused_detail =
+            paused_details
+            |> List.find (fun detail ->
+                 detail |> member "name" |> to_string = "durable-paused")
+          in
+          Alcotest.(check string) "pause kind" "auto_recoverable"
+            (durable_paused_detail |> member "pause_kind" |> to_string);
+          Alcotest.(check bool) "pause missing root cause" true
+            (durable_paused_detail |> member "missing_pause_root_cause" |> to_bool);
+          Alcotest.(check bool) "pause detail keeps autoboot" true
+            (durable_paused_detail |> member "autoboot_enabled" |> to_bool);
+          Alcotest.(check (option (float 0.0001))) "pause detail auto resume"
+            (Some 3600.0)
+            (durable_paused_detail |> member "auto_resume_after_sec" |> to_float_option);
+          Alcotest.(check bool) "union includes durable paused keeper" true
+            (List.exists (( = ) "durable-paused") names);
+          Alcotest.(check bool) "union excludes active durable keeper" false
+            (List.exists (( = ) "durable-active") names);
+          Alcotest.(check int) "durable read errors" 0
+            (paused |> member "read_error_count" |> to_int);
+          Alcotest.(check int) "health exposes requested 24-keeper FD budget"
+            24
+            (fd_pressure |> member "requested_keepers" |> to_int);
+          Alcotest.(check int) "health exposes target 24-keeper FD budget" 24
+            (fd_pressure |> member "target_keeper_count" |> to_int);
+          ignore (fd_pressure |> member "status" |> to_string);
+          ignore (fd_pressure |> member "admission_blocked" |> to_bool);
+          ignore
+            (fd_pressure |> member "admission_decision" |> member "status" |> to_string);
+          ignore (fd_accountant |> member "fd_open" |> to_int);
+          ignore (fd_accountant |> member "fd_limit" |> to_int);
+          ignore (fd_accountant |> member "pressure_active" |> to_bool);
+          Alcotest.(check string) "runtime truth schema"
+            "masc.runtime_truth.v1"
+            (runtime_truth |> member "schema" |> to_string);
+          Alcotest.(check string) "runtime truth source"
+            "running_process"
+            (runtime_truth |> member "source" |> to_string);
+          Alcotest.(check string) "runtime truth effective base path"
+            dir
+            (runtime_truth |> member "effective_base_path" |> to_string);
+          Alcotest.(check string) "runtime truth effective masc root"
+            (Filename.concat dir ".masc")
+            (runtime_truth |> member "effective_masc_root" |> to_string);
+          ignore (runtime_truth |> member "process_cwd" |> to_string);
+          ignore (runtime_truth |> member "executable_path" |> to_string);
+          ignore (runtime_truth |> member "executable_dir" |> to_string);
+          ignore (runtime_truth |> member "keeper_fibers" |> to_int);
+          ignore (runtime_truth |> member "fd_open" |> to_int);
+          ignore (runtime_truth |> member "fd_limit" |> to_int);
+          ignore (runtime_truth |> member "fd_pressure_active" |> to_bool);
+          let fd_accountant_per_kind =
+            fd_accountant |> member "per_kind" |> to_list
+          in
+          Alcotest.(check int) "health exposes all FD accountant kinds"
+            (List.length Fd_accountant.all_kinds)
+            (List.length fd_accountant_per_kind);
+          List.iter
+            (fun kind ->
+              let kind_name = Fd_accountant.kind_to_string kind in
+              let row =
+                fd_accountant_per_kind
+                |> List.find (fun row ->
+                  String.equal (row |> member "kind" |> to_string) kind_name)
+              in
+              ignore (row |> member "in_flight" |> to_int);
+              ignore (row |> member "configured_concurrency" |> to_int);
+              ignore (row |> member "effective_concurrency" |> to_int))
+            Fd_accountant.all_kinds;
+          Alcotest.(check int) "health exposes bootable keeper count" 1
+            (fleet_safety |> member "bootable_keeper_count" |> to_int);
+          Alcotest.(check int) "health exposes autoboot keeper count" 3
+            (fleet_safety |> member "autoboot_enabled_keeper_count" |> to_int);
+          Alcotest.(check int) "health exposes paused autoboot keeper count" 1
+            (fleet_safety |> member "paused_autoboot_enabled_keeper_count" |> to_int);
+          Alcotest.(check int) "health exposes target reaction capacity" 3
+            (fleet_safety |> member "target_reaction_capacity_count" |> to_int);
+          Alcotest.(check int) "health exposes minimum running fibers" 2
+            (fleet_safety |> member "minimum_running_fibers" |> to_int);
+          Alcotest.(check string) "health marks fleet blocked" "blocked"
+            (fleet_safety |> member "status" |> to_string);
+          Alcotest.(check string) "health marks fleet blocker"
+            "no_executable_keeper_fibers"
+            (fleet_safety |> member "blocker" |> to_string);
+          Alcotest.(check bool) "health marks no executable fibers" true
+            (fleet_safety |> member "no_executable_keeper_fibers" |> to_bool);
+          Alcotest.(check bool) "health marks capacity below target" true
+            (fleet_safety |> member "reaction_capacity_below_target" |> to_bool);
+          Alcotest.(check int) "health exposes capacity shortfall" 3
+            (fleet_safety |> member "reaction_capacity_shortfall_count" |> to_int);
+          Alcotest.(check bool) "health fleet asks for operator action" true
+            (fleet_safety |> member "operator_action_required" |> to_bool);
+          Alcotest.(check int) "health exposes autoboot throttle limit" 32
+            (fleet_safety |> member "autoboot_throttle_limit" |> to_int);
+          Alcotest.(check string) "health exposes autoboot throttle source" "default"
+            (fleet_safety |> member "autoboot_throttle_source" |> to_string);
+          Alcotest.(check string) "health reaction ledger degraded"
+            "degraded"
+            (reaction_ledger |> member "status" |> to_string);
+          Alcotest.(check int) "health reaction ledger pending stimuli" 1
+            (reaction_ledger |> member "pending_stimulus_count" |> to_int);
+          Alcotest.(check bool) "health reaction ledger asks for operator action"
+            true
+            (reaction_ledger |> member "operator_action_required" |> to_bool)))
+
+let test_health_json_keeps_timeout_pause_without_policy_manual () =
+  with_temp_dir "health-timeout-paused-without-policy" (fun dir ->
+    let config_root = make_config_root dir in
+    with_env "MASC_CONFIG_DIR" (Some config_root) @@ fun () ->
+    let previous_state = !Server_auth.server_state in
+    Config_dir_resolver.reset ();
+    Fun.protect
+      ~finally:(fun () ->
+        Server_auth.server_state := previous_state;
+        Config_dir_resolver.reset ())
+      (fun () ->
+        let state = Mcp_server.create_state ~base_path:dir in
+        Server_auth.server_state := Some state;
+        let config = state.Mcp_server.room_config in
+        let timeout_paused =
+          { (make_keeper_meta
+               ~name:"timeout-without-policy"
+               ~trace_id:"trace-timeout-without-policy"
+               ~paused:true
+               ())
+            with
+            auto_resume_after_sec = None;
+            runtime =
+              { (make_keeper_meta ()).runtime with
+                last_blocker =
+                  Some
+                    (Keeper_types.blocker_info_of_class
+                       ~detail:"turn_timeout"
+                       Keeper_types.Turn_timeout);
+              };
+          }
+        in
+        write_keeper_meta_exn config timeout_paused;
+        let request = Httpun.Request.create `GET "/health" in
+        let json = Server_routes_http_runtime.make_health_json request in
+        let open Yojson.Safe.Util in
+        let paused_details =
+          json |> member "paused_keepers" |> member "details" |> to_list
+        in
+        let detail =
+          paused_details
+          |> List.find (fun row ->
+               row |> member "name" |> to_string = "timeout-without-policy")
+        in
+        Alcotest.(check string) "pause kind" "operator_paused"
+          (detail |> member "pause_kind" |> to_string);
+        Alcotest.(check (option (float 0.0001))) "effective auto resume"
+          None
+          (detail |> member "auto_resume_after_sec" |> to_float_option);
+        Alcotest.(check (option (float 0.0001))) "persisted auto resume remains absent"
+          None
+          (detail |> member "persisted_auto_resume_after_sec" |> to_float_option);
+        Alcotest.(check bool) "auto resume source is absent" true
+          (Yojson.Safe.Util.member "auto_resume_source" detail = `Null);
+        Alcotest.(check string) "last blocker class" "turn_timeout"
+          (detail |> member "last_blocker" |> member "klass" |> to_string)))
+
+let test_health_json_degrades_when_reaction_capacity_below_target () =
+  with_temp_dir "health-reaction-capacity-below-target" (fun dir ->
+    let config_root = make_config_root dir in
+    with_env "MASC_CONFIG_DIR" (Some config_root) @@ fun () ->
+    let previous_state = !Server_auth.server_state in
+    Config_dir_resolver.reset ();
+    Fun.protect
+      ~finally:(fun () ->
+        Server_auth.server_state := previous_state;
+        Config_dir_resolver.reset ())
+      (fun () ->
+        let state = Mcp_server.create_state ~base_path:dir in
+        Server_auth.server_state := Some state;
+        let config = state.Mcp_server.room_config in
+        let paused =
+          make_keeper_meta ~name:"capacity-paused" ~trace_id:"trace-capacity-paused"
+            ~paused:true ()
+        in
+        let running_a =
+          make_keeper_meta ~name:"capacity-running-a"
+            ~trace_id:"trace-capacity-running-a" ()
+        in
+        let running_b =
+          make_keeper_meta ~name:"capacity-running-b"
+            ~trace_id:"trace-capacity-running-b" ()
+        in
+        List.iter (write_keeper_meta_exn config) [ paused; running_a; running_b ];
+        with_running_keeper_metas config [ running_a; running_b ] (fun () ->
+          let request = Httpun.Request.create `GET "/health" in
+          let json = Server_routes_http_runtime.make_health_json request in
+          let open Yojson.Safe.Util in
+          let fleet_safety = json |> member "keeper_fleet_safety" in
+          Alcotest.(check int) "health exposes running reaction capacity" 2
+            (fleet_safety |> member "effective_reaction_capacity_count" |> to_int);
+          Alcotest.(check int) "health exposes executable reaction capacity" 2
+            (fleet_safety |> member "executable_reaction_capacity_count" |> to_int);
+          Alcotest.(check int) "health exposes failing keeper count" 0
+            (fleet_safety |> member "failing_keeper_fiber_count" |> to_int);
+          Alcotest.(check int) "health exposes target reaction capacity" 4
+            (fleet_safety |> member "target_reaction_capacity_count" |> to_int);
+          Alcotest.(check int) "health exposes minimum running fibers" 2
+            (fleet_safety |> member "minimum_running_fibers" |> to_int);
+          Alcotest.(check bool) "health is not below minimum margin" false
+            (fleet_safety |> member "low_running_fiber_margin" |> to_bool);
+          Alcotest.(check bool) "health marks capacity below target" true
+            (fleet_safety |> member "reaction_capacity_below_target" |> to_bool);
+          Alcotest.(check int) "health exposes capacity shortfall" 2
+            (fleet_safety |> member "reaction_capacity_shortfall_count" |> to_int);
+          Alcotest.(check int) "health exposes executable capacity shortfall" 2
+            (fleet_safety
+             |> member "executable_reaction_capacity_shortfall_count"
+             |> to_int);
+          Alcotest.(check int) "health exposes blocked shortfall" 2
+            (fleet_safety |> member "blocked_count" |> to_int);
+          Alcotest.(check string) "health marks fleet degraded" "degraded"
+            (fleet_safety |> member "status" |> to_string);
+          Alcotest.(check string) "health marks target-capacity blocker"
+            "reaction_capacity_below_target"
+            (fleet_safety |> member "blocker" |> to_string);
+          Alcotest.(check bool) "health fleet asks for operator action" true
+            (fleet_safety |> member "operator_action_required" |> to_bool))))
+
+let test_health_json_distinguishes_failing_executable_keepers () =
+  with_temp_dir "health-failing-executable-keepers" (fun dir ->
+    let config_root = make_config_root dir in
+    with_env "MASC_CONFIG_DIR" (Some config_root) @@ fun () ->
+    let previous_state = !Server_auth.server_state in
+    Config_dir_resolver.reset ();
+    Fun.protect
+      ~finally:(fun () ->
+        Server_auth.server_state := previous_state;
+        Config_dir_resolver.reset ())
+      (fun () ->
+        let state = Mcp_server.create_state ~base_path:dir in
+        Server_auth.server_state := Some state;
+        let config = state.Mcp_server.room_config in
+        let paused =
+          make_keeper_meta ~name:"capacity-paused" ~trace_id:"trace-capacity-paused"
+            ~paused:true ()
+        in
+        let failing =
+          make_keeper_meta ~name:"capacity-failing"
+            ~trace_id:"trace-capacity-failing" ()
+        in
+        List.iter (write_keeper_meta_exn config) [ paused; failing ];
+        with_running_keeper_metas config [ failing ] (fun () ->
+          mark_keeper_failing config failing;
+          let request = Httpun.Request.create `GET "/health" in
+          let json = Server_routes_http_runtime.make_health_json request in
+          let open Yojson.Safe.Util in
+          let fleet_safety = json |> member "keeper_fleet_safety" in
+          Alcotest.(check int) "health exposes no healthy running fibers" 0
+            (fleet_safety |> member "healthy_running_keeper_fiber_count" |> to_int);
+          Alcotest.(check int) "health exposes failing keeper fibers" 1
+            (fleet_safety |> member "failing_keeper_fiber_count" |> to_int);
+          Alcotest.(check int) "health exposes executable keeper fibers" 1
+            (fleet_safety |> member "executable_keeper_fiber_count" |> to_int);
+          Alcotest.(check bool) "health marks no running fibers" true
+            (fleet_safety |> member "no_running_fibers" |> to_bool);
+          Alcotest.(check bool) "health does not mark no executable fibers" false
+            (fleet_safety |> member "no_executable_keeper_fibers" |> to_bool);
+          Alcotest.(check string) "health marks degraded not blocked" "degraded"
+            (fleet_safety |> member "status" |> to_string);
+          Alcotest.(check string) "health marks healthy-running blocker"
+            "no_healthy_running_keeper_fibers"
+            (fleet_safety |> member "blocker" |> to_string);
+          Alcotest.(check bool) "health still asks for operator action" true
+            (fleet_safety |> member "operator_action_required" |> to_bool))))
+
+let test_health_json_reaction_ledger_cursor_sweep_clears_pending () =
+  with_temp_dir "health-reaction-ledger-cursor-sweep" (fun dir ->
+    with_env "MASC_BASE_PATH" (Some dir) (fun () ->
+      Fun.protect
+        ~finally:(fun () ->
+          Server_auth.server_state := None;
+          Config_dir_resolver.reset ())
+        (fun () ->
+        Config_dir_resolver.reset ();
+        let state = Mcp_server.create_state ~base_path:dir in
+        Server_auth.server_state := Some state;
+        let config = state.Mcp_server.room_config in
+        write_keeper_meta_exn config
+          (make_keeper_meta ~name:"cursor-swept" ~trace_id:"trace-cursor" ());
+        let stimulus post_id updated_at : Keeper_event_queue.stimulus =
+          { post_id
+          ; urgency = Immediate
+          ; arrived_at = updated_at +. 10.0
+          ; payload =
+              Yojson.Safe.to_string
+                (`Assoc
+                   [ "source", `String "board_signal"
+                   ; "kind", `String "post_created"
+                   ; "post_id", `String post_id
+                   ; "updated_at_unix", `Float updated_at
+                   ])
+          }
+        in
+        List.iter
+          (Keeper_reaction_ledger.record_event_queue_stimulus
+             ~base_path:dir
+             ~keeper_name:"cursor-swept")
+          [ stimulus "health-post-1" 10.0; stimulus "health-post-2" 20.0 ];
+        Keeper_reaction_ledger.record_board_cursor_ack
+          ~base_path:dir
+          ~keeper_name:"cursor-swept"
+          ~cursor_ts:20.0
+          ~post_id:(Some "health-post-2")
+          ();
+        let request = Httpun.Request.create `GET "/health" in
+        let json = Server_routes_http_runtime.make_health_json request in
+        let open Yojson.Safe.Util in
+        let reaction_ledger = json |> member "keeper_reaction_ledger" in
+        Alcotest.(check string) "health cursor-swept reaction ledger ok"
+          "ok"
+          (reaction_ledger |> member "status" |> to_string);
+        Alcotest.(check int) "health cursor-swept pending stimuli" 0
+          (reaction_ledger |> member "pending_stimulus_count" |> to_int);
+        Alcotest.(check bool)
+          "health cursor-swept reaction ledger clears operator action"
+          false
+          (reaction_ledger |> member "operator_action_required" |> to_bool))))
+
+let test_health_json_surfaces_log_ring_summary () =
+  Log.set_level Log.Info;
+  Log.emit Log.Warn ~module_name:"HealthTest"
+    "health-log-ring-summary-marker";
+  let request = Httpun.Request.create `GET "/health" in
+  let json = Server_routes_http_runtime.make_health_json request in
+  let open Yojson.Safe.Util in
+  let logs = json |> member "logs" in
+  let latest = logs |> member "latest" in
+  Alcotest.(check string) "log ring active" "active"
+    (logs |> member "status" |> to_string);
+  Alcotest.(check bool) "total entries positive" true
+    (logs |> member "total_entries" |> to_int > 0);
+  Alcotest.(check bool) "retained entries positive" true
+    (logs |> member "retained_entries" |> to_int > 0);
+  Alcotest.(check bool) "recent window positive" true
+    (logs |> member "recent_window" |> to_int > 0);
+  Alcotest.(check string) "latest level" "WARN"
+    (latest |> member "level" |> to_string);
+  Alcotest.(check string) "latest module" "HealthTest"
+    (latest |> member "module" |> to_string);
+  Alcotest.(check bool) "latest excludes message text" true
+    (latest |> member "message" = `Null);
+  Alcotest.(check bool) "latest excludes details payload" true
+    (latest |> member "details" = `Null);
+  ignore (logs |> member "file_sink" |> member "enabled" |> to_bool)
+
+let test_health_response_default_is_light_probe () =
+  let request = Httpun.Request.create `GET "/health" in
+  let json = Server_routes_http_runtime.make_health_response_json request in
+  let open Yojson.Safe.Util in
+  Alcotest.(check string) "default health detail" "probe"
+    (json |> member "health_detail" |> to_string);
+  Alcotest.(check string) "full health pointer" "/health?full=1"
+    (json |> member "full_health_url" |> to_string);
+  Alcotest.(check bool) "startup stays on default health" true
+    (match json |> member "startup" with `Assoc _ -> true | _ -> false);
+  Alcotest.(check bool) "paths stay on default health" true
+    (match json |> member "paths" with `Assoc _ -> true | _ -> false);
+  Alcotest.(check bool) "default health skips reaction ledger" true
+    (json |> member "keeper_reaction_ledger" = `Null);
+  Alcotest.(check bool) "default health skips cdal snapshot" true
+    (json |> member "cdal" = `Null)
+
+let test_health_response_full_query_uses_snapshot_cache () =
+  Server_routes_http_runtime.For_testing.reset_full_health_snapshot ();
+  let request = Httpun.Request.create `GET "/health?full=1" in
+  let first = Server_routes_http_runtime.make_health_response_json request in
+  let open Yojson.Safe.Util in
+  Alcotest.(check string) "full health detail" "full"
+    (first |> member "health_detail" |> to_string);
+  Alcotest.(check bool) "full health includes snapshot metadata" true
+    (match first |> member "full_health_snapshot" with
+     | `Assoc _ -> true
+     | _ -> false);
+  let first_snapshot_status =
+    first |> member "full_health_snapshot" |> member "status" |> to_string
+  in
+  Alcotest.(check bool) "first full health status is bounded" true
+    (List.mem first_snapshot_status [ "warming"; "ready"; "stale"; "error" ]);
+  Alcotest.(check bool) "full health response keeps reaction ledger shape" true
+    (match first |> member "keeper_reaction_ledger" with
+     | `Assoc _ -> true
+     | _ -> false);
+  Alcotest.(check bool) "full health response keeps cdal shape" true
+    (match first |> member "cdal" with
+     | `Assoc _ -> true
+     | _ -> false);
+  Server_routes_http_runtime.For_testing.refresh_full_health_snapshot_now request;
+  let refreshed = Server_routes_http_runtime.make_health_response_json request in
+  Alcotest.(check string) "refreshed snapshot is ready" "ready"
+    (refreshed |> member "full_health_snapshot" |> member "status" |> to_string);
+  Alcotest.(check bool) "ready snapshot has no stale reason" true
+    (refreshed |> member "full_health_snapshot" |> member "stale_reason" = `Null);
+  Alcotest.(check bool) "ready snapshot has no stale age" true
+    (refreshed |> member "full_health_snapshot" |> member "stale_age_ms" = `Null);
+  Alcotest.(check bool) "refreshed full health keeps reaction ledger" true
+    (match refreshed |> member "keeper_reaction_ledger" with
+     | `Assoc _ -> true
+     | _ -> false);
+  Alcotest.(check bool) "refreshed full health keeps cdal snapshot" true
+    (match refreshed |> member "cdal" with
+     | `Assoc _ -> true
+     | _ -> false)
+
+let test_full_health_refresh_timeout_is_independent_from_shell_budget () =
+  let interval_sec, timeout_sec, ttl_sec =
+    Server_routes_http_runtime.For_testing.full_health_refresh_timing ()
+  in
+  Alcotest.(check (float 0.001)) "full health timeout uses dedicated budget"
+    Env_config_runtime.Dashboard.full_health_refresh_timeout_sec
+    timeout_sec;
+  Alcotest.(check bool) "full health timeout is below shell full budget" true
+    (timeout_sec < Env_config_runtime.Dashboard.shell_timeout_sec);
+  Alcotest.(check bool) "full health interval exceeds timeout" true
+    (interval_sec > timeout_sec);
+  Alcotest.(check bool) "snapshot ttl covers refresh interval" true
+    (ttl_sec >= interval_sec *. 2.0)
+
+let test_full_health_refresh_timeout_preserves_last_snapshot () =
+  Server_routes_http_runtime.For_testing.reset_full_health_snapshot ();
+  let request = Httpun.Request.create `GET "/health?full=1" in
+  Server_routes_http_runtime.For_testing.refresh_full_health_snapshot_now request;
+  let before = Server_routes_http_runtime.make_health_response_json request in
+  let open Yojson.Safe.Util in
+  let before_reaction_ledger = before |> member "keeper_reaction_ledger" in
+  let timeout_error =
+    Failure
+      "refresh_timeout label=full_health_snapshot phase=refresh timeout_s=16.0 \
+       elapsed_s=17.0"
+  in
+  Server_routes_http_runtime.For_testing.mark_full_health_snapshot_error timeout_error;
+  let after = Server_routes_http_runtime.make_health_response_json request in
+  Alcotest.(check string) "timeout marks snapshot stale" "stale"
+    (after |> member "full_health_snapshot" |> member "status" |> to_string);
+  Alcotest.(check bool) "timeout marks timed out component" true
+    (after |> member "full_health_snapshot" |> member "component_timed_out"
+     |> to_bool);
+  Alcotest.(check bool) "timeout keeps last-good marker" true
+    (after |> member "full_health_snapshot" |> member "last_good_available"
+     |> to_bool);
+  Alcotest.(check string) "timeout error is surfaced" (Printexc.to_string timeout_error)
+    (after |> member "full_health_snapshot" |> member "error" |> to_string);
+  Alcotest.(check string) "timeout stale reason" "last_good_refresh_timeout"
+    (after |> member "full_health_snapshot" |> member "stale_reason" |> to_string);
+  Alcotest.(check bool) "timeout stale age is surfaced" true
+    (match after |> member "full_health_snapshot" |> member "stale_age_ms" with
+     | `Int age -> age >= 0
+     | _ -> false);
+  Alcotest.(check bool) "timeout records stale-since timestamp" true
+    (match after |> member "full_health_snapshot" |> member "stale_since_ts" with
+     | `Float _ | `Int _ -> true
+     | _ -> false);
+  Alcotest.(check string) "timeout preserves previous heavy fields"
+    (Yojson.Safe.to_string before_reaction_ledger)
+    (after |> member "keeper_reaction_ledger" |> Yojson.Safe.to_string)
+
+let test_full_health_cold_refresh_timeout_is_timeout_not_error () =
+  Server_routes_http_runtime.For_testing.reset_full_health_snapshot ();
+  let request = Httpun.Request.create `GET "/health?full=1" in
+  let timeout_error =
+    Failure
+      "refresh_timeout label=full_health_snapshot phase=refresh timeout_s=16.0 \
+       elapsed_s=17.0"
+  in
+  Server_routes_http_runtime.For_testing.mark_full_health_snapshot_error timeout_error;
+  let after = Server_routes_http_runtime.make_health_response_json request in
+  let open Yojson.Safe.Util in
+  Alcotest.(check string) "cold timeout status" "timeout"
+    (after |> member "full_health_snapshot" |> member "status" |> to_string);
+  Alcotest.(check bool) "cold timeout marks metadata timeout" true
+    (after |> member "full_health_snapshot" |> member "component_timed_out"
+     |> to_bool);
+  Alcotest.(check bool) "cold timeout has no last good" false
+    (after |> member "full_health_snapshot" |> member "last_good_available"
+     |> to_bool);
+  Alcotest.(check string) "cold timeout stale reason" "refresh_timeout"
+    (after |> member "full_health_snapshot" |> member "stale_reason" |> to_string);
+  Alcotest.(check bool) "cold timeout stale age is surfaced" true
+    (match after |> member "full_health_snapshot" |> member "stale_age_ms" with
+     | `Int age -> age >= 0
+     | _ -> false);
+  Alcotest.(check bool) "cold timeout marks component timeout" true
+    (after |> member "cdal" |> member "component_timed_out" |> to_bool)
+
+let test_health_response_survives_deleted_cwd () =
+  with_temp_dir "health-deleted-cwd" (fun dir ->
+      let deleted_cwd = Filename.concat dir "deleted-cwd" in
+      Unix.mkdir deleted_cwd 0o755;
+      with_env "MASC_BASE_PATH" (Some dir) @@ fun () ->
+      with_env "MASC_CONFIG_DIR" None @@ fun () ->
+      let saved_cwd = Sys.getcwd () in
+      let expected_base_path =
+        try Unix.realpath dir with
+        | Unix.Unix_error _ -> dir
+      in
+      Config_dir_resolver.reset ();
+      Unix.chdir deleted_cwd;
+      Unix.rmdir deleted_cwd;
+      Fun.protect
+        ~finally:(fun () ->
+          Unix.chdir saved_cwd;
+          Config_dir_resolver.reset ())
+        (fun () ->
+          let request = Httpun.Request.create `GET "/health" in
+          let json =
+            Server_routes_http_runtime.make_health_response_json request
+          in
+          let open Yojson.Safe.Util in
+          Alcotest.(check string)
+            "deleted cwd health still returns probe"
+            "probe"
+            (json |> member "health_detail" |> to_string);
+          Alcotest.(check string)
+            "deleted cwd resolver falls back to base path"
+            expected_base_path
+            (json
+             |> member "paths"
+             |> member "effective_base_path"
+             |> to_string)))
 
 let test_migrate_resident_keeper_dirs_promotes_valid_meta () =
   with_temp_dir "startup-legacy-keepers" (fun dir ->
@@ -938,7 +1641,10 @@ let test_migrate_resident_keeper_dirs_use_source_scoped_quarantine_path () =
 
 let test_blocking_bootstrap_promotes_legacy_keeper_meta_before_autoboot () =
   with_temp_dir "startup-blocking-legacy-keepers" (fun dir ->
+      let _config_root = make_config_root dir in
       write_basepath_keeper_toml dir "sangsu";
+      with_env "MASC_CONFIG_DIR" (Some _config_root) @@ fun () ->
+      Config_dir_resolver.reset ();
       let state = Mcp_server.create_state ~base_path:dir in
       let masc_root = Coord.masc_root_dir state.Mcp_server.room_config in
       let legacy_dir = Filename.concat masc_root "resident-keepers" in
@@ -947,7 +1653,7 @@ let test_blocking_bootstrap_promotes_legacy_keeper_meta_before_autoboot () =
       Fs_compat.mkdir_p legacy_trace_dir;
       write_file (Filename.concat legacy_dir "sangsu.json")
         (make_keeper_meta_json ());
-      write_file (Filename.concat legacy_trace_dir "ckpt-1.json") {|{"ok":true}|};
+      write_file (Filename.concat legacy_trace_dir "trace.jsonl") {|{"ok":true}|};
       Server_runtime_bootstrap.bootstrap_server_state_blocking state;
       Alcotest.(check bool) "legacy keeper meta promoted during blocking bootstrap"
         true
@@ -958,10 +1664,13 @@ let test_blocking_bootstrap_promotes_legacy_keeper_meta_before_autoboot () =
         (Sys.file_exists legacy_dir);
       Alcotest.(check bool) "legacy traces stay deferred to lazy startup" true
         (Sys.file_exists legacy_trace_dir);
+      let keepalive =
+        Keeper_types.keepalive_keeper_names state.Mcp_server.room_config
+      in
       Alcotest.(check (list string))
         "autoboot sees promoted keepers on first scan"
         [ "sangsu" ]
-        (Keeper_types.keepalive_keeper_names state.Mcp_server.room_config))
+        (List.filter (fun n -> String.equal n "sangsu") keepalive))
 
 let test_blocking_bootstrap_flattens_room_with_safe_current_room_fallback () =
   with_temp_dir "startup-blocking-room-flatten" (fun dir ->
@@ -1072,6 +1781,89 @@ let test_blocking_bootstrap_ignores_whitespace_legacy_room_dirs () =
       Alcotest.(check bool)
         "whitespace room backlog does not promote into root" false
         root_backlog_promoted)
+
+let execution_label = function
+  | Server_runtime_bootstrap.Parallel -> "parallel"
+  | Server_runtime_bootstrap.Serial -> "serial"
+
+let check_lazy_group group ~name ~execution ~tasks =
+  Alcotest.(check string) "group name" name group.Server_runtime_bootstrap.group_name;
+  Alcotest.(check string)
+    (name ^ " execution")
+    execution
+    (execution_label group.Server_runtime_bootstrap.execution);
+  Alcotest.(check (list string))
+    (name ^ " tasks")
+    tasks
+    group.Server_runtime_bootstrap.task_names
+
+let test_lazy_startup_plan_groups_independent_tasks () =
+  let groups = Server_runtime_bootstrap.lazy_startup_plan ~has_legacy_traces:false in
+  Alcotest.(check (list string))
+    "group order"
+    [ "initialize"; "tool_state"; "cleanup" ]
+    (List.map
+       (fun group -> group.Server_runtime_bootstrap.group_name)
+       groups);
+  match groups with
+  | [ initialize; tool_state; cleanup ] ->
+      check_lazy_group initialize ~name:"initialize" ~execution:"parallel"
+        ~tasks:
+          [
+            "restore_sessions";
+            "reconcile_active_agents";
+            "prompt_bootstrap";
+            "keeper_history_migration";
+          ];
+      check_lazy_group tool_state ~name:"tool_state" ~execution:"serial"
+        ~tasks:[ "telemetry_warmup"; "tool_metrics_restore" ];
+      check_lazy_group cleanup ~name:"cleanup" ~execution:"serial"
+        ~tasks:
+          [ "jsonl_prune"; "auth_archive_prune" ];
+      Alcotest.(check (list string))
+        "flattened task order"
+        [
+          "restore_sessions";
+          "reconcile_active_agents";
+          "prompt_bootstrap";
+          "keeper_history_migration";
+          "telemetry_warmup";
+          "tool_metrics_restore";
+          "jsonl_prune";
+          "auth_archive_prune";
+        ]
+        (Server_runtime_bootstrap.lazy_startup_task_names
+           ~has_legacy_traces:false)
+  | _ -> Alcotest.fail "unexpected lazy startup group shape"
+
+let test_lazy_startup_plan_keeps_legacy_migration_serial () =
+  let groups = Server_runtime_bootstrap.lazy_startup_plan ~has_legacy_traces:true in
+  Alcotest.(check (list string))
+    "group order"
+    [ "initialize"; "tool_state"; "legacy_trace_migration"; "cleanup" ]
+    (List.map
+       (fun group -> group.Server_runtime_bootstrap.group_name)
+       groups);
+  match groups with
+  | [ _initialize; _tool_state; legacy_migration; _cleanup ] ->
+      check_lazy_group legacy_migration ~name:"legacy_trace_migration"
+        ~execution:"serial" ~tasks:[ "legacy_trace_dir_migration" ];
+      Alcotest.(check (list string))
+        "flattened task order includes legacy migration before cleanup"
+        [
+          "restore_sessions";
+          "reconcile_active_agents";
+          "prompt_bootstrap";
+          "keeper_history_migration";
+          "telemetry_warmup";
+          "tool_metrics_restore";
+          "legacy_trace_dir_migration";
+          "jsonl_prune";
+          "auth_archive_prune";
+        ]
+        (Server_runtime_bootstrap.lazy_startup_task_names
+           ~has_legacy_traces:true)
+  | _ -> Alcotest.fail "unexpected legacy lazy startup group shape"
 
 let test_startup_state_json () =
   Server_startup_state.reset ~backend_mode:"postgres-native" ();
@@ -1225,7 +2017,7 @@ let test_create_server_state_records_runtime_resolution () =
       Server_startup_state.reset ~backend_mode:"filesystem" ();
       ignore
         (Server_runtime_bootstrap.create_server_state ~sw ~base_path:dir ~clock
-           ~mono_clock ~net ~proc_mgr ~fs);
+           ~mono_clock ~net ~proc_mgr ~fs ());
       let json = Server_startup_state.to_yojson () in
       let open Yojson.Safe.Util in
       Alcotest.(check string) "create_server_state records config root"
@@ -1262,7 +2054,7 @@ let test_create_server_state_preserves_raw_input_base_path () =
       Server_startup_state.reset ~backend_mode:"filesystem" ();
       ignore
         (Server_runtime_bootstrap.create_server_state ~sw ~base_path:raw_input
-           ~clock ~mono_clock ~net ~proc_mgr ~fs);
+           ~clock ~mono_clock ~net ~proc_mgr ~fs ());
       let json = Server_startup_state.to_yojson () in
       let open Yojson.Safe.Util in
       Alcotest.(check string) "raw input base path preserved in diagnostics"
@@ -1271,20 +2063,21 @@ let test_create_server_state_preserves_raw_input_base_path () =
        |> to_string);
       Alcotest.(check (option string)) "raw input env preserved"
         (Some raw_input)
-        (Env_config_core.base_path_raw_opt ());
+        ((Host_config.from_env ()).base_path_raw);
       Alcotest.(check string) "normalized env remains effective workspace root"
         dir (Sys.getenv "MASC_BASE_PATH"))
 
-let test_prompt_markdown_dir_falls_back_to_resolved_config_dir_with_repo_fallback_opt_in () =
+let test_prompt_markdown_dir_ignores_repo_seed_prompts () =
   with_temp_dir "startup-prompts" (fun dir ->
       let config_root = Filename.concat dir "config" in
-      let expected = Filename.concat config_root "prompts" in
+      let repo_prompts = Filename.concat config_root "prompts" in
+      let expected = Filename.concat dir ".masc/config/prompts" in
+      Fs_compat.mkdir_p repo_prompts;
       Fs_compat.mkdir_p expected;
-      write_file (Filename.concat config_root "cascade.json") "{}";
+      write_file (Filename.concat config_root "cascade.toml") "";
       write_file (Filename.concat config_root "tool_policy.toml")
         "[groups.base]\ntools = [\"keeper_time_now\"]\n[presets.minimal]\ngroups = [\"base\"]\n";
       with_env "MASC_CONFIG_DIR" None @@ fun () ->
-      with_env "MASC_ALLOW_REPO_CONFIG_FALLBACK" (Some "true") @@ fun () ->
       with_cwd dir @@ fun () ->
       Config_dir_resolver.reset ();
       let resolved =
@@ -1294,23 +2087,20 @@ let test_prompt_markdown_dir_falls_back_to_resolved_config_dir_with_repo_fallbac
              Prompt_defaults.resolve_prompt_markdown_dir
                ~workspace_path:dir ~base_path:dir)
       in
-      Alcotest.(check string) "temp room falls back to resolved prompt dir"
+      Alcotest.(check string) "repo seed prompts are not active config"
         (canonical_path expected) (canonical_path resolved))
 
-let test_prompt_markdown_dir_does_not_use_repo_fallback_without_opt_in () =
+let test_prompt_markdown_dir_does_not_use_repo_seed () =
   with_temp_dir "startup-prompts-no-opt-in" (fun dir ->
       let config_root = Filename.concat dir "config" in
       let repo_prompts = Filename.concat config_root "prompts" in
-      let home = Filename.concat dir "home" in
-      let expected = Filename.concat home ".masc/config/prompts" in
+      let expected = Filename.concat dir ".masc/config/prompts" in
       Fs_compat.mkdir_p repo_prompts;
-      write_file (Filename.concat config_root "cascade.json") "{}";
+      Fs_compat.mkdir_p expected;
+      write_file (Filename.concat config_root "cascade.toml") "";
       write_file (Filename.concat config_root "tool_policy.toml")
         "[groups.base]\ntools = [\"keeper_time_now\"]\n[presets.minimal]\ngroups = [\"base\"]\n";
-      Fs_compat.mkdir_p home;
-      with_env "HOME" (Some home) @@ fun () ->
       with_env "MASC_CONFIG_DIR" None @@ fun () ->
-      with_env "MASC_ALLOW_REPO_CONFIG_FALLBACK" None @@ fun () ->
       with_cwd dir @@ fun () ->
       Config_dir_resolver.reset ();
       let resolved =
@@ -1321,8 +2111,8 @@ let test_prompt_markdown_dir_does_not_use_repo_fallback_without_opt_in () =
                ~workspace_path:dir ~base_path:dir)
       in
       Alcotest.(check string)
-        "temp room keeps resolved default prompt dir without repo fallback opt-in"
-        expected resolved)
+        "temp room keeps resolved default prompt dir without repo seed"
+        (canonical_path expected) (canonical_path resolved))
 
 let test_prompt_markdown_dir_honors_masc_config_dir_override () =
   with_temp_dir "startup-prompts-override" (fun dir ->
@@ -1382,7 +2172,6 @@ let test_main_eio_serves_health_before_lazy_startup () =
             ("GRAPHQL_URL", "http://127.0.0.1:9/graphql");
             ("MASC_AUTONOMY_ENABLED", "0");
             ("MASC_ORCHESTRATOR_ENABLED", "0");
-            ("MASC_ALLOW_LEGACY_ACCEPT", "1");
             ("MASC_USE_H2", "0");
             ("DUNE_SOURCEROOT", project_root ());
           ]
@@ -1522,6 +2311,7 @@ let test_main_eio_fresh_bootstrap_and_mcp_handshake () =
               ~headers:
                 [
                   "Content-Type: application/json";
+                  "Accept: application/json, text/event-stream";
                   "Mcp-Session-Id: " ^ session_id;
                   "Mcp-Protocol-Version: " ^ protocol_version;
                 ]
@@ -1541,6 +2331,7 @@ let test_main_eio_fresh_bootstrap_and_mcp_handshake () =
               ~headers:
                 [
                   "Content-Type: application/json";
+                  "Accept: application/json, text/event-stream";
                   "Mcp-Session-Id: " ^ session_id;
                   "Mcp-Protocol-Version: " ^ protocol_version;
                 ]
@@ -1564,7 +2355,7 @@ let test_main_eio_fresh_bootstrap_and_mcp_handshake () =
             (List.mem "masc_status" tool_names)))
 
 let test_main_eio_self_heals_codex_mcp_token_file () =
-  with_temp_dir "startup-codex-token-selfheal" (fun dir ->
+  with_temp_dir "startup-agent_code-token-selfheal" (fun dir ->
       let exe = find_main_eio_exe () in
       let port = find_free_port () in
       let log_file = Filename.concat dir "server.log" in
@@ -1576,17 +2367,17 @@ let test_main_eio_self_heals_codex_mcp_token_file () =
       with_cwd (project_root ()) @@ fun () ->
       Server_runtime_bootstrap.bootstrap_base_path_config_root ~base_path:dir;
       let auth_dir = Filename.concat dir ".masc/auth" in
-      let token_path = Filename.concat auth_dir "codex-mcp-client.token" in
+      let token_path = Filename.concat auth_dir "agent_code-mcp-client.token" in
       Fs_compat.mkdir_p auth_dir;
       let stale_hash =
         match
           Auth.save_raw_token_credential dir
-            ~agent_name:"codex-mcp-client" ~role:Masc_domain.Worker
-            ~raw_token:"stale-codex-raw-token"
+            ~agent_name:"agent_code-mcp-client" ~role:Masc_domain.Worker
+            ~raw_token:"stale-agent_code-raw-token"
         with
         | Ok cred -> cred.token
         | Error err ->
-            Alcotest.failf "failed to seed stale codex credential: %s"
+            Alcotest.failf "failed to seed stale agent_code credential: %s"
               (Masc_domain.masc_error_to_string err)
       in
       write_file token_path stale_hash;
@@ -1624,7 +2415,7 @@ let test_main_eio_self_heals_codex_mcp_token_file () =
           if not (wait_for_startup_phase ~pid ~port ~timeout_s:10.0 "ready") then begin
             prerr_endline
               (Printf.sprintf
-                 "main_eio codex token self-heal did not reach startup.phase=ready within timeout in this environment.\nlog:\n%s"
+                 "main_eio agent_code token self-heal did not reach startup.phase=ready within timeout in this environment.\nlog:\n%s"
                  (read_file log_file));
             Alcotest.skip ()
           end;
@@ -1634,18 +2425,18 @@ let test_main_eio_self_heals_codex_mcp_token_file () =
             (repaired_raw <> stale_hash);
           Alcotest.(check int) "token file is private" 0o600 repaired_mode;
           let credential =
-            match Auth.load_credential dir "codex-mcp-client" with
+            match Auth.load_credential dir "agent_code-mcp-client" with
             | Some cred -> cred
-            | None -> Alcotest.fail "missing codex-mcp-client credential after startup"
+            | None -> Alcotest.fail "missing agent_code-mcp-client credential after startup"
           in
           Alcotest.(check bool) "existing role preserved" true
             (credential.role = Masc_domain.Worker);
-          Alcotest.(check (option string)) "codex credential does not expire"
+          Alcotest.(check (option string)) "agent_code credential does not expire"
             None credential.expires_at;
           Alcotest.(check string) "raw token hashes to stored credential"
             credential.token (Auth.sha256_hash repaired_raw);
           (match
-             Auth.verify_token dir ~agent_name:"codex-mcp-client"
+             Auth.verify_token dir ~agent_name:"agent_code-mcp-client"
                ~token:repaired_raw
            with
            | Ok _ -> ()
@@ -1677,126 +2468,7 @@ let test_main_eio_self_heals_codex_mcp_token_file () =
               | Error err ->
                   Alcotest.failf "%s raw token should verify: %s"
                     agent_name (Masc_domain.masc_error_to_string err))
-            [ "claude"; "gemini" ]))
-
-let test_codex_mcp_config_sync_updates_only_masc_section () =
-  let content =
-    {|[mcp_servers.other]
-http_headers = { Authorization = "Bearer keep-other" }
-
-[mcp_servers.masc]
-url = "http://127.0.0.1:8935/mcp"
-http_headers_extra = "keep-extra"
-http_headers = { Authorization = "Bearer stale" }
-bearer_token_env_var = "OLD_TOKEN"
-
-[mcp_servers.masc.tools.status]
-http_headers = { Authorization = "Bearer nested-should-stay" }
-|}
-  in
-  let expected =
-    {|[mcp_servers.other]
-http_headers = { Authorization = "Bearer keep-other" }
-
-[mcp_servers.masc]
-url = "http://127.0.0.1:8935/mcp"
-http_headers_extra = "keep-extra"
-http_headers = { "Accept" = "application/json, text/event-stream", "X-MASC-Agent" = "codex-mcp-client" }
-bearer_token_env_var = "MASC_MCP_TOKEN"
-
-[mcp_servers.masc.tools.status]
-http_headers = { Authorization = "Bearer nested-should-stay" }
-|}
-  in
-  let updated, status =
-    Server_runtime_bootstrap.sync_codex_mcp_auth_header_content content
-  in
-  Alcotest.(check string) "masc section updated" expected updated;
-  Alcotest.(check bool) "reported updated" true
-    (status = Server_runtime_bootstrap.Codex_mcp_config_updated)
-
-let test_codex_mcp_config_sync_missing_header_is_inserted () =
-  let content =
-    {|[mcp_servers.masc]
-url = "http://127.0.0.1:8935/mcp"
-|}
-  in
-  let expected =
-    {|[mcp_servers.masc]
-url = "http://127.0.0.1:8935/mcp"
-http_headers = { "Accept" = "application/json, text/event-stream", "X-MASC-Agent" = "codex-mcp-client" }
-bearer_token_env_var = "MASC_MCP_TOKEN"
-|}
-  in
-  let updated, status =
-    Server_runtime_bootstrap.sync_codex_mcp_auth_header_content
-      content
-  in
-  Alcotest.(check string) "missing config inserted" expected updated;
-  Alcotest.(check bool) "reported updated" true
-    (status = Server_runtime_bootstrap.Codex_mcp_config_updated)
-
-let test_codex_mcp_config_sync_strips_standalone_authorization_in_masc_section
-    () =
-  let content =
-    {|[mcp_servers.other]
-Authorization = "Bearer keep-other"
-
-[mcp_servers.masc]
-url = "http://127.0.0.1:8935/mcp"
-Authorization = "Bearer stale-literal"
-http_headers = { "Accept" = "application/json, text/event-stream", "X-MASC-Agent" = "codex-mcp-client" }
-bearer_token_env_var = "MASC_MCP_TOKEN"
-
-[mcp_servers.masc.tools.status]
-Authorization = "Bearer nested-keep"
-|}
-  in
-  let expected =
-    {|[mcp_servers.other]
-Authorization = "Bearer keep-other"
-
-[mcp_servers.masc]
-url = "http://127.0.0.1:8935/mcp"
-http_headers = { "Accept" = "application/json, text/event-stream", "X-MASC-Agent" = "codex-mcp-client" }
-bearer_token_env_var = "MASC_MCP_TOKEN"
-
-[mcp_servers.masc.tools.status]
-Authorization = "Bearer nested-keep"
-|}
-  in
-  let updated, status =
-    Server_runtime_bootstrap.sync_codex_mcp_auth_header_content content
-  in
-  Alcotest.(check string) "standalone authorization stripped from masc" expected
-    updated;
-  Alcotest.(check bool) "reported updated" true
-    (status = Server_runtime_bootstrap.Codex_mcp_config_updated)
-
-let test_codex_mcp_config_sync_strips_standalone_authorization_when_no_bearer_env
-    () =
-  let content =
-    {|[mcp_servers.masc]
-url = "http://127.0.0.1:8935/mcp"
-Authorization = "Bearer stale-literal"
-|}
-  in
-  let expected =
-    {|[mcp_servers.masc]
-url = "http://127.0.0.1:8935/mcp"
-http_headers = { "Accept" = "application/json, text/event-stream", "X-MASC-Agent" = "codex-mcp-client" }
-bearer_token_env_var = "MASC_MCP_TOKEN"
-|}
-  in
-  (* Authorization is stripped; http_headers and bearer_token_env_var are
-     inserted because they are absent. *)
-  let updated, status =
-    Server_runtime_bootstrap.sync_codex_mcp_auth_header_content content
-  in
-  Alcotest.(check string) "authorization stripped, canonical bindings inserted"
-    expected updated;
-  Alcotest.(check bool) "reported updated" true
-    (status = Server_runtime_bootstrap.Codex_mcp_config_updated)
+            [ "agent_llm_a"; "provider_f" ]))
 
 let test_sync_bootable_keeper_credentials_mints_keeper_alias_token () =
   with_temp_dir "startup-keeper-credential-sync" (fun dir ->
@@ -1813,7 +2485,7 @@ let test_sync_bootable_keeper_credentials_mints_keeper_alias_token () =
       Eio.Switch.run @@ fun sw ->
       let state =
         Server_runtime_bootstrap.create_server_state ~sw ~base_path:dir ~clock
-          ~mono_clock ~net ~proc_mgr ~fs
+          ~mono_clock ~net ~proc_mgr ~fs ()
       in
       Server_runtime_bootstrap.bootstrap_server_state_blocking state;
       Server_runtime_bootstrap.sync_bootable_keeper_credentials state;
@@ -1884,7 +2556,7 @@ let test_sync_bootable_keeper_credentials_rotates_shared_keeper_tokens () =
       Eio.Switch.run @@ fun sw ->
       let state =
         Server_runtime_bootstrap.create_server_state ~sw ~base_path:dir ~clock
-          ~mono_clock ~net ~proc_mgr ~fs
+          ~mono_clock ~net ~proc_mgr ~fs ()
       in
       Server_runtime_bootstrap.bootstrap_server_state_blocking state;
       Server_runtime_bootstrap.sync_bootable_keeper_credentials state;
@@ -2082,7 +2754,7 @@ let test_main_eio_invalid_cascade_stays_degraded_but_serves_dashboard () =
             (http_status_from_headers config_headers);
           let config_json = parse_json_response_file config_body in
           Alcotest.(check string) "dashboard cascade surface is live"
-            (Filename.concat dir ".masc/config/cascade.json")
+            (Filename.concat dir ".masc/config/cascade.toml")
             Yojson.Safe.Util.(
               config_json |> member "config_path" |> to_string)))
 
@@ -2262,8 +2934,9 @@ let test_main_eio_invalid_default_partial_catalog_stays_degraded () =
             |> List.map Yojson.Safe.Util.to_string
           in
           Alcotest.(check bool) "last error includes default-profile failure" true
-            (List.mem
-               "required default profile \"big_three\" failed validation"
+            (List.exists
+               (fun error ->
+                  contains_substring error "required default profile")
                rejection_errors);
           let config_headers, config_body =
             curl_request_capture ~output_dir:dir ~name:"cascade-config-default-invalid"
@@ -2296,19 +2969,13 @@ let () =
             "storage enforcement fallback reason is visible"
             `Quick test_storage_enforcement_fallback_reason;
           Alcotest.test_case
-            "default OAS cascade timeout tracks keeper timeout"
-            `Quick test_default_oas_cascade_timeout_tracks_keeper_timeout;
-          Alcotest.test_case
-            "default OAS cascade timeout keeps explicit override"
-            `Quick test_default_oas_cascade_timeout_keeps_explicit_override;
-          Alcotest.test_case
             "bootstrap base-path config copies shared seed only"
             `Quick
             test_bootstrap_base_path_config_root_copies_shared_seed_but_not_keepers;
           Alcotest.test_case
-            "bootstrap base-path config preserves existing root without refill"
+            "bootstrap base-path config backfills missing prompts only"
             `Quick
-            test_bootstrap_base_path_config_root_preserves_existing_root_without_refill;
+            test_bootstrap_base_path_config_root_backfills_missing_prompts_only;
           Alcotest.test_case
             "bootstrap base-path config skips explicit override"
             `Quick
@@ -2373,6 +3040,10 @@ let () =
             "blocking bootstrap ignores whitespace legacy room dirs"
             `Quick
             test_blocking_bootstrap_ignores_whitespace_legacy_room_dirs;
+          Alcotest.test_case "lazy startup plan parallelizes independent tasks"
+            `Quick test_lazy_startup_plan_groups_independent_tasks;
+          Alcotest.test_case "lazy startup plan keeps legacy migration serial"
+            `Quick test_lazy_startup_plan_keeps_legacy_migration_serial;
           Alcotest.test_case "startup state json reports lazy failure" `Quick
             test_startup_state_json;
           Alcotest.test_case
@@ -2381,6 +3052,38 @@ let () =
             test_startup_state_catalog_degraded_survives_lazy_activation;
           Alcotest.test_case "liveness probe is always true" `Quick
             test_startup_state_liveness;
+          Alcotest.test_case
+            "health json surfaces durable paused keepers"
+            `Quick test_health_json_surfaces_durable_paused_keepers;
+          Alcotest.test_case
+            "health json keeps timeout pause without policy manual"
+            `Quick test_health_json_keeps_timeout_pause_without_policy_manual;
+          Alcotest.test_case
+            "health json degrades when reaction capacity is below target"
+            `Quick test_health_json_degrades_when_reaction_capacity_below_target;
+          Alcotest.test_case
+            "health json distinguishes failing executable keepers"
+            `Quick test_health_json_distinguishes_failing_executable_keepers;
+          Alcotest.test_case
+            "health json reaction ledger cursor sweep clears pending"
+            `Quick test_health_json_reaction_ledger_cursor_sweep_clears_pending;
+          Alcotest.test_case "health json surfaces log ring summary" `Quick
+            test_health_json_surfaces_log_ring_summary;
+          Alcotest.test_case "default health response is light probe" `Quick
+            test_health_response_default_is_light_probe;
+          Alcotest.test_case "full health query uses snapshot cache" `Quick
+            test_health_response_full_query_uses_snapshot_cache;
+          Alcotest.test_case "full health refresh timeout is independent"
+            `Quick
+            test_full_health_refresh_timeout_is_independent_from_shell_budget;
+          Alcotest.test_case
+            "full health refresh timeout preserves last snapshot" `Quick
+            test_full_health_refresh_timeout_preserves_last_snapshot;
+          Alcotest.test_case
+            "full health cold refresh timeout is timeout" `Quick
+            test_full_health_cold_refresh_timeout_is_timeout_not_error;
+          Alcotest.test_case "health response survives deleted cwd" `Quick
+            test_health_response_survives_deleted_cwd;
           Alcotest.test_case "readiness false before init" `Quick
             test_startup_state_readiness_before_init;
           Alcotest.test_case "readiness true after init" `Quick
@@ -2398,13 +3101,11 @@ let () =
             "create_server_state preserves raw input base path"
             `Quick test_create_server_state_preserves_raw_input_base_path;
           Alcotest.test_case
-            "prompt markdown dir falls back to resolved config dir with repo fallback opt-in"
-            `Quick
-            test_prompt_markdown_dir_falls_back_to_resolved_config_dir_with_repo_fallback_opt_in;
+            "prompt markdown dir ignores repo seed prompts"
+            `Quick test_prompt_markdown_dir_ignores_repo_seed_prompts;
           Alcotest.test_case
-            "prompt markdown dir does not use repo fallback without opt-in"
-            `Quick
-            test_prompt_markdown_dir_does_not_use_repo_fallback_without_opt_in;
+            "prompt markdown dir does not use repo seed"
+            `Quick test_prompt_markdown_dir_does_not_use_repo_seed;
           Alcotest.test_case "prompt markdown dir honors MASC_CONFIG_DIR override"
             `Quick test_prompt_markdown_dir_honors_masc_config_dir_override;
           Alcotest.test_case
@@ -2417,22 +3118,8 @@ let () =
             "main_eio fresh bootstrap and MCP handshake"
             `Slow test_main_eio_fresh_bootstrap_and_mcp_handshake;
           Alcotest.test_case
-            "main_eio self-heals codex mcp token file"
+            "main_eio self-heals agent_code mcp token file"
             `Slow test_main_eio_self_heals_codex_mcp_token_file;
-          Alcotest.test_case
-            "codex mcp config sync updates only masc section"
-            `Quick test_codex_mcp_config_sync_updates_only_masc_section;
-          Alcotest.test_case
-            "codex mcp config sync inserts missing bearer env config"
-            `Quick test_codex_mcp_config_sync_missing_header_is_inserted;
-          Alcotest.test_case
-            "codex mcp config sync strips standalone Authorization from masc section"
-            `Quick
-            test_codex_mcp_config_sync_strips_standalone_authorization_in_masc_section;
-          Alcotest.test_case
-            "codex mcp config sync strips standalone Authorization when no bearer env"
-            `Quick
-            test_codex_mcp_config_sync_strips_standalone_authorization_when_no_bearer_env;
           Alcotest.test_case
             "startup sync mints bootable keeper credentials"
             `Quick test_sync_bootable_keeper_credentials_mints_keeper_alias_token;

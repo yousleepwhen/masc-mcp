@@ -20,7 +20,7 @@ type agent_overlay = {
 
 type t = {
   defaults : agent_overlay;
-  per_agent : (string * agent_overlay) list;
+  per_agent : (Agent_id.t * agent_overlay) list;
 }
 
 let enforced_all : agent_overlay =
@@ -30,8 +30,6 @@ let enforced_all : agent_overlay =
     privileged_trust = Enforced;
   }
 
-let strict_default = enforced_all
-
 let permissive_default : agent_overlay =
   {
     safe_trust = Auto_safe;
@@ -39,7 +37,7 @@ let permissive_default : agent_overlay =
     privileged_trust = Enforced;
   }
 
-let empty : t = { defaults = strict_default; per_agent = [] }
+let empty : t = { defaults = enforced_all; per_agent = [] }
 
 let lookup t ~actor =
   match List.assoc_opt actor t.per_agent with

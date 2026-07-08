@@ -95,6 +95,12 @@ val agent_card_json : Httpun.Request.t -> Yojson.Safe.t
     card served from [/.well-known/agent.json].  This route is public
     discovery metadata; mutable operations still require normal tool auth. *)
 
+(** {1 Runtime subsystem helpers} *)
+
+val cdal_health_json : unit -> Yojson.Safe.t
+(** [cdal_health_json ()] returns the CDAL health projection reused by
+    runtime-info routes and the full health response. *)
+
 (** {1 Health endpoints} *)
 
 val health_path_diagnostics :
@@ -106,10 +112,13 @@ val health_path_diagnostics :
     default base path computed from env. *)
 
 val make_health_json :
-  ?listener:string -> Httpun.Request.t -> Yojson.Safe.t
-(** [make_health_json ?listener request] builds the full
-    [/health] JSON body.  [listener] defaults to ["http/1.1"]
-    and is overridden to ["h2"] by the H2 gateway.
+  ?listener:string -> ?section_timings_ref:(string * int) list ref -> Httpun.Request.t -> Yojson.Safe.t
+(** [make_health_json ?listener request] builds the full health diagnostics
+    JSON body.  [listener] defaults to ["http/1.1"] and is overridden to
+    ["h2"] by the H2 gateway.  This is the force-compute diagnostic builder
+    used by tests and snapshot refreshes.  The public [/health] route uses
+    {!make_health_response_json}; callers request cached full diagnostics with
+    [/health?full=1].
 
     {2 Top-level keys (operator-visible contract)}
 
@@ -117,13 +126,60 @@ val make_health_json :
     [build] / [protocol] (default + listener + supported list) /
     [transport] / [paths] / [uptime] / [sse_clients] /
     [startup] / [subsystems] / [feature_flags] / [gc] /
-    [keeper_fibers] / [keeper_config_parse_error_count] /
-    [keeper_config_parse_errors] / [keeper_config_unknown_key_count] /
-    [keeper_config_unknown_keys] / [keeper_config_schema_status] /
-    [keeper_config_schema_blocking] /
+    [keeper_fibers] / [keeper_fd_pressure] / [fd_accountant] /
+    [keeper_fleet_safety] / [keeper_reaction_ledger] / [paused_keepers] /
+    [keeper_config_parse_error_count] / [keeper_config_parse_errors] /
+    [keeper_config_unknown_key_count] / [keeper_config_unknown_keys] /
+    [keeper_config_schema_status] / [keeper_config_schema_blocking] /
     [keeper_config_schema_terminal_reason] /
     [keeper_config_operator_action_required] /
     [lazy_task_boot_guard_fires_total].
+
+    {2 paused_keepers contract}
+
+    [paused_keepers.count] and [paused_keepers.names] are the union of
+    registry-visible paused keepers and durable [.masc/keepers/*.json]
+    metas with [paused = true].  The nested [running_*] and
+    [durable_*] fields keep the two sources inspectable so a keeper
+    that has been auto-paused and removed from the live keepalive set
+    does not disappear from [/health].  [autoboot_enabled_*] and
+    [details] distinguish auto-recoverable, operator-paused, and
+    reconcile-gated durable pauses without auto-unpausing them.
+    [missing_pause_root_cause] is true when a keeper is auto-recoverable
+    but its persisted runtime has no typed [last_blocker].  [read_error_count]
+    surfaces corrupt durable meta instead of silently reporting a clean zero.
+
+    {2 keeper_fd_pressure and keeper_fleet_safety contract}
+
+    [keeper_fd_pressure] exposes the effective process [nofile] soft
+    limit, currently open FD count when available, the host kernel file-table
+    snapshot when available, projected 24-Keeper budget, and the admission
+    decision used by the FD guard.  This lets operators distinguish "shell
+    says the host limit is high" from the actual runtime inherited by the
+    server process, and distinguish process-local EMFILE from host-wide ENFILE.
+
+    [fd_accountant] exposes the live resource accountant snapshot used by the
+    shared spawn/HTTP/log backpressure layer: process FD open/limit readings,
+    whether FD pressure is active, and each resource kind's in-flight,
+    configured-concurrency, and effective-concurrency counts.
+
+    [keeper_fleet_safety] compares configured autoboot-enabled keepers
+    with the live healthy-running keeper fiber count while separately reporting
+    [bootable_keeper_*] after durable pause filtering.  It distinguishes
+    [running_keeper_fiber_count] / [healthy_running_keeper_fiber_count] from
+    [failing_keeper_fiber_count] and [executable_keeper_fiber_count] because
+    the FSM intentionally allows [Failing] keepers to finish or attempt turns.
+    It reports [blocked] when autoboot-enabled keepers exist but no executable
+    fiber remains, and [degraded] when executable fibers remain but healthy
+    running capacity is zero, below the safety margin, or below
+    [target_reaction_capacity_count].
+    [paused_autoboot_enabled_keeper_count] makes the intended fleet size
+    visible even when durable pauses suppress every bootable keeper.
+
+    [keeper_reaction_ledger] summarizes recent durable stimulus -> reaction
+    rows per keeper.  It reports [degraded] when a persisted stimulus has no
+    later reaction/cursor/receipt row in the scanned window, making a stopped
+    reaction chain visible without scraping keeper-local JSONL files.
 
     {2 lazy_task_boot_guard_fires_total contract (P2 silent-
     failure fix)}
@@ -135,9 +191,73 @@ val make_health_json :
     at the contract seam: a future "drop unused metric" PR
     must touch this. *)
 
+val make_health_probe_json :
+  ?listener:string -> Httpun.Request.t -> Yojson.Safe.t
+(** [make_health_probe_json ?listener request] builds the cheap default
+    [/health] probe body.  It keeps liveness/readiness-facing fields such as
+    [startup], [paths], [transport], [logs], and quick GC counters, but skips
+    durable keeper scans, reaction-ledger JSONL reads, config TOML scans, and
+    CDAL ledger inspection. *)
+
+val make_health_response_json :
+  ?listener:string -> Httpun.Request.t -> Yojson.Safe.t
+(** [make_health_response_json ?listener request] is the public [/health]
+    renderer.  It returns {!make_health_probe_json} by default.  When the
+    request query contains [full=1] / [full=true], it returns the latest cached
+    full-health snapshot plus cheap request-local fields and marks the snapshot
+    for refresh when it is missing or stale.  The HTTP handler must not
+    synchronously run durable keeper scans; the Eio refresh loop started by
+    {!start_full_health_snapshot_refresh_loop} performs those scans. *)
+
+val start_full_health_snapshot_refresh_loop :
+  sw:Eio.Switch.t ->
+  clock:float Eio.Time.clock_ty Eio.Resource.t ->
+  unit
+(** Starts the Eio background refresh loop for cached [/health?full=1]
+    diagnostics.  The loop keeps heavy durable scans out of the HTTP request
+    path and stores stale/error metadata when refreshes fail or time out. *)
+
+module For_testing : sig
+  val reset_full_health_snapshot : unit -> unit
+  (** Clears the cached full-health snapshot and in-flight refresh marker. *)
+
+  val refresh_full_health_snapshot_now :
+    ?listener:string -> Httpun.Request.t -> unit
+  (** Synchronously recomputes and stores the cached full-health snapshot. *)
+
+  val mark_full_health_snapshot_error : exn -> unit
+  (** Records a failed background refresh without recomputing the snapshot. *)
+
+  val full_health_refresh_timing : unit -> float * float * float
+  (** Returns [(interval_sec, timeout_sec, ttl_sec)] for full-health refresh. *)
+end
+
+val cdal_health_json : unit -> Yojson.Safe.t
+(** [cdal_health_json ()] returns the CDAL writer/proof-store/task-scope
+    projection used by [/health?full=1] and dashboard runtime-resolution
+    surfaces. *)
+
+val keeper_fleet_runtime_resolution_fields : unit -> (string * Yojson.Safe.t) list
+(** [keeper_fleet_runtime_resolution_fields ()] returns the health/fleet
+    safety subset projected into [/api/v1/dashboard/shell]'s
+    [runtime_resolution].  It intentionally flattens
+    [paused_keepers] to a count for the dashboard shell health chip while
+    [/health] keeps the richer paused keeper object.  The
+    [keeper_reaction_ledger] field keeps the same summary object as
+    [/health] so the dashboard can render pending durable stimuli without a
+    second endpoint.  [fd_accountant] is also projected here so the dashboard
+    shell can show the same backpressure source as [/health] without scraping
+    Prometheus. *)
+
+val keeper_fleet_runtime_resolution_light_fields :
+  unit -> (string * Yojson.Safe.t) list
+(** Like {!keeper_fleet_runtime_resolution_fields}, but omits the
+    reaction-ledger JSONL scan for the [/api/v1/dashboard/shell?light=true]
+    header hot path. *)
+
 val health_handler : Httpun.Request.t -> Httpun.Reqd.t -> unit
-(** [health_handler request reqd] writes
-    {!make_health_json} as the response body. *)
+(** [health_handler request reqd] writes {!make_health_response_json} as the
+    response body. *)
 
 val liveness_handler : Httpun.Request.t -> Httpun.Reqd.t -> unit
 (** [liveness_handler request reqd] always responds [200] as
@@ -163,6 +283,7 @@ val readiness_handler : Httpun.Request.t -> Httpun.Reqd.t -> unit
 val board_post_detail_json :
   include_moderation:bool ->
   blind_votes:bool ->
+  config:Coord.config option ->
   voter:string option ->
   response_format:string ->
   post_id:string ->
@@ -173,6 +294,10 @@ val board_post_detail_json :
     that voter.  When [include_moderation] is [true], rows also include
     operator-only moderation projection fields.  When [blind_votes] is
     [true], rows hide score fields until that voter has voted.
+    operator-only moderation projection fields.  When [config] is
+    supplied, post rows include contributor-quality projection fields.
+    When [blind_votes] is [true], rows hide score fields until that
+    voter has voted.
 
     {2 response_format values (case-insensitive, trimmed)}
 

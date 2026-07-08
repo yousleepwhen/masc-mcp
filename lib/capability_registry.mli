@@ -101,11 +101,10 @@ val public_tool_schemas_from :
 
 val visible_public_tool_schemas_from :
   ?include_hidden:bool ->
-  ?include_deprecated:bool ->
   Masc_domain.tool_schema list ->
   Masc_domain.tool_schema list
 (** [public_tool_schemas_from] filtered through [Tool_catalog.is_visible].
-    Both inclusion flags default to [false]. *)
+    [include_hidden] defaults to [false]. *)
 
 val local_worker_tool_schemas :
   ?names:string list ->
@@ -123,9 +122,7 @@ val spawned_agent_prefixed_tools : string list
 
 val privileged_keeper_tool_names : string list
 (** The hardcoded set of keeper tools that route to the privileged
-    executor surface ([keeper_bash] / [keeper_bash_kill] /
-    [keeper_bash_output] / [keeper_fs_edit] /
-    [masc_worktree_create]). *)
+    executor surface ([tool_execute] / [tool_edit_file] / [tool_write_file]). *)
 
 val keeper_privileged_tool_names : string list
 (** Alias for {!privileged_keeper_tool_names} kept for callers that

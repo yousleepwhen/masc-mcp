@@ -22,6 +22,11 @@ export function normalizeJournalSeverity(value: string | null | undefined): Jour
 }
 
 export function normalizeJournalSource(value: string | null | undefined): JournalSource {
+  // Anti-pattern §2 escape: the prior default arm silently coerced
+  // unrecognized values to `'sse'`, classifying malformed wire data as a
+  // normal SSE event. Mirror `normalizeJournalSeverity`'s explicit
+  // `'unknown'` variant so downstream filters/UI can tell when a journal
+  // record arrived with a source we cannot parse.
   switch ((value ?? '').trim().toLowerCase()) {
     case 'structured':
       return 'structured'
@@ -29,8 +34,10 @@ export function normalizeJournalSource(value: string | null | undefined): Journa
       return 'legacy_stderr'
     case 'legacy_traceln':
       return 'legacy_traceln'
-    default:
+    case 'sse':
       return 'sse'
+    default:
+      return 'unknown'
   }
 }
 
@@ -45,35 +52,11 @@ export function defaultJournalSeverity(eventType: JournalEventType | undefined):
   }
 }
 
-function legacyJournalSeverityFromText(text: string | undefined): JournalSeverity {
-  const normalized = (text ?? '').trim().toLowerCase()
-  if (!normalized) return 'unknown'
-  if (
-    normalized.startsWith('[error]')
-    || normalized.startsWith('[fatal]')
-    || /\b(failed|failure|fatal|exception|timed out|timeout|crash(?:ed)?)\b/.test(normalized)
-  ) {
-    return 'error'
-  }
-  if (
-    normalized.startsWith('[warn]')
-    || normalized.startsWith('[warning]')
-    || /\b(warn(?:ing)?|degraded|retry(?:ing)?)\b/.test(normalized)
-  ) {
-    return 'warn'
-  }
-  return 'unknown'
-}
-
 export function journalSeverity(entry: JournalEntry): JournalSeverity {
   const explicit = normalizeJournalSeverity(entry.severity)
   if (explicit !== 'unknown') return explicit
 
-  const fallback = defaultJournalSeverity(entry.eventType)
-  if (fallback === 'error' || fallback === 'warn') return fallback
-
-  const legacy = legacyJournalSeverityFromText(entry.text)
-  return legacy === 'unknown' ? fallback : legacy
+  return defaultJournalSeverity(entry.eventType)
 }
 
 export function isErrorJournalEntry(entry: JournalEntry): boolean {

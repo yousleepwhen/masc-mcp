@@ -1,10 +1,17 @@
 // Centralized dashboard constants.
 // Change a value here to adjust behavior across the entire dashboard.
 
+// --- MASC server defaults ---
+// SSOT: ~/me/instructions/workspaces.md Infrastructure Endpoints
+export const DEFAULT_MASC_HOST = 'localhost'
+export const DEFAULT_MASC_PORT = 8935
+export const DEFAULT_MASC_ORIGIN = `http://${DEFAULT_MASC_HOST}:${DEFAULT_MASC_PORT}`
+
 // --- HTTP timeouts (milliseconds) ---
 // Backend dashboard timeout is 30s; frontend must wait slightly longer.
 export const DEFAULT_GET_TIMEOUT_MS = 35_000
 export const DEFAULT_POST_TIMEOUT_MS = 30_000
+export const KEEPER_LIFECYCLE_TIMEOUT_MS = 12_000
 export const DEFAULT_MCP_TIMEOUT_MS = 60_000
 export const NAMESPACE_TRUTH_GET_TIMEOUT_MS = 30_000
 export const KEEPER_MESSAGE_TIMEOUT_MS = 90_000
@@ -17,6 +24,13 @@ export const MCP_INIT_COOLDOWN_MS = 2_000
 // so a slow first response under Executor_pool contention is not turned into
 // a reconnect by the client side.
 export const DASHBOARD_WS_RPC_TIMEOUT_MS = 30_000
+export const DASHBOARD_WS_HEARTBEAT_INTERVAL_MS = 30_000
+
+// --- Transport retry defaults (shared by all transport implementations) ---
+// Exponential backoff for transport-level reconnection.  Distinct from
+// RECONNECT_* (which caps at 60s for SSE/dashboard-WS reconnect storms).
+export const TRANSPORT_RETRY_BASE_MS = 1_000
+export const TRANSPORT_RETRY_MAX_MS = 30_000
 
 // --- Reconnect backoff (shared by SSE and dashboard WS) ---
 // Cap at 60s with plus/minus 1s jitter to break reconnect storms when the server is
@@ -69,16 +83,11 @@ export const OAS_TELEMETRY_REPLAY_LIMIT = envInt('VITE_OAS_TELEMETRY_REPLAY_LIMI
 export const TRIM_TEXT_DEFAULT = 120
 export const TRUNCATE_DEFAULT = 260
 
-// --- Heatmap color scale (5-level: empty → max intensity) ---
-export const HEATMAP_COLORS = [
-  'var(--color-bg-3)', // 0 events
-  '#0e4a5c', // 1-25%
-  '#0e6e7e', // 26-50%
-  '#14919b', // 51-75%
-  'var(--color-cyan)', // 76-100%
-] as const
+// --- TLA+ verification panel poll interval ---
+export const TLA_POLL_INTERVAL_MS = 60_000
 
-// --- Autoresearch form defaults ---
-export const AUTORESEARCH_DEFAULT_MAX_CYCLES = 100
-export const AUTORESEARCH_DEFAULT_CYCLE_TIMEOUT_S = 300
-export const AUTORESEARCH_DEFAULT_MODEL = 'glm'
+// --- Prometheus /metrics fetch timeout ---
+export const PROMETHEUS_FETCH_TIMEOUT_MS = 10_000
+
+// --- Default query window (minutes) ---
+export const DEFAULT_WINDOW_MINUTES_24H = 1440

@@ -2,13 +2,19 @@ import { html } from 'htm/preact'
 import { useEffect, useRef, useState } from 'preact/hooks'
 import { Activity, AlertTriangle, Bell, Radio, Users, X } from 'lucide-preact'
 import type { JournalEntry, Keeper, Task } from '../types'
+import { isKeeperCrashed } from '../lib/keeper-predicates'
+import { isAttentionCodeSatisfied } from '../lib/keeper-classifiers'
 import { dashboardWsOnlyEnabled } from '../dashboard-ws-cutover'
 import {
   dashboardWsConnected,
   dashboardWsEventCount60s,
   dashboardWsLastError,
   dashboardWsLastEventAt,
+  dashboardWsLastPongAt,
+  dashboardWsLastPongLatencyMs,
   dashboardWsReady,
+  dashboardWsSseFallbackActive,
+  dashboardWsSseFallbackReason,
 } from '../dashboard-ws-state'
 import { route } from '../router'
 import {
@@ -22,6 +28,10 @@ import {
   lastDisconnectedAt,
   reconnectCount,
 } from '../sse'
+import {
+  DASHBOARD_WS_HEARTBEAT_INTERVAL_MS,
+  DASHBOARD_WS_RPC_TIMEOUT_MS,
+} from '../config/constants'
 import { journalSeverity } from '../journal-entry'
 import { TimeAgo } from './common/time-ago'
 import { RouteLink } from './common/route-link'
@@ -29,6 +39,8 @@ import { ringFocusClasses } from './common/ring'
 import { unacknowledgedCount } from './common/error-notification-state'
 
 export const STATUS_TRAY_SILENT_MS = 30_000
+export const STATUS_TRAY_HEARTBEAT_FRESH_MS =
+  DASHBOARD_WS_HEARTBEAT_INTERVAL_MS + DASHBOARD_WS_RPC_TIMEOUT_MS + 1_000
 
 export type StatusTrayKey = 'transport' | 'fleet' | 'activity' | 'attention'
 export type StatusTrayTone = 'ok' | 'warn' | 'err' | 'muted'
@@ -62,6 +74,10 @@ export interface StatusTrayInput {
   wsReady: boolean
   wsLastEventAt: number
   wsEventCount60s: number
+  wsLastPongAt: number
+  wsLastPongLatencyMs: number | null
+  wsSseFallbackActive?: boolean
+  wsSseFallbackReason?: string | null
   wsLastError: string | null
   reconnectCount: number
   lastDisconnectedAt: number
@@ -122,11 +138,56 @@ function countPendingVerification(tasksInput: readonly Task[]): number {
   return tasksInput.filter(task => task.status === 'awaiting_verification').length
 }
 
+// Closed set of wire-format values emitted by the backend
+// keeper_execution_receipt.tool_contract_result_to_string (11 variants).
+// Both runtime_proof_status and tool_contract_result use the same values.
+const EXECUTION_ATTENTION_SET: ReadonlySet<string> = new Set([
+  'violated',
+  'tool_surface_mismatch',
+  'no_tool_capable_provider',
+  'missing_required_tool_use',
+  'claim_only_after_owned_task',
+  'needs_execution_progress',
+  'passive_only',
+  'not_dispatched',
+])
+
+function isExecutionAttentionCode(value: string | null | undefined): boolean {
+  if (!value) return false
+  const normalized = value.trim().toLowerCase()
+  if (!normalized || normalized === 'unknown') return false
+  if (isAttentionCodeSatisfied(normalized)) return false
+  return EXECUTION_ATTENTION_SET.has(normalized)
+}
+
+function hasExecutionAttentionEvidence(keeper: Keeper): boolean {
+  const trust = keeper.trust
+  if (trust?.needs_attention === true) return true
+  const terminalSeverity = trust?.latest_terminal_reason?.severity?.trim().toLowerCase()
+  if (terminalSeverity === 'bad' || terminalSeverity === 'warn') return true
+  const execution = trust?.execution_summary
+  if (!execution) return false
+  if ((execution.missing_required_tools ?? []).length > 0) return true
+  return isExecutionAttentionCode(execution.runtime_proof_status)
+    || isExecutionAttentionCode(execution.tool_contract_result)
+}
+
 function countKeeperAttention(keeperInput: readonly Keeper[]): number {
   return keeperInput.filter(keeper => {
     if (keeper.needs_attention) return true
-    const status = (keeper.status ?? '').toLowerCase()
-    return status.includes('crash') || status === 'dead' || status === 'zombie'
+    if (hasExecutionAttentionEvidence(keeper)) return true
+    // Terminal/crashed lifecycle states. The previous version inspected
+    // `keeper.status` for `'crash' | 'dead' | 'zombie'`, but the
+    // backend `Keeper.status` emit (`patched_keeper_status` in
+    // `lib/server/server_dashboard_http_execution_surfaces.ml:424-432`)
+    // only ever produces `'offline' | 'busy' | 'active' | 'listening' | 'idle'`.
+    // None of those crashed-state tokens are emitted into the status
+    // slot — they belong to `Keeper.phase` (typed `KeeperPhase` union
+    // in `core.ts:879-892`), normalised by `toKeeperPhase` at the wire
+    // boundary. Comparing typed phase tokens here means crashed keepers
+    // actually get counted as attention rather than silently slipping
+    // past an axis-confused string match.
+    return isKeeperCrashed(keeper)
   }).length
 }
 
@@ -146,36 +207,63 @@ export function summarizeStatusTray(input: StatusTrayInput): StatusTraySummary {
   let transport: StatusTrayItem
   if (input.wsOnly) {
     if (!input.wsConnected || !input.wsReady) {
-      transport = {
-        key: 'transport',
-        tone: 'err',
-        label: 'WS',
-        value: 'closed',
-        detail: input.wsLastError ? clip(input.wsLastError) : 'WS-only channel is not ready',
+      if (input.wsSseFallbackActive && input.sseConnected) {
+        transport = {
+          key: 'transport',
+          tone: 'warn',
+          label: 'Client',
+          value: 'SSE fallback',
+          detail: input.wsSseFallbackReason
+            ? `client WS degraded; ${clip(input.wsSseFallbackReason)}`
+            : 'client WS degraded; SSE fallback is live',
+        }
+      } else {
+        transport = {
+          key: 'transport',
+          tone: 'err',
+          label: 'Client',
+          value: 'closed',
+          detail: input.wsLastError
+            ? clip(input.wsLastError)
+            : 'client WS channel is not ready; server transport truth is in Diagnostics > Transport',
+        }
       }
     } else {
       const silentMs = input.wsLastEventAt === 0
         ? Number.POSITIVE_INFINITY
         : input.now - input.wsLastEventAt
       const silent = input.wsLastEventAt === 0 || silentMs > STATUS_TRAY_SILENT_MS
+      const pongAgeMs = input.wsLastPongAt === 0
+        ? Number.POSITIVE_INFINITY
+        : input.now - input.wsLastPongAt
+      const heartbeatFresh = pongAgeMs <= STATUS_TRAY_HEARTBEAT_FRESH_MS
+      const pongLatency = input.wsLastPongLatencyMs == null
+        ? 'pong'
+        : `${input.wsLastPongLatencyMs}ms`
       transport = {
         key: 'transport',
-        tone: silent ? 'warn' : 'ok',
-        label: 'WS',
-        value: silent ? 'silent' : `${input.wsEventCount60s}/60s`,
+        tone: silent && !heartbeatFresh ? 'warn' : 'ok',
+        label: 'Client',
+        value: silent
+          ? heartbeatFresh ? pongLatency : 'silent'
+          : `${input.wsEventCount60s} deltas/min`,
         detail: silent
-          ? 'WS-only channel is open but no recent event has arrived'
-          : `last event ${Math.floor(silentMs / 1000)}s ago`,
+          ? heartbeatFresh
+            ? `client WS channel is idle; heartbeat pong ${Math.floor(pongAgeMs / 1000)}s ago`
+            : 'client WS channel is open but no recent event or heartbeat pong has arrived'
+          : `last applied route delta ${Math.floor(silentMs / 1000)}s ago`,
       }
     }
   } else {
     transport = {
       key: 'transport',
       tone: input.sseConnected ? 'ok' : 'err',
-      label: 'SSE',
+      label: 'Client',
       value: input.sseConnected ? 'live' : 'offline',
       detail: input.sseConnected
-        ? input.wsConnected ? 'SSE is live with WS shadow channel connected' : 'SSE is live'
+        ? input.wsConnected
+          ? 'client SSE is live with WS mirror connected'
+          : 'client SSE is live'
         : formatDisconnectedDetail(input),
     }
   }
@@ -322,7 +410,7 @@ function PopoverContent({
             <div class="mt-0.5 text-sm font-semibold tabular-nums">${summary.counts.reconnectCount}</div>
           </div>
           <div class="rounded-[var(--r-1)] border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 py-1.5">
-            <div class="font-mono text-3xs uppercase tracking-[var(--track-caps)] text-[var(--color-fg-muted)]">WS events</div>
+            <div class="font-mono text-3xs uppercase tracking-[var(--track-caps)] text-[var(--color-fg-muted)]">WS deltas</div>
             <div class="mt-0.5 text-sm font-semibold tabular-nums">${summary.counts.wsEventCount60s}/60s</div>
           </div>
         </div>
@@ -399,6 +487,10 @@ export function DashboardStatusTray({ sideRailCollapsed = false }: DashboardStat
     wsReady: dashboardWsReady.value,
     wsLastEventAt: dashboardWsLastEventAt.value,
     wsEventCount60s: dashboardWsEventCount60s.value,
+    wsLastPongAt: dashboardWsLastPongAt.value,
+    wsLastPongLatencyMs: dashboardWsLastPongLatencyMs.value,
+    wsSseFallbackActive: dashboardWsSseFallbackActive.value,
+    wsSseFallbackReason: dashboardWsSseFallbackReason.value,
     wsLastError: dashboardWsLastError.value,
     reconnectCount: reconnectCount.value,
     lastDisconnectedAt: lastDisconnectedAt.value,

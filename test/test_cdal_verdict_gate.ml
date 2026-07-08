@@ -4,7 +4,7 @@
     based on CDAL verdict status. *)
 
 module CVG = Masc_mcp.Cdal_verdict_gate
-module CT = Masc_mcp.Cdal_types
+module CT = Cdal_types
 
 let make_verdict
     ?(run_id = "test-run-001")
@@ -137,7 +137,7 @@ let test_inconclusive_mixed_gaps_rejects () =
 let with_temp_dir f =
   let dir = Filename.temp_dir "cdal_gate_test" "" in
   Fun.protect ~finally:(fun () ->
-    ignore (Sys.command (Printf.sprintf "rm -rf %s" (Filename.quote dir)))
+    Fs_compat.remove_tree dir
   ) (fun () -> f dir)
 
 let write_verdict_jsonl ~base_dir ?task_id (verdict : CT.contract_verdict) =
@@ -145,7 +145,7 @@ let write_verdict_jsonl ~base_dir ?task_id (verdict : CT.contract_verdict) =
   let date_dir = Printf.sprintf "%04d-%02d"
     (today.tm_year + 1900) (today.tm_mon + 1) in
   let dir = Filename.concat base_dir date_dir in
-  ignore (Sys.command (Printf.sprintf "mkdir -p %s" (Filename.quote dir)));
+  Fs_compat.mkdir_p dir;
   let day_file = Printf.sprintf "%02d.jsonl" today.tm_mday in
   let path = Filename.concat dir day_file in
   let json = CT.contract_verdict_to_json verdict in
@@ -197,6 +197,22 @@ let test_gate_different_task_id_not_found () =
     | Some _ -> ()
     | None ->
       Alcotest.fail "Different task_id should not match")
+
+let test_gate_missing_can_suppress_operator_warning () =
+  with_temp_dir (fun base_dir ->
+    let verdict = make_verdict ~status:CT.Satisfied () in
+    write_verdict_jsonl ~base_dir verdict;
+    match
+      CVG.gate_check ~base_dir ~warn_on_missing:false
+        ~task_id:"task-missing" ()
+    with
+    | Some msg ->
+      Alcotest.(check bool)
+        "still returns rejection reason"
+        true
+        (Astring.String.is_infix ~affix:"task-missing" msg)
+    | None ->
+      Alcotest.fail "No scoped verdict should still reject")
 
 let test_gate_latest_verdict_wins () =
   with_temp_dir (fun base_dir ->
@@ -398,6 +414,8 @@ let () =
       Alcotest.test_case "satisfied verdict allows" `Quick test_gate_satisfied_verdict_allows;
       Alcotest.test_case "violated verdict rejects" `Quick test_gate_violated_verdict_rejects;
       Alcotest.test_case "different task_id not found" `Quick test_gate_different_task_id_not_found;
+      Alcotest.test_case "missing verdict warning can be suppressed" `Quick
+        test_gate_missing_can_suppress_operator_warning;
       Alcotest.test_case "latest verdict wins" `Quick test_gate_latest_verdict_wins;
       Alcotest.test_case "auto-widens past starting limit (#10731)" `Quick
         test_lookup_auto_widens_past_starting_limit;

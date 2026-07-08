@@ -2,13 +2,17 @@ import { html } from 'htm/preact'
 import { render } from 'preact'
 import { act } from 'preact/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { TelemetryResponse, TelemetrySummaryResponse } from '../api/dashboard'
+import type { DashboardCacheStatsResponse, TelemetryResponse, TelemetrySummaryResponse } from '../api/dashboard'
 
 void vi
 vi.setConfig({ testTimeout: 120_000 })
 
 const baseTelemetry: TelemetryResponse = {
   generated_at: '2026-04-09T05:10:00Z',
+  generated_at_iso: '2026-04-09T05:10:00Z',
+  dashboard_surface: '/api/v1/dashboard/telemetry',
+  source: 'telemetry_unified',
+  query: { source: 'tool_metric', n: 100 },
   count: 1,
   entries: [
     {
@@ -29,9 +33,52 @@ const baseSummary: TelemetrySummaryResponse = {
       entry_count: 1,
       keeper_count: 1,
       exists: true,
+      producer: 'Telemetry_unified.summary_json',
+      durable_store: '.masc/tool_metrics/YYYY-MM/DD.jsonl',
+      dashboard_surface: '/api/v1/dashboard/telemetry/summary',
+      freshness_slo_s: 300,
+      latest_age_s: 45,
+      health: 'stale',
+      stale_reason: 'freshness_slo_exceeded',
     },
   ],
   total_entries: 1,
+}
+
+const baseCacheStats: DashboardCacheStatsResponse = {
+  entries: 2,
+  fresh: 1,
+  stale: 1,
+  expired: 0,
+  ready_fresh: 1,
+  ready_stale: 1,
+  computing: 0,
+  max_entries: 500,
+  hits_total: 8,
+  misses_total: 2,
+  hit_ratio: 0.8,
+  timeout_circuit_open: 0,
+  timeout_circuit_tracked: 1,
+  entries_truncated_to: 50,
+  entry_details: [
+    {
+      key: 'telemetry:/Users/dancer/me/.masc:src=tool_metric:n=100',
+      kind: 'fresh',
+      ttl_remaining_ms: 750,
+      stale_remaining_ms: 10_000,
+    },
+    {
+      key: 'telemetry:/Users/dancer/me/.masc:all:n=100',
+      kind: 'stale',
+      ttl_remaining_ms: 0,
+      stale_remaining_ms: 4_000,
+    },
+    {
+      key: 'health:full',
+      kind: 'fresh',
+      ttl_remaining_ms: 500,
+    },
+  ],
 }
 
 async function flushUi(): Promise<void> {
@@ -60,6 +107,7 @@ async function loadPanel(
     fetchDashboardShell?: (args?: { light?: boolean; signal?: AbortSignal }) => Promise<unknown>
     fetchDashboardTools?: (args?: { signal?: AbortSignal }) => Promise<unknown>
     fetchDashboardNamespaceTruth?: (args?: { signal?: AbortSignal }) => Promise<unknown>
+    fetchDashboardCacheStats?: (args?: { signal?: AbortSignal }) => Promise<DashboardCacheStatsResponse>
   },
 ) {
   vi.resetModules()
@@ -69,6 +117,7 @@ async function loadPanel(
     fetchDashboardShell: opts?.fetchDashboardShell ?? vi.fn().mockResolvedValue({ counts: { keepers: 2, agents: 0, tasks: 5 }, status: { version: '0.2.0', build: { uptime_seconds: 600 } } }),
     fetchDashboardTools: opts?.fetchDashboardTools ?? vi.fn().mockResolvedValue({ tool_inventory: { count: 10, tools: [], surface_summary: { public_mcp: { count: 5, tools: [] } } }, tool_usage: { total_calls: 100, never_called_count: 0 } }),
     fetchDashboardNamespaceTruth: opts?.fetchDashboardNamespaceTruth ?? vi.fn().mockResolvedValue({ execution: { summary: { active_operations: 3, blocked_operations: 1, continuity_alerts: 0 } } }),
+    fetchDashboardCacheStats: opts?.fetchDashboardCacheStats ?? vi.fn().mockResolvedValue(baseCacheStats),
   }))
   return import('./telemetry-unified')
 }
@@ -90,6 +139,7 @@ describe('TelemetryUnified', () => {
   afterEach(() => {
     render(null, container)
     container.remove()
+    window.location.hash = ''
     vi.clearAllMocks()
     vi.resetModules()
     vi.doUnmock('../api/dashboard')
@@ -205,6 +255,17 @@ describe('TelemetryUnified', () => {
     expect(container.textContent).toContain('Auto-refresh 30s')
     expect(container.textContent).toContain('MASC telemetry store entries')
     expect(container.textContent).toContain('mcp__masc__masc_status')
+    expect(container.textContent).toContain('Query cache')
+    expect(container.textContent).toContain('telemetry keys')
+    expect(container.textContent).toContain('fresh:1')
+    expect(container.textContent).toContain('stale:1')
+    expect(container.textContent).toContain('hit 80%')
+    expect(container.textContent).toContain('/api/v1/dashboard/telemetry')
+    expect(container.textContent).toContain('source=tool_metric')
+    expect(container.textContent).toContain('freshness_slo_exceeded')
+    expect(container.textContent).toContain('Telemetry_unified.summary_json')
+    expect(container.textContent).toContain('.masc/tool_metrics/YYYY-MM/DD.jsonl')
+    expect(container.textContent).toContain('/api/v1/dashboard/telemetry/summary')
 
     // MASC Store Diagnosis cards (live state)
     expect(container.textContent).toContain('키퍼 현황 (실시간)')
@@ -214,6 +275,154 @@ describe('TelemetryUnified', () => {
     expect(container.textContent).toContain('1 차단 작업')
     expect(container.textContent).not.toContain('활성 세션')
     expect(container.textContent).toContain('5 public')
+  })
+
+  it('keeps telemetry rows when dashboard cache stats are unavailable', async () => {
+    const fetchTelemetry = vi.fn().mockResolvedValue(baseTelemetry)
+    const fetchTelemetrySummary = vi.fn().mockResolvedValue(baseSummary)
+    const fetchDashboardCacheStats = vi.fn().mockRejectedValue(new Error('cache offline'))
+    const { TelemetryUnified } = await loadPanel(fetchTelemetry, fetchTelemetrySummary, {
+      fetchDashboardCacheStats,
+    })
+
+    await act(async () => {
+      render(html`<${TelemetryUnified} />`, container)
+      await Promise.resolve()
+    })
+    await flushUi()
+
+    expect(fetchDashboardCacheStats).toHaveBeenCalled()
+    expect(container.textContent).toContain('mcp__masc__masc_status')
+    expect(container.textContent).toContain('cache stats unavailable: cache offline')
+  })
+
+  it('renders telemetry summary coverage gap provenance', async () => {
+    const fetchTelemetry = vi.fn().mockResolvedValue(baseTelemetry)
+    const fetchTelemetrySummary = vi.fn().mockResolvedValue({
+      ...baseSummary,
+      sources: [
+        {
+          ...baseSummary.sources[0],
+          health: 'coverage_gap',
+          stale_reason: 'append_failed',
+          coverage_gap_count: 1,
+          coverage_gaps: [
+            {
+              schema: 'masc.telemetry_coverage_gap.v1',
+              source: 'tool_metric',
+              producer: 'telemetry_eio',
+              durable_store: '.masc/telemetry',
+              dashboard_surface: '/api/v1/dashboard/telemetry/summary',
+              stale_reason: 'append_failed',
+              trace_id: 'trace-summary-gap',
+              error: 'disk full',
+            },
+          ],
+        },
+      ],
+    })
+    const { TelemetryUnified } = await loadPanel(fetchTelemetry, fetchTelemetrySummary)
+
+    await act(async () => {
+      render(html`<${TelemetryUnified} />`, container)
+      await Promise.resolve()
+    })
+    await flushUi()
+
+    expect(container.textContent).toContain('Telemetry coverage issue · 1 recorded gap')
+    expect(container.textContent).toContain('gap reason')
+    expect(container.textContent).toContain('append_failed')
+    expect(container.textContent).toContain('gap producer')
+    expect(container.textContent).toContain('telemetry_eio')
+    expect(container.textContent).toContain('gap store')
+    expect(container.textContent).toContain('.masc/telemetry')
+    expect(container.textContent).toContain('gap surface')
+    expect(container.textContent).toContain('/api/v1/dashboard/telemetry/summary')
+    expect(container.textContent).toContain('gap trace')
+    expect(container.textContent).toContain('trace-summary-gap')
+    expect(container.textContent).toContain('gap error')
+    expect(container.textContent).toContain('disk full')
+  })
+
+  it('hydrates telemetry scope and entry focus from route params', async () => {
+    window.location.hash = '#monitoring?section=fleet-health&view=event-log&source=oas_event&n=500&session_id=sess-route&operation_id=op-route&worker_run_id=wr-route&q=turn-9'
+    const fetchTelemetry = vi.fn().mockResolvedValue({
+      ...baseTelemetry,
+      count: 2,
+      entries: [
+        {
+          source: 'tool_metric',
+          ts: 1_775_709_100,
+          session_id: 'sess-route',
+          operation_id: 'op-route',
+          worker_run_id: 'wr-route',
+          tool_name: 'turn-9-evidence',
+          duration_ms: 22,
+          success: true,
+        },
+        {
+          source: 'keeper_metric',
+          ts: 1_775_709_000,
+          session_id: 'sess-route',
+          name: 'keeper-other',
+          channel: 'turn_end',
+          tool_call_count: 1,
+        },
+      ],
+    })
+    const fetchTelemetrySummary = vi.fn().mockResolvedValue(baseSummary)
+    const { TelemetryUnified } = await loadPanel(fetchTelemetry, fetchTelemetrySummary)
+
+    await act(async () => {
+      render(html`<${TelemetryUnified} />`, container)
+      await Promise.resolve()
+    })
+    await flushUi()
+
+    expect(fetchTelemetry).toHaveBeenCalledWith(expect.objectContaining({
+      source: 'oas_event',
+      session_id: 'sess-route',
+      operation_id: 'op-route',
+      worker_run_id: 'wr-route',
+      n: 500,
+    }))
+    expect(container.textContent).toContain('session sess-route')
+    expect(container.textContent).toContain('operation op-route')
+    expect(container.textContent).toContain('worker_run wr-route')
+    expect(container.textContent).toContain('source OAS 이벤트')
+    expect(container.textContent).toContain('limit 500')
+    expect(container.textContent).toContain('focus turn-9')
+    expect(container.querySelector('[data-testid="telemetry-route-focus"]')).not.toBeNull()
+    expect(container.textContent).toContain('SESSION sess-route')
+    expect(container.textContent).toContain('OPERATION op-route')
+    expect(container.textContent).toContain('WORKER wr-route')
+    expect(container.textContent).toContain('QUERY turn-9')
+    expect(container.textContent).toContain('1 focused item')
+    const sourceSelect = container.querySelector<HTMLSelectElement>('select[aria-label="텔레메트리 소스 필터"]')
+    expect(sourceSelect?.value).toBe('oas_event')
+    const limitSelect = container.querySelector<HTMLSelectElement>('select[aria-label="표시 개수 제한"]')
+    expect(limitSelect?.value).toBe('500')
+    const searchInput = container.querySelector<HTMLInputElement>('input[aria-label="엔트리 텍스트 검색"]')
+    expect(searchInput?.value).toBe('turn-9')
+    expect(container.textContent).toContain('검색 매치 1건')
+    expect(container.textContent).toContain('turn-9-evidence')
+    expect(container.textContent).not.toContain('keeper-other')
+    expect(container.querySelectorAll('[data-route-focused-telemetry="true"]')).toHaveLength(1)
+
+    const clearButton = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find(button => button.textContent?.includes('CLEAR'))
+    expect(clearButton).not.toBeUndefined()
+    await act(async () => {
+      clearButton!.click()
+    })
+
+    expect(window.location.hash).toContain('#monitoring?section=fleet-health&view=event-log')
+    expect(window.location.hash).not.toContain('session_id=')
+    expect(window.location.hash).not.toContain('operation_id=')
+    expect(window.location.hash).not.toContain('worker_run_id=')
+    expect(window.location.hash).not.toContain('q=')
+    expect(window.location.hash).toContain('source=oas_event')
+    expect(window.location.hash).toContain('n=500')
   })
 
   it('renders a telemetry entry raw JSON copy action', async () => {
@@ -319,7 +528,7 @@ describe('TelemetryUnified', () => {
     })
     await flushUi()
 
-    expect(container.textContent).toContain('반복 그룹 1개 · 원본 3건')
+    expect(container.textContent).toContain('접힌 그룹 1개 · 원본 3건')
     expect(container.textContent).toContain('폴링 / 무동작')
     expect(container.textContent).toContain('폴링 / 무동작 · masc_status · 3 events')
     expect(container.textContent).toContain('task_claimed: keeper-alpha')
@@ -366,7 +575,7 @@ describe('TelemetryUnified', () => {
           ts: 1_775_709_200,
           name: 'keeper-heart',
           channel: 'turn',
-          model_used: 'glm-5.1',
+          model_used: 'provider-k-5.1',
           tool_call_count: 1,
         },
       ],
@@ -398,6 +607,7 @@ describe('TelemetryUnified', () => {
     await flushUi()
 
     expect(container.textContent).toContain('하트비트 · fleet heartbeat · 2 events')
+    expect(container.textContent).not.toContain('model=provider-k-5.1')
   })
 
   it('collapses interleaved heartbeat + oas snapshot polling across multiple keepers into one group (#13002)', async () => {
@@ -504,6 +714,238 @@ describe('TelemetryUnified', () => {
     }
     const receiptMatches = filterTelemetryDisplayItems(items, 'turn_done')
     expect(receiptMatches).toHaveLength(1)
+  })
+
+  it('groups turn-scoped lifecycle, nested telemetry_event, and tool rows', async () => {
+    const { buildTelemetryDisplayItems, filterTelemetryDisplayItems } = await loadPanel(
+      vi.fn().mockResolvedValue(baseTelemetry),
+      vi.fn().mockResolvedValue(baseSummary),
+    )
+
+    const items = buildTelemetryDisplayItems([
+      {
+        source: 'oas_event',
+        ts_unix: 1_775_709_400,
+        event_type: 'turn_ready',
+        agent_name: 'keeper-alpha-agent',
+        turn: 42,
+      },
+      {
+        source: 'oas_event',
+        ts_unix: 1_775_709_399,
+        event_type: 'telemetry_event',
+        payload: [
+          'Context_window_usage',
+          {
+            agent_name: 'keeper-alpha-agent',
+            turn: 42,
+            estimated_tokens: 1234,
+          },
+        ],
+      },
+      {
+        source: 'tool_call_io',
+        ts: 1_775_709_398,
+        keeper: 'alpha',
+        tool: 'keeper_tasks_list',
+        turn: 42,
+        runtime_contract: {
+          agent_name: 'keeper-alpha-agent',
+        },
+      },
+      {
+        source: 'oas_event',
+        ts_unix: 1_775_709_397,
+        event_type: 'telemetry_event',
+        payload: [
+          'Streaming_first_chunk',
+          {
+            provider: 'openai_compat',
+            model: 'provider-g-v4-flash:cloud',
+            ttfrc_ms: 1685,
+          },
+        ],
+      },
+    ])
+
+    expect(items[0]).toMatchObject({
+      kind: 'group',
+      category: 'turn',
+      label: 'keeper-alpha-agent · turn 42',
+      count: 3,
+    })
+    expect(items[1]).toMatchObject({ kind: 'entry' })
+    if (items[1]?.kind === 'entry') {
+      expect(items[1].entry.source).toBe('oas_event')
+      expect(items[1].entry.event_type).toBe('telemetry_event')
+    }
+
+    const contextMatches = filterTelemetryDisplayItems(items, 'Context_window_usage')
+    expect(contextMatches).toHaveLength(1)
+    expect(contextMatches[0]).toMatchObject({
+      kind: 'group',
+      category: 'turn',
+    })
+
+    const cloudMatches = filterTelemetryDisplayItems(items, 'provider-g-v4-flash:cloud')
+    expect(cloudMatches).toHaveLength(1)
+    expect(cloudMatches[0]).toMatchObject({ kind: 'entry' })
+  })
+
+  it('keeps turn groups separated by run scope (session_id / operation_id / worker_run_id)', async () => {
+    const { buildTelemetryDisplayItems } = await loadPanel(
+      vi.fn().mockResolvedValue(baseTelemetry),
+      vi.fn().mockResolvedValue(baseSummary),
+    )
+
+    // Two different sessions reusing the same agent_name + turn number.
+    // Without run-scope in the grouping key these collapse into one row;
+    // with run-scope they MUST stay in two distinct groups.
+    const items = buildTelemetryDisplayItems([
+      {
+        source: 'oas_event',
+        ts_unix: 1_775_710_000,
+        event_type: 'turn_ready',
+        agent_name: 'keeper-alpha-agent',
+        turn: 1,
+        session_id: 'sess-foo',
+      },
+      {
+        source: 'oas_event',
+        ts_unix: 1_775_709_999,
+        event_type: 'telemetry_event',
+        session_id: 'sess-foo',
+        payload: [
+          'Context_window_usage',
+          { agent_name: 'keeper-alpha-agent', turn: 1, estimated_tokens: 100 },
+        ],
+      },
+      {
+        source: 'oas_event',
+        ts_unix: 1_775_709_998,
+        event_type: 'turn_ready',
+        agent_name: 'keeper-alpha-agent',
+        turn: 1,
+        session_id: 'sess-bar',
+      },
+      {
+        source: 'oas_event',
+        ts_unix: 1_775_709_997,
+        event_type: 'telemetry_event',
+        session_id: 'sess-bar',
+        payload: [
+          'Context_window_usage',
+          { agent_name: 'keeper-alpha-agent', turn: 1, estimated_tokens: 200 },
+        ],
+      },
+    ])
+
+    const turnGroups = items.filter(
+      (item): item is Extract<typeof item, { kind: 'group' }> =>
+        item.kind === 'group' && item.category === 'turn',
+    )
+    expect(turnGroups).toHaveLength(2)
+    expect(turnGroups[0]).toMatchObject({
+      label: 'keeper-alpha-agent · turn 1',
+      count: 2,
+    })
+    expect(turnGroups[1]).toMatchObject({
+      label: 'keeper-alpha-agent · turn 1',
+      count: 2,
+    })
+  })
+
+  it('does not group on turn=0 sentinel (turn-not-tracked records stay as entries)', async () => {
+    const { buildTelemetryDisplayItems } = await loadPanel(
+      vi.fn().mockResolvedValue(baseTelemetry),
+      vi.fn().mockResolvedValue(baseSummary),
+    )
+
+    // turn=0 is used by keeper telemetry as "turn not tracked" (e.g.,
+    // trajectory tool-call records). These entries must not be collapsed
+    // into a fake `actor · turn 0` group even when they share an actor.
+    const items = buildTelemetryDisplayItems([
+      {
+        source: 'tool_call_io',
+        ts: 1_775_711_000,
+        keeper: 'alpha',
+        tool: 'keeper_tasks_list',
+        turn: 0,
+        runtime_contract: { agent_name: 'keeper-alpha-agent' },
+      },
+      {
+        source: 'tool_call_io',
+        ts: 1_775_710_999,
+        keeper: 'alpha',
+        tool: 'masc_status',
+        turn: 0,
+        runtime_contract: { agent_name: 'keeper-alpha-agent' },
+      },
+      {
+        source: 'oas_event',
+        ts_unix: 1_775_710_998,
+        event_type: 'telemetry_event',
+        payload: [
+          'Context_window_usage',
+          { agent_name: 'keeper-alpha-agent', turn: 0, estimated_tokens: 50 },
+        ],
+      },
+    ])
+
+    const turnGroups = items.filter(
+      (item): item is Extract<typeof item, { kind: 'group' }> =>
+        item.kind === 'group' && item.category === 'turn',
+    )
+    expect(turnGroups).toHaveLength(0)
+  })
+
+  it('surfaces cloud Ollama provider details in OAS telemetry previews and search', async () => {
+    const { buildTelemetryDisplayItems, filterTelemetryDisplayItems } = await loadPanel(
+      vi.fn().mockResolvedValue(baseTelemetry),
+      vi.fn().mockResolvedValue(baseSummary),
+    )
+
+    const items = buildTelemetryDisplayItems([
+      {
+        source: 'oas_event',
+        ts_unix: 1_775_709_500,
+        event_type: 'masc:oas_worker:build',
+        agent_name: 'oas-tier-group.ollama_cloud_stable',
+        payload: {
+          agent: 'oas-tier-group.ollama_cloud_stable',
+          provider_kind: 'openai_compat',
+          model_id: 'model-c:cloud',
+          provider_model_id: 'model-c:cloud',
+          base_url: 'https://ollama.com/v1',
+          endpoint: 'https://ollama.com/v1/chat/completions',
+        },
+      },
+      {
+        source: 'oas_event',
+        ts_unix: 1_775_709_499,
+        event_type: 'telemetry_event',
+        payload: [
+          'Streaming_summary',
+          {
+            provider: 'openai_compat',
+            model: 'provider-g-v4-flash:cloud',
+            total_ms: 3450,
+          },
+        ],
+      },
+    ])
+
+    const buildMatches = filterTelemetryDisplayItems(items, 'ollama.com')
+    expect(buildMatches).toHaveLength(1)
+    expect(buildMatches[0]).toMatchObject({ kind: 'entry' })
+
+    const streamingMatches = filterTelemetryDisplayItems(items, 'Streaming_summary')
+    expect(streamingMatches).toHaveLength(1)
+    expect(streamingMatches[0]).toMatchObject({ kind: 'entry' })
+
+    const modelMatches = filterTelemetryDisplayItems(items, 'provider-g-v4-flash:cloud')
+    expect(modelMatches).toHaveLength(1)
+    expect(modelMatches[0]).toMatchObject({ kind: 'entry' })
   })
 
   it('expands grouped rows to reveal the condensed raw entries', async () => {
@@ -793,7 +1235,7 @@ describe('filterTelemetryDisplayItems', () => {
       ts: 1_775_709_200,
       name: 'keeper-bravo',
       channel: 'turn_end',
-      model_used: 'glm-4.6',
+      model_used: 'provider-k-4.6',
       tool_call_count: 2,
       success: true,
     },

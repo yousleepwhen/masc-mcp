@@ -5,76 +5,43 @@
 import { html } from 'htm/preact'
 import type { PipelineStage } from '../types'
 
+// 10 values emitted by `Keeper_status_runtime.pipeline_stage_of_phase`
+// (lib/keeper/keeper_status_runtime.ml:537) post-RFC-0046 (#14707). The
+// legacy 6-entry list had `thinking` / `tool_use` /
+// `scheduled_autonomous` which the backend never emits as a
+// pipeline_stage value (they live in trajectory content_type / turn
+// channel respectively), and was missing `failing` / `overflowed` /
+// `draining` / `paused` / `crashed` / `restarting` / `offline` — so
+// 7 real backend values fell through to the raw-string fallback at
+// line 33. Labels are short forms suitable for the roster badge.
 const STAGES: { key: PipelineStage; label: string }[] = [
   { key: 'idle', label: 'idle' },
-  { key: 'thinking', label: 'think' },
-  { key: 'tool_use', label: 'tool' },
   { key: 'compacting', label: 'compact' },
   { key: 'handoff', label: 'handoff' },
-  { key: 'scheduled_autonomous', label: 'auto' },
+  { key: 'offline', label: 'offline' },
+  { key: 'failing', label: 'fail' },
+  { key: 'overflowed', label: 'overflow' },
+  { key: 'draining', label: 'drain' },
+  { key: 'paused', label: 'pause' },
+  { key: 'crashed', label: 'crash' },
+  { key: 'restarting', label: 'restart' },
 ]
-
-const STAGE_ORDER: Record<string, number> = Object.fromEntries(
-  STAGES.map((s, i) => [s.key, i]),
-)
-
-/**
- * Full horizontal pipeline stage indicator.
- * Shows all stages as dots connected by lines. The current stage is highlighted.
- */
-export function PipelineStageBar({ stage }: { stage?: PipelineStage | null }) {
-  const current = stage ?? 'offline'
-  const currentIdx = STAGE_ORDER[current] ?? -1
-
-  if (current === 'offline' || currentIdx === -1) {
-    return html`
-      <div class="flex items-center py-1.5">
-        <div class="pipeline-stage-node active stage-${current}">
-          <span class="pipeline-stage-dot transition-colors duration-[var(--t-slow)]"></span>
-          <span class="pipeline-stage-label">${current}</span>
-        </div>
-      </div>
-    `
-  }
-
-  return html`
-    <div class="flex items-center py-1.5">
-      ${STAGES.map((s, i) => {
-        const isActive = s.key === current
-        const isPassed = i < currentIdx
-        const nodeClass = [
-          'pipeline-stage-node',
-          isActive ? 'active' : '',
-          isPassed ? 'passed' : '',
-          isActive ? `stage-${s.key}` : '',
-        ]
-          .filter(Boolean)
-          .join(' ')
-
-        return html`
-          ${i > 0 ? html`<span class="pipeline-stage-connector"></span>` : null}
-          <div class=${nodeClass}>
-            <span class="pipeline-stage-dot transition-colors duration-[var(--t-slow)]"></span>
-            ${isActive
-              ? html`<span class="pipeline-stage-label">${s.label}</span>`
-              : null}
-          </div>
-        `
-      })}
-    </div>
-  `
-}
 
 /**
  * Compact badge variant for roster cards.
  * Shows only the current stage as a small pill.
+ *
+ * Note: A wider `PipelineStageBar` once lived here. RFC-0046 removed
+ * its sole caller (keeper detail) in favour of the FsmHub composite
+ * snapshot; the badge survives because agent-monitor / fleet roster
+ * still need a one-axis stage hint outside the FSM hub.
  */
 export function PipelineStageBadge({
   stage,
 }: {
   stage?: PipelineStage | null
 }) {
-  const current = stage ?? 'offline'
+  const current = stage ?? 'unknown'
   const label =
     STAGES.find((s) => s.key === current)?.label ?? current
 

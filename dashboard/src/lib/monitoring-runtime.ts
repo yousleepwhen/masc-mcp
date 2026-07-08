@@ -1,5 +1,11 @@
-import type { Agent, Keeper, KeeperPhase, PipelineStage } from '../types'
-import { keeperDisplayStatus, keeperRuntimeBlockerHint } from './keeper-runtime-display'
+import type { Agent, Keeper, PipelineStage } from '../types'
+import type { KeeperCompositeSnapshot } from '../api/schemas/keeper-composite'
+import { parseAgentStatus } from './agent-status'
+import { UNKNOWN_STATUS_LABEL } from './format-string'
+import {
+  deriveKeeperRuntimeProjection,
+  type KeeperRuntimeProjection,
+} from './keeper-runtime-projection'
 
 export type RuntimeBand = 'active' | 'attention' | 'paused' | 'offline'
 
@@ -33,30 +39,9 @@ interface MonitoringEvidence {
   stage: StageMeta | null
 }
 
-const HEARTBEAT_STALE_MS = 5 * 60 * 1000
-const DEFAULT_CONTEXT_ATTENTION_RATIO = 0.95
-
-const CANONICAL_PHASE_KEYS = new Set([
-  'Offline',
-  'Running',
-  'Failing',
-  'Overflowed',
-  'Compacting',
-  'HandingOff',
-  'Draining',
-  'Paused',
-  'Stopped',
-  'Crashed',
-  'Restarting',
-  'Dead',
-])
-
-const OFFLINE_PHASES = new Set<string>(['Offline', 'Stopped', 'Dead'])
-const ATTENTION_PHASES = new Set<string>(['Failing', 'Overflowed', 'Compacting', 'HandingOff', 'Draining', 'Crashed', 'Restarting'])
-
 const UNKNOWN_PHASE_META: PhaseMeta = {
   key: 'unknown',
-  label: '확인 필요',
+  label: UNKNOWN_STATUS_LABEL,
   description: 'phase 정보가 부족해 수동 확인이 필요합니다.',
 }
 
@@ -70,7 +55,7 @@ const PHASE_LABELS: Record<string, PhaseMeta> = {
   Offline: { key: 'Offline', label: '오프라인', description: '런타임이 올라오지 않았거나 연결 정보가 없습니다.' },
   Running: { key: 'Running', label: '실행중', description: 'keeper_state_machine 기준으로 정상 실행 상태입니다.' },
   Failing: { key: 'Failing', label: '오류중', description: '최근 실행에서 오류를 감지했습니다.' },
-  Overflowed: { key: 'Overflowed', label: '컨텍스트 초과', description: '프롬프트가 provider 컨텍스트 한도를 넘겨 자동 복구가 필요합니다.' },
+  Overflowed: { key: 'Overflowed', label: '컨텍스트초과', description: '프롬프트가 runtime 컨텍스트 한도를 넘겨 자동 복구가 필요합니다.' },
   Compacting: { key: 'Compacting', label: '압축중', description: '컨텍스트를 정리하는 중입니다.' },
   HandingOff: { key: 'HandingOff', label: '승계중', description: '새 세대로 넘기는 중입니다.' },
   Draining: { key: 'Draining', label: '종료중', description: '현재 작업을 마무리하는 중입니다.' },
@@ -79,6 +64,7 @@ const PHASE_LABELS: Record<string, PhaseMeta> = {
   Crashed: { key: 'Crashed', label: '비정상종료', description: 'fiber가 비정상적으로 종료되었습니다.' },
   Restarting: { key: 'Restarting', label: '재시작중', description: '복구를 시도하고 있습니다.' },
   Dead: { key: 'Dead', label: '종료', description: '재시도 budget이 소진된 종료 상태입니다.' },
+  Zombie: { key: 'Zombie', label: '좀비', description: 'fiber는 종료되었으나 런타임이 아직 정리하지 않은 상태입니다.' },
   active: { key: 'active', label: '실행중', description: '프로세스는 살아 있지만 state projection이 부족합니다.' },
   busy: { key: 'busy', label: '작업중', description: '프로세스는 살아 있고 현재 작업을 수행 중입니다.' },
   listening: { key: 'listening', label: '대기중', description: '프로세스는 살아 있고 입력을 기다리고 있습니다.' },
@@ -156,100 +142,45 @@ function stageMeta(key: string | null | undefined): StageMeta {
   return meta ?? OFFLINE_STAGE_META
 }
 
-function normalizePhase(phase: KeeperPhase | string | null | undefined): string | null {
-  if (!phase) return null
-  if (CANONICAL_PHASE_KEYS.has(phase)) return phase
-  const normalized = String(phase).trim().toLowerCase()
-  if (!normalized) return null
-  const lookup: Record<string, string> = {
-    offline: 'Offline',
-    running: 'Running',
-    failing: 'Failing',
-    overflowed: 'Overflowed',
-    compacting: 'Compacting',
-    handing_off: 'HandingOff',
-    handingoff: 'HandingOff',
-    draining: 'Draining',
-    paused: 'Paused',
-    stopped: 'Stopped',
-    crashed: 'Crashed',
-    restarting: 'Restarting',
-    dead: 'Dead',
-  }
-  return lookup[normalized] ?? null
-}
-
 function normalizeStage(stage: PipelineStage | string | null | undefined): string {
   return stage ? String(stage) : 'offline'
 }
 
-export function keeperPhaseForDisplay(keeper: Keeper): string | null {
-  const lifecycleKey = keeperDisplayStatus(keeper)
-  const lifecyclePhase = normalizePhase(lifecycleKey)
-  if (
-    lifecyclePhase === 'Paused'
-    || lifecyclePhase === 'Stopped'
-    || lifecyclePhase === 'Offline'
-    || lifecyclePhase === 'Dead'
-  ) {
-    return lifecyclePhase
-  }
-  return normalizePhase(keeper.phase) ?? lifecyclePhase
+export function keeperPhaseForDisplay(
+  keeper: Keeper,
+  composite: KeeperCompositeSnapshot | null = null,
+): string | null {
+  return deriveKeeperRuntimeProjection({ keeper, composite }).opState.phase
 }
 
-function isHeartbeatStale(keeper: Keeper): boolean {
-  if (!keeper.last_heartbeat) return false
-  const ts = Date.parse(keeper.last_heartbeat)
-  if (Number.isNaN(ts)) return false
-  return Date.now() - ts > HEARTBEAT_STALE_MS
-}
-
-function contextAttentionRatio(keeper: Keeper): number {
-  const value = keeper.runtime_warning_ctx_ratio
-  return typeof value === 'number' && Number.isFinite(value)
-    ? value
-    : DEFAULT_CONTEXT_ATTENTION_RATIO
-}
-
-function keeperBand(keeper: Keeper, phaseKey: string, lifecycleKey: string): RuntimeBand {
-  if (keeper.paused || phaseKey === 'Paused' || lifecycleKey === 'paused') return 'paused'
-  if (
-    lifecycleKey === 'offline'
-    || lifecycleKey === 'inactive'
-    || lifecycleKey === 'unbooted'
-    || lifecycleKey === 'stopped'
-    || OFFLINE_PHASES.has(phaseKey)
-  ) {
-    return 'offline'
-  }
-  if (
-    ATTENTION_PHASES.has(phaseKey)
-    || Boolean(keeper.runtime_blocker_class)
-    || keeper.social_model_recognized === false
-    || isHeartbeatStale(keeper)
-    || (typeof keeper.context_ratio === 'number' && keeper.context_ratio >= contextAttentionRatio(keeper))
-  ) {
+function keeperBand(projection: KeeperRuntimeProjection): RuntimeBand {
+  // RFC-0135 §13 Goal-1 (audit B1, 2026-05-20): paused / offline / stuck
+  // routing collapsed into the typed sum SSOT. The two prior local
+  // checks
+  //   - `isKeeperPaused(keeper)` (PR-3 canonical predicate)
+  //   - `lifecycleKey === 'offline' | 'unbooted' | 'stopped'
+  //      || OFFLINE_PHASES.has(phaseKey)` (string-set lifecycle/phase
+  //      bypass)
+  // were strict subsets of `projection.opState.kind === 'paused'` and
+  // `projection.opState.kind === 'offline'`; routing through the runtime
+  // projection keeps monitoring aligned with detail live-truth.
+  if (projection.opState.kind === 'paused') return 'paused'
+  if (projection.opState.kind === 'offline') return 'offline'
+  if (projection.signals.some(signal => signal.contributesToAttention)) {
     return 'attention'
   }
   return 'active'
 }
 
-function keeperHint(keeper: Keeper, band: RuntimeBand, stage: StageMeta): string | null {
-  const runtimeBlocker = keeperRuntimeBlockerHint(keeper)
-  if (runtimeBlocker) return runtimeBlocker
-  if (keeper.social_model_recognized === false) {
-    const configured = keeper.configured_social_model?.trim()
-    const fallback = keeper.social_model_fallback?.trim()
-    if (configured && fallback) return `대화 모델 ${configured} 미인식 · ${fallback}로 대체 중입니다.`
-    if (configured) return `대화 모델 ${configured} 미인식입니다.`
-    if (fallback) return `대화 모델 fallback이 ${fallback}로 설정돼 있습니다.`
-    return '미인식 대화 모델 설정이 감지됐습니다.'
-  }
+function keeperHint(
+  keeper: Keeper,
+  projection: KeeperRuntimeProjection,
+  band: RuntimeBand,
+  stage: StageMeta,
+): string | null {
+  const signalHint = projection.signals.find(signal => signal.contributesToAttention && signal.hint !== null)?.hint
+  if (signalHint) return signalHint
   if (band === 'paused') return '운영자가 멈춰 둔 상태입니다.'
-  if (isHeartbeatStale(keeper)) return '오래 응답이 없어 실제 상태 확인이 필요합니다.'
-  if (typeof keeper.context_ratio === 'number' && keeper.context_ratio >= contextAttentionRatio(keeper)) {
-    return `컨텍스트 사용량이 ${Math.round(keeper.context_ratio * 100)}%입니다.`
-  }
   if (band === 'attention') return stage.description
   if (band === 'offline' && keeper.generation === 0 && (keeper.turn_count ?? 0) === 0) {
     return '아직 부팅된 적 없는 등록 런타임입니다.'
@@ -258,17 +189,20 @@ function keeperHint(keeper: Keeper, band: RuntimeBand, stage: StageMeta): string
   return stage.description
 }
 
-export function summarizeKeeperMonitoring(keeper: Keeper): KeeperMonitoringSummary {
-  const lifecycleKey = keeperDisplayStatus(keeper)
-  const phaseKey = keeperPhaseForDisplay(keeper) ?? 'unknown'
+export function summarizeKeeperMonitoring(
+  keeper: Keeper,
+  composite: KeeperCompositeSnapshot | null = null,
+): KeeperMonitoringSummary {
+  const projection = deriveKeeperRuntimeProjection({ keeper, composite })
+  const phaseKey = projection.opState.phase ?? 'unknown'
   const stage = stageMeta(normalizeStage(keeper.pipeline_stage))
-  const band = BAND_META[keeperBand(keeper, phaseKey, lifecycleKey)]
+  const band = BAND_META[keeperBand(projection)]
 
   return {
     band,
     phase: phaseMeta(phaseKey),
     stage,
-    hint: keeperHint(keeper, band.key, stage),
+    hint: keeperHint(keeper, projection, band.key, stage),
   }
 }
 
@@ -292,21 +226,50 @@ export function summarizeMonitoringEvidence(summary: KeeperMonitoringSummary): M
 }
 
 function agentBand(status: string | undefined | null): RuntimeBand {
-  const normalized = (status ?? '').trim().toLowerCase()
-  if (!normalized) return 'attention'
-  if (normalized === 'inactive' || normalized === 'offline' || normalized === 'dead' || normalized === 'left') {
-    return 'offline'
-  }
-  return 'active'
+  if (status == null || status.trim() === '') return 'attention'
+  const parsed = parseAgentStatus(status)
+  if (parsed === 'inactive' || parsed === 'offline') return 'offline'
+  if (parsed != null) return 'active'
+  // Wire-format tokens outside the declared AgentStatus union
+  // (`parseAgentStatus` returned null). The OCaml backend
+  // `agent_status` sum (lib/types/types_core.ml:42) emits only
+  // Active|Busy|Listening|Inactive, plus `dashboard_mission_agents.ml:206-207`
+  // adds `"offline" | "unknown"` via typed-union bypass.
+  //
+  // Wire-format audit 2026-05-20: `rg -n '"dead"|"left"' lib/` returned
+  // zero hits in the `agent.status` slot — `"dead"` belongs to
+  // `Fiber_dead`/`KH_dead`/`subsystem_health`, `"left"` belongs to
+  // `Span_left` (different axis vocabularies). Defensive arms for
+  // those tokens dropped.
+  //
+  // Unknown token surfaces as `'attention'` (not the prior `'active'`
+  // default). `"unknown"` is an emitted backend default
+  // (`dashboard_mission_agents.ml:207` `| None -> "unknown"`,
+  // `dashboard_execution_builders.ml:209` `~default:"unknown"`), so the
+  // previous `'active'` fallback silently absorbed operator-relevant
+  // ambiguity into a "running" badge. `'attention'` ("주의 필요 — 응답
+  // 지연, 오류, 복구, 승계 등으로 상태 확인이 필요합니다") preserves
+  // that signal. Software-development.md §"Unknown → Permissive
+  // Default" anti-pattern: unknown input must surface as a distinct
+  // state, not collapse into the happy-path default.
+  return 'attention'
 }
 
-function runtimeBandForAgent(agent: Agent, keeper?: Keeper | null): RuntimeBand {
-  if (keeper) return summarizeKeeperMonitoring(keeper).band.key
+function runtimeBandForAgent(
+  agent: Agent,
+  keeper?: Keeper | null,
+  composite?: KeeperCompositeSnapshot | null,
+): RuntimeBand {
+  if (keeper) return summarizeKeeperMonitoring(keeper, composite ?? null).band.key
   return agentBand(agent.status)
 }
 
-export function runtimeBandMetaForAgent(agent: Agent, keeper?: Keeper | null): RuntimeBandMeta {
-  return BAND_META[runtimeBandForAgent(agent, keeper)]
+export function runtimeBandMetaForAgent(
+  agent: Agent,
+  keeper?: Keeper | null,
+  composite?: KeeperCompositeSnapshot | null,
+): RuntimeBandMeta {
+  return BAND_META[runtimeBandForAgent(agent, keeper, composite)]
 }
 
 export function runtimeBandMeta(band: RuntimeBand): RuntimeBandMeta {

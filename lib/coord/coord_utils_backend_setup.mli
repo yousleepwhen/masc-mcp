@@ -27,6 +27,7 @@ val test_base_path_override_env : string
 val test_base_path_override_enabled : unit -> bool
 val sync_test_base_path_env : string -> unit
 val resolve_requested_base_path : string -> string
+val cache_resolved_base_path : string -> unit
 val resolve_masc_base_path : string -> string
 val resolve_server_default_base_path : string -> string
 val is_unresolved_template : string -> bool
@@ -36,7 +37,6 @@ val storage_type_from_env : unit -> string
 val sanitize_namespace_segment : string -> string
 val backend_config_for : string -> Backend_types.config
 val create_backend : Backend_types.config -> (storage_backend, Backend_types.error) result
-val create_backend_eio : sw:Eio.Switch.t -> Backend_types.config -> (storage_backend, Backend_types.error) result
 val reset_default_config_cache : unit -> unit
 val build_default_config : string -> config
 val default_config : string -> config

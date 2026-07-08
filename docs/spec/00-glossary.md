@@ -1,15 +1,18 @@
 ---
 status: reference
-last_verified: 2026-04-17
+last_verified: 2026-05-15
 code_refs:
   - lib/types/
   - lib/tool_dispatch.ml
   - lib/agent_identity.ml
+  - lib/keeper/keeper_agent_run.ml
+  - lib/keeper/keeper_registry.mli
+  - lib/keeper/keeper_turn_driver.ml
 ---
 
 # MASC Glossary
 
-> Version 2.0.0 | Supersedes: docs/GLOSSARY.md (v1.0.0)
+> Version 2.1.0 | Supersedes: docs/GLOSSARY.md (v1.0.0)
 
 ## Normalization Principles
 
@@ -34,7 +37,7 @@ code_refs:
 Task의 상태를 나타내는 ADT. `Todo`, `Claimed`, `InProgress`, `Done`, `Cancelled` 5개 variant로 구성된다. 각 variant는 assignee, timestamp 등의 메타데이터를 포함한다. 상태 전이는 타입 시스템으로 강제된다. `-> lib/types/types_core.ml`
 
 **Agent**
-MASC Room에 참여하는 AI 에이전트. 고유 이름, 에이전트 타입(claude, gemini, codex 등), 상태, 역량 목록을 가진다. `-> lib/types/types_core.ml`
+MASC Room에 참여하는 AI 에이전트. 고유 이름, 에이전트 타입(agent-llm-a, provider-f, agent-code 등), 상태, 역량 목록을 가진다. `-> lib/types/types_core.ml`
 
 **Agent Status**
 에이전트의 현재 상태: `Active`, `Busy`, `Listening`, `Inactive`. 컴파일 타임 상태 머신으로 전이가 관리된다. `-> lib/types/types_core.ml`
@@ -43,16 +46,16 @@ MASC Room에 참여하는 AI 에이전트. 고유 이름, 에이전트 타입(cl
 Room 내 모든 에이전트에게 전달되는 메시지. @mention으로 특정 에이전트를 호출할 수 있다. MASC 협업에서 상태 공유의 기본 수단이다. `-> lib/types/types_core.ml`
 
 **Portal**
-두 에이전트 간의 직접 통신 링크. Broadcast가 전체 공개라면, Portal은 1:1 비공개 채널이다. `-> lib/tool_portal.mli`, `-> lib/types/types_auth.ml`
+두 에이전트 간의 직접 통신 링크. Broadcast가 전체 공개라면, Portal은 1:1 비공개 채널이다. `-> lib/coord/coord_portal.ml`, `-> lib/types/types_auth.ml`
 
 **Worktree**
-에이전트별로 격리된 git 작업 공간. 각 에이전트가 독립적인 브랜치에서 작업하여 충돌을 방지한다. 경로 패턴: `.worktrees/{agent}-{task}/`. `-> lib/types/types_core.ml`, `-> lib/tool_worktree.mli`
+에이전트별로 격리된 git 작업 공간. 각 에이전트가 독립적인 브랜치에서 작업하여 충돌을 방지한다. 경로 패턴: `.worktrees/{agent}-{task}/`. `-> lib/types/types_core.ml`
 
 **Handoff**
 Keeper post-turn lifecycle에서 같은 keeper를 새 `trace_id` / 새 session으로 이어붙이는 rollover. 성공 시 `generation`이 증가하고 이전 `trace_id`가 `trace_history`에 추가된다. 세션 handoff 문서와는 다른 개념이다. `-> lib/keeper/keeper_post_turn.ml`, `-> lib/keeper/keeper_rollover.ml`
 
 **Capsule**
-에이전트 컨텍스트의 압축된 표현. 현재 목표, 진행 상황, 완료/대기 단계, 핵심 결정과 근거, 수정된 파일 목록 등을 포함한다. Handoff 시 후임 에이전트에게 전달된다. (구 명칭: DNA) `-> lib/tool_relay.mli`
+에이전트 컨텍스트의 압축된 표현. 현재 목표, 진행 상황, 완료/대기 단계, 핵심 결정과 근거, 수정된 파일 목록 등을 포함한다. Handoff 시 후임 에이전트에게 전달된다. (구 명칭: DNA) `-> lib/relay.mli`
 
 **Usage**
 에이전트의 컨텍스트 윈도우 소비율(%). keeper에서는 compaction gate와 handoff gate를 평가하는 입력값이다. 현재 owner는 OAS reducer + keeper compact/handoff path다.
@@ -80,10 +83,10 @@ Keeper 런타임은 12-state FSM과 turn/post-turn sub-FSM으로 구성된다. `
 노드 기반 실행 파이프라인 엔진(`lib/chain/`)은 purge됐다. `Chain`, `Node`, `Node Type`(23 variant), `Chain Result` 같은 세부 용어도 같이 제거. 현재 execution은 OAS swarm + keeper FSM + verifier 조합이다.
 
 **Cascade**
-LLM 모델 호출의 폴백 순서를 정의하는 설정. `config/cascade.json`에 cascade 이름별로 모델 리스트가 지정된다. 첫 번째 모델 실패 시 다음 모델로 폴백한다. 기본 순서: llama(local) -> GLM Cloud -> Skip. `-> config/cascade.json`, `-> lib/cascade_inference.mli`
+LLM 모델 호출의 폴백 순서를 정의하는 설정. live authoring source는 `<base-path>/.masc/config/cascade.toml` 또는 명시적 `MASC_CONFIG_DIR/cascade.toml`이고, 체크인된 `config/cascade.toml`은 default/example fallback source다. 실제 순서는 route/tier-group 설정을 따른다. `-> docs/cascade/README.md`, `-> lib/cascade/cascade_runtime.mli`
 
 **Cascade Inference**
-cascade.json에서 cascade 이름별 추론 파라미터(temperature, max_tokens)를 읽어 해결하는 모듈. 해결 순서: cascade별 값 -> default 값 -> 호출자 fallback. `-> lib/cascade_inference.mli`
+cascade.toml에서 cascade 이름별 추론 파라미터(temperature, max_tokens)를 읽어 해결하는 모듈. 해결 순서: cascade별 값 -> default 값 -> 호출자 fallback. `-> lib/cascade_inference.mli`
 
 **Layer (Architecture Layer)**
 MASC 아키텍처의 계층 구조. HTTP Server(L0) -> MCP Protocol(L1) -> Tool Dispatch(L2) -> Domain Logic(L3) -> Storage(L4) -> OAS Integration(L5) 순으로 구성된다.
@@ -122,6 +125,21 @@ Task 식별자의 newtype 래퍼. 타임스탬프 + 시퀀스 번호로 자동 �
 **Keeper**
 자율적으로 동작하는 장기 실행 에이전트. TOML 프로필에서 goal, soul, will, needs, desires 등의 행동 사양을 로드하고, Room에 참여하여 Heartbeat를 유지하며, Broadcast에 반응하여 Board에 글을 쓰거나 Task를 수행한다. Compaction, Drift, Handoff 정책을 자체적으로 관리한다. `-> lib/keeper/keeper_types.ml`, `-> lib/keeper/`
 
+**Keeper Cycle**
+Keeper keepalive 루프가 한 번 관찰, board/mention 수집, turn scheduling 판단, 필요 시 keeper turn 실행, recurring 작업 dispatch까지 수행하는 runtime cycle. 항상 LLM 호출을 포함하지 않는다. 로그에서 "keeper cycle"은 이 outer loop를 의미한다. `-> lib/keeper/keeper_heartbeat_loop.ml`, `-> lib/keeper/keeper_world_observation.ml`
+
+**Keeper Turn**
+MASC가 하나의 keeper 작업 시도를 위해 OAS `Agent.run`을 감싸는 실행 envelope. 하나의 keeper turn은 cascade 후보를 여러 번 시도할 수 있고, 각 시도는 OAS SDK turn을 여러 개 포함할 수 있다. `turn_count` 또는 `total_turns` 같은 keeper runtime counter와 OAS `result.turns`를 같은 단위로 비교하지 않는다. `-> lib/keeper/keeper_agent_run.ml`, `-> lib/keeper/keeper_registry.mli`
+
+**OAS SDK Turn**
+OAS `Agent.run` 내부의 provider response + tool execution loop 한 단계. MASC manifest/receipt에서는 `oas_turn_count` 또는 OAS `result.turns`로 기록된다. 이 값은 keeper turn 번호가 아니라 한 keeper turn 내부에서 소비된 SDK loop 횟수다. `-> workspace/yousleepwhen/oas/lib/agent/agent.ml`
+
+**Cascade Attempt**
+Keeper turn 안에서 하나의 resolved provider/model candidate를 호출하는 시도. 실패하면 같은 keeper turn 안에서 다음 candidate로 넘어갈 수 있다. Cascade attempt는 keeper turn도, OAS SDK turn도 아니다. `-> lib/keeper/keeper_turn_driver.ml`, `-> lib/keeper/keeper_turn_driver_try_provider.ml`
+
+**Agent Run**
+OAS `Agent.run` 호출 전체. MASC keeper path에서는 보통 하나의 cascade attempt가 하나의 OAS agent run을 만든다. Dashboard single-agent runs and OAS library callers may create agent runs outside a keeper turn, so do not infer keeper ownership from "agent run" alone. `-> lib/keeper/keeper_agent_run.ml`, `-> workspace/yousleepwhen/oas/lib/agent/agent.ml`
+
 **Keeper Meta**
 Keeper의 전체 설정과 런타임 상태를 담는 레코드 타입. 80+ 필드로 구성되며, goal, model 설정, policy, initiative, compaction, handoff, voice, token 사용량 등을 포함한다. `-> lib/keeper/keeper_types.ml`
 
@@ -129,7 +147,7 @@ Keeper의 전체 설정과 런타임 상태를 담는 레코드 타입. 80+ 필�
 지속적으로 실행되며 keepalive/heartbeat를 유지하는 장기 런타임. Keeper가 대표적이다. `-> lib/keeper/keeper_types.ml`
 
 **Visitor (Agent Type)**
-세션 기반으로 참여하는 에이전트. Claude Code, Cursor 등 사용자 세션 에이전트가 해당한다. (ecosystem types retired; `lib/agent_identity.ml` + `lib/coord/coord_lifecycle.ml` 참고)
+세션 기반으로 참여하는 에이전트. CLI-Tool-A, Cursor 등 사용자 세션 에이전트가 해당한다. (ecosystem types retired; `lib/agent_identity.ml` + `lib/coord/coord_lifecycle.ml` 참고)
 
 **Ephemeral (Agent Type)**
 단일 Task 실행 후 소멸하는 에이전트. Spawn으로 생성되어 Task 완료 후 자동 종료된다. (ecosystem types retired; `lib/agent_identity.ml` + `lib/coord/coord_lifecycle.ml` 참고)
@@ -300,13 +318,13 @@ Streamable HTTP 엔드포인트에서 노출되는 도구 집합의 프로필: `
 O(1) Hashtbl 기반의 중앙 도구 라우팅 레지스트리. 각 Tool 모듈이 클로저를 등록하고, 호출 시 이름으로 O(1) 조회하여 실행한다. Pre-hook/Post-hook 체인을 지원한다. `-> lib/tool_dispatch.mli`
 
 **Handler**
-도구 호출 처리 함수의 통합 타입: `name:string -> args:Yojson.Safe.t -> (bool * string) option`. `None`은 해당 핸들러가 이 도구를 모르는 경우를 나타낸다. `-> lib/tool_dispatch.mli`
+도구 호출 처리 함수의 통합 타입: `name:string -> args:Yojson.Safe.t -> Tool_result.result option`. `None`은 해당 핸들러가 이 도구를 모르는 경우를 나타낸다. `-> lib/tool_dispatch.mli`
 
 **Pre-hook**
-도구 핸들러 실행 전 호출되는 가로채기 함수. `None` 반환 시 진행, `Some result` 반환 시 핸들러를 건너뛰고 단축 반환한다. Governance Pipeline이 pre-hook으로 설치된다. `-> lib/tool_dispatch.mli`
+도구 핸들러 실행 전 호출되는 가로채기 함수. `Pass`는 진행, `Proceed args`는 정규화/강제 변환 후 진행, `Reject result`는 핸들러를 건너뛰고 단축 반환한다. Governance Pipeline과 input validation이 pre-hook으로 설치된다. `-> lib/tool_dispatch.mli`
 
 **Post-hook**
-도구 핸들러 실행 후 호출되는 변환 함수. 결과를 수신하여 (변환된) 결과를 반환한다. `-> lib/tool_dispatch.mli`
+도구 핸들러 실행 후 호출되는 typed 관찰 hook. 결과 변환은 별도 `result_transformer`가 담당한다. `-> lib/tool_dispatch.mli`
 
 **Module Tag**
 도구 이름에서 담당 모듈로의 O(1) 2-level 디스패치를 위한 태그. 시작 시 도구 이름 -> 모듈 태그 매핑이 구축되고, 호출 시 태그로 모듈 컨텍스트를 lazy 생성한다. `-> lib/tool_dispatch.mli`
@@ -361,16 +379,16 @@ Portal 도메인 에러: `PortalNotOpen`, `PortalAlreadyOpen { agent; target }`,
 MASC가 에이전트 실행에 사용하는 SDK 라이브러리. 프로젝트: `workspace/yousleepwhen/oas` (agent_sdk). Agent.run, Context_reducer, Memory, Checkpoint, Guardrails, Hooks 등을 제공한다. MASC는 자체 에이전트 생명주기를 재구현하지 않고 OAS Agent.run을 사용한다.
 
 **OAS Worker**
-MASC에서 OAS 기반 모델 호출을 수행하는 통합 진입점. cascade_name 또는 model_label로 모델을 지정하고, OAS Agent.run을 통해 실행한다. 결과로 `run_result`(response, checkpoint, session_id, turns, trace_ref)를 반환한다. `-> lib/oas_worker.mli`
+MASC에서 OAS 기반 모델 호출을 수행하는 통합 진입점. cascade_name 또는 model_label로 모델을 지정하고, OAS Agent.run을 통해 실행한다. 결과로 `run_result`(response, checkpoint, session_id, turns, trace_ref)를 반환한다. 여기서 `turns`는 OAS SDK turn count이며 keeper turn count가 아니다. `-> lib/oas_worker.mli`
 
 **Cascade Config**
-`config/cascade.json`에 정의된 cascade 이름별 모델 리스트와 추론 파라미터. OAS Provider와 MASC 모두에서 사용된다. `-> config/cascade.json`
+`config/cascade.toml`에 정의된 cascade 이름별 모델 리스트와 추론 파라미터. OAS Provider와 MASC 모두에서 사용된다. `-> config/cascade.toml`
 
 **Provider Kind**
-OAS에서 LLM 제공자를 구분하는 타입. MASC에서는 `llama`(local), `glm`(GLM Cloud), `claude`, `gemini` 등이 사용된다.
+OAS에서 LLM 제공자를 구분하는 타입. MASC에서는 `llama`(local), `provider-k`(Provider-K Cloud), `agent-llm-a`, `provider-f` 등이 사용된다.
 
 **Agent.run**
-OAS의 에이전트 실행 진입점. MASC의 always-on keeper loop은 이 API 위에서 실행된다. Keeper 포함 모든 자율 에이전트 루프가 이 경로를 사용한다.
+OAS의 에이전트 실행 진입점. MASC의 always-on keeper loop은 이 API 위에서 실행된다. Keeper 포함 모든 자율 에이전트 루프가 이 경로를 사용한다. MASC 문서에서 `Agent.run`을 언급할 때는 agent run / OAS SDK turn / keeper turn 중 어느 clock을 말하는지 명시한다.
 
 **OAS SSE Bridge**
 OAS 이벤트를 MASC SSE 스트림으로 전달하는 브릿지. OAS 에이전트 실행 중 발생하는 이벤트를 Room의 SSE 구독자에게 전달한다. `-> lib/oas_event_bridge.mli`
@@ -413,3 +431,4 @@ Preact + HTM 기반 SPA. `/dashboard` 경로에서 제공된다. Hash 기반 라
 |---------|------|---------|
 | 1.0.0 | 2026-01-10 | 초기 용어집 (10개 용어, P2 용어 정규화) |
 | 2.0.0 | 2026-03-23 | 전면 확장 (90+ 용어). 아키텍처, 체인 엔진, CPv2, 에러 분류, OAS 통합, 프로토콜, 거버넌스, 메모리 섹션 추가 |
+| 2.1.0 | 2026-05-15 | DD-024 turn vocabulary 정리. Keeper cycle, keeper turn, OAS SDK turn, cascade attempt, agent run의 clock을 분리 |

@@ -38,9 +38,11 @@ type cascade_failure_class =
   | Accept_rejected_capability_mismatch
   | Accept_rejected_terminal
   | Cli_transport_required
+  | Tls_error
   | Network_error
+  | Provider_timeout
   | Provider_terminal
-  | Provider_capacity_exhausted
+  | Provider_capacity_backpressure
   | Provider_hard_quota
   | Provider_capability_mismatch
   | Provider_cli_policy_invalid
@@ -111,9 +113,6 @@ let filter_healthy_internal ~sw ~net (providers : Llm_provider.Provider_config.t
           (List.length local_providers) (List.length cloud_providers);
         (cloud_providers, [])
       end
-
-let filter_healthy ~sw ~net providers =
-  fst (filter_healthy_internal ~sw ~net providers)
 
 let filter_healthy_strict ~sw ~net (providers : Llm_provider.Provider_config.t list)
     : (Llm_provider.Provider_config.t list, health_filter_rejection) result =

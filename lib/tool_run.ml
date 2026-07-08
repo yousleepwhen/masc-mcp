@@ -26,84 +26,123 @@ type context = {
   config: Coord.config;
 }
 
-(** Tool result type *)
-type tool_result = bool * string
-
 open Tool_args
 
 (** {1 Individual Handlers} *)
 
-let handle_run_init ctx args : tool_result =
+(* RFC-0189 PR-1b.6 — handlers in this module return typed
+   [Tool_result.result]. Run_eio is the persistence layer; its Error
+   cases are opaque "Failed to ..." (Runtime_failure). The
+   "task_id is required" caller-input rejections are Workflow_rejection.
+
+   JSON responses flow as typed [~data:json] directly. *)
+
+let task_id_required ~tool_name ~start_time : Tool_result.result =
+  Tool_result.make_err
+    ~tool_name
+    ~class_:Tool_result.Workflow_rejection
+    ~start_time
+    "task_id is required"
+
+let handle_run_init ~tool_name ~start_time ctx args : Tool_result.result =
   let task_id = get_string args "task_id" "" in
   if String.equal task_id "" then
-    (false, "task_id is required")
+    task_id_required ~tool_name ~start_time
   else
     let agent = get_string_opt args "agent_name" in
     match Run_eio.init ctx.config ~task_id ~agent_name:agent with
   | Ok run ->
-      (true, Yojson.Safe.to_string (Run_eio.run_record_to_json run))
+      Tool_result.make_ok ~tool_name ~start_time ~data:(Run_eio.run_record_to_json run) ()
   | Error e ->
-      (false, Printf.sprintf "Failed to init run: %s" e)
+      Tool_result.make_err
+        ~tool_name
+        ~class_:Tool_result.Runtime_failure
+        ~start_time
+        (Printf.sprintf "Failed to init run: %s" e)
 
-let handle_run_plan ctx args : tool_result =
+let handle_run_plan ~tool_name ~start_time ctx args : Tool_result.result =
   let task_id = get_string args "task_id" "" in
   if String.equal task_id "" then
-    (false, "task_id is required")
+    task_id_required ~tool_name ~start_time
   else
     let plan = get_string args "plan" "" in
     match Run_eio.update_plan ctx.config ~task_id ~content:plan with
   | Ok run ->
-      (true, Yojson.Safe.to_string (Run_eio.run_record_to_json run))
+      Tool_result.make_ok ~tool_name ~start_time ~data:(Run_eio.run_record_to_json run) ()
   | Error e ->
-      (false, Printf.sprintf "Failed to update run plan: %s" e)
+      Tool_result.make_err
+        ~tool_name
+        ~class_:Tool_result.Runtime_failure
+        ~start_time
+        (Printf.sprintf "Failed to update run plan: %s" e)
 
-let handle_run_log ctx args : tool_result =
+let handle_run_log ~tool_name ~start_time ctx args : Tool_result.result =
   let task_id = get_string args "task_id" "" in
   if String.equal task_id "" then
-    (false, "task_id is required")
+    task_id_required ~tool_name ~start_time
   else
     let note = get_string args "note" "" in
     match Run_eio.append_log ctx.config ~task_id ~note with
   | Ok entry ->
-      (true, Yojson.Safe.to_string (Run_eio.log_entry_to_json entry))
+      Tool_result.make_ok ~tool_name ~start_time ~data:(Run_eio.log_entry_to_json entry) ()
   | Error e ->
-      (false, Printf.sprintf "Failed to append run log: %s" e)
+      Tool_result.make_err
+        ~tool_name
+        ~class_:Tool_result.Runtime_failure
+        ~start_time
+        (Printf.sprintf "Failed to append run log: %s" e)
 
-let handle_run_deliverable ctx args : tool_result =
+let handle_run_deliverable ~tool_name ~start_time ctx args : Tool_result.result =
   let task_id = get_string args "task_id" "" in
   if String.equal task_id "" then
-    (false, "task_id is required")
+    task_id_required ~tool_name ~start_time
   else
     let deliverable = get_string args "deliverable" "" in
     match Run_eio.set_deliverable ctx.config ~task_id ~content:deliverable with
   | Ok run ->
-      (true, Yojson.Safe.to_string (Run_eio.run_record_to_json run))
+      Tool_result.make_ok ~tool_name ~start_time ~data:(Run_eio.run_record_to_json run) ()
   | Error e ->
-      (false, Printf.sprintf "Failed to set run deliverable: %s" e)
+      Tool_result.make_err
+        ~tool_name
+        ~class_:Tool_result.Runtime_failure
+        ~start_time
+        (Printf.sprintf "Failed to set run deliverable: %s" e)
 
-let handle_run_get ctx args : tool_result =
+let handle_run_get ~tool_name ~start_time ctx args : Tool_result.result =
   let task_id = get_string args "task_id" "" in
   if String.equal task_id "" then
-    (false, "task_id is required")
+    task_id_required ~tool_name ~start_time
   else
     match Run_eio.get ctx.config ~task_id with
-    | Ok json -> (true, Yojson.Safe.to_string json)
-    | Error e -> (false, Printf.sprintf "Failed to get run: %s" e)
+    | Ok json -> Tool_result.make_ok ~tool_name ~start_time ~data:json ()
+    | Error e ->
+        Tool_result.make_err
+          ~tool_name
+          ~class_:Tool_result.Runtime_failure
+          ~start_time
+          (Printf.sprintf "Failed to get run: %s" e)
 
-let handle_run_list ctx _args : tool_result =
+let handle_run_list ~tool_name ~start_time ctx _args : Tool_result.result =
   let json = Run_eio.list ctx.config in
-  (true, Yojson.Safe.to_string json)
+  Tool_result.make_ok ~tool_name ~start_time ~data:json ()
 
 (** {1 Dispatcher} *)
 
-let dispatch ctx ~name ~args : tool_result option =
+(* RFC-0189 PR-1b.6 — boundary projection lives here. Handlers above are
+   typed; external callers (mcp_server_eio_execute, tools.ml,
+   keeper_tag_dispatch) still consume Tool_result.result option. PR-1c will
+   move the Tool_dispatch.handler ABI itself to result, removing this
+   bridge. *)
+let dispatch ctx ~name ~args : Tool_result.result option =
+  let start = Time_compat.now () in
+  let lift r = Some r in
   match name with
-  | "masc_run_init" -> Some (handle_run_init ctx args)
-  | "masc_run_plan" -> Some (handle_run_plan ctx args)
-  | "masc_run_log" -> Some (handle_run_log ctx args)
-  | "masc_run_deliverable" -> Some (handle_run_deliverable ctx args)
-  | "masc_run_get" -> Some (handle_run_get ctx args)
-  | "masc_run_list" -> Some (handle_run_list ctx args)
+  | "masc_run_init" -> lift (handle_run_init ~tool_name:name ~start_time:start ctx args)
+  | "masc_run_plan" -> lift (handle_run_plan ~tool_name:name ~start_time:start ctx args)
+  | "masc_run_log" -> lift (handle_run_log ~tool_name:name ~start_time:start ctx args)
+  | "masc_run_deliverable" -> lift (handle_run_deliverable ~tool_name:name ~start_time:start ctx args)
+  | "masc_run_get" -> lift (handle_run_get ~tool_name:name ~start_time:start ctx args)
+  | "masc_run_list" -> lift (handle_run_list ~tool_name:name ~start_time:start ctx args)
   | _ -> None
 
 let schemas : Masc_domain.tool_schema list = [
@@ -225,6 +264,12 @@ After recording, the run shows as completed in masc_run_list and masc_run_get.";
 
 let read_only_tools = [ "masc_run_get"; "masc_run_list" ]
 
+let tool_required_permission = function
+  | "masc_run_get" | "masc_run_list" -> Some Masc_domain.CanReadState
+  | "masc_run_init" | "masc_run_plan" | "masc_run_log"
+  | "masc_run_deliverable" -> Some Masc_domain.CanBroadcast
+  | _ -> None
+
 let () =
   List.iter
     (fun (s : Masc_domain.tool_schema) ->
@@ -238,5 +283,6 @@ let () =
            ~handler_binding:Tag_dispatch
            ~is_read_only:is_ro
            ~is_idempotent:is_ro
+           ?required_permission:(tool_required_permission s.name)
            ()))
     schemas

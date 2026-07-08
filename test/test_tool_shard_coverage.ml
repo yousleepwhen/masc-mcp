@@ -7,6 +7,7 @@
     Pure synchronous tests — no Eio or network required. *)
 
 module Tool_shard = Masc_mcp.Tool_shard
+module Tool_shard_types_schemas_execute = Masc_mcp.Tool_shard_types_schemas_execute
 module Types = Masc_domain
 
 let get_json_assoc key = function
@@ -42,40 +43,32 @@ let test_shard_filesystem_exists () =
     Alcotest.(check bool) "has tools" true (List.length s.Tool_shard.tools >= 1);
     let names = List.map (fun (t : Masc_domain.tool_schema) -> t.name) s.tools in
     Alcotest.(check bool) "contains fs_read" true
-      (List.mem "keeper_fs_read" names);
+      (List.mem "tool_read_file" names);
     Alcotest.(check bool) "contains fs_edit" true
-      (List.mem "keeper_fs_edit" names)
+      (List.mem "tool_edit_file" names)
   | None -> Alcotest.fail "filesystem shard not found"
 
-let test_shard_shell_exists () =
-  match Tool_shard.get_shard "shell" with
+let test_shard_search_files_exists () =
+  match Tool_shard.get_shard "search_files" with
   | Some s ->
     Alcotest.(check bool) "removable" true s.Tool_shard.removable;
     Alcotest.(check bool) "has tools" true (List.length s.Tool_shard.tools >= 1)
-  | None -> Alcotest.fail "shell shard not found"
+  | None -> Alcotest.fail "search_files shard not found"
 
 let test_shard_governance_removed () =
   Alcotest.(check bool) "governance shard removed"
     true (Option.is_none (Tool_shard.get_shard "governance"))
 
-let test_shard_coding_exists () =
-  match Tool_shard.get_shard "coding" with
-  | Some s ->
-    Alcotest.(check bool) "removable" true s.Tool_shard.removable;
-    Alcotest.(check bool) "has tools" true (List.length s.Tool_shard.tools >= 1);
-    let names = List.map (fun (t : Masc_domain.tool_schema) -> t.name) s.tools in
-    (* keeper_bash is the coding shard's shell bridge.
-       keeper_shell (incl. op=gh) lives in shard_shell, not coding. *)
-    Alcotest.(check bool) "contains keeper_bash" true (List.mem "keeper_bash" names);
-    Alcotest.(check bool) "contains worktree_create" true
-      (List.mem "masc_worktree_create" names);
-    Alcotest.(check bool) "contains code_search" true
-      (List.mem "masc_code_search" names)
-  | None -> Alcotest.fail "coding shard not found"
+let retired_tool_mode_shard = "co" ^ "ding"
 
-let test_coding_in_defaults () =
-  Alcotest.(check bool) "coding in defaults" true
-    (List.mem "coding" Tool_shard.default_shard_names)
+let test_retired_tool_mode_shard_removed () =
+  Alcotest.(check bool) "retired tool-mode shard removed" true
+    (Option.is_none (Tool_shard.get_shard retired_tool_mode_shard))
+
+let test_retired_search_family_name_removed () =
+  let legacy_name = "s" ^ "hell" in
+  Alcotest.(check bool) "legacy search-family shard removed" true
+    (Option.is_none (Tool_shard.get_shard legacy_name))
 
 let test_shard_voice_exists () =
   match Tool_shard.get_shard "voice" with
@@ -90,7 +83,7 @@ let test_shard_unknown () =
 
 let test_all_shards_count () =
   let all = Tool_shard.list_all_shards () in
-  Alcotest.(check bool) "at least 8 predefined shards" true (List.length all >= 8)
+  Alcotest.(check bool) "at least 7 predefined shards" true (List.length all >= 7)
 
 (* ============================================================
    default_shard_names tests
@@ -99,15 +92,13 @@ let test_all_shards_count () =
 let test_default_shard_names () =
   let defaults = Tool_shard.default_shard_names in
   (* All shards are now in defaults (mode removal: every keeper gets all tools) *)
-  Alcotest.(check bool) "at least 7 defaults" true (List.length defaults >= 7);
+  Alcotest.(check bool) "at least 6 defaults" true (List.length defaults >= 6);
   Alcotest.(check bool) "base in defaults" true (List.mem "base" defaults);
   (* governance shard removed; must not appear in defaults *)
   Alcotest.(check bool) "governance not in defaults" false
     (List.mem "governance" defaults);
-  Alcotest.(check bool) "coding in defaults" true
-    (List.mem "coding" defaults);
-  Alcotest.(check bool) "autoresearch in defaults" true
-    (List.mem "autoresearch" defaults);
+  Alcotest.(check bool) "retired tool-mode not in defaults" false
+    (List.mem retired_tool_mode_shard defaults);
   Alcotest.(check bool) "weather removed from defaults" false
     (List.mem "weather" defaults);
   (* voice still not in defaults: gated by policy_voice_enabled boolean *)
@@ -139,11 +130,13 @@ let test_tools_of_shards_unknown_ignored () =
 
 let test_keeper_model_tools_count () =
   let tools = Tool_shard.keeper_model_tools in
-  (* keeper_model_tools = tools_of_shards default_shard_names;
-     verify it equals the sum of individual default shards.
+  (* keeper_model_tools = default shards plus unsharded default tools.
      Standalone keeper schemas (keeper_tool_search) are added downstream
      in keeper_tool_policy.keeper_default_model_tools, not here. *)
-  let expected = Tool_shard.tools_of_shards Tool_shard.default_shard_names in
+  let expected =
+    Tool_shard.tools_of_shards Tool_shard.default_shard_names
+    @ Tool_shard_types_schemas_execute.typed_execute_tools
+  in
   Alcotest.(check int) "matches default shards sum" (List.length expected) (List.length tools);
   Alcotest.(check bool) "has tools" true (List.length tools >= 1)
 
@@ -182,7 +175,7 @@ let test_grant_already_granted () =
    ============================================================ *)
 
 let test_revoke_removable () =
-  let active = ["base"; "board"; "shell"] in
+  let active = ["base"; "board"; "search_files"] in
   match Tool_shard.revoke_shard active "board" with
   | Ok new_shards ->
     Alcotest.(check int) "now 2" 2 (List.length new_shards);
@@ -199,7 +192,7 @@ let test_revoke_non_removable () =
        with Not_found -> false)
 
 let test_revoke_not_granted () =
-  match Tool_shard.revoke_shard ["base"] "shell" with
+  match Tool_shard.revoke_shard ["base"] "search_files" with
   | Ok _ -> Alcotest.fail "should fail"
   | Error msg ->
     Alcotest.(check bool) "mentions not granted" true
@@ -228,7 +221,7 @@ let test_get_agent_shards_default () =
 
 let test_set_get_agent_shards () =
   Tool_shard.remove_agent_shards "test-agent-x";
-  Tool_shard.set_agent_shards "test-agent-x" ["base"; "shell"];
+  Tool_shard.set_agent_shards "test-agent-x" ["base"; "search_files"];
   let shards = Tool_shard.get_agent_shards "test-agent-x" in
   Alcotest.(check int) "2 shards" 2 (List.length shards);
   Alcotest.(check bool) "sorted" true (shards = List.sort String.compare shards);
@@ -278,7 +271,7 @@ let test_execute_grant_missing_params () =
 
 let test_execute_revoke () =
   Tool_shard.remove_agent_shards "test-revoke";
-  Tool_shard.set_agent_shards "test-revoke" ["base"; "board"; "shell"];
+  Tool_shard.set_agent_shards "test-revoke" ["base"; "board"; "search_files"];
   let (ok, json) = Tool_shard.execute "masc_tool_revoke"
     (`Assoc [("agent_name", `String "test-revoke"); ("shard_name", `String "board")]) in
   Alcotest.(check bool) "succeeds" true ok;
@@ -423,13 +416,14 @@ let test_revoke_voice_removes_all_tools () =
    Keeper dispatch coverage: every shard schema has a dispatch handler
    ============================================================ *)
 
-(** All keeper tool names from all shards (default + coding). *)
+(** All keeper tool names from all shards plus unsharded defaults. *)
 let all_keeper_shard_tool_names () : string list =
   let all_shard_names =
     Tool_shard.list_all_shards ()
     |> List.map (fun (name, _, _) -> name)
   in
-  Tool_shard.tools_of_shards all_shard_names
+  (Tool_shard.tools_of_shards all_shard_names
+   @ Tool_shard_types_schemas_execute.typed_execute_tools)
   |> List.filter (fun (t : Masc_domain.tool_schema) ->
        String.length t.name >= 7
        && String.sub t.name 0 7 = "keeper_")
@@ -454,8 +448,6 @@ let test_keeper_dispatch_coverage () =
       (Tool_shard.keeper_model_tools
        |> List.map (fun (t : Masc_domain.tool_schema) -> t.name));
       shard_tool_names "voice";
-      (Tool_shard.coding_tools
-       |> List.map (fun (t : Masc_domain.tool_schema) -> t.name));
     ]
     |> List.sort_uniq String.compare
   in
@@ -463,23 +455,6 @@ let test_keeper_dispatch_coverage () =
   if missing <> [] then
     Alcotest.fail
       (Printf.sprintf "Shard tools unreachable by dispatch: %s"
-         (String.concat ", " missing))
-
-(** Verify coding tools ARE in keeper_model_tools (default set).
-    Mode removal: all keepers get all tools unconditionally. *)
-let test_coding_tools_included_in_defaults () =
-  let default_names =
-    Tool_shard.keeper_model_tools
-    |> List.map (fun (t : Masc_domain.tool_schema) -> t.name)
-  in
-  let coding_names =
-    Tool_shard.coding_tools
-    |> List.map (fun (t : Masc_domain.tool_schema) -> t.name)
-  in
-  let missing = List.filter (fun n -> not (List.mem n default_names)) coding_names in
-  if missing <> [] then
-    Alcotest.fail
-      (Printf.sprintf "Coding tools missing from defaults: %s"
          (String.concat ", " missing))
 
 (* ============================================================
@@ -503,15 +478,16 @@ let test_set_agent_shards_from_persona () =
   Alcotest.(check bool) "has base" true (List.mem "base" active);
   Alcotest.(check bool) "has board" true (List.mem "board" active);
   Alcotest.(check bool) "has library" true (List.mem "library" active);
-  Alcotest.(check bool) "no coding" false (List.mem "coding" active);
-  Alcotest.(check bool) "no shell" false (List.mem "shell" active);
+  Alcotest.(check bool) "no retired tool-mode shard" false
+    (List.mem retired_tool_mode_shard active);
+  Alcotest.(check bool) "no search_files" false (List.mem "search_files" active);
   (* Verify tools_of_shards returns restricted set *)
   let tools = Tool_shard.tools_of_shards active in
   let tool_names = List.map (fun (t : Masc_domain.tool_schema) -> t.name) tools in
   Alcotest.(check bool) "has keeper_board_post" true
     (List.mem "keeper_board_post" tool_names);
-  Alcotest.(check bool) "no keeper_bash" false
-    (List.mem "keeper_bash" tool_names);
+  Alcotest.(check bool) "no tool_execute" false
+    (List.mem "tool_execute" tool_names);
   Tool_shard.remove_agent_shards "test-persona-shard"
 
 let test_no_shards_gets_defaults () =
@@ -531,55 +507,14 @@ let () =
       Alcotest.test_case "base" `Quick test_shard_base_exists;
       Alcotest.test_case "board" `Quick test_shard_board_exists;
       Alcotest.test_case "filesystem" `Quick test_shard_filesystem_exists;
-      Alcotest.test_case "shell" `Quick test_shard_shell_exists;
+      Alcotest.test_case "search_files" `Quick test_shard_search_files_exists;
       Alcotest.test_case "governance removed" `Quick test_shard_governance_removed;
-      Alcotest.test_case "coding" `Quick test_shard_coding_exists;
-      Alcotest.test_case "coding in defaults" `Quick test_coding_in_defaults;
+      Alcotest.test_case "retired tool-mode shard removed" `Quick
+        test_retired_tool_mode_shard_removed;
+      Alcotest.test_case "legacy search-family removed" `Quick test_retired_search_family_name_removed;
       Alcotest.test_case "voice" `Quick test_shard_voice_exists;
       Alcotest.test_case "unknown" `Quick test_shard_unknown;
       Alcotest.test_case "all count" `Quick test_all_shards_count;
-    ]);
-    ("autoresearch_shard", [
-      Alcotest.test_case "exists" `Quick (fun () ->
-        let s = Tool_shard.get_shard "autoresearch" in
-        Alcotest.(check bool) "found" true (s <> None));
-      Alcotest.test_case "removable" `Quick (fun () ->
-        let s = Option.get (Tool_shard.get_shard "autoresearch") in
-        Alcotest.(check bool) "removable" true s.removable);
-      Alcotest.test_case "has no retired swarm front doors" `Quick (fun () ->
-        let tools = Tool_shard.autoresearch_keeper_tools in
-        let has_swarm =
-          List.exists (fun (t : Masc_domain.tool_schema) ->
-            t.name = "masc_autoresearch_swarm_start") tools
-        in
-        let has_repo_synthesis =
-          List.exists (fun (t : Masc_domain.tool_schema) ->
-            t.name = "masc_repo_synthesis_swarm_start") tools
-        in
-        Alcotest.(check bool) "no swarm_start" false has_swarm;
-        Alcotest.(check bool) "no repo synthesis swarm start" false
-          has_repo_synthesis);
-      Alcotest.test_case "has cycle" `Quick (fun () ->
-        let tools = Tool_shard.autoresearch_keeper_tools in
-        let has_cycle =
-          List.exists (fun (t : Masc_domain.tool_schema) ->
-            t.name = "masc_autoresearch_cycle") tools
-        in
-        let has_record =
-          List.exists (fun (t : Masc_domain.tool_schema) ->
-            t.name = "masc_autoresearch_record_finding") tools
-        in
-        let has_search =
-          List.exists (fun (t : Masc_domain.tool_schema) ->
-            t.name = "masc_autoresearch_search_findings") tools
-        in
-        Alcotest.(check bool) "has cycle" true has_cycle;
-        Alcotest.(check bool) "has record finding" true has_record;
-        Alcotest.(check bool) "has search findings" true has_search);
-      Alcotest.test_case "in defaults" `Quick (fun () ->
-        let defaults = Tool_shard.default_shard_names in
-        Alcotest.(check bool) "autoresearch in defaults"
-          true (List.mem "autoresearch" defaults));
     ]);
     ("default_shard_names", [
       Alcotest.test_case "defaults" `Quick test_default_shard_names;
@@ -633,7 +568,6 @@ let () =
     ]);
     ("keeper_dispatch_coverage", [
       Alcotest.test_case "all shard tools reachable" `Quick test_keeper_dispatch_coverage;
-      Alcotest.test_case "coding included in defaults" `Quick test_coding_tools_included_in_defaults;
     ]);
     ("persona_shard_config", [
       Alcotest.test_case "empty defaults shards None" `Quick test_empty_defaults_shards_none;

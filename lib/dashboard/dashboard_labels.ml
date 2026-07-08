@@ -45,7 +45,8 @@ let parse_iso_timestamp (s : string) : float option =
             let mm = String.sub raw 4 2 in
             if all_digits hh && all_digits mm then
               match int_of_string_opt hh, int_of_string_opt mm with
-              | Some h, Some m -> Some (sign * ((h * 3600) + (m * 60)))
+              | Some h, Some m ->
+                Some (sign * ((h * Masc_time_constants.hour_int) + (m * 60)))
               | _ -> None
             else
               None
@@ -54,7 +55,8 @@ let parse_iso_timestamp (s : string) : float option =
             let mm = String.sub raw 3 2 in
             if all_digits hh && all_digits mm then
               match int_of_string_opt hh, int_of_string_opt mm with
-              | Some h, Some m -> Some (sign * ((h * 3600) + (m * 60)))
+              | Some h, Some m ->
+                Some (sign * ((h * Masc_time_constants.hour_int) + (m * 60)))
               | _ -> None
             else
               None
@@ -147,8 +149,8 @@ let format_elapsed now timestamp fallback =
   | Some ts ->
       let elapsed = now -. ts in
       if elapsed < 60.0 then Printf.sprintf "%.0fs ago" elapsed
-      else if elapsed < 3600.0 then Printf.sprintf "%.0fm ago" (elapsed /. 60.0)
-      else Printf.sprintf "%.1fh ago" (elapsed /. 3600.0)
+      else if elapsed < Masc_time_constants.hour then Printf.sprintf "%.0fm ago" (elapsed /. 60.0)
+      else Printf.sprintf "%.1fh ago" (elapsed /. Masc_time_constants.hour)
   | None -> fallback
 
 (* ===== Agent Status Translation ===== *)

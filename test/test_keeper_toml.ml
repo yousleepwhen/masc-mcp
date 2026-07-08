@@ -3,7 +3,7 @@ open Alcotest
 module TL = Masc_mcp.Keeper_toml_loader
 module KTP = Masc_mcp.Keeper_types_profile
 module KPA = Masc_mcp.Keeper_persona_authoring
-module KEP = Masc_mcp.Keeper_exec_persona
+module KEP = Masc_mcp.Agent_tool_persona_runtime
 module Runtime = Masc_mcp.Server_routes_http_runtime
 
 let contains_substring s needle =
@@ -453,9 +453,8 @@ proactive_enabled = true
 proactive_idle_sec = 300
 proactive_cooldown_sec = 60
 room_signal_prompt_enabled = true
-policy_voice_enabled = false
 autoboot_enabled = false
-github_identity = "anyang-keepers"
+repo_cli_identity = "anyang-keepers"
 git_identity_mode = "keeper_alias"
 active_goal_ids = ["goal-runtime", "goal-masc-mcp"]
 |} in
@@ -474,10 +473,9 @@ active_goal_ids = ["goal-runtime", "goal-masc-mcp"]
       check (option bool) "proactive" (Some true) d.proactive_enabled;
       check (option bool) "room signal prompt" (Some true)
         d.room_signal_prompt_enabled;
-      check (option bool) "policy_voice" (Some false) d.policy_voice_enabled;
       check (option bool) "autoboot_enabled" (Some false) d.autoboot_enabled;
-      check (option string) "github_identity" (Some "anyang-keepers")
-        d.github_identity;
+      check (option string) "repo_cli_identity" (Some "anyang-keepers")
+        d.repo_cli_identity;
       check (option string) "git_identity_mode" (Some "keeper_alias")
         d.git_identity_mode;
       check (option (list string)) "active_goal_ids"
@@ -561,7 +559,7 @@ let test_profile_rejects_removed_also_allow_alias () =
   let input = {|
 [keeper]
 goal = "test"
-also_allow = ["keeper_shell"]
+also_allow = ["tool_search_files"]
 |} in
   match TL.parse_toml input with
   | Error e -> fail e
@@ -672,45 +670,39 @@ let test_load_keeper_toml_inherits_base_defaults () =
     (fun () ->
       write_file base_path {|
 [keeper]
-cascade_name = "big_three"
+cascade_name = "route.keeper_turn"
 sandbox_profile = "docker"
 network_mode = "inherit"
-work_discovery_enabled = true
-github_identity = "anyang-keepers"
-git_identity_mode = "github_identity"
+repo_cli_identity = "anyang-keepers"
+git_identity_mode = "repo_cli_identity"
 |};
       write_file child_path {|
 [keeper]
 base = "base.toml"
 persona_name = "sangsu"
-work_discovery_sources = ["unclaimed_tasks"]
 
 [keeper.tool_access]
 kind = "preset"
-preset = "coding"
+preset = "delivery"
 |};
       match KTP.load_keeper_toml child_path with
       | Error e -> fail e
       | Ok (name, defaults) ->
           check string "name from filename" "sangsu" name;
-          check (option string) "base cascade" (Some "big_three")
+          check (option string) "base cascade" (Some "route.keeper_turn")
             defaults.cascade_name;
           check (option string) "base sandbox" (Some "docker")
             (Option.map KTP.sandbox_profile_to_string defaults.sandbox_profile);
           check (option string) "base network" (Some "inherit")
             (Option.map KTP.network_mode_to_string defaults.network_mode);
-          check (option bool) "base work discovery" (Some true)
-            defaults.work_discovery_enabled;
           check (option string) "base github identity"
-            (Some "anyang-keepers") defaults.github_identity;
+            (Some "anyang-keepers") defaults.repo_cli_identity;
           check (option string) "base git identity mode"
-            (Some "github_identity") defaults.git_identity_mode;
-          check (option string) "child preset wins" (Some "coding")
+            (Some "repo_cli_identity") defaults.git_identity_mode;
+          check (option string) "child preset wins" (Some "delivery")
             defaults.tool_preset;
           check (option string) "child preset source" (Some "toml")
-            defaults.tool_preset_source;
-          check (option (list string)) "child work discovery sources"
-            (Some [ "unclaimed_tasks" ]) defaults.work_discovery_sources)
+            defaults.tool_preset_source)
 
 (* ================================================================ *)
 (* Discovery tests                                                   *)
@@ -823,10 +815,10 @@ let with_personas_dir f =
   Fun.protect
     ~finally:(fun () ->
       restore_env "MASC_PERSONAS_DIR" original;
-      Masc_mcp.Config_dir_resolver.reset ())
+      Config_dir_resolver.reset ())
     (fun () ->
       Unix.putenv "MASC_PERSONAS_DIR" personas_dir;
-      Masc_mcp.Config_dir_resolver.reset ();
+      Config_dir_resolver.reset ();
       f personas_dir)
 
 let with_config_dir f =
@@ -835,30 +827,27 @@ let with_config_dir f =
   Fun.protect
     ~finally:(fun () ->
       restore_env "MASC_CONFIG_DIR" original;
-      Masc_mcp.Config_dir_resolver.reset ())
+      Config_dir_resolver.reset ())
     (fun () ->
       Unix.putenv "MASC_CONFIG_DIR" config_dir;
-      Masc_mcp.Config_dir_resolver.reset ();
+      Config_dir_resolver.reset ();
       f config_dir)
 
-(* Legacy allowed_providers is accepted for compatibility but ignored.
-   Provider ownership now lives with OAS cascade resolution. *)
-
-let test_profile_ignores_legacy_allowed_providers () =
+let test_profile_rejects_legacy_allowed_providers () =
   let input = {|
 [keeper]
 goal = "test"
 allowed_providers = ["Ollama", "GLM"]
-cascade_name = "big_three"
+cascade_name = "primary"
 |} in
   match TL.parse_toml input with
   | Error e -> fail e
   | Ok doc ->
     (match KTP.profile_defaults_of_toml doc with
-     | Error e -> fail e
-     | Ok d ->
-       check (option string) "cascade preserved"
-         (Some "big_three") d.cascade_name)
+     | Ok _ -> fail "expected removed TOML key error"
+     | Error msg ->
+       check bool "mentions removed allowed_providers key" true
+         (contains_substring msg "keeper.allowed_providers"))
 
 let test_profile_max_turns_overrides () =
   let input = {|
@@ -940,7 +929,7 @@ max_turns_per_call_scheduled_autonomous = 0
        check int "zero autonomous falls back" 10
          (KTP.effective_max_turns_per_call_scheduled_autonomous d))
 
-let test_profile_normalizes_legacy_keeper_cascade_alias () =
+let test_profile_rejects_removed_keeper_cascade_alias () =
   let input = {|
 [keeper]
 goal = "test"
@@ -950,11 +939,15 @@ cascade_name = "oas-coding_first"
   | Error e -> fail e
   | Ok doc ->
     (match KTP.profile_defaults_of_toml doc with
-     | Error e -> fail e
-     | Ok d ->
-       check (option string) "legacy keeper cascade normalized"
-         (Some Masc_mcp.Keeper_config.default_cascade_name)
-         d.cascade_name)
+     | Error e ->
+       check bool "removed alias rejected" true
+         (try
+            ignore
+              (Str.search_forward (Str.regexp_string "invalid cascade_name") e 0);
+            true
+          with
+          | Not_found -> false)
+     | Ok _ -> fail "expected removed keeper cascade alias rejection")
 
 let test_persona_resolver_defaults_to_research_tool_access () =
   with_personas_dir @@ fun personas_dir ->
@@ -971,7 +964,7 @@ let test_persona_resolver_defaults_to_research_tool_access () =
 }
 |};
   match
-    Masc_mcp.Keeper_exec_persona.resolved_keeper_args_from_persona
+    Masc_mcp.Agent_tool_persona_runtime.resolved_keeper_args_from_persona
       (`Assoc [ ("persona_name", `String "probe") ])
   with
   | Error e -> fail ("resolver failed: " ^ e)
@@ -1107,7 +1100,7 @@ let test_persona_resolver_ignores_non_public_social_model_arg () =
 }
 |};
   match
-    Masc_mcp.Keeper_exec_persona.resolved_keeper_args_from_persona
+    Masc_mcp.Agent_tool_persona_runtime.resolved_keeper_args_from_persona
       (`Assoc
         [
           ("persona_name", `String "probe");
@@ -1136,7 +1129,7 @@ let test_persona_resolver_preserves_autoboot_enabled_arg () =
 }
 |};
   match
-    Masc_mcp.Keeper_exec_persona.resolved_keeper_args_from_persona
+    Masc_mcp.Agent_tool_persona_runtime.resolved_keeper_args_from_persona
       (`Assoc
         [
           ("persona_name", `String "probe");
@@ -1169,7 +1162,7 @@ let test_persona_resolver_preserves_canonical_tool_access_and_allowed_paths () =
       (Masc_mcp.Keeper_types.Custom [ "masc_status" ])
   in
   match
-    Masc_mcp.Keeper_exec_persona.resolved_keeper_args_from_persona
+    Masc_mcp.Agent_tool_persona_runtime.resolved_keeper_args_from_persona
       (`Assoc
         [
           ("persona_name", `String "probe");
@@ -1210,7 +1203,6 @@ let test_persona_resolver_renders_durable_keeper_toml () =
         ("mid_goal", `String "mid");
         ("long_goal", `String "long");
         ("instructions", `String "quote: \"ok\"");
-        ("policy_voice_enabled", `Bool false);
         ("autoboot_enabled", `Bool false);
         ("mention_targets", `List [ `String "probe"; `String "@probe" ]);
         ("proactive_enabled", `Bool true);
@@ -1482,14 +1474,14 @@ let test_detect_unknown_keys_empty_when_all_canonical () =
 goal = "canonical"
 mention_targets = ["a", "b"]
 autoboot_enabled = false
-cascade_name = "big_three"
-github_identity = "anyang-keepers"
+cascade_name = "primary"
+repo_cli_identity = "anyang-keepers"
 git_identity_mode = "keeper_alias"
 active_goal_ids = ["goal-runtime"]
 
 [keeper.tool_access]
 kind = "preset"
-preset = "coding"
+preset = "delivery"
 also_allow = ["x"]
 |} in
   match TL.parse_toml input with
@@ -1520,7 +1512,7 @@ goal = "g"
 
 [keeper.tool_access]
 kind = "preset"
-preset = "coding"
+preset = "delivery"
 |} in
   match TL.parse_toml input with
   | Error e -> fail e
@@ -1550,6 +1542,7 @@ persona_name = "analyst"
 OAS_CLAUDE_STRICT_MCP = "1"
 OAS_GEMINI_NO_MCP = "1"
 OAS_CODEX_CONFIG = "mcp_servers={}"
+MASC_KEEPER_OAS_UNIFIED_MAX_TOKENS = 8192
 |} in
   match TL.parse_toml input with
   | Error e -> fail e
@@ -1557,13 +1550,38 @@ OAS_CODEX_CONFIG = "mcp_servers={}"
     match KTP.profile_defaults_of_toml doc with
     | Error e -> fail e
     | Ok d ->
-      check int "oas_env count" 3 (List.length d.oas_env);
+      check int "oas_env count" 4 (List.length d.oas_env);
       check string "strict_mcp value"
         "1" (List.assoc "OAS_CLAUDE_STRICT_MCP" d.oas_env);
       check string "no_mcp value"
         "1" (List.assoc "OAS_GEMINI_NO_MCP" d.oas_env);
       check string "codex_config value"
-        "mcp_servers={}" (List.assoc "OAS_CODEX_CONFIG" d.oas_env)
+        "mcp_servers={}" (List.assoc "OAS_CODEX_CONFIG" d.oas_env);
+      check string "unified max tokens value"
+        "8192" (List.assoc "MASC_KEEPER_OAS_UNIFIED_MAX_TOKENS" d.oas_env);
+      check (option int) "unified max tokens override"
+        (Some 8192)
+        (KTP.unified_max_tokens_override_of_oas_env d.oas_env)
+
+let test_oas_env_rejects_legacy_unified_max_tokens_alias () =
+  let input = {|
+[keeper]
+persona_name = "analyst"
+[keeper.oas_env]
+MASC_KEEPER_UNIFIED_MAX_TOKENS = 4096
+|} in
+  match TL.parse_toml input with
+  | Error e -> fail e
+  | Ok doc ->
+    match KTP.profile_defaults_of_toml doc with
+    | Error e -> fail e
+    | Ok d ->
+      check int "legacy oas_env count" 0 (List.length d.oas_env);
+      check bool "legacy unified max tokens dropped" false
+        (List.mem_assoc "MASC_KEEPER_UNIFIED_MAX_TOKENS" d.oas_env);
+      check (option int) "legacy unified max tokens override"
+        None
+        (KTP.unified_max_tokens_override_of_oas_env d.oas_env)
 
 let test_keeper_oas_context_demotes_gemini_no_mcp_to_plan () =
   let defaults =
@@ -1594,8 +1612,8 @@ let test_keeper_oas_context_preserves_explicit_gemini_approval_mode () =
     ctx.gemini_approval_mode_derived
 
 let test_oas_env_drops_non_oas_prefix () =
-  (* Guards against ambient env injection via keeper TOML: keys that
-     don't start with OAS_(CLAUDE|CODEX|GEMINI)_ are silently dropped. *)
+  (* Guards against ambient env injection via keeper TOML: arbitrary keys
+     outside the audited allowlist are silently dropped. *)
   let input = {|
 [keeper]
 persona_name = "analyst"
@@ -1603,6 +1621,7 @@ persona_name = "analyst"
 PATH = "/evil/bin:/usr/bin"
 LD_PRELOAD = "/tmp/hack.so"
 OAS_CLAUDE_STRICT_MCP = "1"
+MASC_KEEPER_AUTONOMOUS_MAX_TOKENS = "9999"
 RANDOM_VAR = "nope"
 |} in
   match TL.parse_toml input with
@@ -1614,6 +1633,8 @@ RANDOM_VAR = "nope"
       check int "only OAS_* survives" 1 (List.length d.oas_env);
       check bool "PATH dropped" false (List.mem_assoc "PATH" d.oas_env);
       check bool "LD_PRELOAD dropped" false (List.mem_assoc "LD_PRELOAD" d.oas_env);
+      check bool "unlisted keeper key dropped" false
+        (List.mem_assoc "MASC_KEEPER_AUTONOMOUS_MAX_TOKENS" d.oas_env);
       check bool "RANDOM_VAR dropped" false (List.mem_assoc "RANDOM_VAR" d.oas_env)
 
 let test_oas_env_absent_means_empty () =
@@ -1764,6 +1785,15 @@ legacy_scope = "removed"
   let request = Httpun.Request.create `GET "/health" in
   let json = Runtime.make_health_json request in
   let open Yojson.Safe.Util in
+  let listener = json |> member "http_listener" in
+  check bool "health exposes http listener diagnostics" true
+    (match listener with `Assoc _ -> true | _ -> false);
+  check bool "health listener status is surfaced" true
+    (match listener |> member "status" with `String _ -> true | _ -> false);
+  check bool "health listener active connections surfaced" true
+    (match listener |> member "active_connections" with
+    | `Int _ -> true
+    | _ -> false);
   check int "unknown key count" 1
     (json |> member "keeper_config_unknown_key_count" |> to_int);
   check string "schema status" "blocked"
@@ -1795,6 +1825,27 @@ legacy_scope = "removed"
           (List.length rows)));
   check (float 0.0001) "health scan does not increment warning metric"
     before_unknown_metric (unknown_metric ())
+
+let test_health_json_build_exposes_runtime_binary_identity () =
+  with_config_dir @@ fun _config_dir ->
+  let request = Httpun.Request.create `GET "/health" in
+  let json = Runtime.make_health_json request in
+  let open Yojson.Safe.Util in
+  let build = json |> member "build" in
+  check bool "build binary version populated" true
+    (String.length (build |> member "binary_version" |> to_string) > 0);
+  check bool "build commit source field present" true
+    (match build |> member "commit_source" with `Null | `String _ -> true | _ -> false);
+  check bool "build binary commit field present" true
+    (match build |> member "binary_commit" with `Null | `String _ -> true | _ -> false);
+  check bool "build repo head commit field present" true
+    (match build |> member "repo_head_commit" with `Null | `String _ -> true | _ -> false);
+  check bool "build executable path populated" true
+    (String.length (build |> member "executable_path" |> to_string) > 0);
+  check bool "build executable dir populated" true
+    (String.length (build |> member "executable_dir" |> to_string) > 0);
+  check bool "build repo_root field present" true
+    (match build |> member "repo_root" with `Null | `String _ -> true | _ -> false)
 
 let test_unknown_toml_warning_key_normalizes_unknown_order () =
   let path =
@@ -1837,7 +1888,7 @@ let test_unknown_toml_warning_key_cache_is_bounded () =
          [ "keeper.typo_field" ])
   done;
   let matching =
-    Atomic.get KTP.unknown_keeper_toml_warning_keys
+    KTP.current_unknown_keeper_toml_warning_keys ()
     |> List.filter (string_starts_with ~prefix)
   in
   check bool "warning cache stays bounded for this prefix" true
@@ -1921,10 +1972,10 @@ let () =
             test_profile_rejects_removed_also_allow_alias;
           test_case "rejects removed initiative keys" `Quick
             test_profile_rejects_removed_initiative_keys;
-          test_case "legacy allowed_providers ignored" `Quick
-            test_profile_ignores_legacy_allowed_providers;
-          test_case "legacy keeper cascade alias normalized" `Quick
-            test_profile_normalizes_legacy_keeper_cascade_alias;
+          test_case "legacy allowed_providers rejected" `Quick
+            test_profile_rejects_legacy_allowed_providers;
+          test_case "removed keeper cascade alias rejected" `Quick
+            test_profile_rejects_removed_keeper_cascade_alias;
           test_case "max_turns overrides parsed and applied" `Quick
             test_profile_max_turns_overrides;
           test_case "max_turns defaults when absent" `Quick
@@ -1954,6 +2005,8 @@ let () =
             test_keeper_toml_unknown_keys_in_dir_reports_files;
           test_case "health JSON surfaces unknown keys" `Quick
             test_health_json_surfaces_keeper_toml_unknown_keys;
+          test_case "health JSON build exposes runtime binary identity" `Quick
+            test_health_json_build_exposes_runtime_binary_identity;
           test_case "unknown TOML warning key normalizes order" `Quick
             test_unknown_toml_warning_key_normalizes_unknown_order;
           test_case "unknown TOML warning key uses full path not basename" `Quick
@@ -1965,9 +2018,11 @@ let () =
         [
           test_case "parses allowed OAS_* keys" `Quick
             test_oas_env_parses_allowed_keys;
-          test_case "demotes Gemini no-MCP runs to plan approval mode" `Quick
+          test_case "rejects legacy unified max tokens alias" `Quick
+            test_oas_env_rejects_legacy_unified_max_tokens_alias;
+          test_case "demotes Provider_f no-MCP runs to plan approval mode" `Quick
             test_keeper_oas_context_demotes_gemini_no_mcp_to_plan;
-          test_case "preserves explicit Gemini approval mode" `Quick
+          test_case "preserves explicit Provider_f approval mode" `Quick
             test_keeper_oas_context_preserves_explicit_gemini_approval_mode;
           test_case "drops non-OAS_* keys (ambient injection guard)" `Quick
             test_oas_env_drops_non_oas_prefix;

@@ -59,37 +59,38 @@ val body_with_canonical_http_actor :
   string
 val validate_session_requirement :
   session_was_provided:bool -> string -> (unit, string) result
+val validate_session_known :
+  session_was_provided:bool ->
+  is_known:bool ->
+  string ->
+  (unit, string) result
+val is_known_session : string -> bool
+val body_tools_call_name : string -> string option
 val protocol_version_from_body : string -> string option
 val get_session_id_query : string -> string option
 val get_header_any_case : Httpun.Headers.t -> string -> string option
 val get_cookie_value : Httpun.Request.t -> string -> string option
 val get_session_id_any : Httpun.Request.t -> string option
-val legacy_messages_endpoint_url : Httpun.Request.t -> string -> string
 val get_protocol_version : Httpun.Request.t -> string
 val validate_protocol_version_continuity :
   session_id:string -> Httpun.Request.t -> (unit, string) result
 val get_protocol_version_for_session :
   ?session_id:string -> Httpun.Request.t -> string
 val request_force_json_response : Httpun.Request.t -> bool
-val allow_legacy_accept : bool
 val classify_mcp_accept :
   Httpun.Request.t -> Mcp_transport_protocol.Http_negotiation.accept_mode
-val classify_mcp_accept_for_body :
-  Httpun.Request.t -> string -> Mcp_transport_protocol.Http_negotiation.accept_mode
 val should_use_sse_for_body :
   Httpun.Request.t ->
   string ->
   Mcp_transport_protocol.Http_negotiation.accept_mode ->
   bool
-val legacy_accept_warning_headers :
-  Mcp_transport_protocol.Http_negotiation.accept_mode -> (string * string) list
-val legacy_transport_deprecation_headers : (string * string) list
 val force_json_response : bool
 val get_last_event_id : Httpun.Request.t -> int option
 val mcp_headers : string -> string -> (string * string) list
 val json_headers :
   deps:deps -> string -> string -> string -> (string * string) list
-val check_sse_connect_guard : string -> (unit, string * float) result
+val check_sse_connect_guard
+  : string -> (unit, Sse_reject_reason.t * float) result
 val stop_sse_session : string -> unit
 val is_active_sse_session : string -> bool
 val reap_stale_guards : unit -> int
@@ -102,15 +103,12 @@ val handle_post_mcp :
   unit
 val handle_get_mcp :
   deps:deps ->
-  ?legacy_messages_endpoint:(string -> string) ->
   ?profile:tool_profile ->
   ?sse_kind:Sse.session_kind ->
   Httpun.Request.t ->
   Httpun.Reqd.t ->
   unit
 val handle_get_operator_mcp :
-  deps:deps -> Httpun.Request.t -> Httpun.Reqd.t -> unit
-val handle_post_messages :
   deps:deps -> Httpun.Request.t -> Httpun.Reqd.t -> unit
 val handle_delete_mcp :
   deps:deps ->

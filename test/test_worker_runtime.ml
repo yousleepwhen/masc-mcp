@@ -44,7 +44,7 @@ let make_config_root root =
   mkdir_p (Filename.concat config "prompts");
   mkdir_p (Filename.concat config "keepers");
   mkdir_p (Filename.concat config "personas");
-  write_file (Filename.concat config "cascade.json") "{}";
+  write_file (Filename.concat config "cascade.toml") "";
   config
 
 (* OCaml stdlib lacks Unix.unsetenv; putenv name "" is only an
@@ -101,13 +101,13 @@ let test_worker_runtime_config_prefers_env_override () =
 }|};
   with_env "MASC_CONFIG_DIR" (Some config_dir) @@ fun () ->
   with_env "MASC_WORKER_RUNTIME_BACKEND" None @@ fun () ->
-  Lib.Config_dir_resolver.reset ();
+  Config_dir_resolver.reset ();
   Lib.Worker_runtime_config.reset ();
   check string "file config enables docker backend" "docker"
     (Lib.Worker_execution_backend.to_string
        (Lib.Worker_runtime_config.backend ()));
   with_env "MASC_WORKER_RUNTIME_BACKEND" (Some "local_playground") @@ fun () ->
-  Lib.Config_dir_resolver.reset ();
+  Config_dir_resolver.reset ();
   Lib.Worker_runtime_config.reset ();
   check string "env override forces local backend" "local_playground"
     (Lib.Worker_execution_backend.to_string
@@ -154,31 +154,13 @@ let test_worker_runtime_invalid_config_fails_closed () =
     {|{ "worker_spawn": { "backend": "docker", |};
   with_env "MASC_CONFIG_DIR" (Some config_dir) @@ fun () ->
   with_env "MASC_WORKER_RUNTIME_BACKEND" None @@ fun () ->
-  Lib.Config_dir_resolver.reset ();
+  Config_dir_resolver.reset ();
   Lib.Worker_runtime_config.reset ();
   check string "malformed config resolves to fail-closed docker backend" "docker"
     (Lib.Worker_execution_backend.to_string
        (Lib.Worker_runtime_config.backend ()));
   check string "malformed config clears docker image" ""
     (Lib.Worker_runtime_config.docker_image ())
-
-let test_rewrite_custom_model_label_for_container () =
-  let rewritten =
-    Lib.Worker_runtime_docker.rewrite_model_label_for_container
-      "custom:qwen-test@http://127.0.0.1:19001"
-  in
-  check string "loopback custom label rewritten to host alias"
-    "custom:qwen-test@http://host.docker.internal:19001" rewritten
-
-let test_run_process_with_timeout_returns_124_on_timeout () =
-  with_eio @@ fun env ->
-  let result =
-    Lib.Worker_runtime_docker.run_process_with_timeout
-      ~clock_opt:(Some (Eio.Stdenv.clock env)) ~timeout_sec:1
-      ~prog:"/bin/sh" ~argv:[ "/bin/sh"; "-c"; "trap '' TERM; kill -STOP $$" ]
-      ~env:(Unix.environment ()) ()
-  in
-  check int "timeout exit code" 124 result.exit_code
 
 let test_run_worker_oas_rejects_invalid_explicit_model_label () =
   with_temp_dir "worker-runtime-local" @@ fun root ->
@@ -213,11 +195,7 @@ let test_run_worker_oas_rejects_invalid_explicit_model_label () =
           fail "expected invalid explicit model label to fail before execution"
       | Error err ->
           check bool "mentions rejected label" true
-            (String.contains err 'n' && String.contains err '-');
-          check bool "does not use removed team-session stub" false
-            (Astring.String.is_infix
-               ~affix:"Worker_run_once removed (team session layer)"
-               err))
+            (String.contains err 'n' && String.contains err '-'))
 
 let test_worker_execution_spec_rejects_removed_fields () =
   let json =
@@ -225,7 +203,7 @@ let test_worker_execution_spec_rejects_removed_fields () =
       {|{
   "base_path": "/tmp/base",
   "worker_name": "worker",
-  "model_label": "custom:qwen@http://127.0.0.1:19001",
+  "model_label": "custom:provider_h@http://127.0.0.1:19001",
   "runtime_backend": "docker",
   "prompt": "hello",
   "timeout_sec": 30,
@@ -253,12 +231,6 @@ let () =
       ( "fail_closed",
         [ test_case "malformed worker runtime config fails closed" `Quick
             test_worker_runtime_invalid_config_fails_closed ] );
-      ( "rewrites",
-        [ test_case "custom loopback model label rewritten for container" `Quick
-            test_rewrite_custom_model_label_for_container ] );
-      ( "process_timeout",
-        [ test_case "timeout maps to exit code 124" `Quick
-            test_run_process_with_timeout_returns_124_on_timeout ] );
       ( "local_runtime",
         [ test_case "invalid explicit model label fails before local worker execution"
             `Quick

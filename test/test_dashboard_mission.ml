@@ -73,7 +73,7 @@ let write_pending_confirm config _session_id =
 
 let seed_room config session_id =
   ignore (Lib.Coord.init config ~agent_name:(Some "fixture-root"));
-  ignore (Lib.Coord.join config ~agent_name:"team-session-local64-smoke"
+  ignore (Lib.Coord.join config ~agent_name:"mission-local64-smoke"
             ~capabilities:[ "operator"; "fixture"; "local64" ] ());
   ignore (Lib.Coord.join config ~agent_name:"llama-local-alpha"
             ~capabilities:[ "worker"; "local64"; "manager" ] ());
@@ -84,7 +84,7 @@ let seed_room config session_id =
   ignore (Lib.Coord.join config ~agent_name:"llama-local-delta"
             ~capabilities:[ "worker"; "local64"; "observer" ] ());
   ignore
-    (Lib.Coord.broadcast config ~from_agent:"team-session-local64-smoke"
+    (Lib.Coord.broadcast config ~from_agent:"mission-local64-smoke"
        ~content:"@llama-local-alpha recover failed worker coverage");
   ignore
     (Lib.Coord.broadcast config ~from_agent:"llama-local-alpha"
@@ -361,9 +361,9 @@ let test_dashboard_mission_keeper_tool_audit_uses_decision_log () =
       with_test_env @@ fun ~clock:_ ~sw:_ ->
       let config = Coord_utils.default_config dir in
       Coord_utils.mkdir_p
-        (Filename.dirname (Lib.Keeper_types.keeper_decision_log_path config keeper_name));
+        (Filename.dirname (Lib.Keeper_types_support.keeper_decision_log_path config keeper_name));
       Fs_compat.append_jsonl
-        (Lib.Keeper_types.keeper_decision_log_path config keeper_name)
+        (Lib.Keeper_types_support.keeper_decision_log_path config keeper_name)
         (`Assoc
           [
             ("ts", `String (Masc_domain.now_iso ()));
@@ -435,7 +435,7 @@ let test_dashboard_mission_keeper_brief_registry_lookup_scoped_to_base_path () =
       Unix.mkdir dir_z 0o755;
       Masc_test_deps.init_keeper_tool_registry ();
       let policy_base_path = Masc_test_deps.find_project_root () in
-      ignore (Result.get_ok (Lib.Keeper_exec_tools.init_policy_config ~base_path:policy_base_path));
+      ignore (Result.get_ok (Lib.Agent_tool_dispatch_runtime.init_policy_config ~base_path:policy_base_path));
       let config_a = Coord_utils.default_config dir_a in
       let config_z = Coord_utils.default_config dir_z in
       ignore

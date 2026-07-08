@@ -1,6 +1,10 @@
 open Masc_mcp
 
+module KH = Keeper_heartbeat_loop
+module KFP = Keeper_failure_policy
 module KK = Keeper_keepalive
+module KTD = Keeper_turn_driver
+module EC = Keeper_error_classify
 
 let with_reset keeper f =
   KK.reset_budget_exhaustion ~keeper_name:keeper;
@@ -42,8 +46,109 @@ let test_reset_clears () =
   Alcotest.(check int) "reset clears" 0
     (KK.peek_budget_exhaustion_for_test ~keeper_name:"reset")
 
+let test_strike_limit_is_soft_backoff () =
+  (match KK.classify_provider_timeout_strike ~strikes:1 with
+   | KK.Provider_timeout_warn -> ()
+   | KK.Provider_timeout_soft_backoff -> failwith "strike 1 should warn");
+  (match
+     KK.classify_provider_timeout_strike
+       ~strikes:KK.provider_timeout_strike_limit
+   with
+   | KK.Provider_timeout_soft_backoff -> ()
+   | KK.Provider_timeout_warn ->
+     failwith "strike limit should soft-backoff, not crash")
+
+let provider_timeout_error ~phase =
+  KTD.sdk_error_of_masc_internal_error
+    (KTD.Provider_timeout
+       { budget_sec = 90.0
+       ; keeper_turn_timeout_sec = 1200.0
+       ; estimated_input_tokens = 10_000
+       ; source = "test"
+       ; remaining_turn_budget_sec = Some 42.0
+       ; min_required_sec = 15.0
+       ; phase
+       })
+
+let turn_timeout_error () =
+  KTD.sdk_error_of_masc_internal_error (KTD.Turn_timeout { elapsed_sec = 600.0 })
+
+let test_cycle_failed_log_level_is_policy_aware () =
+  Alcotest.(check bool)
+    "provider timeout cycle failure is warn"
+    true
+    (EC.should_warn_keeper_cycle_failed
+       (provider_timeout_error ~phase:"cascade_attempt_watchdog"));
+  Alcotest.(check bool)
+    "turn wall-clock timeout remains error"
+    false
+    (EC.should_warn_keeper_cycle_failed (turn_timeout_error ()))
+
+let test_strike_limit_routes_through_policy_without_keeper_death () =
+  let err = provider_timeout_error ~phase:"stream_idle:streaming_thinking" in
+  match
+    KH.provider_timeout_policy_decision
+      ~strikes:KK.provider_timeout_strike_limit
+      err
+  with
+  | None -> Alcotest.fail "expected provider timeout policy decision"
+  | Some decision ->
+    Alcotest.(check bool) "keeper death denied" false decision.keeper_death_allowed;
+    Alcotest.(check string)
+      "lifecycle"
+      "pause_current_work"
+      (KFP.lifecycle_effect_to_label decision.lifecycle_effect);
+    Alcotest.(check string)
+      "circuit"
+      "provider_cooldown"
+      (KFP.circuit_effect_to_label decision.circuit_effect);
+    Alcotest.(check string)
+      "reason preserves streaming thinking"
+      "provider_timeout_loop:stream_idle:streaming_thinking"
+      decision.reason
+
+let test_capacity_phase_routes_to_provider_tuning () =
+  let err = provider_timeout_error ~phase:"capacity_backpressure" in
+  match KH.provider_timeout_policy_decision ~strikes:1 err with
+  | None -> Alcotest.fail "expected provider timeout policy decision"
+  | Some decision ->
+    Alcotest.(check bool) "keeper death denied" false decision.keeper_death_allowed;
+    Alcotest.(check string)
+      "lifecycle"
+      "soft_fail_turn"
+      (KFP.lifecycle_effect_to_label decision.lifecycle_effect);
+    Alcotest.(check string)
+      "circuit"
+      "provider_cooldown"
+      (KFP.circuit_effect_to_label decision.circuit_effect);
+    Alcotest.(check string)
+      "operator action"
+      "reroute_or_tune_provider"
+      (KFP.operator_action_to_label decision.operator_action);
+    Alcotest.(check string)
+      "reason preserves capacity phase"
+      "provider_timeout:capacity_backpressure"
+      decision.reason
+
+let test_concurrent_bumps_do_not_lose_updates () =
+  let keeper = "parallel-bumps" in
+  with_reset keeper (fun () ->
+    let workers = 4 in
+    let bumps_per_worker = 25 in
+    let domains =
+      List.init workers (fun _ ->
+        Domain.spawn (fun () ->
+          for _ = 1 to bumps_per_worker do
+            ignore (KK.bump_budget_exhaustion ~keeper_name:keeper : int)
+          done))
+    in
+    List.iter Domain.join domains;
+    Alcotest.(check int) "all bumps accounted"
+      (workers * bumps_per_worker)
+      (KK.peek_budget_exhaustion_for_test ~keeper_name:keeper))
+
 let () =
-  Alcotest.run "oas_timeout_budget_strike"
+  Alcotest.run "provider_timeout_strike"
   [
     ( "strike ledger",
       [
@@ -54,5 +159,15 @@ let () =
         Alcotest.test_case "seeded bump uses higher persisted count" `Quick
           test_seeded_bump_uses_higher_persisted_count;
         Alcotest.test_case "reset clears" `Quick test_reset_clears;
+        Alcotest.test_case "strike limit soft-backoffs without crash" `Quick
+          test_strike_limit_is_soft_backoff;
+        Alcotest.test_case "cycle failure log level is policy-aware" `Quick
+          test_cycle_failed_log_level_is_policy_aware;
+        Alcotest.test_case "strike limit uses policy, not keeper death" `Quick
+          test_strike_limit_routes_through_policy_without_keeper_death;
+        Alcotest.test_case "capacity phase routes to provider tuning" `Quick
+          test_capacity_phase_routes_to_provider_tuning;
+        Alcotest.test_case "concurrent bumps do not lose updates" `Quick
+          test_concurrent_bumps_do_not_lose_updates;
       ] );
   ]

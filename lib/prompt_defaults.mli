@@ -14,24 +14,17 @@
     Internal helpers (the [existing_dir] predicate, the
     [prompt_markdown_dir_candidates] list, and the
     [bootstrapped_signature] memo ref) are hidden — callers
-    consume only the three entry points below. *)
-
-val init : unit -> unit
-(** Re-scan the currently-configured markdown directory and
-    register all prompts that have YAML frontmatter. Used by
-    tests after a manual [Prompt_registry.set_markdown_dir] call;
-    no-op when no directory is configured. *)
+    consume only the entry point below. *)
 
 val resolve_prompt_markdown_dir :
-  workspace_path:string ->
-  base_path:string ->
-  string
-(** Pick the prompt markdown directory for a given workspace.
-    Currently always returns [Config_dir_resolver.prompts_dir ()]
-    (both for the resolved candidate and the fallback) — the
-    parameters are accepted for forward compatibility with
-    workspace-scoped overrides and exercised directly by the
-    [test_server_runtime_bootstrap] suite. *)
+  workspace_path:string -> base_path:string -> string
+(** Return the first existing prompt markdown directory from the
+    candidate list, falling back to {!Config_dir_resolver.prompts_dir}
+    when none exist yet. *)
+
+val init : unit -> unit
+(** Initialise prompt defaults from the environment.
+    Idempotent — safe to call multiple times. *)
 
 val bootstrap_runtime :
   workspace_path:string ->
@@ -47,3 +40,11 @@ val bootstrap_runtime :
     is propagated; any other exception during override restore
     is logged via [Log.Misc.error] and swallowed so a corrupt
     override file cannot bring the boot path down. *)
+
+val init : unit -> unit
+(** Install prompt-registry observers and re-scan the currently
+    configured markdown directory.  Used by [bootstrap_runtime]
+    internally; also exposed for tests that have already set the
+    markdown dir via [Prompt_registry.set_markdown_dir] and just
+    need to (re)load prompts.  No-op when no markdown dir is
+    configured. *)

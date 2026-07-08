@@ -17,8 +17,8 @@ lib/handover_eio.ml:139
 lib/institution_eio.ml:629
 lib/keeper/keeper_alerting_path.ml:264
 lib/keeper/keeper_approval_queue.ml:403
-lib/keeper/keeper_exec_shared.ml:252
-lib/keeper/keeper_exec_shell.ml:548
+lib/keeper/agent_tool_shared_runtime.ml:252
+lib/keeper/agent_tool_command_runtime.ml:548
 lib/keeper/keeper_status_detail.ml:1238
 lib/mcp_server_eio_resource.ml:150
 lib/mcp_server_eio_resource.ml:163
@@ -28,4 +28,4 @@ lib/server/server_routes_http_routes_sidecar.ml:135
 lib/server/server_routes_http_routes_sidecar.ml:288
 lib/server/server_routes_http_routes_sidecar.ml:297
 lib/tool_blob_store/tool_blob_store.ml:21
-lib/tool_code.ml:279
+retired file-read tool module:279

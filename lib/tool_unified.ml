@@ -20,7 +20,8 @@ module Float = Stdlib.Float
     Combines:
     - Tool_catalog: visibility, lifecycle, metadata
     - Tool_registry: call statistics (count, success, failure, duration)
-    - Tool_dispatch: registration status, read_only, join_required
+    - Tool_dispatch: registration status
+    - Tool_capability: read_only, join_required
 *)
 
 type tool_info = {
@@ -44,8 +45,8 @@ let tool_info name : tool_info =
     visibility = meta.visibility;
     lifecycle = meta.lifecycle;
     is_registered = Tool_dispatch.is_registered name;
-    is_read_only = Tool_dispatch.is_read_only name;
-    is_join_required = Tool_dispatch.is_join_required name;
+    is_read_only = Tool_capability.has Tool_capability.Read_only name;
+    is_join_required = Tool_capability.has Tool_capability.Requires_join name;
     call_stats = stats;
   }
 
@@ -117,7 +118,10 @@ let summary_report () : Yojson.Safe.t =
      ) top_20));
     ("never_called_count", `Int (List.length never_called));
     ("tool_distribution", tool_dist);
-    ("dispatch_v2_enabled", `Bool Tool_dispatch.v2_enabled);
+    (* RFC-0084 host-config-cleanup-J — [dispatch_v2_enabled] JSON
+       field removed alongside the [MASC_DISPATCH_V2] flag.  The
+       Hashtbl dispatch path is now the only code path so the field
+       carried no signal. *)
     ("registered_count", `Int (Tool_dispatch.registered_count ()));
-    ("cascade_metrics", Oas_worker.cascade_metrics_json ());
+    ("cascade_metrics", Cascade_observation.cascade_metrics_json ());
   ]

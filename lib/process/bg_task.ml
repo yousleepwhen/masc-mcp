@@ -6,9 +6,8 @@
    time it is called.  Rationale:
    - Simpler lifecycle: no long-lived switch to manage, no fiber
      leakage surface.
-   - Matches the MCP request/response cadence — the LLM polls by
-     calling [keeper_bash_output], so there is always a natural
-     trigger for draining.
+   - Matches a pull-based request/response cadence: consumers call
+     [read], so there is always a natural trigger for draining.
    - Back-pressure: the OS pipe buffer (~64 KB on Linux, larger on
      macOS) absorbs short silences; long silences block the child on
      write until the next pull.  Acceptable for Tick 6a; Tick 7 will
@@ -68,7 +67,16 @@ type state = {
   pid_file : string option;
       (** Full path to the persistence sidecar when
           [~base_path] was supplied at spawn. Deleted on close/kill. *)
+  mutable release_lifetime_guard : (unit -> unit) option;
 }
+
+type lifetime_guard = { acquire : unit -> (unit -> unit) }
+
+let default_lifetime_guard = { acquire = (fun () -> fun () -> ()) }
+let lifetime_guard : lifetime_guard Atomic.t = Atomic.make default_lifetime_guard
+let set_lifetime_guard guard = Atomic.set lifetime_guard guard
+let reset_lifetime_guard_for_testing () = Atomic.set lifetime_guard default_lifetime_guard
+let acquire_lifetime_guard () = (Atomic.get lifetime_guard).acquire ()
 
 (* Tick 7: PID-file helpers. Path convention:
      <base_path>/.masc/keeper/<keeper>/bg/<task_id>.pid
@@ -91,6 +99,29 @@ let sidecar_failure_observer :
 
 let set_sidecar_failure_observer f =
   Atomic.set sidecar_failure_observer (Some f)
+
+(* Observer for unexpected (non-EAGAIN/EWOULDBLOCK/EINTR/EOF)
+   drain-pipe read errors.  Labels are closed-vocabulary:
+   [fd_kind = "stdout" | "stderr"] (call-site tagged) and
+   [err_kind = "unix_error" | "other"] (typed match arm).
+   Cardinality bound: 2 × 2 = 4.  See top-level Prometheus
+   module for the registered counter. *)
+let drain_failure_observer :
+    ((fd_kind:string -> err_kind:string -> unit) option) Atomic.t =
+  Atomic.make None
+
+let set_drain_failure_observer f =
+  Atomic.set drain_failure_observer (Some f)
+
+let observe_drain_failure ~fd_kind ~err_kind =
+  match Atomic.get drain_failure_observer with
+  | None -> ()
+  | Some observe ->
+      (try observe ~fd_kind ~err_kind with
+       | Eio.Cancel.Cancelled _ as e -> raise e
+       | observer_exn ->
+           Log.Misc.warn "bg_task drain observer failed: %s"
+             (Printexc.to_string observer_exn))
 
 let observe_sidecar_failure ~site exn =
   match exn with
@@ -141,15 +172,53 @@ let try_delete_pid_file = function
   | None -> ()
   | Some path -> ignore (delete_pid_file path : bool)
 
+let release_lifetime_guard st =
+  match st.release_lifetime_guard with
+  | None -> ()
+  | Some release ->
+      st.release_lifetime_guard <- None;
+      release ()
+
+let close_task_fds st =
+  Safe_ops.protect ~default:() (fun () -> Unix.close st.handle.stdout_fd);
+  Safe_ops.protect ~default:() (fun () -> Unix.close st.handle.stderr_fd)
+
+let mark_process_finished st status =
+  if Option.is_none st.status then st.status <- Some status;
+  release_lifetime_guard st
+
 let registry : (string, state) Hashtbl.t = Hashtbl.create 16
 let registry_mu = Mutex.create ()
 let id_counter = ref 0
+let pending_spawn_global = ref 0
+let pending_spawn_by_keeper : (string, int) Hashtbl.t = Hashtbl.create 16
 
 let with_reg f =
   Mutex.lock registry_mu;
   match f () with
   | v -> Mutex.unlock registry_mu; v
   | exception e -> Mutex.unlock registry_mu; raise e
+
+let default_exit_watcher_thread_create f =
+  let _watcher = Thread.create f () in
+  ()
+
+let exit_watcher_thread_create = Atomic.make default_exit_watcher_thread_create
+let set_exit_watcher_thread_create_for_testing f = Atomic.set exit_watcher_thread_create f
+let reset_exit_watcher_thread_create_for_testing () =
+  Atomic.set exit_watcher_thread_create default_exit_watcher_thread_create
+
+let start_exit_watcher st =
+  (Atomic.get exit_watcher_thread_create)
+    (let rec wait () =
+       match Unix.waitpid [] st.handle.pid with
+       | _, status -> with_reg (fun () -> mark_process_finished st status)
+       | exception Unix.Unix_error (Unix.EINTR, _, _) -> wait ()
+       | exception Unix.Unix_error (Unix.ECHILD, _, _) ->
+           with_reg (fun () -> release_lifetime_guard st)
+       | exception exn -> observe_sidecar_failure ~site:"waitpid" exn
+     in
+     wait)
 
 let fresh_id () =
   with_reg (fun () ->
@@ -168,6 +237,20 @@ let shell_ring_line_limit () =
       | Some n when n >= 0 -> n
       | _ -> 5000)
   | None -> 5000
+
+let env_int ?(min_v = 1) name default =
+  match Sys.getenv_opt name with
+  | Some raw ->
+      (match int_of_string_opt (String.trim raw) with
+       | Some n -> max min_v n
+       | None -> default)
+  | None -> default
+
+let global_task_limit () =
+  env_int "MASC_KEEPER_BG_TASK_GLOBAL_MAX" 12
+
+let per_keeper_task_limit () =
+  env_int "MASC_KEEPER_BG_TASK_PER_KEEPER_MAX" 2
 
 let retained_start_for_last_lines s ~limit =
   if limit <= 0 then String.length s
@@ -204,9 +287,43 @@ let trim_buffer_to_ring buf base_offset =
     base_offset + drop_len
   end
 
-(* [drain_fd_to_buf buf fd] reads every byte currently available on
-   [fd] without blocking. Returns [true] if EOF was observed. *)
-let drain_fd_to_buf buf fd =
+(* RFC-0145 §5 PR-2 (narrow): typed [drain_outcome] sum replaces
+   the previous [bool] return.  The two outcomes that used to be
+   collapsed under [true] — clean EOF vs read-side error fallback
+   — are now distinct constructors, and [Drain_error] carries the
+   typed cause ([Drain_unix_error] errno vs [Drain_other_exn]
+   arbitrary exception).  Observer/counter wiring inside the
+   function is unchanged (counter behavior is out of scope for
+   this PR); the typed sum just makes the read-side failure mode
+   visible to callers at the type level so future PRs can refine
+   reap semantics without re-walking call-sites blindly. *)
+type drain_read_error =
+  | Drain_unix_error of Unix.error
+  | Drain_other_exn of exn
+
+type drain_outcome =
+  | Drain_ok
+  | Drain_eof
+  | Drain_error of drain_read_error
+
+(* [drain_fd_to_buf ~fd_kind buf fd] reads every byte currently
+   available on [fd] without blocking.
+
+   - [Drain_ok]:  no bytes immediately readable (EAGAIN /
+     EWOULDBLOCK), or [select] returned an empty readable set.
+     Equivalent to the previous [false] return.
+   - [Drain_eof]: [Unix.read] returned [0] (peer closed cleanly).
+     Equivalent to the previous [true] return.
+   - [Drain_error e]: an unexpected read-side failure occurred.
+     The previous implementation also returned [true] for these
+     to preserve reap semantics (caller advances [stdout_eof] /
+     [stderr_eof]); callers in this PR mirror that behavior via
+     [drain_outcome_is_eof].  Refining the reap policy per
+     [drain_read_error] constructor is a separate RFC.
+
+   [Eio.Cancel.Cancelled] is re-raised so cancellation propagates
+   through the enclosing switch. *)
+let drain_fd_to_buf ~fd_kind buf fd =
   let chunk = Bytes.create 4096 in
   let rec loop () =
     let readable =
@@ -214,16 +331,38 @@ let drain_fd_to_buf buf fd =
         let r, _, _ = Unix.select [ fd ] [] [] 0.0 in
         r)
     in
-    if readable = [] then false
+    if readable = [] then Drain_ok
     else
       match Unix.read fd chunk 0 (Bytes.length chunk) with
-      | 0 -> true
+      | 0 -> Drain_eof
       | n -> Buffer.add_subbytes buf chunk 0 n; loop ()
-      | exception Unix.Unix_error ((Unix.EAGAIN | Unix.EWOULDBLOCK), _, _) -> false
+      | exception Unix.Unix_error ((Unix.EAGAIN | Unix.EWOULDBLOCK), _, _) ->
+          Drain_ok
       | exception Unix.Unix_error (Unix.EINTR, _, _) -> loop ()
-      | exception _ -> true
+      | exception (Eio.Cancel.Cancelled _ as e) -> raise e
+      | exception Unix.Unix_error (errno, fn, _) ->
+          Log.Misc.warn
+            "bg_task drain_fd_to_buf %s Unix_error in %s: %s"
+            fd_kind fn (Unix.error_message errno);
+          observe_drain_failure ~fd_kind ~err_kind:"unix_error";
+          Drain_error (Drain_unix_error errno)
+      | exception exn ->
+          Log.Misc.warn
+            "bg_task drain_fd_to_buf %s unexpected exception: %s"
+            fd_kind (Printexc.to_string exn);
+          observe_drain_failure ~fd_kind ~err_kind:"other";
+          Drain_error (Drain_other_exn exn)
   in
   loop ()
+
+(* Reap-policy adapter: preserves the previous [bool] semantics
+   ([true] = stop reading this FD).  Defined as an exhaustive
+   [match] so adding a new [drain_outcome] constructor is a
+   compile error here, forcing a per-site reap decision. *)
+let drain_outcome_is_eof = function
+  | Drain_ok -> false
+  | Drain_eof -> true
+  | Drain_error _ -> true
 
 (* Called under [registry_mu]. Drains pipes, reaps if exited, kills
    on timeout. *)
@@ -231,13 +370,21 @@ let poll_state st =
   if st.closed then ()
   else begin
     if not st.stdout_eof then begin
-      let eof = drain_fd_to_buf st.stdout_buf st.handle.stdout_fd in
+      let eof =
+        drain_outcome_is_eof
+          (drain_fd_to_buf ~fd_kind:"stdout"
+             st.stdout_buf st.handle.stdout_fd)
+      in
       st.stdout_base_offset <-
         trim_buffer_to_ring st.stdout_buf st.stdout_base_offset;
       st.stdout_eof <- eof
     end;
     if not st.stderr_eof then begin
-      let eof = drain_fd_to_buf st.stderr_buf st.handle.stderr_fd in
+      let eof =
+        drain_outcome_is_eof
+          (drain_fd_to_buf ~fd_kind:"stderr"
+             st.stderr_buf st.handle.stderr_fd)
+      in
       st.stderr_base_offset <-
         trim_buffer_to_ring st.stderr_buf st.stderr_base_offset;
       st.stderr_eof <- eof
@@ -245,67 +392,165 @@ let poll_state st =
     (match st.status with
      | Some _ -> ()
      | None ->
-         (match Unix.waitpid [ Unix.WNOHANG ] st.handle.pid with
-          | 0, _ -> ()
-          | _, s -> st.status <- Some s
-          | exception Unix.Unix_error (Unix.ECHILD, _, _) ->
-              st.status <- Some (Unix.WEXITED 0)
-          | exception _ -> ()));
+	         (match Unix.waitpid [ Unix.WNOHANG ] st.handle.pid with
+	          | 0, _ -> ()
+	          | _, s -> mark_process_finished st s
+	          | exception Unix.Unix_error (Unix.ECHILD, _, _) ->
+	              mark_process_finished st (Unix.WEXITED 0)
+	          (* RFC-0145 — narrow to the only remaining exception kind
+	             [Unix.waitpid] raises (the [ECHILD] case is handled
+	             above as a domain-meaningful outcome). *)
+	          | exception Unix.Unix_error _ -> ()));
     if st.status = None
        && st.timeout_sec > 0.0
        && Unix.gettimeofday () -. st.handle.started_at > st.timeout_sec
     then begin
       Process_eio.tree_kill ~pgid:st.handle.pgid
         ~signal:Sys.sigterm ~grace_sec:2.0;
-      (match Unix.waitpid [ Unix.WNOHANG ] st.handle.pid with
-       | 0, _ -> ()
-       | _, s -> st.status <- Some s
-       | exception _ -> ())
+	      (match Unix.waitpid [ Unix.WNOHANG ] st.handle.pid with
+	       | 0, _ -> ()
+	       | _, s -> mark_process_finished st s
+	       (* RFC-0145 — narrow to [Unix.Unix_error] (the only exception
+	          [Unix.waitpid] raises). *)
+	       | exception Unix.Unix_error _ -> ())
     end;
-    if st.status <> None && st.stdout_eof && st.stderr_eof then begin
-      st.closed <- true;
-      Safe_ops.protect ~default:() (fun () -> Unix.close st.handle.stdout_fd);
-      Safe_ops.protect ~default:() (fun () -> Unix.close st.handle.stderr_fd);
-      try_delete_pid_file st.pid_file
-    end
-  end
+	    if st.status <> None && st.stdout_eof && st.stderr_eof then begin
+		      st.closed <- true;
+		      close_task_fds st;
+		      try_delete_pid_file st.pid_file
+		    end
+	  end
+
+let poll_all_states () =
+  Hashtbl.iter (fun _ st -> poll_state st) registry
+
+let live_task_count ?keeper () =
+  Hashtbl.fold
+    (fun _ st acc ->
+      if st.closed then acc
+      else
+        match keeper with
+        | Some expected when not (String.equal st.keeper expected) -> acc
+        | Some _ | None -> acc + 1)
+    registry
+    0
+
+let pending_keeper_count keeper =
+  Hashtbl.find_opt pending_spawn_by_keeper keeper
+  |> Option.value ~default:0
+
+let reserve_spawn_slot ~keeper =
+  with_reg (fun () ->
+    poll_all_states ();
+    let global_limit = global_task_limit () in
+    let per_keeper_limit = per_keeper_task_limit () in
+    let keeper_pending = pending_keeper_count keeper in
+    let keeper_count = live_task_count ~keeper () + keeper_pending in
+    let global_count = live_task_count () + !pending_spawn_global in
+    if keeper_count >= per_keeper_limit then
+      Error (Too_many_tasks { keeper; limit = per_keeper_limit })
+    else if global_count >= global_limit then
+      Error (Too_many_tasks { keeper = "global"; limit = global_limit })
+    else begin
+      incr pending_spawn_global;
+      Hashtbl.replace pending_spawn_by_keeper keeper (keeper_pending + 1);
+      Ok ()
+    end)
+
+let release_spawn_slot ~keeper =
+  with_reg (fun () ->
+    pending_spawn_global := max 0 (!pending_spawn_global - 1);
+    let next = max 0 (pending_keeper_count keeper - 1) in
+    if next = 0 then Hashtbl.remove pending_spawn_by_keeper keeper
+    else Hashtbl.replace pending_spawn_by_keeper keeper next)
+
+let cleanup_failed_registered_spawn ~tid st =
+  Safe_ops.protect ~default:() (fun () ->
+    Process_eio.tree_kill ~pgid:st.handle.pgid ~signal:Sys.sigterm ~grace_sec:0.2);
+  with_reg (fun () ->
+    Hashtbl.remove registry tid;
+    release_lifetime_guard st);
+  close_task_fds st;
+  try_delete_pid_file st.pid_file
 
 let spawn ?base_path ~keeper ~argv ~cwd ~envp ~timeout_sec () =
-  match Process_eio.spawn_detached ~argv ~env:envp ~cwd with
-  | Error e -> Error (Spawn_failed e)
-  | Ok handle ->
-      try_set_nonblock handle.stdout_fd;
-      try_set_nonblock handle.stderr_fd;
-      let tid = fresh_id () in
-      let pid_file =
-        match base_path with
-        | None | Some "" -> None
-        | Some bp ->
-            let path = pid_file_of ~base_path:bp ~keeper ~task_id:tid in
-            try_write_pid_file path
-              ~pid:handle.pid
-              ~pgid:handle.pgid
-              ~started_at:handle.started_at;
-            Some path
-      in
-      let st =
-        {
-          handle;
-          keeper;
-          timeout_sec;
-          stdout_buf = Buffer.create 4096;
-          stderr_buf = Buffer.create 4096;
-          stdout_base_offset = 0;
-          stderr_base_offset = 0;
-          status = None;
-          closed = false;
-          stdout_eof = false;
-          stderr_eof = false;
-          pid_file;
-        }
-      in
-      with_reg (fun () -> Hashtbl.replace registry tid st);
-      Ok tid
+  match reserve_spawn_slot ~keeper with
+  | Error err -> Error err
+  | Ok () ->
+	    let release_lifetime_guard =
+	      try Ok (acquire_lifetime_guard ()) with
+	      | Eio.Cancel.Cancelled _ as e ->
+	          release_spawn_slot ~keeper;
+	          raise e
+	      | exn ->
+	          release_spawn_slot ~keeper;
+          Error
+            (Spawn_failed
+               (Printf.sprintf "bg_task lifetime guard acquire failed: %s"
+                  (Printexc.to_string exn)))
+    in
+    (match release_lifetime_guard with
+    | Error err -> Error err
+    | Ok release_lifetime_guard ->
+        match Process_eio.spawn_detached ~argv ~env:envp ~cwd with
+        | Error e ->
+            release_lifetime_guard ();
+            release_spawn_slot ~keeper;
+            Error (Spawn_failed e)
+        | Ok handle ->
+            try_set_nonblock handle.stdout_fd;
+            try_set_nonblock handle.stderr_fd;
+            let tid = fresh_id () in
+            let pid_file =
+              match base_path with
+              | None | Some "" -> None
+              | Some bp ->
+                  let path =
+                    pid_file_of ~base_path:bp ~keeper ~task_id:tid
+                  in
+                  try_write_pid_file path
+                    ~pid:handle.pid
+                    ~pgid:handle.pgid
+                    ~started_at:handle.started_at;
+                  Some path
+            in
+            let st =
+              {
+                handle;
+                keeper;
+                timeout_sec;
+                stdout_buf = Buffer.create 4096;
+                stderr_buf = Buffer.create 4096;
+                stdout_base_offset = 0;
+                stderr_base_offset = 0;
+                status = None;
+                closed = false;
+                stdout_eof = false;
+                stderr_eof = false;
+                pid_file;
+                release_lifetime_guard = Some release_lifetime_guard;
+              }
+            in
+            with_reg (fun () ->
+                Hashtbl.replace registry tid st;
+                pending_spawn_global := max 0 (!pending_spawn_global - 1);
+	                let next = max 0 (pending_keeper_count keeper - 1) in
+	                if next = 0 then Hashtbl.remove pending_spawn_by_keeper keeper
+	                else Hashtbl.replace pending_spawn_by_keeper keeper next);
+		            (try
+		               start_exit_watcher st;
+		               Ok tid
+		             with
+		             | Eio.Cancel.Cancelled _ as e ->
+		                 cleanup_failed_registered_spawn ~tid st;
+		                 raise e
+		             | exn ->
+		                 cleanup_failed_registered_spawn ~tid st;
+		                 Error
+		                   (Spawn_failed
+		                      (Printf.sprintf
+		                         "bg_task exit watcher start failed: %s"
+		                         (Printexc.to_string exn)))))
 
 let bufsub buf ~base_offset since =
   let len = Buffer.length buf in
@@ -378,12 +623,12 @@ let list_with_started_at ~keeper =
 (* Directory walk helpers — avoid Filename.Infix / extra deps. *)
 
 let safe_readdir dir =
-  try Array.to_list (Sys.readdir dir) with
-  | Eio.Cancel.Cancelled _ as e -> raise e
-  | exn ->
+  Cancel_safe.protect
+    ~on_exn:(fun exn ->
       if Sys.file_exists dir then
         observe_sidecar_failure ~site:"readdir" exn;
-      []
+      [])
+    (fun () -> Array.to_list (Sys.readdir dir))
 
 let is_dir p =
   try (Unix.stat p).Unix.st_kind = Unix.S_DIR with
@@ -393,32 +638,31 @@ let is_dir p =
       false
 
 let read_pid_file path =
-  try
-    let ic = open_in path in
-    Fun.protect ~finally:(fun () -> close_in_noerr ic) (fun () ->
-      let input_line_opt ic =
-        try Some (input_line ic) with End_of_file -> None
-      in
-      let pid_line = input_line_opt ic in
-      let pgid_line = input_line_opt ic in
-      let parse_int line =
-        Option.bind (Option.map String.trim line) int_of_string_opt
-      in
-      match parse_int pid_line, parse_int pgid_line with
-      | Some pid, Some pgid -> Some (pid, pgid)
-      | _ ->
-          observe_sidecar_failure ~site:"read_parse"
-            (Failure (Printf.sprintf "invalid PID sidecar: %s" path));
-          None)
-  with
-  | Eio.Cancel.Cancelled _ as e -> raise e
-  | exn ->
+  Cancel_safe.protect
+    ~on_exn:(fun exn ->
       if Sys.file_exists path then
         observe_sidecar_failure ~site:"read"
           (Failure
              (Printf.sprintf "read PID sidecar %s: %s" path
                 (Printexc.to_string exn)));
-      None
+      None)
+    (fun () ->
+      let ic = open_in path in
+      Fun.protect ~finally:(fun () -> close_in_noerr ic) (fun () ->
+        let input_line_opt ic =
+          try Some (input_line ic) with End_of_file -> None
+        in
+        let pid_line = input_line_opt ic in
+        let pgid_line = input_line_opt ic in
+        let parse_int line =
+          Option.bind (Option.map String.trim line) int_of_string_opt
+        in
+        match parse_int pid_line, parse_int pgid_line with
+        | Some pid, Some pgid -> Some (pid, pgid)
+        | _ ->
+            observe_sidecar_failure ~site:"read_parse"
+              (Failure (Printf.sprintf "invalid PID sidecar: %s" path));
+            None))
 
 let pid_is_live pid =
   try Unix.kill pid 0; true

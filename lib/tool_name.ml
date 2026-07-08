@@ -23,37 +23,33 @@ module Float = Stdlib.Float
 
 module Keeper = struct
   type t =
-    | Bash | Bash_kill | Bash_output
-    | Board_cleanup
+    | Execute
     | Board_comment
     | Board_comment_vote
     | Board_curation_read
     | Board_curation_submit
-    | Board_delete
     | Board_get
     | Board_list
     | Board_post
     | Board_search
     | Board_stats
+    | Board_sub_board_create
+    | Board_sub_board_delete
+    | Board_sub_board_get
+    | Board_sub_board_list
+    | Board_sub_board_update
     | Board_vote
     | Broadcast
-    | Code_read
     | Context_status
-    | Discovery
     | Fs_edit
     | Fs_read
+    | Ide_annotate
     | Handoff
     | Library_read
     | Library_search
     | Memory_search
-    | Pr_create
-    | Pr_list
-    | Pr_review_comment
-    | Pr_review_read
-    | Pr_review_reply
-    | Pr_status
-    | Preflight_check
-    | Shell
+    | Memory_write
+    | Search_files
     | Stay_silent
     | Task_claim
     | Task_create
@@ -72,41 +68,35 @@ module Keeper = struct
     | Voice_session_start
     | Voice_sessions
     | Voice_speak
-    | Write
+
   let to_string = function
-    | Bash -> "keeper_bash"
-    | Bash_kill -> "keeper_bash_kill"
-    | Bash_output -> "keeper_bash_output"
-    | Board_cleanup -> "keeper_board_cleanup"
+    | Execute -> "tool_execute"
     | Board_comment -> "keeper_board_comment"
     | Board_comment_vote -> "keeper_board_comment_vote"
     | Board_curation_read -> "keeper_board_curation_read"
     | Board_curation_submit -> "keeper_board_curation_submit"
-    | Board_delete -> "keeper_board_delete"
     | Board_get -> "keeper_board_get"
     | Board_list -> "keeper_board_list"
     | Board_post -> "keeper_board_post"
     | Board_search -> "keeper_board_search"
     | Board_stats -> "keeper_board_stats"
+    | Board_sub_board_create -> "keeper_board_sub_board_create"
+    | Board_sub_board_delete -> "keeper_board_sub_board_delete"
+    | Board_sub_board_get -> "keeper_board_sub_board_get"
+    | Board_sub_board_list -> "keeper_board_sub_board_list"
+    | Board_sub_board_update -> "keeper_board_sub_board_update"
     | Board_vote -> "keeper_board_vote"
     | Broadcast -> "keeper_broadcast"
-    | Code_read -> "keeper_code_read"
     | Context_status -> "keeper_context_status"
-    | Discovery -> "keeper_discovery"
-    | Fs_edit -> "keeper_fs_edit"
-    | Fs_read -> "keeper_fs_read"
+    | Fs_edit -> "tool_edit_file"
+    | Fs_read -> "tool_read_file"
+    | Ide_annotate -> "keeper_ide_annotate"
     | Handoff -> "keeper_handoff"
     | Library_read -> "keeper_library_read"
     | Library_search -> "keeper_library_search"
     | Memory_search -> "keeper_memory_search"
-    | Pr_create -> "keeper_pr_create"
-    | Pr_list -> "keeper_pr_list"
-    | Pr_review_comment -> "keeper_pr_review_comment"
-    | Pr_review_read -> "keeper_pr_review_read"
-    | Pr_review_reply -> "keeper_pr_review_reply"
-    | Pr_status -> "keeper_pr_status"
-    | Preflight_check -> "keeper_preflight_check"
-    | Shell -> "keeper_shell"
+    | Memory_write -> "keeper_memory_write"
+    | Search_files -> "tool_search_files"
     | Stay_silent -> "keeper_stay_silent"
     | Task_claim -> "keeper_task_claim"
     | Task_create -> "keeper_task_create"
@@ -125,41 +115,36 @@ module Keeper = struct
     | Voice_session_start -> "keeper_voice_session_start"
     | Voice_sessions -> "keeper_voice_sessions"
     | Voice_speak -> "keeper_voice_speak"
-    | Write -> "keeper_write"
+  ;;
+
   let of_string = function
-    | "keeper_bash" -> Some Bash
-    | "keeper_bash_kill" -> Some Bash_kill
-    | "keeper_bash_output" -> Some Bash_output
-    | "keeper_board_cleanup" -> Some Board_cleanup
+    | "tool_execute" -> Some Execute
     | "keeper_board_comment" -> Some Board_comment
     | "keeper_board_comment_vote" -> Some Board_comment_vote
     | "keeper_board_curation_read" -> Some Board_curation_read
     | "keeper_board_curation_submit" -> Some Board_curation_submit
-    | "keeper_board_delete" -> Some Board_delete
     | "keeper_board_get" -> Some Board_get
     | "keeper_board_list" -> Some Board_list
     | "keeper_board_post" -> Some Board_post
     | "keeper_board_search" -> Some Board_search
     | "keeper_board_stats" -> Some Board_stats
     | "keeper_board_vote" -> Some Board_vote
+    | "keeper_board_sub_board_create" -> Some Board_sub_board_create
+    | "keeper_board_sub_board_delete" -> Some Board_sub_board_delete
+    | "keeper_board_sub_board_get" -> Some Board_sub_board_get
+    | "keeper_board_sub_board_list" -> Some Board_sub_board_list
+    | "keeper_board_sub_board_update" -> Some Board_sub_board_update
     | "keeper_broadcast" -> Some Broadcast
-    | "keeper_code_read" -> Some Code_read
     | "keeper_context_status" -> Some Context_status
-    | "keeper_discovery" -> Some Discovery
-    | "keeper_fs_edit" -> Some Fs_edit
-    | "keeper_fs_read" -> Some Fs_read
+    | "tool_edit_file" | "tool_write_file" -> Some Fs_edit
+    | "tool_read_file" -> Some Fs_read
+    | "keeper_ide_annotate" -> Some Ide_annotate
     | "keeper_handoff" -> Some Handoff
     | "keeper_library_read" -> Some Library_read
     | "keeper_library_search" -> Some Library_search
     | "keeper_memory_search" -> Some Memory_search
-    | "keeper_pr_create" -> Some Pr_create
-    | "keeper_pr_list" -> Some Pr_list
-    | "keeper_pr_review_comment" -> Some Pr_review_comment
-    | "keeper_pr_review_read" -> Some Pr_review_read
-    | "keeper_pr_review_reply" -> Some Pr_review_reply
-    | "keeper_pr_status" -> Some Pr_status
-    | "keeper_preflight_check" -> Some Preflight_check
-    | "keeper_shell" -> Some Shell
+    | "keeper_memory_write" -> Some Memory_write
+    | "tool_search_files" -> Some Search_files
     | "keeper_stay_silent" -> Some Stay_silent
     | "keeper_task_claim" -> Some Task_claim
     | "keeper_task_create" -> Some Task_create
@@ -178,31 +163,35 @@ module Keeper = struct
     | "keeper_voice_session_start" -> Some Voice_session_start
     | "keeper_voice_sessions" -> Some Voice_sessions
     | "keeper_voice_speak" -> Some Voice_speak
-    | "keeper_write" -> Some Write
     | _ -> None
+  ;;
 
   let board_write_tools = [ Board_post; Board_comment; Board_vote; Board_curation_submit ]
-
   let board_write_tool_names = List.map to_string board_write_tools
 
   let is_board = function
-    | Board_cleanup
     | Board_comment
     | Board_comment_vote
     | Board_curation_read
     | Board_curation_submit
-    | Board_delete
     | Board_get
     | Board_list
     | Board_post
     | Board_search
     | Board_stats
+    | Board_sub_board_create
+    | Board_sub_board_delete
+    | Board_sub_board_get
+    | Board_sub_board_list
+    | Board_sub_board_update
     | Board_vote -> true
     | _ -> false
+  ;;
 
   let is_board_write = function
     | Board_post | Board_comment | Board_vote | Board_curation_submit -> true
     | _ -> false
+  ;;
 
   let board_write_action_kind = function
     | Board_post -> Some "post"
@@ -210,6 +199,7 @@ module Keeper = struct
     | Board_vote -> Some "vote"
     | Board_curation_submit -> Some "curation"
     | _ -> None
+  ;;
 
   let pp fmt t = Format.pp_print_string fmt (to_string t)
 end
@@ -221,13 +211,6 @@ module Masc = struct
     | Agent_update
     | Agent_card
     | Agents
-    | Autoresearch_cycle
-    | Autoresearch_inject
-    | Autoresearch_record_finding
-    | Autoresearch_search_findings
-    | Autoresearch_start
-    | Autoresearch_status
-    | Autoresearch_stop
     | Batch_add_tasks
     | Board_cleanup
     | Board_comment
@@ -243,41 +226,27 @@ module Masc = struct
     | Board_reaction
     | Board_search
     | Board_stats
+    | Board_sub_board_create
+    | Board_sub_board_delete
+    | Board_sub_board_get
+    | Board_sub_board_list
+    | Board_sub_board_update
     | Board_vote
     | Broadcast
-    | Cancel_task
     | Check
     | Claim_next
-    | Claim_task
     | Cleanup_zombies
-    | Coordination_fsm_snapshot
-    | Code_delete
-    | Code_edit
-    | Code_git
-    | Code_read
-    | Code_search
-    | Code_shell
-    | Code_symbols
-    | Code_write
-    | Complete_task
     | Dashboard
     | Deliver
-    | Dispatch_plan
     | Goal_list
-    | Goal_review
     | Goal_transition
     | Goal_upsert
     | Goal_verify
     | Heartbeat
     | Join
     | Leave
-    | List_tasks
     | Messages
     | Note_add
-    | Operation_pause
-    | Operation_start
-    | Operation_status
-    | Operation_stop
     | Operator_action
     | Operator_confirm
     | Operator_digest
@@ -288,11 +257,7 @@ module Masc = struct
     | Plan_init
     | Plan_set_task
     | Plan_update
-    | Register_capabilities
-    | Release_task
     | Reset
-    | Coord_status
-    | Set_current_task
     | Status
     | Task_history
     | Tasks
@@ -302,12 +267,9 @@ module Masc = struct
     | Tool_revoke
     | Transition
     | Update_priority
+    | Web_fetch
     | Web_search
     | Who
-    | Workflow_guide
-    | Worktree_create
-    | Worktree_list
-    | Worktree_remove
     | Approval_pending
     | Approval_get
     | Config
@@ -316,13 +278,10 @@ module Masc = struct
     | Mcp_session
     | Pause
     | Resume
-    | Spawn
     | Start
     | Tool_admin_snapshot
     | Tool_admin_update
     | Tool_stats
-    | Webrtc_answer
-    | Webrtc_offer
 
   let to_string = function
     | Add_task -> "masc_add_task"
@@ -345,48 +304,27 @@ module Masc = struct
     | Board_reaction -> "masc_board_reaction"
     | Board_search -> "masc_board_search"
     | Board_stats -> "masc_board_stats"
+    | Board_sub_board_create -> "masc_board_sub_board_create"
+    | Board_sub_board_delete -> "masc_board_sub_board_delete"
+    | Board_sub_board_get -> "masc_board_sub_board_get"
+    | Board_sub_board_list -> "masc_board_sub_board_list"
+    | Board_sub_board_update -> "masc_board_sub_board_update"
     | Board_vote -> "masc_board_vote"
     | Broadcast -> "masc_broadcast"
-    | Cancel_task -> "masc_cancel_task"
     | Check -> "masc_check"
     | Claim_next -> "masc_claim_next"
-    | Claim_task -> "masc_claim_task"
     | Cleanup_zombies -> "masc_cleanup_zombies"
-    | Coordination_fsm_snapshot -> "masc_coordination_fsm_snapshot"
-    | Autoresearch_cycle -> "masc_autoresearch_cycle"
-    | Autoresearch_inject -> "masc_autoresearch_inject"
-    | Autoresearch_record_finding -> "masc_autoresearch_record_finding"
-    | Autoresearch_search_findings -> "masc_autoresearch_search_findings"
-    | Autoresearch_start -> "masc_autoresearch_start"
-    | Autoresearch_status -> "masc_autoresearch_status"
-    | Autoresearch_stop -> "masc_autoresearch_stop"
-    | Code_delete -> "masc_code_delete"
-    | Code_edit -> "masc_code_edit"
-    | Code_git -> "masc_code_git"
-    | Code_read -> "masc_code_read"
-    | Code_search -> "masc_code_search"
-    | Code_shell -> "masc_code_shell"
-    | Code_symbols -> "masc_code_symbols"
-    | Code_write -> "masc_code_write"
-    | Complete_task -> "masc_complete_task"
     | Dashboard -> "masc_dashboard"
     | Deliver -> "masc_deliver"
-    | Dispatch_plan -> "masc_dispatch_plan"
     | Goal_list -> "masc_goal_list"
-    | Goal_review -> "masc_goal_review"
     | Goal_transition -> "masc_goal_transition"
     | Goal_upsert -> "masc_goal_upsert"
     | Goal_verify -> "masc_goal_verify"
     | Heartbeat -> "masc_heartbeat"
     | Join -> "masc_join"
     | Leave -> "masc_leave"
-    | List_tasks -> "masc_list_tasks"
     | Messages -> "masc_messages"
     | Note_add -> "masc_note_add"
-    | Operation_pause -> "masc_operation_pause"
-    | Operation_start -> "masc_operation_start"
-    | Operation_status -> "masc_operation_status"
-    | Operation_stop -> "masc_operation_stop"
     | Operator_action -> "masc_operator_action"
     | Operator_confirm -> "masc_operator_confirm"
     | Operator_digest -> "masc_operator_digest"
@@ -397,11 +335,7 @@ module Masc = struct
     | Plan_init -> "masc_plan_init"
     | Plan_set_task -> "masc_plan_set_task"
     | Plan_update -> "masc_plan_update"
-    | Register_capabilities -> "masc_register_capabilities"
-    | Release_task -> "masc_release_task"
     | Reset -> "masc_reset"
-    | Coord_status -> "masc_room_status"
-    | Set_current_task -> "masc_set_current_task"
     | Status -> "masc_status"
     | Task_history -> "masc_task_history"
     | Tasks -> "masc_tasks"
@@ -411,12 +345,9 @@ module Masc = struct
     | Tool_revoke -> "masc_tool_revoke"
     | Transition -> "masc_transition"
     | Update_priority -> "masc_update_priority"
+    | Web_fetch -> "masc_web_fetch"
     | Web_search -> "masc_web_search"
     | Who -> "masc_who"
-    | Workflow_guide -> "masc_workflow_guide"
-    | Worktree_create -> "masc_worktree_create"
-    | Worktree_list -> "masc_worktree_list"
-    | Worktree_remove -> "masc_worktree_remove"
     | Approval_pending -> "masc_approval_pending"
     | Approval_get -> "masc_approval_get"
     | Config -> "masc_config"
@@ -425,13 +356,11 @@ module Masc = struct
     | Mcp_session -> "masc_mcp_session"
     | Pause -> "masc_pause"
     | Resume -> "masc_resume"
-    | Spawn -> "masc_spawn"
     | Start -> "masc_start"
     | Tool_admin_snapshot -> "masc_tool_admin_snapshot"
     | Tool_admin_update -> "masc_tool_admin_update"
     | Tool_stats -> "masc_tool_stats"
-    | Webrtc_answer -> "masc_webrtc_answer"
-    | Webrtc_offer -> "masc_webrtc_offer"
+  ;;
 
   let of_string = function
     | "masc_add_task" -> Some Add_task
@@ -455,47 +384,26 @@ module Masc = struct
     | "masc_board_search" -> Some Board_search
     | "masc_board_stats" -> Some Board_stats
     | "masc_board_vote" -> Some Board_vote
+    | "masc_board_sub_board_create" -> Some Board_sub_board_create
+    | "masc_board_sub_board_delete" -> Some Board_sub_board_delete
+    | "masc_board_sub_board_get" -> Some Board_sub_board_get
+    | "masc_board_sub_board_list" -> Some Board_sub_board_list
+    | "masc_board_sub_board_update" -> Some Board_sub_board_update
     | "masc_broadcast" -> Some Broadcast
-    | "masc_cancel_task" -> Some Cancel_task
     | "masc_check" -> Some Check
     | "masc_claim_next" -> Some Claim_next
-    | "masc_claim_task" -> Some Claim_task
     | "masc_cleanup_zombies" -> Some Cleanup_zombies
-    | "masc_coordination_fsm_snapshot" -> Some Coordination_fsm_snapshot
-    | "masc_autoresearch_cycle" -> Some Autoresearch_cycle
-    | "masc_autoresearch_inject" -> Some Autoresearch_inject
-    | "masc_autoresearch_record_finding" -> Some Autoresearch_record_finding
-    | "masc_autoresearch_search_findings" -> Some Autoresearch_search_findings
-    | "masc_autoresearch_start" -> Some Autoresearch_start
-    | "masc_autoresearch_status" -> Some Autoresearch_status
-    | "masc_autoresearch_stop" -> Some Autoresearch_stop
-    | "masc_code_delete" -> Some Code_delete
-    | "masc_code_edit" -> Some Code_edit
-    | "masc_code_git" -> Some Code_git
-    | "masc_code_read" -> Some Code_read
-    | "masc_code_search" -> Some Code_search
-    | "masc_code_shell" -> Some Code_shell
-    | "masc_code_symbols" -> Some Code_symbols
-    | "masc_code_write" -> Some Code_write
-    | "masc_complete_task" -> Some Complete_task
     | "masc_dashboard" -> Some Dashboard
     | "masc_deliver" -> Some Deliver
-    | "masc_dispatch_plan" -> Some Dispatch_plan
     | "masc_goal_list" -> Some Goal_list
-    | "masc_goal_review" -> Some Goal_review
     | "masc_goal_transition" -> Some Goal_transition
     | "masc_goal_upsert" -> Some Goal_upsert
     | "masc_goal_verify" -> Some Goal_verify
     | "masc_heartbeat" -> Some Heartbeat
     | "masc_join" -> Some Join
     | "masc_leave" -> Some Leave
-    | "masc_list_tasks" -> Some List_tasks
     | "masc_messages" -> Some Messages
     | "masc_note_add" -> Some Note_add
-    | "masc_operation_pause" -> Some Operation_pause
-    | "masc_operation_start" -> Some Operation_start
-    | "masc_operation_status" -> Some Operation_status
-    | "masc_operation_stop" -> Some Operation_stop
     | "masc_operator_action" -> Some Operator_action
     | "masc_operator_confirm" -> Some Operator_confirm
     | "masc_operator_digest" -> Some Operator_digest
@@ -506,11 +414,7 @@ module Masc = struct
     | "masc_plan_init" -> Some Plan_init
     | "masc_plan_set_task" -> Some Plan_set_task
     | "masc_plan_update" -> Some Plan_update
-    | "masc_register_capabilities" -> Some Register_capabilities
-    | "masc_release_task" -> Some Release_task
     | "masc_reset" -> Some Reset
-    | "masc_room_status" -> Some Coord_status
-    | "masc_set_current_task" -> Some Set_current_task
     | "masc_status" -> Some Status
     | "masc_task_history" -> Some Task_history
     | "masc_tasks" -> Some Tasks
@@ -520,12 +424,9 @@ module Masc = struct
     | "masc_tool_revoke" -> Some Tool_revoke
     | "masc_transition" -> Some Transition
     | "masc_update_priority" -> Some Update_priority
+    | "masc_web_fetch" -> Some Web_fetch
     | "masc_web_search" -> Some Web_search
     | "masc_who" -> Some Who
-    | "masc_workflow_guide" -> Some Workflow_guide
-    | "masc_worktree_create" -> Some Worktree_create
-    | "masc_worktree_list" -> Some Worktree_list
-    | "masc_worktree_remove" -> Some Worktree_remove
     | "masc_approval_pending" -> Some Approval_pending
     | "masc_approval_get" -> Some Approval_get
     | "masc_config" -> Some Config
@@ -534,14 +435,12 @@ module Masc = struct
     | "masc_mcp_session" -> Some Mcp_session
     | "masc_pause" -> Some Pause
     | "masc_resume" -> Some Resume
-    | "masc_spawn" -> Some Spawn
     | "masc_start" -> Some Start
     | "masc_tool_admin_snapshot" -> Some Tool_admin_snapshot
     | "masc_tool_admin_update" -> Some Tool_admin_update
     | "masc_tool_stats" -> Some Tool_stats
-    | "masc_webrtc_answer" -> Some Webrtc_answer
-    | "masc_webrtc_offer" -> Some Webrtc_offer
     | _ -> None
+  ;;
 
   let is_board = function
     | Board_cleanup
@@ -558,8 +457,14 @@ module Masc = struct
     | Board_reaction
     | Board_search
     | Board_stats
+    | Board_sub_board_create
+    | Board_sub_board_delete
+    | Board_sub_board_get
+    | Board_sub_board_list
+    | Board_sub_board_update
     | Board_vote -> true
     | _ -> false
+  ;;
 
   let pp fmt t = Format.pp_print_string fmt (to_string t)
 end
@@ -572,9 +477,13 @@ module Masc_keeper = struct
     | Down
     | List
     | Msg
+    | Msg_result
     | Persona_audit
     | Repair
     | Reset
+    | Sandbox_start
+    | Sandbox_status
+    | Sandbox_stop
     | Status
     | Up
 
@@ -585,11 +494,16 @@ module Masc_keeper = struct
     | Down -> "masc_keeper_down"
     | List -> "masc_keeper_list"
     | Msg -> "masc_keeper_msg"
+    | Msg_result -> "masc_keeper_msg_result"
     | Persona_audit -> "masc_keeper_persona_audit"
     | Repair -> "masc_keeper_repair"
     | Reset -> "masc_keeper_reset"
+    | Sandbox_start -> "masc_keeper_sandbox_start"
+    | Sandbox_status -> "masc_keeper_sandbox_status"
+    | Sandbox_stop -> "masc_keeper_sandbox_stop"
     | Status -> "masc_keeper_status"
     | Up -> "masc_keeper_up"
+  ;;
 
   let of_string = function
     | "masc_keeper_clear" -> Some Clear
@@ -598,12 +512,17 @@ module Masc_keeper = struct
     | "masc_keeper_down" -> Some Down
     | "masc_keeper_list" -> Some List
     | "masc_keeper_msg" -> Some Msg
+    | "masc_keeper_msg_result" -> Some Msg_result
     | "masc_keeper_persona_audit" -> Some Persona_audit
     | "masc_keeper_repair" -> Some Repair
     | "masc_keeper_reset" -> Some Reset
+    | "masc_keeper_sandbox_start" -> Some Sandbox_start
+    | "masc_keeper_sandbox_status" -> Some Sandbox_status
+    | "masc_keeper_sandbox_stop" -> Some Sandbox_stop
     | "masc_keeper_status" -> Some Status
     | "masc_keeper_up" -> Some Up
     | _ -> None
+  ;;
 
   let pp fmt t = Format.pp_print_string fmt (to_string t)
 end
@@ -617,25 +536,49 @@ let to_string = function
   | Keeper k -> Keeper.to_string k
   | Masc m -> Masc.to_string m
   | Masc_keeper mk -> Masc_keeper.to_string mk
+;;
 
 let of_string s =
   match Keeper.of_string s with
   | Some k -> Some (Keeper k)
   | None ->
-    match Masc_keeper.of_string s with
-    | Some mk -> Some (Masc_keeper mk)
-    | None ->
-      match Masc.of_string s with
-      | Some m -> Some (Masc m)
-      | None -> None
+    (match Masc_keeper.of_string s with
+     | Some mk -> Some (Masc_keeper mk)
+     | None ->
+       (match Masc.of_string s with
+        | Some m -> Some (Masc m)
+        | None -> None))
+;;
 
 let pp fmt t = Format.pp_print_string fmt (to_string t)
 
-let is_keeper = function Keeper _ -> true | _ -> false
-let is_masc = function Masc _ -> true | _ -> false
-let is_masc_keeper = function Masc_keeper _ -> true | _ -> false
+(* Enumerate every [t] constructor in each sibling predicate so the
+   compiler flags any new variant added to [t]. If a future variant
+   (say [External of ...]) joins the sum, the previous [_ -> false]
+   catch-alls would silently classify it as not-keeper / not-masc /
+   not-masc_keeper without any review point; with explicit
+   enumeration the new variant must be deliberately mapped on each
+   predicate. Mirrors the [is_board] convention below and the fix
+   shape in PR #14842 (Resilience_outcome predicates). Same FSM
+   Sparse Match anti-pattern as PRs #14716, #14790, #14806, #14810,
+   #14816, #14823, #14829. *)
+let is_keeper = function
+  | Keeper _ -> true
+  | Masc _ | Masc_keeper _ -> false
+;;
+
+let is_masc = function
+  | Masc _ -> true
+  | Keeper _ | Masc_keeper _ -> false
+;;
+
+let is_masc_keeper = function
+  | Masc_keeper _ -> true
+  | Keeper _ | Masc _ -> false
+;;
 
 let is_board = function
   | Keeper k -> Keeper.is_board k
   | Masc m -> Masc.is_board m
   | Masc_keeper _ -> false
+;;

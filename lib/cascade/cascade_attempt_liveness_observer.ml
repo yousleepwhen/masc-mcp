@@ -5,6 +5,7 @@
 
 module L = Cascade_attempt_liveness
 module Cfg = Cascade_attempt_liveness_config
+module Runtime_binding = Agent_sdk.Provider_runtime_binding
 
 exception Liveness_kill of L.failure
 
@@ -13,22 +14,88 @@ type t = {
   budget : L.budget;
   cascade_label : string;
   provider_label : string;
+  candidate_key : string option;
+  external_wait : (unit -> bool) option;
+  started_at : float;
+  first_chunk_at : float option ref;
+  last_chunk_at : float option ref;
+  max_inter_chunk_s : float ref;
+  success_sample : (string * Cfg.success_sample) option ref;
   state : L.state ref;
   sw_ref : Eio.Switch.t option ref;
   finalized : bool ref;
+  stop_tick_p : unit Eio.Promise.t;
+  stop_tick_r : unit Eio.Promise.u;
+  stop_tick_requested : bool Atomic.t;
 }
 
 let mode (t : t) : Cfg.mode = t.mode
 
-let create ~mode ~budget ~cascade_label ~provider_label ~started_at =
+(* RFC-0132 PR-2: liveness observer public label = external boundary; redact via SSOT. *)
+let public_runtime_provider_label =
+  Boundary_redaction.to_string Boundary_redaction.runtime_provider_label
+let public_other_provider_label = "other"
+
+let normalize_provider_label label = String.trim label |> String.lowercase_ascii
+
+let provider_prefix raw =
+  match String.index_opt raw ':' with
+  | Some idx when idx > 0 -> String.sub raw 0 idx
+  | _ -> raw
+;;
+
+let public_known_provider_label label =
+  let normalized = normalize_provider_label label in
+  if normalized = ""
+  then None
+  else
+    match Runtime_binding.find normalized with
+    | Some binding -> Some binding.Runtime_binding.id
+    | None ->
+      (match Llm_provider.Capabilities.capabilities_for_provider_label normalized with
+       | Some _ -> Some normalized
+       | None -> None)
+;;
+
+let public_provider_label_of_raw raw =
+  let raw = String.trim raw in
+  if raw = "" || String.equal raw public_runtime_provider_label
+  then public_runtime_provider_label
+  else
+    match public_known_provider_label (provider_prefix raw) with
+    | Some provider -> provider
+    | None -> public_other_provider_label
+;;
+
+let create
+      ~mode
+      ~budget
+      ~cascade_label
+      ?(provider_label = public_runtime_provider_label)
+      ?external_wait
+      ?candidate_key
+      ~started_at
+      ()
+  =
+  let stop_tick_p, stop_tick_r = Eio.Promise.create () in
   {
     mode;
     budget;
     cascade_label;
-    provider_label;
+    provider_label = public_provider_label_of_raw provider_label;
+    candidate_key;
+    external_wait;
+    started_at;
+    first_chunk_at = ref None;
+    last_chunk_at = ref None;
+    max_inter_chunk_s = ref 0.0;
+    success_sample = ref None;
     state = ref (L.initial ~started_at);
     sw_ref = ref None;
     finalized = ref false;
+    stop_tick_p;
+    stop_tick_r;
+    stop_tick_requested = Atomic.make false;
   }
 
 let current_state_for_test (t : t) : L.state = !(t.state)
@@ -128,6 +195,34 @@ let react_to_output (t : t) (output : L.output) : unit =
 
 let now_seconds () = Time_compat.now ()
 
+let observe_chunk_clock (t : t) ~(at : float) : unit =
+  (match !(t.first_chunk_at) with
+   | None -> t.first_chunk_at := Some at
+   | Some _ -> ());
+  (match !(t.last_chunk_at) with
+   | None -> ()
+   | Some prev ->
+     let gap = at -. prev in
+     if Float.is_finite gap && gap > !(t.max_inter_chunk_s)
+     then t.max_inter_chunk_s := gap);
+  t.last_chunk_at := Some at
+
+let prometheus_recorder (t : t) : L.recorder =
+  let labels = [ ("cascade", t.cascade_label); ("provider", t.provider_label) ] in
+  {
+    L.record_ttft = (fun seconds ->
+        Prometheus.observe_histogram Prometheus.metric_cascade_ttfb_seconds
+          ~labels seconds);
+    record_inter_chunk = (fun seconds ->
+        Prometheus.observe_histogram Prometheus.metric_cascade_inter_chunk_seconds
+          ~labels seconds);
+    record_liveness_outcome = (fun _ -> ());
+  }
+
+let stop_tick_fiber (t : t) : unit =
+  if Atomic.compare_and_set t.stop_tick_requested false true then
+    Eio.Promise.resolve t.stop_tick_r ()
+
 let step_with_event (t : t) (evt : Agent_sdk.Types.sse_event) : unit =
   if L.is_terminal !(t.state) then ()
   else
@@ -143,9 +238,29 @@ let step_with_event (t : t) (evt : Agent_sdk.Types.sse_event) : unit =
     match liveness_event with
     | None -> ()
     | Some le ->
-        let new_state, output = L.step t.budget !(t.state) le in
+        (match le with
+         | L.Chunk (_, at) -> observe_chunk_clock t ~at
+         | L.Tick _ | L.Provider_wire_error _ -> ());
+        let new_state, output =
+          L.step ~recorder:(prometheus_recorder t) t.budget !(t.state) le
+        in
         t.state := new_state;
+        if L.is_terminal new_state then stop_tick_fiber t;
         react_to_output t output
+
+let external_wait_active (t : t) : bool =
+  match t.external_wait with
+  | None -> false
+  | Some f ->
+    (try f () with
+     | Eio.Cancel.Cancelled _ as e -> raise e
+     | exn ->
+       Log.Misc.warn
+         "cascade_attempt_liveness: external_wait predicate raised \
+          (cascade=%s provider=runtime): %s"
+         t.cascade_label
+         (Printexc.to_string exn);
+       false)
 
 let wrap_on_event (t : t)
     (original : (Agent_sdk.Types.sse_event -> unit) option)
@@ -157,6 +272,7 @@ let wrap_on_event (t : t)
         (* Run the original first so baseline semantics never lose an
            event even if the FSM step would raise (defensive — Observe
            must not raise; Enforce raises only via Switch.fail). *)
+        Eio_guard.check_if_ready ();
         (match original with
          | None -> ()
          | Some f -> (
@@ -165,17 +281,18 @@ let wrap_on_event (t : t)
              | exn ->
                  Log.Misc.warn
                    "cascade_attempt_liveness: original on_event raised \
-                    (cascade=%s provider=%s): %s"
-                   t.cascade_label t.provider_label
+                    (cascade=%s provider=runtime): %s"
+                   t.cascade_label
                    (Printexc.to_string exn)));
+        Eio_guard.check_if_ready ();
         try step_with_event t evt with
         | Eio.Cancel.Cancelled _ as e -> raise e
         | Liveness_kill _ as e -> raise e
         | exn ->
             Log.Misc.warn
               "cascade_attempt_liveness: step raised (cascade=%s \
-               provider=%s): %s"
-              t.cascade_label t.provider_label (Printexc.to_string exn)
+               provider=runtime): %s"
+              t.cascade_label (Printexc.to_string exn)
       in
       Some wrapped
 
@@ -197,27 +314,55 @@ let start_tick_fiber (t : t) ~(sw : Eio.Switch.t)
   | Cfg.Observe | Cfg.Enforce ->
       register_attempt_switch t ~sw;
       let interval = tick_interval_seconds t.budget in
+      let await_tick_or_stop () =
+        Eio.Fiber.first
+          (fun () ->
+             Eio.Time.sleep clock interval;
+             `Tick)
+          (fun () ->
+             Eio.Promise.await t.stop_tick_p;
+             `Stop)
+      in
       Eio.Fiber.fork ~sw (fun () ->
           let rec loop () =
             if L.is_terminal !(t.state) then ()
             else begin
-              (try Eio.Time.sleep clock interval
-               with Eio.Cancel.Cancelled _ as e -> raise e);
-              if L.is_terminal !(t.state) then ()
-              else begin
-                let now = now_seconds () in
-                let new_state, output =
-                  L.step t.budget !(t.state) (L.Tick now)
-                in
-                t.state := new_state;
-                (try react_to_output t output
-                 with Liveness_kill _ as e -> raise e);
-                loop ()
-              end
+              match await_tick_or_stop () with
+              | `Stop -> ()
+              | `Tick ->
+                if L.is_terminal !(t.state) then ()
+                else begin
+                  let now = now_seconds () in
+                  let event =
+                    if external_wait_active t
+                    then L.Chunk (L.Stream_chunk.Heartbeat, now)
+                    else L.Tick now
+                  in
+                  (match event with
+                   | L.Chunk (_, at) -> observe_chunk_clock t ~at
+                   | L.Tick _ | L.Provider_wire_error _ -> ());
+                  let new_state, output =
+                    L.step ~recorder:(prometheus_recorder t)
+                      t.budget !(t.state) event
+                  in
+                  t.state := new_state;
+                  (try react_to_output t output
+                   with Liveness_kill _ as e -> raise e);
+                  loop ()
+                end
             end
           in
           try loop () with
-          | Eio.Cancel.Cancelled _ -> ()
+          (* Cooperative cancel: re-raise so the parent switch sees the
+             signal propagate out of this fiber. Previously [-> ()] which
+             absorbed the cancel and broke Eio back-propagation conventions
+             (every other live-loop fiber in lib/keeper/keeper_keepalive.ml,
+             lib/keeper/keeper_heartbeat_loop.ml does the explicit re-raise). *)
+          | Eio.Cancel.Cancelled _ as e -> raise e
+          (* Liveness_kill is the loop's own terminator: the body raises it
+             via [react_to_output] when the budget is exceeded and we want
+             the fiber to exit cleanly without surfacing the exception to
+             the parent. Intentional absorption. *)
           | Liveness_kill _ -> ()
           | exn ->
               Log.Misc.warn
@@ -238,11 +383,24 @@ let finalize (t : t) : unit =
   if !(t.finalized) then ()
   else begin
     t.finalized := true;
+    stop_tick_fiber t;
     match t.mode with
     | Cfg.Off -> ()
     | Cfg.Observe | Cfg.Enforce ->
         let outcome = outcome_of_state !(t.state) in
+        (match !(t.state), t.candidate_key, !(t.first_chunk_at), !(t.last_chunk_at) with
+         | L.Success, Some candidate_key, Some first_chunk_at, Some last_chunk_at ->
+           t.success_sample :=
+             Some
+               ( candidate_key
+               , { Cfg.ttft_ms = (first_chunk_at -. t.started_at) *. 1000.0
+                 ; max_inter_chunk_ms = !(t.max_inter_chunk_s) *. 1000.0
+                 ; wall_ms = (last_chunk_at -. t.started_at) *. 1000.0
+                 } )
+         | _ -> ());
         Prometheus.inc_counter
           Prometheus.metric_cascade_attempt_liveness_observed
           ~labels:(observed_labels t ~outcome) ()
   end
+
+let success_sample_for_candidate (t : t) = !(t.success_sample)

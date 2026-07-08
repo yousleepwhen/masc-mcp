@@ -1,18 +1,28 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   fetchDashboardShell,
+  fetchDashboardExecutionTrust,
   fetchDashboardGovernance,
   fetchDashboardGoalDetail,
   fetchDashboardGoalsTree,
   fetchDashboardTools,
+  fetchKeeperToolCalls,
+  fetchKeeperToolStats,
   fetchDashboardMemory,
   fetchCostLatency,
   fetchKeeperConfig,
+  fetchKeeperCostMetrics,
+  fetchKeeperDecisions,
   fetchMemorySubsystems,
+  fetchRuntimeProviders,
   fetchRuntimeModelMetrics,
+  fetchDashboardCacheStats,
+  fetchTelemetry,
+  fetchTelemetrySummary,
   fetchTlcResults,
   fetchToolQuality,
 } from './dashboard'
+import { fetchDashboardShell as fetchDashboardShellHot } from './dashboard-hot'
 import { keeperRuntimeBlockerLabel } from '../lib/keeper-runtime-display'
 
 afterEach(() => {
@@ -65,6 +75,10 @@ function makeRawGoalNode(overrides: Record<string, unknown> = {}) {
 }
 
 describe('fetchDashboardShell', () => {
+  it('uses the hot-path shell fetcher as the API SSOT', () => {
+    expect(fetchDashboardShell).toBe(fetchDashboardShellHot)
+  })
+
   it('uses the light shell query when requested', async () => {
     const rawResponse = {
       status: { project: 'default' },
@@ -82,6 +96,179 @@ describe('fetchDashboardShell', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/v1/dashboard/shell?light=true')
+  })
+})
+
+describe('fetchDashboardExecutionTrust', () => {
+  it('requests the dedicated execution trust surface and preserves coverage gaps', async () => {
+    const rawResponse = {
+      generated_at: '2026-05-14T00:00:00Z',
+      source: 'execution_receipt',
+      producer: 'keeper_agent_run.execution_receipt',
+      durable_store: '.masc/keepers/*/execution-receipts',
+      dashboard_surface: '/api/v1/dashboard/execution-trust',
+      dashboard_surface_envelope: {
+        schema: 'masc.dashboard_surface.v1',
+        schema_version: 1,
+        surface: '/api/v1/dashboard/execution-trust',
+        source: 'execution_receipt',
+        generated_at_iso: '2026-05-14T00:00:00Z',
+        cache: {
+          state: 'request_cache',
+          key: 'execution-trust:default',
+          ttl_s: 15,
+          stale: true,
+          stale_reason: 'execution_receipt_append_failed',
+          latest_age_s: null,
+          health: 'coverage_gap',
+        },
+        migration: {
+          body_shape: 'root_fields_preserved',
+          rule: 'additive envelope first',
+        },
+      },
+      freshness_slo_s: 900,
+      entry_count: 0,
+      total: 0,
+      keepers: [],
+      health: 'coverage_gap',
+      stale_reason: 'execution_receipt_append_failed',
+      coverage_gap_count: 1,
+      coverage_gaps: [
+        {
+          schema: 'masc.telemetry_coverage_gap.v1',
+          source: 'execution_receipt',
+          producer: 'keeper_agent_run.execution_receipt',
+          durable_store: '.masc/keepers/*/execution-receipts',
+          dashboard_surface: '/api/v1/dashboard/execution-trust',
+          stale_reason: 'execution_receipt_append_failed',
+          keeper_name: 'sangsu',
+          trace_id: 'trace-exec-gap',
+        },
+      ],
+    }
+
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(rawResponse), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await fetchDashboardExecutionTrust()
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/v1/dashboard/execution-trust')
+    expect(result.coverage_gap_count).toBe(1)
+    expect(result.dashboard_surface_envelope).toMatchObject({
+      schema: 'masc.dashboard_surface.v1',
+      surface: '/api/v1/dashboard/execution-trust',
+      source: 'execution_receipt',
+      cache: {
+        state: 'request_cache',
+        key: 'execution-trust:default',
+        stale_reason: 'execution_receipt_append_failed',
+      },
+      migration: { body_shape: 'root_fields_preserved' },
+    })
+    expect(result.coverage_gaps?.[0]).toMatchObject({
+      producer: 'keeper_agent_run.execution_receipt',
+      durable_store: '.masc/keepers/*/execution-receipts',
+      dashboard_surface: '/api/v1/dashboard/execution-trust',
+      stale_reason: 'execution_receipt_append_failed',
+      keeper_name: 'sangsu',
+      trace_id: 'trace-exec-gap',
+    })
+  })
+})
+
+describe('keeper tool telemetry fetchers', () => {
+  it('preserves tool-stats coverage gap rows', async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(
+      new Response(JSON.stringify({
+        keeper: 'keeper-alpha',
+        window_hours: 24,
+        total_entries: 0,
+        source: 'trajectory_tool_call',
+        health: 'coverage_gap',
+        stale_reason: 'trajectory_append_failed',
+        coverage_gaps: [
+          {
+            schema: 'masc.telemetry_coverage_gap.v1',
+            ts: 1_777_100_000,
+            ts_iso: '2026-05-14T00:00:00Z',
+            source: 'trajectory_tool_call',
+            producer: 'keeper_hooks_oas.post_tool_use',
+            durable_store: '.masc/keepers/keeper-alpha/trajectories',
+            dashboard_surface: '/api/v1/keepers/:name/tool-stats',
+            stale_reason: 'trajectory_append_failed',
+            keeper_name: 'keeper-alpha',
+            trace_id: 'trace-tool-stats-gap',
+            error: 'append denied',
+          },
+        ],
+        tools: [],
+        timeline: [],
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    ))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await fetchKeeperToolStats('keeper-alpha')
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/v1/keepers/keeper-alpha/tool-stats')
+    expect(result.coverage_gap_count).toBe(1)
+    expect(result.coverage_gaps?.[0]).toMatchObject({
+      producer: 'keeper_hooks_oas.post_tool_use',
+      durable_store: '.masc/keepers/keeper-alpha/trajectories',
+      dashboard_surface: '/api/v1/keepers/:name/tool-stats',
+      stale_reason: 'trajectory_append_failed',
+      trace_id: 'trace-tool-stats-gap',
+      error: 'append denied',
+    })
+  })
+
+  it('preserves tool-call coverage gap rows', async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(
+      new Response(JSON.stringify({
+        keeper: 'keeper-alpha',
+        count: 0,
+        source: 'tool_call_io',
+        health: 'coverage_gap',
+        stale_reason: 'tool_call_io_append_failed',
+        coverage_gaps: [
+          {
+            schema: 'masc.telemetry_coverage_gap.v1',
+            source: 'tool_call_io',
+            producer: 'keeper_tool_call_log.append',
+            durable_store: '.masc/tool_calls',
+            dashboard_surface: '/api/v1/keepers/:name/tool-calls',
+            stale_reason: 'tool_call_io_append_failed',
+            keeper_name: 'keeper-alpha',
+            trace_id: 'trace-tool-call-gap',
+          },
+        ],
+        entries: [],
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    ))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await fetchKeeperToolCalls('keeper-alpha')
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/v1/keepers/keeper-alpha/tool-calls')
+    expect(result.coverage_gap_count).toBe(1)
+    expect(result.coverage_gaps?.[0]).toMatchObject({
+      producer: 'keeper_tool_call_log.append',
+      durable_store: '.masc/tool_calls',
+      dashboard_surface: '/api/v1/keepers/:name/tool-calls',
+      stale_reason: 'tool_call_io_append_failed',
+      trace_id: 'trace-tool-call-gap',
+    })
   })
 })
 
@@ -167,8 +354,8 @@ describe('fetchDashboardTools', () => {
     const result = await fetchDashboardTools()
 
     const tools = result.tool_inventory.tools
-    expect(tools[0]).toMatchObject({ name: 'tool_a', category: 'uncategorized', tier: 'standard' })
-    expect(tools[1]).toMatchObject({ name: 'tool_b', category: 'keeper', tier: 'standard' })
+    expect(tools[0]).toMatchObject({ name: 'tool_a', category: 'uncategorized', tier: '(unknown tier)' })
+    expect(tools[1]).toMatchObject({ name: 'tool_b', category: 'keeper', tier: '(unknown tier)' })
     expect(tools[2]).toMatchObject({ name: 'tool_c', category: 'uncategorized', tier: 'essential' })
   })
 
@@ -212,6 +399,55 @@ describe('fetchDashboardTools', () => {
 
     const result = await fetchDashboardTools()
     expect(result.tool_inventory).toBeDefined()
+  })
+
+  it('preserves tool usage coverage gap rows', async () => {
+    const rawResponse = {
+      tool_inventory: { tools: [] },
+      tool_usage: {
+        total_calls: 0,
+        distinct_tools_called: 0,
+        top_20: [],
+        never_called_count: 0,
+        dispatch_v2_enabled: false,
+        registered_count: 0,
+        source: 'tool_usage',
+        health: 'coverage_gap',
+        stale_reason: 'tool_usage_append_failed',
+        coverage_gap_count: 1,
+        coverage_gaps: [
+          {
+            schema: 'masc.telemetry_coverage_gap.v1',
+            source: 'tool_usage',
+            producer: 'tool_usage_log',
+            durable_store: '.masc/tool_usage',
+            dashboard_surface: '/api/v1/dashboard/tools',
+            stale_reason: 'tool_usage_append_failed',
+            error: 'synthetic append failure',
+          },
+        ],
+      },
+    }
+
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(rawResponse), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await fetchDashboardTools()
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/v1/dashboard/tools')
+    expect(result.tool_usage.coverage_gap_count).toBe(1)
+    expect(result.tool_usage.coverage_gaps?.[0]).toMatchObject({
+      producer: 'tool_usage_log',
+      durable_store: '.masc/tool_usage',
+      dashboard_surface: '/api/v1/dashboard/tools',
+      stale_reason: 'tool_usage_append_failed',
+      error: 'synthetic append failure',
+    })
   })
 })
 
@@ -275,6 +511,203 @@ describe('fetchToolQuality', () => {
     expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/v1/dashboard/tool-quality?window_hours=24')
     expect(result.window_hours).toBe(24)
     expect(result.sampling_mode).toBe('window_hours')
+  })
+
+  it('preserves tool-quality coverage gap rows', async () => {
+    const rawResponse = {
+      generated_at: '2026-05-14T00:00:00Z',
+      sampling_mode: 'window_hours',
+      sample_limit: null,
+      window_hours: 24,
+      total: 2,
+      success: 1,
+      failure: 1,
+      success_rate: 50,
+      source: 'tool_call_io',
+      health: 'coverage_gap',
+      stale_reason: 'append_failed',
+      coverage_gap_count: 1,
+      coverage_gaps: [
+        {
+          schema: 'masc.telemetry_coverage_gap.v1',
+          source: 'tool_call_io',
+          producer: 'keeper_tool_call_log.append',
+          durable_store: '.masc/tool_calls',
+          dashboard_surface: '/api/v1/dashboard/tool-quality',
+          stale_reason: 'append_failed',
+          trace_id: 'trace-quality-gap',
+          error: 'disk full',
+        },
+      ],
+      by_tool: [],
+      by_keeper: [],
+      failure_categories: [],
+    }
+
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(rawResponse), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await fetchToolQuality({ windowHours: 24 })
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/v1/dashboard/tool-quality?window_hours=24')
+    expect(result.coverage_gap_count).toBe(1)
+    expect(result.coverage_gaps?.[0]).toMatchObject({
+      producer: 'keeper_tool_call_log.append',
+      durable_store: '.masc/tool_calls',
+      dashboard_surface: '/api/v1/dashboard/tool-quality',
+      stale_reason: 'append_failed',
+      trace_id: 'trace-quality-gap',
+      error: 'disk full',
+    })
+  })
+})
+
+describe('fetchTelemetrySummary', () => {
+  it('preserves telemetry envelope metadata', async () => {
+    const rawResponse = {
+      generated_at: '2026-05-14T00:00:00Z',
+      generated_at_iso: '2026-05-14T00:00:00Z',
+      dashboard_surface: '/api/v1/dashboard/telemetry',
+      source: 'telemetry_unified',
+      retention: { window_days: 7 },
+      query: { source: 'tool_metric', n: 100 },
+      count: 1,
+      total_matching_entries: 2,
+      truncated: true,
+      entries: [
+        {
+          source: 'tool_metric',
+          ts_unix: 1_775_709_000,
+          tool_name: 'mcp__masc__masc_status',
+        },
+      ],
+    }
+
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(rawResponse), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await fetchTelemetry({ source: 'tool_metric', n: 100 })
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/v1/dashboard/telemetry?source=tool_metric&n=100')
+    expect(result.dashboard_surface).toBe('/api/v1/dashboard/telemetry')
+    expect(result.source).toBe('telemetry_unified')
+    expect(result.retention).toMatchObject({ window_days: 7 })
+    expect(result.query).toMatchObject({ source: 'tool_metric', n: 100 })
+    expect(result.total_matching_entries).toBe(2)
+    expect(result.truncated).toBe(true)
+  })
+
+  it('decodes dashboard cache stats details', async () => {
+    const rawResponse = {
+      entries: 3,
+      fresh: 1,
+      stale: 1,
+      expired: 0,
+      ready_fresh: 1,
+      ready_stale: 1,
+      computing: 1,
+      max_entries: 500,
+      hits_total: 8,
+      misses_total: 2,
+      hit_ratio: 0.8,
+      timeout_circuit_open: 0,
+      timeout_circuit_tracked: 1,
+      entries_truncated_to: 50,
+      entry_details: [
+        {
+          key: 'telemetry:/Users/dancer/me/.masc:src=tool_metric:n=100',
+          kind: 'fresh',
+          ttl_remaining_ms: 750,
+          stale_remaining_ms: 10_000,
+        },
+        {
+          key: 'health:full',
+          kind: 'computing',
+          computing_for_ms: 12,
+          has_stale_fallback: true,
+        },
+      ],
+    }
+
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(rawResponse), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await fetchDashboardCacheStats()
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/v1/dashboard/cache-stats')
+    expect(result.hit_ratio).toBe(0.8)
+    expect(result.entry_details[0]).toMatchObject({
+      key: 'telemetry:/Users/dancer/me/.masc:src=tool_metric:n=100',
+      kind: 'fresh',
+      ttl_remaining_ms: 750,
+      stale_remaining_ms: 10_000,
+    })
+    expect(result.entry_details[1]).toMatchObject({
+      kind: 'computing',
+      computing_for_ms: 12,
+      has_stale_fallback: true,
+    })
+  })
+
+  it('preserves per-source coverage gap rows', async () => {
+    const rawResponse = {
+      generated_at: '2026-05-14T00:00:00Z',
+      total_entries: 0,
+      sources: [
+        {
+          source: 'agent_event',
+          entry_count: 0,
+          health: 'coverage_gap',
+          stale_reason: 'append_failed',
+          coverage_gaps: [
+            {
+              schema: 'masc.telemetry_coverage_gap.v1',
+              source: 'agent_event',
+              producer: 'telemetry_eio',
+              durable_store: '.masc/telemetry',
+              dashboard_surface: '/api/v1/dashboard/telemetry/summary',
+              stale_reason: 'append_failed',
+              error: 'disk full',
+            },
+          ],
+        },
+      ],
+    }
+
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(rawResponse), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await fetchTelemetrySummary()
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/v1/dashboard/telemetry/summary')
+    expect(result.sources[0]?.coverage_gap_count).toBe(1)
+    expect(result.sources[0]?.coverage_gaps?.[0]).toMatchObject({
+      producer: 'telemetry_eio',
+      durable_store: '.masc/telemetry',
+      dashboard_surface: '/api/v1/dashboard/telemetry/summary',
+      stale_reason: 'append_failed',
+      error: 'disk full',
+    })
   })
 })
 
@@ -628,7 +1061,7 @@ describe('dashboard goals decoding', () => {
           latest_execution_at: '2026-04-23T00:10:00Z',
           latest_receipt: { outcome: 'completed' },
           runtime_trust: {
-            disposition: 'Pause',
+            disposition: 'Blocked',
             disposition_reason: 'approval_waiting',
             needs_attention: true,
             attention_reason: 'approval_pending',
@@ -637,10 +1070,30 @@ describe('dashboard goals decoding', () => {
               state: 'pending',
               summary: '1 approval request is waiting for an operator.',
               pending_count: 1,
+              pending_first: {
+                id: 'approval-1',
+                tool_name: 'Execute',
+                task_id: 'task-1',
+                blocker_class: 'blocked_before_worktree',
+              },
             },
             execution: {
               tool_contract_result: 'unknown',
+              runtime_proof_status: 'missing_required_tool_use',
+              required_tools: ['keeper_task_done'],
+              missing_required_tools: ['keeper_task_done'],
+              requested_tools: ['keeper_task_claim', 'keeper_task_done'],
+              tools_used: ['keeper_task_claim'],
+              unexpected_tools: ['keeper_board_list'],
+              requested_tool_count: 2,
+              tools_used_count: 1,
+              unexpected_tool_count: 1,
+              provider_attempt_count: 2,
+              provider_fallback_applied: true,
+              provider_selected_model: 'runtime-lane',
+              cascade_outcome: 'fallback_exhausted',
               sandbox_summary: 'docker / none',
+              sandbox_root: '/tmp/keeper-sandbox',
               mutation_guard_summary: 'mutation_contract_not_observed',
               latest_receipt_at: '2026-04-23T00:10:00Z',
             },
@@ -688,7 +1141,7 @@ describe('dashboard goals decoding', () => {
 
     expect(result.linked_keepers[0]).toMatchObject({
       runtime_trust: {
-        disposition: 'Pause',
+        disposition: 'Blocked',
         disposition_reason: 'approval_waiting',
         needs_attention: true,
         attention_reason: 'approval_pending',
@@ -697,10 +1150,30 @@ describe('dashboard goals decoding', () => {
           state: 'pending',
           summary: '1 approval request is waiting for an operator.',
           pending_count: 1,
+          pending_first: {
+            id: 'approval-1',
+            tool_name: 'Execute',
+            task_id: 'task-1',
+            blocker_class: 'blocked_before_worktree',
+          },
         },
         execution_summary: {
           tool_contract_result: 'unknown',
+          runtime_proof_status: 'missing_required_tool_use',
+          required_tools: ['keeper_task_done'],
+          missing_required_tools: ['keeper_task_done'],
+          requested_tools: ['keeper_task_claim', 'keeper_task_done'],
+          tools_used: ['keeper_task_claim'],
+          unexpected_tools: ['keeper_board_list'],
+          requested_tool_count: 2,
+          tools_used_count: 1,
+          unexpected_tool_count: 1,
+          provider_attempt_count: 2,
+          provider_fallback_applied: true,
+          provider_selected_model: 'runtime-lane',
+          cascade_outcome: 'fallback_exhausted',
           sandbox_summary: 'docker / none',
+          sandbox_root: '/tmp/keeper-sandbox',
           mutation_guard_summary: 'mutation_contract_not_observed',
           latest_receipt_at: '2026-04-23T00:10:00Z',
         },
@@ -868,7 +1341,7 @@ describe('fetchKeeperConfig', () => {
             gates: 'keeper_deny_list',
           },
         },
-        deny_list: 'keeper_bash',
+        deny_list: 'Execute',
         deny_list_count: '1',
         destructive_check_tools: 'dynamic_boundary (Tool_dispatch.is_destructive)',
         cost_budget: {
@@ -903,9 +1376,9 @@ describe('fetchKeeperConfig', () => {
         missing_active_goal_ids: [],
       },
       tools: {
-        tool_access: { kind: 'preset', preset: 'coding' },
+        tool_access: { kind: 'preset', preset: 'delivery' },
         resolved_allowlist: 'keeper_fs_read',
-        tool_denylist: 'keeper_bash',
+        tool_denylist: 'Execute',
         active_masc_tool_count: '1',
         active_keeper_tool_count: '2',
         total_active: '3',
@@ -919,8 +1392,6 @@ describe('fetchKeeperConfig', () => {
         override_fields: 'goal',
         cascade_catalog_source_kind: 'toml',
         cascade_catalog_source_path: '/tmp/config/cascade.toml',
-        cascade_runtime_json_path: '/tmp/config/cascade.json',
-        cascade_runtime_json_editable: 'false',
       },
       metrics: {
         generation: '3',
@@ -979,8 +1450,6 @@ describe('fetchKeeperConfig', () => {
     expect(result.sources.precedence).toEqual(['live_meta'])
     expect(result.sources.cascade_catalog_source_kind).toBe('toml')
     expect(result.sources.cascade_catalog_source_path).toBe('/tmp/config/cascade.toml')
-    expect(result.sources.cascade_runtime_json_path).toBe('/tmp/config/cascade.json')
-    expect(result.sources.cascade_runtime_json_editable).toBe(false)
     expect(result.metrics.total_cost_usd).toBe(0.12)
     expect(result.runtime.presence_keepalive_sec).toBe(30)
     expect(result.runtime.runtime_blocker_class).toBe('stale_fleet_batch')
@@ -991,6 +1460,36 @@ describe('fetchKeeperConfig', () => {
     expect(result.runtime_trust?.disposition).toBe('Pass')
   })
 
+  it('preserves missing keeper config latency as null instead of zero', async () => {
+    const cases: Array<[string, Record<string, unknown>]> = [
+      ['null', { last_latency_ms: null }],
+      ['missing', {}],
+      ['zero number', { last_latency_ms: 0 }],
+      ['zero string', { last_latency_ms: '0' }],
+    ]
+
+    for (const [label, metrics] of cases) {
+      const fetchMock = vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            name: 'keeper-sangsu',
+            metrics,
+          }),
+          {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          },
+        ),
+      )
+      vi.stubGlobal('fetch', fetchMock)
+
+      const result = await fetchKeeperConfig('keeper-sangsu')
+
+      expect(result.metrics.last_latency_ms, label).toBeNull()
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('preserves terminal runtime blocker classes through config fetch and display labeling', async () => {
     const cases = [
       ['no_tool_capable_provider', '도구 실행 Provider 없음'],
@@ -998,6 +1497,20 @@ describe('fetchKeeperConfig', () => {
       ['tool_required_unsatisfied', '필수 도구 미충족'],
       ['fiber_unresolved', 'Fiber 미해결'],
       ['stale_turn_timeout', '오래된 턴 만료'],
+      ['awaiting_operator', '운영자 조치 대기'],
+      ['awaiting_sandbox_egress', '샌드박스 egress 대기'],
+      ['supervisor_paused', 'Supervisor 일시정지'],
+      ['synthetic_stall', '합성 상태 정체'],
+      ['self_imposed_idle', '자체 대기'],
+      ['sdk_max_turns_exceeded', 'SDK 최대 턴 초과'],
+      ['sdk_token_budget_exceeded', 'SDK 토큰 예산 초과'],
+      ['sdk_cost_budget_exceeded', 'SDK 비용 예산 초과'],
+      ['sdk_unrecognized_stop_reason', 'SDK 미식별 정지 사유'],
+      ['sdk_idle_detected', 'SDK Idle 감지'],
+      ['sdk_tool_retry_exhausted', 'SDK 도구 재시도 소진'],
+      ['sdk_guardrail_violation', 'SDK 가드레일 위반'],
+      ['sdk_tripwire_violation', 'SDK Tripwire 위반'],
+      ['sdk_exit_condition_met', 'SDK 종료 조건 충족'],
     ] as const
 
     for (const [blockerClass, label] of cases) {
@@ -1026,6 +1539,50 @@ describe('fetchKeeperConfig', () => {
   })
 })
 
+describe('fetchRuntimeProviders', () => {
+  it('preserves stable provider lane IDs emitted by the API', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({
+        updated_at: '2026-05-13T13:00:00Z',
+        summary: {
+          providers: 1,
+          local_models: 0,
+          cloud_models: 1,
+          cli_models: 0,
+        },
+        providers: [
+          {
+            provider: 'runtime_lane_deadbeef1234',
+            kind: 'runtime',
+            runtime_kind: 'cloud',
+            status: 'available',
+            available: true,
+            supports_single_agent_run: true,
+            model_count: 1,
+            source: 'runtime',
+            discovery: {
+              healthy: true,
+              ctx_size: 200000,
+            },
+          },
+        ],
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await fetchRuntimeProviders()
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/v1/providers')
+    expect(result.providers[0]?.provider).toBe('runtime_lane_deadbeef1234')
+    expect(result.providers[0]?.kind).toBe('runtime')
+    expect(result.providers[0]?.runtime_kind).toBe('cloud')
+    expect(result.providers[0]?.discovery?.ctx_size).toBe(200000)
+  })
+})
+
 describe('fetchRuntimeModelMetrics', () => {
   it('preserves null telemetry fields instead of coercing them to zero', async () => {
     const rawResponse = {
@@ -1035,7 +1592,7 @@ describe('fetchRuntimeModelMetrics', () => {
       total_error_entries: 0,
       models: [
         {
-          model_id: 'kimi_cli:kimi-for-coding',
+          model_id: 'runtime_lane_a1b2c3d4e5f6',
           entry_count: 1,
           success_count: 1,
           usage_sample_count: 0,
@@ -1096,6 +1653,8 @@ describe('fetchRuntimeModelMetrics', () => {
     const result = await fetchRuntimeModelMetrics()
     const metric = result.models[0]!
 
+    expect(metric.model_id).toBe('runtime_lane_a1b2c3d4e5f6')
+    expect(metric.provider).toBeNull()
     expect(metric.usage_sample_count).toBe(0)
     expect(metric.telemetry_sample_count).toBe(0)
     expect(metric.usage_missing_count).toBe(1)
@@ -1122,12 +1681,109 @@ describe('fetchRuntimeModelMetrics', () => {
   })
 })
 
+describe('fetchKeeperCostMetrics', () => {
+  it('redacts legacy model breakdown labels while preserving cost totals', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({
+        window_minutes: 60,
+        keepers: [
+          {
+            keeper_name: 'keeper-alpha',
+            total_cost_usd: 0.5,
+            total_input_tokens: 10,
+            total_output_tokens: 5,
+            total_tokens: 15,
+            p50_latency_ms: 100,
+            p95_latency_ms: 100,
+            sample_count: 2,
+            model_breakdown: [
+              { model: 'private-provider:model-a', cost_usd: 0.2 },
+              { model: 'private-provider:model-b', cost_usd: 0.3 },
+            ],
+          },
+        ],
+        generated_at: 1,
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await fetchKeeperCostMetrics(60)
+
+    expect(result.keepers[0]?.model_breakdown).toEqual([
+      { model: 'runtime', cost_usd: 0.5 },
+    ])
+  })
+})
+
+describe('fetchKeeperDecisions', () => {
+  it('redacts legacy model_used labels from decision rows', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({
+        events: [
+          {
+            ts_unix: 1,
+            keeper_name: 'keeper-alpha',
+            event_type: 'turn',
+            outcome: 'success',
+            choice: 'use_shell',
+            reason: 'verify touched test target',
+            context: {
+              file_path: 'runtime.ts',
+              line: 19,
+              goal_id: 'goal-decision',
+              task_id: 'task-decision',
+              board_post_id: 'post-decision',
+              comment_id: 'comment-decision',
+              pr_id: '15035',
+              git_ref: 'refs/heads/decision-route',
+              log_id: 'decision-turn-19',
+              session_id: 'sess-decision',
+              operation_id: 'op-decision',
+              worker_run_id: 'worker-decision',
+            },
+            model_used: 'private-provider:model-a',
+          },
+        ],
+        limit: 1,
+        generated_at: 1,
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await fetchKeeperDecisions(1)
+
+    expect(result.events[0]?.model_used).toBeNull()
+    expect(result.events[0]?.choice).toBe('use_shell')
+    expect(result.events[0]?.reason).toBe('verify touched test target')
+    expect(result.events[0]?.context).toEqual({
+      file_path: 'runtime.ts',
+      line: 19,
+      goal_id: 'goal-decision',
+      task_id: 'task-decision',
+      board_post_id: 'post-decision',
+      comment_id: 'comment-decision',
+      pr_id: '15035',
+      git_ref: 'refs/heads/decision-route',
+      log_id: 'decision-turn-19',
+      session_id: 'sess-decision',
+      operation_id: 'op-decision',
+      worker_run_id: 'worker-decision',
+    })
+  })
+})
+
 describe('fetchCostLatency', () => {
   it('preserves missing latency percentiles as null instead of zero', async () => {
     const rawResponse = {
       perAgent: [
         {
-          agent: 'unlatenced-model',
+          agent: 'runtime_lane_7',
           in_tok: 100,
           out_tok: 50,
           cost: 0.01,
@@ -1137,7 +1793,7 @@ describe('fetchCostLatency', () => {
       ],
       matrix: {
         providers: ['local'],
-        models: ['unlatenced-model'],
+        models: ['runtime_lane_7'],
         grid: [[0.01]],
       },
       latencyBuckets: [],
@@ -1161,7 +1817,10 @@ describe('fetchCostLatency', () => {
     expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/v1/dashboard/cost-latency?window=60')
     expect(result.p50).toBeNull()
     expect(result.p95).toBeNull()
+    expect(result.perAgent[0]?.agent).toBe('runtime_lane_7')
     expect(result.perAgent[0]?.p50_ms).toBeNull()
     expect(result.perAgent[0]?.p95_ms).toBeNull()
+    expect(result.matrix.providers).toEqual(['runtime'])
+    expect(result.matrix.models).toEqual(['runtime_lane_7'])
   })
 })

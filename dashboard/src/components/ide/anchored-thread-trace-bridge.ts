@@ -1,4 +1,5 @@
 import { pushTrace } from './keeper-trace-store'
+import { isPositiveSafeInteger } from '../common/normalize'
 
 /**
  * RFC-0028 PR-δ producer: anchored-thread → keeper-trace bridge.
@@ -8,7 +9,7 @@ import { pushTrace } from './keeper-trace-store'
  * new ones and return the updated set.
  *
  * Why a pure function (not a stateful subscription):
- *   - The owning component (`IdeConversationRailMock`) already has the
+ *   - The owning component (`IdeConversationRail`) already has the
  *     fetched `posts` array as a useState value. A pure mapper called
  *     from a `useEffect([posts])` is sufficient and trivially testable.
  *   - Avoids storing per-component state inside the trace store, which
@@ -18,21 +19,26 @@ import { pushTrace } from './keeper-trace-store'
  *
  * Mapping (BoardPost → KeeperTraceEvent):
  *   id         ← post.id
- *   tsMs       ← Date.parse(post.created_at_iso) (NaN-guarded)
+ *   tsMs       ← Date.parse(post.created_at) (NaN-guarded)
  *   keeperName ← post.author_identity
  *   threadId   ← post.id (BoardPost is the thread itself for now)
- *   line       ← null (BoardPost carries no line anchor; consumers fall
- *                back to the keeper-level no-line bucket per RFC §5)
+ *   filePath   ← post.filePath when the caller has already resolved a safe
+ *                board-thread file anchor; otherwise null
+ *   line       ← post.line when the caller has already resolved a safe
+ *                board-thread file anchor; otherwise null so consumers fall
+ *                back to the keeper-level no-line bucket per RFC §5
  *
- * NaN-guard rationale: a malformed `created_at_iso` would otherwise
+ * NaN-guard rationale: a malformed `created_at` would otherwise
  * propagate `NaN` into the store and break binary-search insertion. We
  * silently skip such posts — they cannot participate in replay either.
  */
 
 export interface AnchoredThreadProducerInput {
   readonly id: string
-  readonly created_at_iso: string
+  readonly created_at: string
   readonly author_identity: string
+  readonly filePath?: string | null
+  readonly line?: number | null
 }
 
 /**
@@ -48,7 +54,7 @@ export function bridgePostsToTrace(
   const next = new Set(alreadyEmitted)
   for (const post of posts) {
     if (next.has(post.id)) continue
-    const tsMs = Date.parse(post.created_at_iso)
+    const tsMs = Date.parse(post.created_at)
     if (!Number.isFinite(tsMs)) continue
     pushTrace({
       id: post.id,
@@ -56,9 +62,14 @@ export function bridgePostsToTrace(
       keeperName: post.author_identity,
       source: 'anchored-thread',
       threadId: post.id,
-      line: null,
+      filePath: post.filePath ?? null,
+      line: lineFromPost(post),
     })
     next.add(post.id)
   }
   return next
+}
+
+function lineFromPost(post: AnchoredThreadProducerInput): number | null {
+  return isPositiveSafeInteger(post.line) ? post.line : null
 }

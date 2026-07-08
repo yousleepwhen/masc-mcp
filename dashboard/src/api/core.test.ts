@@ -5,6 +5,7 @@ import {
   clearStoredToken,
   confirmOperatorAction,
   currentDashboardActor,
+  dashboardBearerToken,
   defaultBoardVoter,
   extractApiError,
   get,
@@ -60,11 +61,18 @@ describe('stored token metadata', () => {
     expect(getStoredToken()).toBeNull()
     expect(getStoredTokenMeta()).toBeNull()
   })
+
+  it('normalizes blank raw storage for shared transport auth', () => {
+    sessionStorage.setItem('masc_bearer_token', '   ')
+
+    expect(dashboardBearerToken()).toBeNull()
+    expect(authHeaders()).not.toHaveProperty('Authorization')
+  })
 })
 
 describe('post', () => {
   it('clears the canonical actor immediately when replacing a stored token', () => {
-    setCanonicalDashboardActor('codex')
+    setCanonicalDashboardActor('agent-code')
 
     setStoredToken('next-token')
 
@@ -72,7 +80,7 @@ describe('post', () => {
   })
 
   it('clears the canonical actor immediately when clearing a stored token', () => {
-    setCanonicalDashboardActor('codex')
+    setCanonicalDashboardActor('agent-code')
 
     clearStoredToken()
 
@@ -98,6 +106,21 @@ describe('post', () => {
     const actorHeader = headers['X-MASC-Agent'] ?? headers['x-masc-agent']
     expect(actorHeader).toBe('dashboard-eager-manta')
     expect(actorHeader).not.toContain('%')
+  })
+
+  it('bypasses browser HTTP cache for dashboard API reads', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response('{"keepers":[]}', {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await get('/api/v1/operator')
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(init.cache).toBe('no-store')
   })
 
   it('keeps board voter resolution scoped to query params', () => {

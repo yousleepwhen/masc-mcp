@@ -12,9 +12,7 @@
     Gating lives in [Keeper_config.keeper_adaptive_thinking_mode ()]; when
     that flag is false, classification is not consulted. *)
 
-type t = Mechanical | Cognitive
-
-val equal : t -> t -> bool
+type t = Mechanical | Cognitive [@@deriving eq]
 
 val to_string : t -> string
 
@@ -37,7 +35,3 @@ val classify :
   retry_count:int ->
   t
 
-(** Set of tool names considered "mechanical" for classification.
-    Exposed so tests can assert coverage and keeper operators can audit
-    the list. *)
-val mechanical_tools : string list

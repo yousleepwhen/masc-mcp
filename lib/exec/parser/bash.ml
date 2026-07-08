@@ -8,23 +8,62 @@ let make_parse_error (lexbuf : Lexing.lexbuf) : Parsed.parse_error =
   let token = Lexing.lexeme lexbuf in
   { pos; token; expected = [] (* populated in later PR *) }
 
-let raw_to_simple (bin_str, args_str) : (Shell_ir.simple, Parsed.parse_error) result =
-  match Bin.of_string bin_str with
+let is_env_name_start = function
+  | 'A' .. 'Z' | 'a' .. 'z' | '_' -> true
+  | _other -> false
+
+let is_env_name_char = function
+  | 'A' .. 'Z' | 'a' .. 'z' | '0' .. '9' | '_' -> true
+  | _other -> false
+
+let parse_env_assignment (word_str, meta) =
+  match String.index_opt word_str '=' with
+  | None -> None
+  | Some 0 -> None
+  | Some idx ->
+    let name = String.sub word_str 0 idx in
+    if is_env_name_start name.[0]
+       && String.for_all is_env_name_char name
+    then
+      let value =
+        String.sub word_str (idx + 1) (String.length word_str - idx - 1)
+      in
+      Some (name, Shell_ir.Lit (value, meta))
+    else None
+
+let split_env_prefix words =
+  let rec loop env = function
+    | [] -> Error { Parsed.pos = Lexing.dummy_pos; token = ""; expected = [ "command" ] }
+    | word :: rest ->
+      (match parse_env_assignment word with
+       | Some binding -> loop (binding :: env) rest
+       | None -> Ok (List.rev env, word, rest))
+  in
+  loop [] words
+
+let raw_to_simple (bin_word, args_words, redirects)
+    : (Shell_ir.simple, Parsed.parse_error) result =
+  match split_env_prefix (bin_word :: args_words) with
+  | Error e -> Error e
+  | Ok (env, (bin_str, _), args_words) -> (
+  match Exec_program.of_string bin_str with
   | Error (`Unknown _) ->
-    (* A0 guarantees Bin.of_string only errors on empty input.  That
+    (* A0 guarantees Exec_program.of_string only errors on empty input.  That
        cannot happen downstream of the current grammar (WORD+ accepts
        at least one token), so this branch is defensive. *)
     Error { Parsed.pos = Lexing.dummy_pos; token = bin_str; expected = [] }
   | Ok bin ->
-    let args = List.map (fun s -> Shell_ir.Lit s) args_str in
+    let args =
+      List.map (fun (s, meta) -> Shell_ir.Lit (s, meta)) args_words
+    in
     Ok
       { Shell_ir.bin
       ; args
-      ; env = []
+      ; env
       ; cwd = None
-      ; redirects = []
+      ; redirects
       ; sandbox = Sandbox_target.host ()
-      }
+      })
 
 let rec map_stages = function
   | [] -> Ok []
@@ -36,7 +75,12 @@ let rec map_stages = function
         | Error e -> Error e
         | Ok tail -> Ok (simple :: tail)))
 
-let to_shell_ir (stages : (string * string list) list)
+let to_shell_ir
+      (stages :
+        ( (string * Shell_ir.arg_meta)
+        * (string * Shell_ir.arg_meta) list
+        * Redirect_scope.t list )
+        list)
     : Shell_ir.t Parsed.t =
   match map_stages stages with
   | Error e -> Parsed.Parse_error e
@@ -95,5 +139,6 @@ let parse_string (source : string) : Shell_ir.t Parsed.t =
     let raw = Bash_subset.command Bash_lexer.token lexbuf in
     to_shell_ir raw
   with
+  | Bash_lexer.Token_limit_exceeded -> Parsed.Parse_aborted `Token_limit_50k
   | Bash_subset.Error -> map_error_or_classify source lexbuf
   | Failure _ -> map_error_or_classify source lexbuf

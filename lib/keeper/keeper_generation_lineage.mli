@@ -17,10 +17,6 @@ val identity_fields :
   (string * (Keeper_types.keeper_meta -> string)) list
 
 val string_list_to_json : string list -> Yojson.Safe.t
-val float_opt_to_json : float option -> Yojson.Safe.t
-
-val option_to_json :
-  ('a -> Yojson.Safe.t) -> 'a option -> Yojson.Safe.t
 
 (** Compose the canonical [<keeper>:<generation>:<trace_id>]
     generation identifier. *)
@@ -63,7 +59,6 @@ val manifest_json :
   parent_trace_id:string ->
   trigger_reason:string ->
   context_ratio:float ->
-  model:string ->
   Yojson.Safe.t
 
 (** Build the per-rollover index-entry JSON appended to the keeper
@@ -75,7 +70,6 @@ val index_entry_json :
   parent_trace_id:string ->
   trigger_reason:string ->
   context_ratio:float ->
-  model:string ->
   Yojson.Safe.t
 
 (** Persist both the manifest (atomic write) and the index entry
@@ -88,7 +82,6 @@ val record_handoff_artifacts :
   parent_trace_id:string ->
   trigger_reason:string ->
   context_ratio:float ->
-  model:string ->
   unit
 
 (** Load a JSON file as [Some json] when present and parseable;

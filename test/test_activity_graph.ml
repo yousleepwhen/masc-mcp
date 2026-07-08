@@ -31,10 +31,10 @@ let test_emit_and_list_events () =
   with_config (fun config ->
       ignore
         (Activity_graph.emit config ~kind:"agent.joined"
-           ~actor:(Activity_graph.entity ~kind:"agent" "claude")
-           ~subject:(Activity_graph.entity ~kind:"agent" "claude")
+           ~actor:(Activity_graph.entity ~kind:"agent" "agent_llm_a")
+           ~subject:(Activity_graph.entity ~kind:"agent" "agent_llm_a")
            ~tags:[ "agent"; "join" ]
-           ~payload:(`Assoc [ ("agent_name", `String "claude") ])
+           ~payload:(`Assoc [ ("agent_name", `String "agent_llm_a") ])
            ());
       ignore
         (Activity_graph.emit config ~kind:"task.created"
@@ -55,6 +55,218 @@ let test_emit_and_list_events () =
           ~kinds:[ "task.created" ] ~after_seq:0 ~limit:10 ()
       in
       check int "task filter" 1 (List.length task_only))
+
+let test_events_json_derives_ide_context () =
+  with_config (fun config ->
+      ignore
+        (Activity_graph.emit config ~kind:"keeper.turn_completed"
+           ~actor:(Activity_graph.entity ~kind:"keeper" "sangsu")
+           ~subject:(Activity_graph.entity ~kind:"log" "turn-9")
+           ~tags:[
+             "file:lib/keeper/agent_tool_ide_runtime.ml:27";
+             "task:task-42";
+             "board:post-1";
+             "comment:comment-7";
+             "git:main";
+             "log:turn-9";
+           ]
+           ~payload:
+             (`Assoc
+                [
+                  ("goal_id", `String "goal-ide");
+                  ("comment_id", `String "comment-7");
+                  ("pr_number", `Int 15035);
+                ])
+           ());
+      let json = Activity_graph.json_response config ~after_seq:0 ~limit:10 () in
+      let open Yojson.Safe.Util in
+      let event =
+        match json |> member "events" |> to_list with
+        | [ event ] -> event
+        | events ->
+          fail (Printf.sprintf "expected one event, got %d" (List.length events))
+      in
+      let context = event |> member "context" in
+      check string "context file path" "lib/keeper/agent_tool_ide_runtime.ml"
+        (context |> member "file_path" |> to_string);
+      check int "context line" 27 (context |> member "line" |> to_int);
+      check string "context goal" "goal-ide"
+        (context |> member "goal_id" |> to_string);
+      check string "context task" "task-42"
+        (context |> member "task_id" |> to_string);
+      check string "context board" "post-1"
+        (context |> member "board_post_id" |> to_string);
+      check string "context comment" "comment-7"
+        (context |> member "comment_id" |> to_string);
+      check string "context pr" "15035"
+        (context |> member "pr_id" |> to_string);
+      check string "context git" "main"
+        (context |> member "git_ref" |> to_string);
+      check string "context log" "turn-9"
+        (context |> member "log_id" |> to_string))
+
+let test_events_json_normalizes_ide_context_file_paths () =
+  with_config (fun config ->
+      ignore
+        (Activity_graph.emit config ~kind:"keeper.turn_completed"
+           ~actor:(Activity_graph.entity ~kind:"keeper" "sangsu")
+           ~subject:(Activity_graph.entity ~kind:"log" "turn-payload")
+           ~tags:[]
+           ~payload:
+             (`Assoc
+                [
+                  ("file_path", `String " lib\\payload.ml ");
+                  ("line", `Int 12);
+                ])
+           ());
+      ignore
+        (Activity_graph.emit config ~kind:"keeper.turn_completed"
+           ~actor:(Activity_graph.entity ~kind:"keeper" "sangsu")
+           ~subject:(Activity_graph.entity ~kind:"log" "turn-tag")
+           ~tags:[ "file: lib\\tag.ml:27" ]
+           ~payload:(`Assoc [])
+           ());
+      let json = Activity_graph.json_response config ~after_seq:0 ~limit:10 () in
+      let open Yojson.Safe.Util in
+      match json |> member "events" |> to_list with
+      | [ payload_event; tag_event ] ->
+        let payload_context = payload_event |> member "context" in
+        let tag_context = tag_event |> member "context" in
+        check string "payload file path normalized" "lib/payload.ml"
+          (payload_context |> member "file_path" |> to_string);
+        check string "tag file path normalized" "lib/tag.ml"
+          (tag_context |> member "file_path" |> to_string);
+        check int "tag line kept" 27 (tag_context |> member "line" |> to_int)
+      | events ->
+        fail (Printf.sprintf "expected two events, got %d" (List.length events)))
+
+let test_events_json_omits_unsafe_ide_context_file_paths () =
+  with_config (fun config ->
+      ignore
+        (Activity_graph.emit config ~kind:"keeper.turn_completed"
+           ~actor:(Activity_graph.entity ~kind:"keeper" "sangsu")
+           ~subject:(Activity_graph.entity ~kind:"log" "turn-absolute")
+           ~tags:[]
+           ~payload:
+             (`Assoc
+                [
+                  ("file_path", `String "/workspace/lib/payload.ml");
+                  ("line", `Int 12);
+                ])
+           ());
+      ignore
+        (Activity_graph.emit config ~kind:"keeper.turn_completed"
+           ~actor:(Activity_graph.entity ~kind:"keeper" "sangsu")
+           ~subject:(Activity_graph.entity ~kind:"log" "turn-drive")
+           ~tags:[ "file:C:\\workspace\\lib\\tag.ml:27" ]
+           ~payload:(`Assoc [])
+           ());
+      ignore
+        (Activity_graph.emit config ~kind:"keeper.turn_completed"
+           ~actor:(Activity_graph.entity ~kind:"keeper" "sangsu")
+           ~subject:(Activity_graph.entity ~kind:"log" "turn-traversal")
+           ~tags:[ "file:lib/../tag.ml:31" ]
+           ~payload:(`Assoc [])
+           ());
+      ignore
+        (Activity_graph.emit config ~kind:"keeper.turn_completed"
+           ~actor:(Activity_graph.entity ~kind:"keeper" "sangsu")
+           ~subject:(Activity_graph.entity ~kind:"log" "turn-mismatch")
+           ~tags:[ "file:/workspace/lib/tag.ml:99" ]
+           ~payload:
+             (`Assoc
+                [
+                  ("file_path", `String "lib/payload.ml");
+                  ("line", `Int 12);
+                ])
+           ());
+      let json = Activity_graph.json_response config ~after_seq:0 ~limit:10 () in
+      let open Yojson.Safe.Util in
+      match json |> member "events" |> to_list with
+      | [ payload_event; drive_event; traversal_event; mismatch_event ] ->
+        let file_path_omitted event =
+          match event |> member "context" with
+          | `Null -> true
+          | context -> context |> member "file_path" = `Null
+        in
+        List.iter
+          (fun event ->
+            check bool "unsafe file path omitted" true (file_path_omitted event))
+          [ payload_event; drive_event; traversal_event ];
+        check int "line survives without unsafe payload file path" 12
+          (payload_event |> member "context" |> member "line" |> to_int);
+        check bool "unsafe tag file line omitted" true
+          (drive_event |> member "context" = `Null);
+        let mismatch_context = mismatch_event |> member "context" in
+        check string "unsafe tag keeps payload file path" "lib/payload.ml"
+          (mismatch_context |> member "file_path" |> to_string);
+        check int "unsafe tag keeps payload line" 12
+          (mismatch_context |> member "line" |> to_int)
+      | events ->
+        fail
+          (Printf.sprintf "expected four events, got %d" (List.length events)))
+
+let test_events_json_ignores_invalid_derived_pr_number () =
+  with_config (fun config ->
+      ignore
+        (Activity_graph.emit config ~kind:"keeper.turn_completed"
+           ~actor:(Activity_graph.entity ~kind:"keeper" "sangsu")
+           ~subject:(Activity_graph.entity ~kind:"log" "turn-10")
+           ~tags:[]
+           ~payload:(`Assoc [ ("pr_number", `Int 0) ])
+           ());
+      let json = Activity_graph.json_response config ~after_seq:0 ~limit:10 () in
+      let open Yojson.Safe.Util in
+      let event =
+        match json |> member "events" |> to_list with
+        | [ event ] -> event
+        | events ->
+          fail (Printf.sprintf "expected one event, got %d" (List.length events))
+      in
+      let context = event |> member "context" in
+      check bool "invalid pr number omitted" true
+        (match context with
+         | `Null -> true
+         | _ -> context |> member "pr_id" |> fun value -> value = `Null))
+
+let test_events_json_exposes_provenance_and_non_stale_latest_seq () =
+  with_config (fun config ->
+      let first =
+        Activity_graph.emit config ~kind:"agent.joined"
+          ~actor:(Activity_graph.entity ~kind:"agent" "agent_llm_a")
+          ~subject:(Activity_graph.entity ~kind:"agent" "agent_llm_a")
+          ~payload:(`Assoc [ ("agent_name", `String "agent_llm_a") ])
+          ()
+      in
+      let second =
+        Activity_graph.emit config ~kind:"task.created"
+          ~actor:(Activity_graph.entity ~kind:"agent" "system")
+          ~subject:(Activity_graph.entity ~kind:"task" "task-activity")
+          ~payload:(`Assoc [ ("task_id", `String "task-activity") ])
+          ()
+      in
+      let seq_counter =
+        Filename.concat
+          (Filename.concat (Coord_utils.masc_dir config) "activity-events")
+          "_seq"
+      in
+      Fs_compat.save_file seq_counter (string_of_int first.seq);
+      let json = Activity_graph.json_response config ~after_seq:0 ~limit:10 () in
+      let open Yojson.Safe.Util in
+      check string "surface" "/api/v1/activity/events"
+        (json |> member "dashboard_surface" |> to_string);
+      check string "source" "activity_graph_jsonl"
+        (json |> member "source" |> to_string);
+      check string "retention scope" "activity_events"
+        (json |> member "retention" |> member "scope" |> to_string);
+      check string "query kind list is empty" "[]"
+        (json |> member "query" |> member "kinds" |> Yojson.Safe.to_string);
+      check int "next cursor is newest returned event" second.seq
+        (json |> member "next_after_seq" |> to_int);
+      check int "latest matching seq sees JSONL rows" second.seq
+        (json |> member "latest_matching_seq" |> to_int);
+      check bool "latest seq does not move behind persisted rows" true
+        ((json |> member "latest_seq" |> to_int) >= second.seq))
 
 let test_emit_sanitizes_invalid_utf8_before_persisting () =
   with_config (fun config ->
@@ -95,6 +307,44 @@ let test_emit_sanitizes_invalid_utf8_before_persisting () =
       check int "read path did not repair activity graph row" 0
         stats.repaired_reads)
 
+let test_read_self_heals_historic_invalid_utf8_event_file () =
+  with_config (fun config ->
+      Safe_ops.reset_persistence_utf8_repair_stats_for_tests ();
+      let root = Filename.concat (Coord_utils.masc_dir config) "activity-events" in
+      let month_dir = Filename.concat root "2000-01" in
+      Unix.mkdir root 0o755;
+      Unix.mkdir month_dir 0o755;
+      let event_path = Filename.concat month_dir "01.jsonl" in
+      let raw_line =
+        "{\"seq\":1,\"ts_ms\":1,\"ts_iso\":\"2000-01-01T00:00:00Z\",\
+         \"room_id\":\"default\",\"kind\":\"message.broadcast\",\
+         \"payload\":{\"content\":\"bad\xffpayload\"},\"tags\":[]}\n"
+      in
+      Fs_compat.save_file event_path raw_line;
+      check bool "fixture starts invalid" false
+        (String.is_valid_utf_8 (Fs_compat.load_file event_path));
+      let events = Activity_graph.list_events config ~after_seq:0 ~limit:10 () in
+      let event =
+        match events with
+        | [ event ] -> event
+        | events ->
+            fail
+              (Printf.sprintf "expected one event, got %d"
+                 (List.length events))
+      in
+      let open Yojson.Safe.Util in
+      let replacement = "\xEF\xBF\xBD" in
+      check string "payload repaired on read" ("bad" ^ replacement ^ "payload")
+        (event.payload |> member "content" |> to_string);
+      let stats_after_first = Safe_ops.persistence_utf8_repair_stats () in
+      check int "file repair counted once" 1 stats_after_first.repaired_reads;
+      check bool "backing file rewritten valid" true
+        (String.is_valid_utf_8 (Fs_compat.load_file event_path));
+      ignore (Activity_graph.list_events config ~after_seq:0 ~limit:10 ());
+      let stats_after_second = Safe_ops.persistence_utf8_repair_stats () in
+      check int "second read does not repair again" 1
+        stats_after_second.repaired_reads)
+
 let test_filtered_client_receives_matching_events () =
   Eio_main.run @@ fun env ->
   Fs_compat.set_fs (Eio.Stdenv.fs env);
@@ -127,10 +377,10 @@ let test_graph_json_summarizes_relationships () =
   with_config (fun config ->
       ignore
         (Activity_graph.emit config ~kind:"agent.joined"
-           ~actor:(Activity_graph.entity ~kind:"agent" "claude")
-           ~subject:(Activity_graph.entity ~kind:"agent" "claude")
+           ~actor:(Activity_graph.entity ~kind:"agent" "agent_llm_a")
+           ~subject:(Activity_graph.entity ~kind:"agent" "agent_llm_a")
            ~tags:[ "agent"; "join" ]
-           ~payload:(`Assoc [ ("agent_name", `String "claude") ])
+           ~payload:(`Assoc [ ("agent_name", `String "agent_llm_a") ])
            ());
       ignore
         (Activity_graph.emit config ~kind:"task.created"
@@ -141,7 +391,7 @@ let test_graph_json_summarizes_relationships () =
            ());
       ignore
         (Activity_graph.emit config ~kind:"task.claimed"
-           ~actor:(Activity_graph.entity ~kind:"agent" "claude")
+           ~actor:(Activity_graph.entity ~kind:"agent" "agent_llm_a")
            ~subject:(Activity_graph.entity ~kind:"task" "task-003")
            ~tags:[ "task"; "claim" ]
            ~payload:(`Assoc [ ("task_id", `String "task-003") ])
@@ -164,35 +414,35 @@ let test_graph_json_tracks_runtime_activity_kinds () =
   with_config (fun config ->
       ignore
         (Activity_graph.emit config           ~kind:"operation.started"
-           ~actor:(Activity_graph.entity ~kind:"agent" "team-session")
+           ~actor:(Activity_graph.entity ~kind:"agent" "mission-agent")
            ~subject:(Activity_graph.entity ~kind:"operation" "sess-001")
            ~tags:[ "operation"; "operation.started" ]
            ~payload:(`Assoc [ ("session_id", `String "sess-001") ])
            ());
       ignore
         (Activity_graph.emit config ~kind:"team.turn"
-           ~actor:(Activity_graph.entity ~kind:"agent" "claude")
+           ~actor:(Activity_graph.entity ~kind:"agent" "agent_llm_a")
            ~subject:(Activity_graph.entity ~kind:"operation" "sess-001")
            ~tags:[ "operation"; "team.turn" ]
            ~payload:(`Assoc [ ("kind", `String "broadcast") ])
            ());
       ignore
         (Activity_graph.emit config ~kind:"task.started"
-           ~actor:(Activity_graph.entity ~kind:"agent" "claude")
+           ~actor:(Activity_graph.entity ~kind:"agent" "agent_llm_a")
            ~subject:(Activity_graph.entity ~kind:"task" "task-777")
            ~tags:[ "task"; "task.started" ]
            ~payload:(`Assoc [ ("task_id", `String "task-777") ])
            ());
       ignore
         (Activity_graph.emit config           ~kind:"board.posted"
-           ~actor:(Activity_graph.entity ~kind:"agent" "claude")
+           ~actor:(Activity_graph.entity ~kind:"agent" "agent_llm_a")
            ~subject:(Activity_graph.entity ~kind:"post" "post-42")
            ~tags:[ "board"; "board.posted" ]
            ~payload:(`Assoc [ ("post_id", `String "post-42") ])
            ());
       ignore
         (Activity_graph.emit config           ~kind:"board.voted"
-           ~actor:(Activity_graph.entity ~kind:"agent" "gemini")
+           ~actor:(Activity_graph.entity ~kind:"agent" "provider_f")
            ~subject:(Activity_graph.entity ~kind:"post" "post-42")
            ~tags:[ "board"; "board.voted" ]
            ~payload:(`Assoc [ ("target_id", `String "post-42") ])
@@ -233,19 +483,19 @@ let test_graph_json_reports_kind_counts_and_heatmap_totals () =
   with_config (fun config ->
       ignore
         (Activity_graph.emit config ~kind:"message.broadcast"
-           ~actor:(Activity_graph.entity ~kind:"agent" "claude")
+           ~actor:(Activity_graph.entity ~kind:"agent" "agent_llm_a")
            ~tags:[ "message"; "broadcast" ]
            ~payload:(`Assoc [ ("content", `String "hello") ])
            ());
       ignore
         (Activity_graph.emit config ~kind:"message.broadcast"
-           ~actor:(Activity_graph.entity ~kind:"agent" "claude")
+           ~actor:(Activity_graph.entity ~kind:"agent" "agent_llm_a")
            ~tags:[ "message"; "broadcast" ]
            ~payload:(`Assoc [ ("content", `String "world") ])
            ());
       ignore
         (Activity_graph.emit config ~kind:"task.started"
-           ~actor:(Activity_graph.entity ~kind:"agent" "claude")
+           ~actor:(Activity_graph.entity ~kind:"agent" "agent_llm_a")
            ~subject:(Activity_graph.entity ~kind:"task" "task-900")
            ~tags:[ "task"; "task.started" ]
            ~payload:(`Assoc [ ("task_id", `String "task-900") ])
@@ -274,7 +524,7 @@ let test_agent_spans_json_honors_since_ms () =
   with_config (fun config ->
       ignore
         (Activity_graph.emit config ~kind:"task.started"
-           ~actor:(Activity_graph.entity ~kind:"agent" "claude")
+           ~actor:(Activity_graph.entity ~kind:"agent" "agent_llm_a")
            ~subject:(Activity_graph.entity ~kind:"task" "task-old")
            ~tags:[ "task"; "task.started" ]
            ~payload:(`Assoc [ ("task_id", `String "task-old") ])
@@ -283,14 +533,14 @@ let test_agent_spans_json_honors_since_ms () =
       let cutoff_ms = int_of_float (Time_compat.now () *. 1000.0) in
       ignore
         (Activity_graph.emit config ~kind:"task.started"
-           ~actor:(Activity_graph.entity ~kind:"agent" "claude")
+           ~actor:(Activity_graph.entity ~kind:"agent" "agent_llm_a")
            ~subject:(Activity_graph.entity ~kind:"task" "task-new")
            ~tags:[ "task"; "task.started" ]
            ~payload:(`Assoc [ ("task_id", `String "task-new") ])
            ());
       ignore
         (Activity_graph.emit config ~kind:"task.done"
-           ~actor:(Activity_graph.entity ~kind:"agent" "claude")
+           ~actor:(Activity_graph.entity ~kind:"agent" "agent_llm_a")
            ~subject:(Activity_graph.entity ~kind:"task" "task-new")
            ~tags:[ "task"; "task.done" ]
            ~payload:(`Assoc [ ("task_id", `String "task-new") ])
@@ -309,16 +559,6 @@ let test_parse_since_ms_supports_minutes () =
     (Lib.Server_activity_http.parse_since_ms "5m");
   check (option int) "1h still parses" (Some (3600 * 1000))
     (Lib.Server_activity_http.parse_since_ms "1h")
-
-let test_span_status_of_string_handles_ended_round_trip () =
-  check string "ended round-trips explicitly" "ended"
-    (Activity_graph.span_status_of_string "ended"
-     |> Activity_graph.span_status_to_string)
-
-let test_span_status_of_string_keeps_legacy_unknown_fallback () =
-  check string "unknown falls back to ended" "ended"
-    (Activity_graph.span_status_of_string "definitely-not-a-status"
-     |> Activity_graph.span_status_to_string)
 
 let test_span_status_of_string_opt_returns_none_for_unknown () =
   (* #8605 family: strict variant exposes unknown wires explicitly so
@@ -341,8 +581,20 @@ let () =
       ( "core",
         [
           test_case "emit and list events" `Quick test_emit_and_list_events;
+          test_case "events json derives IDE context" `Quick
+            test_events_json_derives_ide_context;
+          test_case "events json normalizes IDE context file paths" `Quick
+            test_events_json_normalizes_ide_context_file_paths;
+          test_case "events json omits unsafe IDE context file paths" `Quick
+            test_events_json_omits_unsafe_ide_context_file_paths;
+          test_case "events json ignores invalid derived PR number" `Quick
+            test_events_json_ignores_invalid_derived_pr_number;
+          test_case "events json exposes provenance and non-stale latest seq"
+            `Quick test_events_json_exposes_provenance_and_non_stale_latest_seq;
           test_case "emit sanitizes invalid utf8 before persisting" `Quick
             test_emit_sanitizes_invalid_utf8_before_persisting;
+          test_case "read self-heals historic invalid utf8 event file" `Quick
+            test_read_self_heals_historic_invalid_utf8_event_file;
           test_case "filtered client receives matching events" `Quick
             test_filtered_client_receives_matching_events;
           test_case "graph summary builds nodes and edges" `Quick
@@ -355,10 +607,6 @@ let () =
             test_agent_spans_json_honors_since_ms;
           test_case "parse_since_ms supports minutes" `Quick
             test_parse_since_ms_supports_minutes;
-          test_case "span_status parses ended explicitly" `Quick
-            test_span_status_of_string_handles_ended_round_trip;
-          test_case "span_status keeps unknown fallback" `Quick
-            test_span_status_of_string_keeps_legacy_unknown_fallback;
           test_case "span_status_opt None for unknown" `Quick
             test_span_status_of_string_opt_returns_none_for_unknown;
         ] );

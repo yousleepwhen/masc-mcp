@@ -23,10 +23,12 @@ import {
   type VerificationRequestsResponse,
 } from '../api/dashboard'
 import { Btn } from './btn'
-import { Card } from './common/card'
-import { EmptyState } from './common/empty-state'
+import { SectionCard } from './common/card'
+import { EmptyState } from './common/feedback-state'
 import { ErrorState, LoadingState } from './common/feedback-state'
 import { StatusChip } from './common/status-chip'
+import { relativeTime } from '../lib/format-time'
+import { errorToString } from '../lib/format-string'
 import { FilterChips } from './common/filter-chips'
 import { TextInput } from './common/input'
 import type { ManagedAsyncResource } from '../lib/async-state'
@@ -177,24 +179,6 @@ function verdictTone(v: VerificationRequestVerdict): 'ok' | 'warn' | 'bad' {
   }
 }
 
-// ── Formatting helpers ────────────────────────────────
-
-function parseIso(ts: string | null | undefined): number | null {
-  if (!ts) return null
-  const n = Date.parse(ts)
-  return Number.isNaN(n) ? null : n
-}
-
-function relativeTime(ts: string): string {
-  const ms = parseIso(ts)
-  if (ms == null) return ts
-  const delta = (Date.now() - ms) / 1000
-  if (delta < 60) return `${Math.floor(delta)}초 전`
-  if (delta < 3600) return `${Math.floor(delta / 60)}분 전`
-  if (delta < 86400) return `${Math.floor(delta / 3600)}시간 전`
-  return `${Math.floor(delta / 86400)}일 전`
-}
-
 // ── Action handler ────────────────────────────────────
 
 async function submitResolve(
@@ -214,7 +198,7 @@ async function submitResolve(
     setRowAction(row.request_id, { kind: 'idle' })
     refresh()
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
+    const message = errorToString(err)
     setRowAction(row.request_id, { kind: 'error', message })
   }
 }
@@ -628,7 +612,7 @@ export function VerificationRequestsPanel() {
           `
         : null}
 
-      <${Card} title="검증 요청">
+      <${SectionCard} label="검증 요청">
         ${data
           ? html`<${RequestsTable}
               requests=${filtered}

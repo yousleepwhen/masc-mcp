@@ -37,10 +37,18 @@ export function toolMatchesCategory(
   return toolCategory(item.name).label === category
 }
 
-export function filterTools<T extends Pick<ToolMetricsTopEntry, 'name'>>(
+/**
+ * SSOT for tool list filtering across the dashboard.
+ *
+ * Until 2026-05-27 `tool-quality-panel.ts` exposed its own compatible import
+ * path for this operation. Callers now import the filter from this owning
+ * module, while the category parameter still defaults to `'all'` for the
+ * two-argument `filterTools(tools, query)` panel use case.
+ */
+export function filterTools<T extends { name: string }>(
   items: T[],
   query: string,
-  category: string,
+  category: string = 'all',
 ): T[] {
   const q = query.trim().toLowerCase()
   if (q === '' && category === 'all') return items

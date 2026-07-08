@@ -46,3 +46,17 @@ val contextualize_message :
   string
 (** Render a stable external-channel context envelope ahead of the raw
     user message so keeper memory can retain actor/channel metadata. *)
+
+val filesystem_safe_or_unknown : string -> string
+(** Sanitize a value for use as a filesystem path component.
+    Replaces everything outside [A-Za-z0-9_-] with '_'.
+    Empty or fully-stripped values collapse to "unknown". *)
+
+val extract_reply_text : string -> string
+(** Parse the reply text from a keeper response JSON body.
+    Reads the ["reply"] field for JSON responses; non-JSON or missing-reply
+    bodies are returned verbatim. *)
+
+val extract_turn_stats : string -> Gate_protocol.turn_stats option
+(** Extract model usage statistics from a keeper response JSON body.
+    Returns [None] when all fields are absent or zero. *)

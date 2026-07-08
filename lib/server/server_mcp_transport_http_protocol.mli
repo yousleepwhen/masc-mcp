@@ -77,6 +77,20 @@ val validate_session_requirement :
       [Error "Mcp-Session-Id header required. Call initialize first
       to obtain a session."] *)
 
+val validate_session_known :
+  session_was_provided:bool ->
+  is_known:bool ->
+  string ->
+  (unit, string) result
+(** RFC-0100 PR-3 — Q3 default. Reject [POST /mcp] when the client
+    echoes an [Mcp-Session-Id] the server has no state for. Returns
+    [Ok ()] when [session_was_provided = false] (a missing header is
+    handled by {!validate_session_requirement}), when [is_known = true],
+    or when the JSON-RPC method is one of the handshake set
+    ([initialize] / [notifications/initialized] / [ping]). Otherwise
+    returns [Error] with a message suitable for a [404 Not Found]
+    response body. *)
+
 (** {1 Re-exports} *)
 
 val protocol_version_from_body : string -> string option
@@ -98,22 +112,10 @@ val request_force_json_response : Httpun.Request.t -> bool
 (** Re-export of
     {!Server_mcp_transport_http_headers.request_force_json_response}. *)
 
-val allow_legacy_accept : bool
-(** Re-export of
-    {!Server_mcp_transport_http_headers.allow_legacy_accept}.
-    Captured at module init from [MASC_ALLOW_LEGACY_ACCEPT]. *)
-
 val classify_mcp_accept :
   Httpun.Request.t -> Mcp_transport_protocol.Http_negotiation.accept_mode
 (** Re-export of
     {!Server_mcp_transport_http_headers.classify_mcp_accept}. *)
-
-val classify_mcp_accept_for_body :
-  Httpun.Request.t ->
-  string ->
-  Mcp_transport_protocol.Http_negotiation.accept_mode
-(** Re-export of
-    {!Server_mcp_transport_http_headers.classify_mcp_accept_for_body}. *)
 
 val should_use_sse_for_body :
   Httpun.Request.t ->
@@ -122,18 +124,6 @@ val should_use_sse_for_body :
   bool
 (** Re-export of
     {!Server_mcp_transport_http_headers.should_use_sse_for_body}. *)
-
-val legacy_accept_warning_headers :
-  Mcp_transport_protocol.Http_negotiation.accept_mode ->
-  (string * string) list
-(** Re-export of
-    {!Server_mcp_transport_http_headers.legacy_accept_warning_headers}.
-    Returns warn-deprecation headers when the accept mode is
-    [Legacy_accepted], else [\[\]]. *)
-
-val legacy_transport_deprecation_headers : (string * string) list
-(** Re-export of
-    {!Server_mcp_transport_http_headers.legacy_transport_deprecation_headers}. *)
 
 val force_json_response : bool
 (** Re-export of

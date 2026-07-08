@@ -1,15 +1,14 @@
 (** Server_webrtc_transport — WebRTC signaling +
     DataChannel transport for MASC.
 
-    Reached via dotted call from 7 modules (agent_card,
+    Reached via dotted call from server modules (agent_card,
     server_bootstrap_http / _loops,
     server_h2_gateway, routes_frontend,
-    runtime_bootstrap, tool_misc_transport,
-    transport_metrics) and via the [module Wrtc =
+    runtime_bootstrap, transport_metrics) and via the [module Wrtc =
     Masc_mcp.Server_webrtc_transport] alias from the WS
     + signaling regression tests.
 
-    External surface (19 entries + 2 records):
+    External surface (20 entries + 2 records):
     - {b records} ({!pending_offer}, {!peer_conn})
       reached by record-pattern access from the
       regression test suite.
@@ -29,7 +28,8 @@
       {!active_peer_count},
       {!live_webrtc_count},
       {!connected_channel_count}).
-    - {b janitor} ({!cleanup_expired_offers}).
+    - {b janitor}
+      ({!cleanup_expired_offers}, {!cleanup_stale_peers}).
     - {b callback registration}
       ({!set_message_handler},
       {!set_connection_starter}).
@@ -171,6 +171,13 @@ val cleanup_expired_offers : ?max_age_s:float -> unit -> int
     from the pending registry.  Returns the number of
     offers expired.  Used by the periodic janitor in
     the bootstrap loops. *)
+
+val cleanup_stale_peers : ?max_idle_s:float -> unit -> int
+(** Drops active peers idle longer than [?max_idle_s]
+    (default 300.0) from every WebRTC registry and closes
+    their WebRTC stack.  Returns the number of peers
+    removed.  Used by the periodic janitor in the
+    bootstrap loops. *)
 
 (** {1 Callback registration} *)
 

@@ -1,22 +1,25 @@
-// RuntimePanel — Phase 4 runtime section with FilterChips toggle.
-// Wraps OasHealthChip, RuntimeMonitor, CascadeConfigPanel, PrometheusMetrics,
-// VerificationSpecsPanel with view switching.
+// RuntimePanel — Monitor "Cascade & Runtime" lane.
+// Renders OasHealthChip / RuntimeMonitor / PrometheusMetrics /
+// VerificationSpecsPanel / CascadeInspector inline, and delegates the four
+// telemetry views to TelemetryPanel (cost / audit / heuristics / stress).
 //
 // Progressive-disclosure default view (density reduction, 2026-04):
 //   Signal layer     — OasHealthChip always expanded (summary StatCells)
-//   Diagnostic layer — Cascade, Providers & Models via CollapsibleSection (closed)
+//   Diagnostic layer — Providers & Models via CollapsibleSection (closed)
 //   Raw layer        — Prometheus metrics, Formal specs via CollapsibleSection (closed)
 // NN/g progressive disclosure: respect working-memory limits, defer detail.
 //
-// Explicit drill-down via FilterChips remains unchanged:
+// Explicit drill-down via FilterChips, split into two strips (PR #17014):
+//   Primary strip   — default · providers · inspector
+//   Advanced strip  — cost · audit · heuristics · stress · prometheus · verification
+//                     (the first four are spread from TELEMETRY_VIEW_CHIPS,
+//                      owned by telemetry-panel.ts; PR #17044 / #17052)
+//
+// Per-view dispatch:
 //   default      — Signal strip + collapsed diagnostic/raw accordions
-//   cascade      — cascade config + health only (설정 ↔ 실측)
 //   providers    — OAS health chip + runtime monitor only
-//   cost         — model/keeper cost and latency only
-//   audit        — dashboard audit ledger
-//   heuristics   — heuristic firing log + coverage by module
-//   stress       — agent stress events
-//   inspector    — cascade strategy trace/provider health drill-down
+//   inspector    — cascade strategy trace / provider health drill-down
+//   cost / audit / heuristics / stress — TelemetryPanel → CostDashboard
 //   prometheus   — raw Prometheus metrics only
 //   verification — formal specs only
 // Pattern: mirrors fleet-health-panel.ts (unidirectional flow via URL).
@@ -29,17 +32,14 @@ import { CollapsibleSection } from './common/collapsible'
 import { OasHealthChip } from './oas-health-chip'
 import { RuntimeMonitor } from './runtime-monitor'
 import { PrometheusMetrics } from './prometheus-metrics'
-import { CascadeConfigPanel } from './cascade-config-panel'
 import { VerificationSpecsPanel } from './verification-specs-panel'
-import { CostDashboard, type CostView } from './cost-dashboard'
+import { TelemetryPanel, isTelemetryView, TELEMETRY_VIEW_CHIPS } from './telemetry-panel'
 import { CascadeInspector } from './cascade-inspector'
-import { ProviderCapabilityMatrix } from './provider-capability-matrix'
+import { RouteLink } from './common/route-link'
 
 type RuntimeView =
   | 'default'
-  | 'cascade'
   | 'providers'
-  | 'capability'
   | 'cost'
   | 'audit'
   | 'heuristics'
@@ -50,9 +50,7 @@ type RuntimeView =
 
 const RUNTIME_VIEWS: RuntimeView[] = [
   'default',
-  'cascade',
   'providers',
-  'capability',
   'cost',
   'audit',
   'heuristics',
@@ -71,25 +69,26 @@ const activeView = computed<RuntimeView>(() => {
   return isRuntimeView(v) ? v : 'default'
 })
 
-const VIEW_CHIPS: Array<{ key: RuntimeView; label: string }> = [
+// Primary chips answer the keeper-facing question "can my tools run through
+// which cascade, and why did the routing decision come out this way?"
+// Default, providers (runtime health), and inspector (cascade decisions) are
+// the views an operator opens during normal use.
+const PRIMARY_VIEW_CHIPS: Array<{ key: RuntimeView; label: string }> = [
   { key: 'default', label: '전체' },
-  { key: 'cascade', label: 'Cascade' },
-  { key: 'providers', label: '프로바이더' },
-  { key: 'capability', label: '기능 매트릭스' },
-  { key: 'cost', label: '비용 / 지연' },
-  { key: 'audit', label: '감사' },
-  { key: 'heuristics', label: '휴리스틱' },
-  { key: 'stress', label: '스트레스' },
+  { key: 'providers', label: '런타임' },
   { key: 'inspector', label: '검사기' },
+]
+
+// Advanced chips are infra/billing telemetry plus the raw / formal layers.
+// The first four chips (cost / audit / heuristics / stress) are owned by
+// telemetry-panel.ts — both their labels and their dispatch live there.
+// The remaining two (prometheus / verification) stay inline because
+// runtime-panel still renders them directly.
+const ADVANCED_VIEW_CHIPS: Array<{ key: RuntimeView; label: string }> = [
+  ...TELEMETRY_VIEW_CHIPS,
   { key: 'prometheus', label: '메트릭' },
   { key: 'verification', label: '형식검증' },
 ]
-
-function costDiagnosticView(view: RuntimeView): CostView | null {
-  return view === 'cost' || view === 'audit' || view === 'heuristics' || view === 'stress'
-    ? view
-    : null
-}
 
 function updateViewParam(view: RuntimeView): void {
   replaceRoute(
@@ -100,29 +99,110 @@ function updateViewParam(view: RuntimeView): void {
   )
 }
 
+function CascadeConfigCanonicalLink() {
+  return html`
+    <section
+      class="rounded-[var(--r-1)] border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3"
+      aria-label="Cascade canonical surface"
+    >
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div class="min-w-0">
+          <div class="text-sm font-semibold text-text-strong">Cascade Config</div>
+          <div class="mt-1 max-w-2xl text-xs leading-relaxed text-text-muted">
+            Providers, models, and routing rules are managed in the dedicated Cascade Config surface.
+          </div>
+        </div>
+        <${RouteLink}
+          tab="monitoring"
+          params=${{ section: 'cascade-config' }}
+          class="inline-flex min-h-9 items-center rounded-[var(--r-1)] border border-[var(--color-border-default)] bg-[var(--color-bg-page)] px-3 py-2 text-xs font-semibold text-text-strong transition-colors hover:border-[var(--color-border-strong)] hover:bg-[var(--color-bg-elevated)]"
+        >
+          Open Cascade Config
+        <//>
+      </div>
+    </section>
+  `
+}
+
+function HiddenDiagnosticsLinks() {
+  const links = [
+    {
+      label: 'Transport diagnostics',
+      detail: 'SSE/gRPC/WebSocket/WebRTC connection freshness.',
+      section: 'transport-health',
+    },
+    {
+      label: 'Doctor',
+      detail: 'Sidecar, base-path, and config diagnostics.',
+      section: 'doctor',
+    },
+    {
+      label: 'Feature cleanup',
+      detail: 'Feature flag rollout, inactive, and deprecated states.',
+      section: 'feature-health',
+    },
+  ]
+  return html`
+    <section
+      class="rounded-[var(--r-1)] border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3"
+      aria-label="Hidden diagnostics"
+    >
+      <div class="flex flex-col gap-3">
+        <div>
+          <div class="text-sm font-semibold text-text-strong">Diagnostics</div>
+          <div class="mt-1 max-w-2xl text-xs leading-relaxed text-text-muted">
+            These are routeable support surfaces, not primary Monitor lanes. Use them when a keeper-facing runtime incident points at infrastructure or stale rollout state.
+          </div>
+        </div>
+        <div class="grid gap-2 md:grid-cols-3">
+          ${links.map(link => html`
+            <${RouteLink}
+              key=${link.section}
+              tab="monitoring"
+              params=${{ section: link.section }}
+              class="min-w-0 rounded-[var(--r-1)] border border-[var(--color-border-default)] bg-[var(--color-bg-page)] px-3 py-2 transition-colors hover:border-[var(--color-border-strong)] hover:bg-[var(--color-bg-elevated)]"
+            >
+              <span class="block text-xs font-semibold text-text-strong">${link.label}</span>
+              <span class="mt-1 block text-2xs leading-relaxed text-text-muted">${link.detail}</span>
+            <//>
+          `)}
+        </div>
+      </div>
+    </section>
+  `
+}
+
 export function RuntimePanel() {
   const view = activeView.value
-  const costView = costDiagnosticView(view)
 
   return html`
     <div class="flex flex-col gap-4">
-      <${FilterChips}
-        chips=${VIEW_CHIPS}
-        value=${view}
-        onChange=${updateViewParam}
-      />
+      <div class="flex flex-col gap-2">
+        <${FilterChips}
+          chips=${PRIMARY_VIEW_CHIPS}
+          value=${view}
+          onChange=${updateViewParam}
+          aria-label="Primary runtime views"
+        />
+        <div class="flex items-center gap-2 text-2xs uppercase tracking-[var(--track-caps)] text-[var(--color-fg-muted)]">
+          <span>고급 / 진단</span>
+          <span class="h-px flex-1 bg-[var(--color-border-divider)]" aria-hidden="true"></span>
+        </div>
+        <${FilterChips}
+          chips=${ADVANCED_VIEW_CHIPS}
+          value=${view}
+          onChange=${updateViewParam}
+          aria-label="Advanced runtime views"
+        />
+      </div>
       <div class="grid gap-4">
-        ${view === 'cascade'
-          ? html`<${CascadeConfigPanel} />`
-        : view === 'providers'
+        ${view === 'providers'
           ? html`
             <${OasHealthChip} />
             <${RuntimeMonitor} />
           `
-        : view === 'capability'
-          ? html`<${ProviderCapabilityMatrix} />`
-        : costView
-          ? html`<${CostDashboard} view=${costView} />`
+        : isTelemetryView(view)
+          ? html`<${TelemetryPanel} view=${view} />`
         : view === 'inspector'
           ? html`<${CascadeInspector} />`
         : view === 'prometheus'
@@ -131,10 +211,9 @@ export function RuntimePanel() {
           ? html`<${VerificationSpecsPanel} />`
         : html`
             <${OasHealthChip} />
-            <${CollapsibleSection} id="runtime-details-cascade" title="캐스케이드">
-              <${CascadeConfigPanel} />
-            <//>
-            <${CollapsibleSection} id="runtime-details-providers" title="프로바이더">
+            <${CascadeConfigCanonicalLink} />
+            <${HiddenDiagnosticsLinks} />
+            <${CollapsibleSection} id="runtime-details-providers" title="런타임">
               <${RuntimeMonitor} />
             <//>
             <${CollapsibleSection} id="runtime-details-prometheus" title="메트릭">

@@ -23,18 +23,33 @@ let error_kind_of_string value =
   | "internal" -> Some Internal
   | _ -> None
 
-let option_to_yojson to_json = function
-  | Some value -> to_json value
-  | None -> `Null
-
 open Result.Syntax
+
+(* Every parse error below now distinguishes between *Intlit overflow*
+   (the digits are syntactically a number but do not fit the target
+   numeric type) and *wrong-kind* (the JSON value is not a number at
+   all).  The previous form returned the same generic string for both,
+   forcing operators to guess which path failed when the payload came
+   back malformed from a remote worker. *)
 
 let int_option_of_yojson = function
   | `Null -> Ok None
   | `Int value -> Ok (Some value)
   | `Intlit value -> (
-      match int_of_string_opt value with Some v -> Ok (Some v) | None -> Error "invalid int option in worker helper payload")
-  | _ -> Error "invalid int option in worker helper payload"
+      match int_of_string_opt value with
+      | Some v -> Ok (Some v)
+      | None ->
+          Error
+            (Printf.sprintf
+               "int option in worker helper payload: intlit overflow \
+                (digits=%s, exceeds native int range)"
+               value))
+  | other ->
+      Error
+        (Printf.sprintf
+           "int option in worker helper payload: expected null|int|intlit \
+            (kind=%s)"
+           (Json_util.kind_name other))
 
 let float_option_of_yojson = function
   | `Null -> Ok None
@@ -43,12 +58,27 @@ let float_option_of_yojson = function
   | `Intlit value -> (
       match float_of_string_opt value with
       | Some f -> Ok (Some f)
-      | None -> Error "invalid float option in worker helper payload")
+      | None ->
+          Error
+            (Printf.sprintf
+               "float option in worker helper payload: intlit not parseable \
+                as float (digits=%s)"
+               value))
   | `String value -> (
       match float_of_string_opt value with
       | Some f -> Ok (Some f)
-      | None -> Error "invalid float option in worker helper payload")
-  | _ -> Error "invalid float option in worker helper payload"
+      | None ->
+          Error
+            (Printf.sprintf
+               "float option in worker helper payload: string not parseable \
+                as float (value=%s)"
+               value))
+  | other ->
+      Error
+        (Printf.sprintf
+           "float option in worker helper payload: expected \
+            null|float|int|intlit|string (kind=%s)"
+           (Json_util.kind_name other))
 
 let string_list_of_yojson = function
   | `List values ->
@@ -56,13 +86,23 @@ let string_list_of_yojson = function
         (fun value acc ->
           match (value, acc) with
           | `String s, Ok rest -> Ok (s :: rest)
-          | _, Ok _ -> Error "invalid string list in worker helper payload"
+          | other, Ok _ ->
+              Error
+                (Printf.sprintf
+                   "string list in worker helper payload: element is not a \
+                    string (kind=%s)"
+                   (Json_util.kind_name other))
           | _, Error msg -> Error msg)
         values (Ok [])
-  | _ -> Error "invalid string list in worker helper payload"
+  | other ->
+      Error
+        (Printf.sprintf
+           "string list in worker helper payload: expected JSON array \
+            (kind=%s)"
+           (Json_util.kind_name other))
 
 let api_response_to_yojson =
-  option_to_yojson Llm_provider.Cache.response_to_json
+  Json_util.option_to_yojson Llm_provider.Cache.response_to_json
 
 let api_response_of_yojson = function
   | `Null -> Ok None
@@ -72,12 +112,12 @@ let api_response_of_yojson = function
       | None -> Error "invalid api_response in worker helper payload")
 
 let proof_to_yojson =
-  option_to_yojson Agent_sdk.Cdal_proof.to_json
+  Json_util.option_to_yojson Masc_mcp_cdal_runtime.Cdal_proof.to_json
 
 let proof_of_yojson = function
   | `Null -> Ok None
   | json -> (
-      match Agent_sdk.Cdal_proof.of_json json with
+      match Masc_mcp_cdal_runtime.Cdal_proof.of_json json with
       | Ok proof -> Ok (Some proof)
       | Error msg -> Error ("invalid proof in worker helper payload: " ^ msg))
 
@@ -86,14 +126,14 @@ let run_result_to_yojson (run_result : Worker_container_types.run_result) =
     [
       ("output", `String run_result.output);
       ("model_used", `String run_result.model_used);
-      ("input_tokens", option_to_yojson (fun v -> `Int v) run_result.input_tokens);
-      ("output_tokens", option_to_yojson (fun v -> `Int v) run_result.output_tokens);
-      ("cost_usd", option_to_yojson (fun v -> `Float v) run_result.cost_usd);
+      ("input_tokens", Json_util.option_to_yojson (fun v -> `Int v) run_result.input_tokens);
+      ("output_tokens", Json_util.option_to_yojson (fun v -> `Int v) run_result.output_tokens);
+      ("cost_usd", Json_util.option_to_yojson (fun v -> `Float v) run_result.cost_usd);
       ("tool_call_count", `Int run_result.tool_call_count);
       ("tool_names", `List (List.map (fun name -> `String name) run_result.tool_names));
       ("session_id", `String run_result.session_id);
       ( "raw_trace_run",
-        option_to_yojson Agent_sdk.Raw_trace.run_ref_to_yojson run_result.raw_trace_run );
+        Json_util.option_to_yojson Agent_sdk.Raw_trace.run_ref_to_yojson run_result.raw_trace_run );
       ("api_response", api_response_to_yojson run_result.api_response);
       ("proof", proof_to_yojson run_result.proof);
     ]
@@ -138,9 +178,36 @@ let run_result_of_yojson (json : Yojson.Safe.t) :
     } in
     Ok run_result
   with
-  | Yojson.Json_error msg -> Error ("invalid worker helper run_result JSON: " ^ msg)
-  | Type_error (msg, _) -> Error ("invalid worker helper run_result JSON: " ^ msg)
-  | Failure msg -> Error msg
+  (* Three distinct failure modes — the previous form returned the same
+     "invalid worker helper run_result JSON" string for both syntactic
+     and type-mismatch errors, and a bare [msg] (no context label) for
+     [Failure].  Operators reading the masc-mcp log now see which class
+     of failure occurred:
+
+       - [Yojson.Json_error]  → input not parseable as JSON at all
+       - [Type_error]         → JSON parsed but a [member]/[to_string]/
+                                [to_int] kind-check failed
+       - [Failure]            → numeric parse or other [failwith] from
+                                downstream helpers (now context-labelled)
+
+     [Eio.Cancel.Cancelled] is intentionally not in this list and so
+     propagates without being caught (RFC-0106).  The closed
+     exception list is safer than [with _ ->] for the same reason. *)
+  | Yojson.Json_error msg ->
+      Error
+        (Printf.sprintf
+           "worker helper run_result: JSON syntax error (%s)"
+           msg)
+  | Type_error (msg, _) ->
+      Error
+        (Printf.sprintf
+           "worker helper run_result: JSON shape mismatch (%s)"
+           msg)
+  | Failure msg ->
+      Error
+        (Printf.sprintf
+           "worker helper run_result: parse step raised Failure (%s)"
+           msg)
 
 let success_json (run_result : Worker_container_types.run_result) =
   `Assoc [ ("ok", run_result_to_yojson run_result) ]
@@ -193,5 +260,12 @@ let parse_stdout (stdout : string) :
             Ok (Error { message; kind })
         | _ -> Error "worker helper stdout did not contain ok or error")
   with
-  | Failure msg -> Error msg
+  (* Context-label the bare Failure so the operator reading the log
+     can tell a parse_stdout failure apart from any other [failwith]
+     that bubbles up from a downstream helper. *)
+  | Failure msg ->
+      Error
+        (Printf.sprintf
+           "worker helper parse_stdout: parse step raised Failure (%s)"
+           msg)
   | Yojson.Json_error msg -> Error ("invalid worker helper JSON: " ^ msg)

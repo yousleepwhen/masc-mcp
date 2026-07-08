@@ -39,12 +39,23 @@ let agent_role_of_string = function
 
 let agent_role_to_yojson role = `String (agent_role_to_string role)
 
-let agent_role_of_yojson = function
-  | `String s -> agent_role_of_string s
-  | _ -> Error "Expected string for agent_role"
-
 let all_agent_roles = [ Worker; Admin ]
 let valid_agent_role_strings = List.map agent_role_to_string all_agent_roles
+
+let agent_role_of_yojson = function
+  | `String s -> agent_role_of_string s
+  | other ->
+    (* Bind the actual JSON kind we received so operators can tell a
+       wrong-type bug ([`Int 1] / [`Bool true]) apart from a wrong-shape
+       bug ([`Assoc] containing a [role] field by mistake).  The
+       previous ["Expected string for agent_role"] message identified
+       neither the contract nor the offender. *)
+    Error
+      (Printf.sprintf
+         "agent_role_of_yojson: expected JSON string (one of %s), got %s"
+         (String.concat " | "
+            (List.map (Printf.sprintf "%S") valid_agent_role_strings))
+         (Json_util.kind_name other))
 
 (** Agent credential - used for token-based auth *)
 type agent_credential = {
@@ -137,11 +148,31 @@ type permission =
   | CanBroadcast
   | CanOpenPortal
   | CanSendPortal
-  | CanCreateWorktree
-  | CanRemoveWorktree
   | CanVote
   | CanAdmin
 [@@deriving show { with_path = false }]
+
+(** Stable wire format for [permission].  Returns the same string as
+    [show_permission] does today (PascalCase constructor name), but
+    locks the contract: future renames of the variant constructor will
+    NOT change the wire string, because callers must update this
+    explicit match at the same time.  Public API/SSE/error output
+    (tool_catalog requiredPermission, Auth_error.Forbidden action)
+    depends on these exact strings. *)
+let permission_to_string = function
+  | CanInit -> "CanInit"
+  | CanReset -> "CanReset"
+  | CanJoin -> "CanJoin"
+  | CanLeave -> "CanLeave"
+  | CanReadState -> "CanReadState"
+  | CanAddTask -> "CanAddTask"
+  | CanClaimTask -> "CanClaimTask"
+  | CanCompleteTask -> "CanCompleteTask"
+  | CanBroadcast -> "CanBroadcast"
+  | CanOpenPortal -> "CanOpenPortal"
+  | CanSendPortal -> "CanSendPortal"
+  | CanVote -> "CanVote"
+  | CanAdmin -> "CanAdmin"
 
 (** Get permissions for a role *)
 let permissions_for_role = function
@@ -150,7 +181,6 @@ let permissions_for_role = function
       CanAddTask; CanClaimTask; CanCompleteTask;
       CanBroadcast;
       CanOpenPortal; CanSendPortal;
-      CanCreateWorktree; CanRemoveWorktree;
       CanVote;
     ]
   | Admin -> [
@@ -159,12 +189,27 @@ let permissions_for_role = function
       CanAddTask; CanClaimTask; CanCompleteTask;
       CanBroadcast;
       CanOpenPortal; CanSendPortal;
-      CanCreateWorktree; CanRemoveWorktree;
       CanVote; CanAdmin;
     ]
 
+(* Direct (role, permission) variant match — O(1), no per-call list
+   allocation.  Hot path: [Auth.check_permission] runs this on every
+   protected operation; [Auth_doctor] runs it 10+ times per snapshot.
+   The previous [List.mem permission (permissions_for_role role)] form
+   built a fresh 12-element (Worker) / 15-element (Admin) list each
+   call.
+
+   Parallel to [permissions_for_role]: both forms are compiler-checked
+   exhaustive against the [permission] variant, so adding a new
+   constructor breaks both at compile time rather than letting one
+   silently fall through to a default. *)
 let has_permission role permission =
-  List.mem permission (permissions_for_role role)
+  match role, permission with
+  | Admin, _ -> true
+  | Worker, (CanInit | CanReset | CanAdmin) -> false
+  | Worker, ( CanJoin | CanLeave | CanReadState | CanAddTask
+            | CanClaimTask | CanCompleteTask | CanBroadcast
+            | CanOpenPortal | CanSendPortal | CanVote ) -> true
 
 (* ============================================ *)
 (* Rate limit role integration                  *)

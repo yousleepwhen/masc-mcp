@@ -1,9 +1,8 @@
-(** Keeper_types -- shared keeper contract, registry/store helpers,
-    path resolution, and model-selection utilities.
+(** Keeper_types -- shared keeper contract, profile, meta codec/store, and
+    health utilities.
 
-    Re-exports everything from {!Keeper_types_profile} (context, schemas,
-    profile defaults, path helpers) and {!Keeper_types_support}
-    (model selection, JSONL helpers, metrics store).
+    Support stores, path helpers, and JSONL helpers are owned by
+    {!Keeper_types_support}; do not route new callers through this facade.
 
     Spec navigation (OCaml -> TLA+) — plan §19 anchor pattern.  Sibling
     to #11612 (rollover) and #11614 (post_turn).  Authoritative spec
@@ -57,6 +56,19 @@ type compaction_policy = {
   token_gate: int;
   cooldown_sec: int;
   max_checkpoint_messages: int;
+  keep_recent_tool_results: int;
+    (** Verbatim tool-result tail length passed to
+        [Agent_sdk.Context_reducer.stub_tool_results ~keep_recent]
+        during OAS context compaction.  See
+        {!Keeper_meta_contract.compaction_policy} for full semantics. *)
+  tool_heavy_msg_threshold: int;
+    (** Per-keeper message-count floor for the tool-heavy compaction
+        gate.  See
+        {!Keeper_meta_contract.compaction_policy} for full semantics. *)
+  tool_heavy_ratio_floor: float;
+    (** Per-keeper context-ratio floor for the tool-heavy compaction
+        gate.  See
+        {!Keeper_meta_contract.compaction_policy} for full semantics. *)
 }
 
 type proactive_policy = {
@@ -64,8 +76,6 @@ type proactive_policy = {
   idle_sec: int;
   cooldown_sec: int;
 }
-
-type scheduled_autonomous_policy = proactive_policy
 
 type proactive_cycle_outcome =
   | Proactive_never_started
@@ -76,14 +86,11 @@ type proactive_cycle_outcome =
   | Proactive_mixed_response
   | Proactive_error
 
-type scheduled_autonomous_cycle_outcome = proactive_cycle_outcome
-
 type tool_preset =
   | Minimal
   | Social
   | Messaging
   | Dispatch
-  | Coding
   | Research
   | Delivery
   | Full
@@ -125,12 +132,8 @@ type proactive_runtime = {
   last_outcome: proactive_cycle_outcome;
   last_reason: string;
   last_preview: string;
-  last_work_discovery_ts : float;
-  work_discovery_count : int;
   consecutive_noop_count : int;
 }
-
-type scheduled_autonomous_runtime = proactive_runtime
 
 type usage_metrics = {
   total_turns: int;
@@ -148,35 +151,87 @@ type usage_metrics = {
 
 (** {1 Agent runtime state} *)
 
-(** Structured blocker classification — replaces string-based error matching. *)
-type cascade_exhaustion_reason =
+(** Structured blocker classification — replaces string-based error matching.
+    These are re-exports of the canonical types from [Keeper_meta_contract];
+    the [=] type equations make sure values flow without coercion across the
+    facade boundary (so callers may freely mix [Keeper_types.blocker_class]
+    and [Keeper_meta_contract.blocker_class]). *)
+type cascade_exhaustion_reason = Keeper_meta_contract.cascade_exhaustion_reason =
   | Connection_refused
+  | Dns_failure
   | No_providers_available
   | All_providers_failed
   | Candidates_filtered_after_cycles
   | Max_turns_exceeded
+  | Structural_attempt_timeout of { detail : string }
   | Other_detail of string
 
-type blocker_class =
+type blocker_class = Keeper_meta_contract.blocker_class =
   | Cascade_exhausted of cascade_exhaustion_reason
+  | Capacity_backpressure
   | Ambiguous_post_commit_timeout
   | Ambiguous_post_commit_failure
   | Autonomous_slot_wait_timeout
   | Admission_queue_wait_timeout
   | Turn_timeout_after_queue_wait
-  | Oas_timeout_budget
   | Turn_timeout
+  | Turn_livelock_blocked
   | Completion_contract_violation
   | No_tool_capable_provider
+  | Stay_silent_loop
   | Fiber_unresolved
   | Stale_turn_timeout
   | Stale_fleet_batch
+  | Oas_agent_execution_timeout
+  | Sdk_max_turns_exceeded
+  | Sdk_token_budget_exceeded
+  | Sdk_cost_budget_exceeded
+  | Sdk_unrecognized_stop_reason
+  | Sdk_idle_detected
+  | Sdk_tool_retry_exhausted
+  | Sdk_guardrail_violation
+  | Sdk_tripwire_violation
+  | Sdk_exit_condition_met
+  | Sdk_input_required
 
 val blocker_class_to_string : blocker_class -> string
 val cascade_exhaustion_summary : cascade_exhaustion_reason -> string
 val blocker_class_continue_gate : blocker_class -> bool
 val cascade_exhaustion_reason_to_json : cascade_exhaustion_reason -> Yojson.Safe.t
 val cascade_exhaustion_reason_of_json : Yojson.Safe.t -> cascade_exhaustion_reason option
+
+(** Authoritative blocker representation: typed [klass] + free-form
+    [detail].  The historic split blocker fields are no longer a
+    supported keeper_meta shape, so substring classification is not
+    load-bearing.  Re-exported via type equation from
+    [Keeper_meta_contract] so values flow without coercion across the
+    facade boundary. *)
+type blocker_info = Keeper_meta_contract.blocker_info = {
+  klass : blocker_class;
+  detail : string;
+}
+
+val blocker_info_of_class : ?detail:string -> blocker_class -> blocker_info
+val blocker_info_to_json : blocker_info -> Yojson.Safe.t
+val blocker_info_of_json : Yojson.Safe.t -> blocker_info option
+
+type cascade_attempt_record = Keeper_meta_contract.cascade_attempt_record = {
+  provider_id : string;
+  http_status : int option;
+  outcome : [ `Success | `Failure of string ];
+  timestamp : float;
+}
+
+val cascade_attempt_record_to_json :
+  cascade_attempt_record -> Yojson.Safe.t
+
+val cascade_attempt_record_of_json :
+  Yojson.Safe.t -> cascade_attempt_record option
+
+type tool_call_summary = {
+  tool_name : string;
+  outcome : string;
+}
 
 type agent_runtime_state = {
   usage: usage_metrics;
@@ -195,14 +250,14 @@ type agent_runtime_state = {
   board_reactive_turn_count: int;
   mention_reactive_turn_count: int;
   noop_turn_count: int;
-  consecutive_noop_count: int;
   last_speech_act: string;
   last_social_transition_reason: string;
   last_active_desire: string;
   last_current_intention: string;
-  last_blocker: string;
-  last_blocker_class: blocker_class option;
+  last_blocker: blocker_info option;
+  last_cascade_attempt: cascade_attempt_record option;
   last_need: string;
+  last_turn_tool_calls: tool_call_summary list;
 }
 
 (** {1 Keeper meta} *)
@@ -216,13 +271,12 @@ type keeper_meta = {
   mid_goal: string;
   long_goal: string;
   social_model: string;
-  cascade_name: string;
   models: string list;
+  cascade_ref: Cascade_ref.cascade_ref option;
   will: string;
   needs: string;
   desires: string;
   instructions: string;
-  policy_voice_enabled: bool;
   sandbox_profile: sandbox_profile;
   sandbox_image: string option;
   network_mode: network_mode;
@@ -239,9 +293,6 @@ type keeper_meta = {
   auto_handoff: bool;
   handoff_threshold: float;
   handoff_cooldown_sec: int;
-  voice_enabled: bool;
-  voice_channel: string;
-  voice_agent_id: string;
   created_at: string;
   updated_at: string;
   max_context_override: int option;
@@ -256,10 +307,6 @@ type keeper_meta = {
   autoboot_enabled: bool;
   current_task_id: Keeper_id.Task_id.t option;
   (** Currently claimed task ID for cost attribution. *)
-  work_discovery_enabled : bool option;
-  work_discovery_sources : string list option;
-  work_discovery_interval_sec : int option;
-  work_discovery_guidance : string option;
   telemetry_feedback_enabled : bool option;
   telemetry_feedback_window_hours : int option;
   per_provider_timeout_s : float option;
@@ -271,6 +318,17 @@ type keeper_meta = {
 }
 
 val now_iso : unit -> string
+
+val cascade_name_of_meta : keeper_meta -> string
+(** [cascade_name_of_meta m] is the canonical cascade name for the keeper.
+
+    Resolution order:
+    1. If [m.cascade_ref] is [Some] and [.group] is non-empty, return [.group].
+    2. Otherwise return the current keeper default route. *)
+
+val set_cascade_name : string -> keeper_meta -> keeper_meta
+(** [set_cascade_name name m] pins [cascade_ref] to [name]. Use for every
+    write that changes the keeper's cascade routing target. *)
 
 val tool_preset_to_string : tool_preset -> string
 val tool_preset_of_string : string -> tool_preset option
@@ -288,10 +346,6 @@ val valid_tool_preset_strings : string list
 
 val proactive_cycle_outcome_to_string : proactive_cycle_outcome -> string
 val proactive_cycle_outcome_of_string : string -> proactive_cycle_outcome
-val scheduled_autonomous_cycle_outcome_to_string :
-  scheduled_autonomous_cycle_outcome -> string
-val scheduled_autonomous_cycle_outcome_of_string :
-  string -> scheduled_autonomous_cycle_outcome
 val tool_access_preset : tool_access -> tool_preset option
 val tool_access_custom_allowlist : tool_access -> string list option
 val tool_access_also_allowlist : tool_access -> string list
@@ -306,16 +360,6 @@ val zero_usage : usage_metrics
 val reset_runtime_state : keeper_meta -> keeper_meta
 val map_compaction_rt : (compaction_runtime -> compaction_runtime) -> keeper_meta -> keeper_meta
 val map_proactive_rt : (proactive_runtime -> proactive_runtime) -> keeper_meta -> keeper_meta
-val map_scheduled_autonomous_rt :
-  (scheduled_autonomous_runtime -> scheduled_autonomous_runtime) ->
-  keeper_meta -> keeper_meta
-
-(** {1 Legacy model arg rejection} *)
-
-val keeper_legacy_model_arg_names : string list
-
-val reject_legacy_model_args :
-  tool_name:string -> Yojson.Safe.t -> (unit, string) result
 
 (** {1 Runtime meta write sync hook} *)
 
@@ -323,6 +367,10 @@ val runtime_meta_write_sync_hook : (Coord.config -> keeper_meta -> unit) ref
 val register_runtime_meta_write_sync : (Coord.config -> keeper_meta -> unit) -> unit
 
 (** {1 JSON field scrubbing} *)
+
+val config_field_names : string list
+(** Config field names owned by TOML only — never written to JSON.
+    Re-exported from {!Keeper_meta_json_scrub}. *)
 
 val drop_assoc_keys : string list -> Yojson.Safe.t -> Yojson.Safe.t
 val reject_removed_keeper_meta_fields : Yojson.Safe.t -> (unit, string) result
@@ -344,25 +392,6 @@ val keepalive_keeper_names : Coord.config -> string list
 val persistent_agent_names : Coord.config -> string list
 val write_meta : ?force:bool -> Coord.config -> keeper_meta -> (unit, string) result
 
-val write_meta_with_retry :
-  ?max_retries:int -> Coord.config -> keeper_meta -> (unit, string) result
-(** CAS write with bounded retry on version conflict.
-
-    On version conflict, re-reads disk to learn the latest version,
-    lifts the caller's payload onto it, and writes again. Retries up
-    to [max_retries] (default 3) times. Non-conflict errors fail
-    immediately.
-
-    Trade-off: payload-wins-at-field-level. Concurrent writes from
-    other fibers (e.g. heartbeat updating last_seen) are overwritten
-    by this caller's payload. Use only when the caller's data is
-    less recoverable than the concurrent writer's (cycle completion
-    qualifies; heartbeat does NOT — it should keep using {!write_meta}
-    and tolerate occasional CAS conflicts). See #9764 / #9733 / #9769.
-
-    Equivalent to [write_meta_with_merge ~merge:Keeper_meta_merge.caller_wins];
-    kept as a thin wrapper for backwards compatibility. *)
-
 val write_meta_with_merge :
   ?max_retries:int ->
   merge:(latest:keeper_meta -> caller:keeper_meta -> keeper_meta) ->
@@ -371,9 +400,8 @@ val write_meta_with_merge :
   (unit, string) result
 (** CAS write with bounded retry and caller-supplied field merge (#9769).
 
-    Like {!write_meta_with_retry}, but on CAS conflict the caller's
-    [merge] function decides which fields to take from the disk
-    snapshot and which from the caller. This eliminates the false
+    On CAS conflict the caller's [merge] function decides which fields
+    to take from the disk snapshot and which from the caller. This eliminates the false
     sharing that caused turn-failure writes to lose the CAS race
     against concurrent heartbeat writers: the turn path never modifies
     [joined_room_ids] / [last_seen_seq_by_room], so preserving those
@@ -387,9 +415,6 @@ val is_version_conflict_error : string -> bool
 (** True when [write_meta] returned an error caused by CAS version
     mismatch (vs an actual I/O failure). Useful for callers that want
     to log conflicts at WARN and other failures at ERROR. *)
-val keeper_name_from_agent_name : string -> string option
-val canonical_keeper_name_from_agent_name : string -> string option
-val canonical_keeper_name : string -> string option
 val read_meta_resolved :
   Coord.config -> string -> ((string * keeper_meta) option, string) result
 val read_meta : Coord.config -> string -> (keeper_meta option, string) result
@@ -400,12 +425,6 @@ val read_meta : Coord.config -> string -> (keeper_meta option, string) result
 val read_meta_if_changed :
   Coord.config -> string -> last_mtime:float ->
   (keeper_meta * float) option
-
-(** {1 Re-exports from Keeper_types_support} *)
-
-include module type of struct
-  include Keeper_types_support
-end
 
 (** {1 Fiber health (for keeper supervisor)} *)
 
@@ -447,17 +466,7 @@ type working_context = {
   max_tokens : int;
 }
 
-type checkpoint = {
-  checkpoint_id : string;
-  timestamp : float;
-  generation : int;
-  message_count : int;
-  token_count : int;
-  serialized : string;
-}
-
 type session_context = {
   session_id : string;
   session_dir : string;
-  mutable checkpoints : checkpoint list;
 }

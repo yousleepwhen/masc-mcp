@@ -12,6 +12,9 @@ module P = Masc_mcp.Prometheus
 
 let setup () = PLD.reset_all_for_test ()
 
+let check_absent label needle text =
+  check bool label false (Re.execp (Re.compile (Re.str needle)) text)
+
 (* ── Tests ──────────────────────────────────────────────────────────── *)
 
 let test_initial_streak_zero () =
@@ -36,17 +39,18 @@ let test_claim_context_increments_streak () =
     (PLD.current_streak ~keeper_name:"k1")
 
 let test_terminal_reason_maps_required_tool_failures () =
+  let module D = Masc_mcp.Keeper_turn_disposition in
+  let module Code = Masc_mcp.Keeper_turn_terminal_code in
   check (option string) "no tool call maps to detector class"
     (Some "required_tool_no_call")
-    (PLD.progress_class_of_terminal_reason_code
-       "required_tool_use_no_tool_call");
+    (PLD.progress_class_of_disposition D.Required_tool_use_no_tool_call);
   check (option string) "unsatisfied maps to detector class"
     (Some "required_tool_unsatisfied")
-    (PLD.progress_class_of_terminal_reason_code
-       "required_tool_use_unsatisfied");
+    (PLD.progress_class_of_disposition D.Required_tool_use_unsatisfied);
   check (option string) "provider errors do not count"
     None
-    (PLD.progress_class_of_terminal_reason_code "provider_error")
+    (PLD.progress_class_of_disposition
+       (D.Provider_error (Code.Provider_runtime_error "provider_error")))
 
 let test_required_tool_no_call_fires_metric_at_three () =
   Eio_main.run @@ fun _env ->
@@ -56,12 +60,12 @@ let test_required_tool_no_call_fires_metric_at_three () =
   in
   let before =
     P.metric_value_or_zero
-      P.metric_keeper_required_tool_loop_detected_total
+      Masc_mcp.Keeper_metrics.(to_string RequiredToolLoopDetectedTotal)
       ~labels ()
   in
   let zombie_before =
     P.metric_value_or_zero
-      P.metric_keeper_zombie_loop_detected_total
+      Masc_mcp.Keeper_metrics.(to_string ZombieLoopDetectedTotal)
       ~labels:[("keeper_name", "k-required-no-call")]
       ()
   in
@@ -73,7 +77,7 @@ let test_required_tool_no_call_fires_metric_at_three () =
     (PLD.current_streak ~keeper_name:"k-required-no-call");
   check (float 0.001) "no metric before threshold" before
     (P.metric_value_or_zero
-       P.metric_keeper_required_tool_loop_detected_total
+       Masc_mcp.Keeper_metrics.(to_string RequiredToolLoopDetectedTotal)
        ~labels ());
   PLD.record_turn ~keeper_name:"k-required-no-call"
     ~progress_class:"required_tool_no_call";
@@ -82,12 +86,12 @@ let test_required_tool_no_call_fires_metric_at_three () =
   check (float 0.001) "required-tool metric increments once"
     (before +. 1.0)
     (P.metric_value_or_zero
-       P.metric_keeper_required_tool_loop_detected_total
+       Masc_mcp.Keeper_metrics.(to_string RequiredToolLoopDetectedTotal)
        ~labels ());
   check (float 0.001) "Observe zombie-loop metric increments once"
     (zombie_before +. 1.0)
     (P.metric_value_or_zero
-       P.metric_keeper_zombie_loop_detected_total
+       Masc_mcp.Keeper_metrics.(to_string ZombieLoopDetectedTotal)
        ~labels:[("keeper_name", "k-required-no-call")]
        ())
 
@@ -116,7 +120,10 @@ let test_required_tool_nudge_mentions_real_tool_call () =
       check bool "nudge names required tool loop" true
         (Re.execp (Re.compile (Re.str "REQUIRED TOOL LOOP")) msg);
       check bool "nudge requires real keeper tool" true
-        (Re.execp (Re.compile (Re.str "real keeper tool call")) msg)
+        (Re.execp (Re.compile (Re.str "real tool call")) msg);
+      check_absent "nudge avoids tool_search_files" "tool_search_files" msg;
+      check_absent "nudge avoids tool_execute" "tool_execute" msg;
+      check_absent "nudge avoids tool_read_file" "tool_read_file" msg
 
 let test_execution_resets_streak () =
   Eio_main.run @@ fun _env ->
@@ -141,12 +148,12 @@ let test_detection_fires_metric_at_threshold () =
   (* Default threshold is 5. Fire exactly 5 passive turns and check metric. *)
   let before =
     P.metric_value_or_zero
-      P.metric_keeper_passive_loop_detected_total
+      Masc_mcp.Keeper_metrics.(to_string PassiveLoopDetectedTotal)
       ~labels:[("keeper", "k-metric")] ()
   in
   let zombie_before =
     P.metric_value_or_zero
-      P.metric_keeper_zombie_loop_detected_total
+      Masc_mcp.Keeper_metrics.(to_string ZombieLoopDetectedTotal)
       ~labels:[("keeper_name", "k-metric")] ()
   in
   for _ = 1 to 5 do
@@ -154,12 +161,12 @@ let test_detection_fires_metric_at_threshold () =
   done;
   let after =
     P.metric_value_or_zero
-      P.metric_keeper_passive_loop_detected_total
+      Masc_mcp.Keeper_metrics.(to_string PassiveLoopDetectedTotal)
       ~labels:[("keeper", "k-metric")] ()
   in
   let zombie_after =
     P.metric_value_or_zero
-      P.metric_keeper_zombie_loop_detected_total
+      Masc_mcp.Keeper_metrics.(to_string ZombieLoopDetectedTotal)
       ~labels:[("keeper_name", "k-metric")] ()
   in
   check bool "metric incremented at threshold" true (after > before);
@@ -171,12 +178,12 @@ let test_detection_latch_does_not_double_fire () =
   setup ();
   let before =
     P.metric_value_or_zero
-      P.metric_keeper_passive_loop_detected_total
+      Masc_mcp.Keeper_metrics.(to_string PassiveLoopDetectedTotal)
       ~labels:[("keeper", "k-latch")] ()
   in
   let zombie_before =
     P.metric_value_or_zero
-      P.metric_keeper_zombie_loop_detected_total
+      Masc_mcp.Keeper_metrics.(to_string ZombieLoopDetectedTotal)
       ~labels:[("keeper_name", "k-latch")] ()
   in
   (* Fire well above threshold — latch should prevent repeated increments *)
@@ -185,7 +192,7 @@ let test_detection_latch_does_not_double_fire () =
   done;
   let after =
     P.metric_value_or_zero
-      P.metric_keeper_passive_loop_detected_total
+      Masc_mcp.Keeper_metrics.(to_string PassiveLoopDetectedTotal)
       ~labels:[("keeper", "k-latch")] ()
   in
   check (float 0.001) "latch: counter increments exactly once per episode"
@@ -194,7 +201,7 @@ let test_detection_latch_does_not_double_fire () =
     "latch: Observe zombie-loop counter increments exactly once per episode"
     (zombie_before +. 1.0)
     (P.metric_value_or_zero
-       P.metric_keeper_zombie_loop_detected_total
+       Masc_mcp.Keeper_metrics.(to_string ZombieLoopDetectedTotal)
        ~labels:[("keeper_name", "k-latch")] ())
 
 let test_reset_clears_state () =
@@ -282,7 +289,55 @@ let test_nudge_message_contains_streak_count () =
        passive turns have accumulated. *)
     check bool "nudge text contains 'completed 5'" true
       (let re = Re.compile (Re.str "completed 5") in
-       Re.execp re text)
+       Re.execp re text);
+    check_absent "passive nudge avoids tool_search_files" "tool_search_files" text;
+    check_absent "passive nudge avoids tool_execute" "tool_execute" text;
+    check_absent "passive nudge avoids tool_read_file" "tool_read_file" text
+
+(* ── record_turn_effect tests (task-555) ──────────────────────────── *)
+
+module TD = Masc_mcp.Keeper_tool_progress
+
+let test_turn_effect_streak_increment () =
+  Eio_main.run @@ fun _env ->
+  setup ();
+  PLD.record_turn_effect ~keeper_name:"k-effect-inc" TD.Streak_increment;
+  PLD.record_turn_effect ~keeper_name:"k-effect-inc" TD.Streak_increment;
+  check int "Streak_increment → streak 2" 2
+    (PLD.current_streak ~keeper_name:"k-effect-inc")
+
+let test_turn_effect_streak_reset () =
+  Eio_main.run @@ fun _env ->
+  setup ();
+  PLD.record_turn_effect ~keeper_name:"k-effect-reset" TD.Streak_increment;
+  PLD.record_turn_effect ~keeper_name:"k-effect-reset" TD.Streak_increment;
+  PLD.record_turn_effect ~keeper_name:"k-effect-reset" TD.Streak_reset;
+  check int "Streak_reset → streak 0" 0
+    (PLD.current_streak ~keeper_name:"k-effect-reset")
+
+let test_turn_effect_empty_queue_sleep_resets_streak () =
+  Eio_main.run @@ fun _env ->
+  setup ();
+  PLD.record_turn_effect ~keeper_name:"k-effect-sleep" TD.Streak_increment;
+  PLD.record_turn_effect ~keeper_name:"k-effect-sleep" TD.Streak_increment;
+  PLD.record_turn_effect ~keeper_name:"k-effect-sleep"
+    (TD.Streak_reset_and_empty_queue_sleep
+       { reason = TD.No_eligible_tasks { scope_excluded_count = 3; all_goals_excluded = true } });
+  check int "Streak_reset_and_empty_queue_sleep → streak 0" 0
+    (PLD.current_streak ~keeper_name:"k-effect-sleep")
+
+let test_turn_effect_mixed_with_record_turn () =
+  Eio_main.run @@ fun _env ->
+  setup ();
+  (* Old API + new API interleaved — must share the same state. *)
+  PLD.record_turn ~keeper_name:"k-mixed" ~progress_class:"passive_status";
+  PLD.record_turn_effect ~keeper_name:"k-mixed" TD.Streak_increment;
+  PLD.record_turn ~keeper_name:"k-mixed" ~progress_class:"passive_status";
+  check int "mixed old/new API → streak 3" 3
+    (PLD.current_streak ~keeper_name:"k-mixed");
+  PLD.record_turn_effect ~keeper_name:"k-mixed" TD.Streak_reset;
+  check int "mixed reset → streak 0" 0
+    (PLD.current_streak ~keeper_name:"k-mixed")
 
 let () =
   run "keeper_passive_loop_detector" [
@@ -331,5 +386,15 @@ let () =
         test_nudge_message_none_for_unknown_keeper;
       test_case "nudge text contains streak count" `Quick
         test_nudge_message_contains_streak_count;
+    ];
+    "turn_effect (task-555)", [
+      test_case "Streak_increment increments streak" `Quick
+        test_turn_effect_streak_increment;
+      test_case "Streak_reset resets streak" `Quick
+        test_turn_effect_streak_reset;
+      test_case "Streak_reset_and_empty_queue_sleep resets streak" `Quick
+        test_turn_effect_empty_queue_sleep_resets_streak;
+      test_case "Mixed record_turn + record_turn_effect" `Quick
+        test_turn_effect_mixed_with_record_turn;
     ];
   ]

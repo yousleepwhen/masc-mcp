@@ -54,9 +54,6 @@ type world_observation = {
   continuity_summary : string;
   (** Latest continuity snapshot text (empty if unavailable). *)
 
-  worktree_change_summary : string option;
-  (** Git worktree delta detected since the previous keeper turn, if any. *)
-
   context_ratio : float;
   (** Current context window utilization [0.0, 1.0]. *)
 
@@ -69,6 +66,10 @@ type world_observation = {
   claimable_task_count : int;
   (** Number of unclaimed tasks this keeper can claim with its current tool
       surface. This is a matched subset of [unclaimed_task_count]. *)
+
+  provider_capacity_blocked_task_count : int;
+  (** Number of otherwise-claimable tasks currently held back by provider
+      capacity/cooldown when no fail-open cascade is available. *)
 
   failed_task_count : int;
   (** Number of failed/cancelled tasks in the room backlog. *)
@@ -86,8 +87,6 @@ type world_observation = {
 
   last_turn_budget : (int * int) option;
   (** Previous generation's turn usage as [(used, total)], if available. *)
-
-  work_discovery_due : bool;
 }
 
 type keeper_cycle_channel =
@@ -229,6 +228,20 @@ val observe :
   meta:Keeper_types.keeper_meta ->
   world_observation
 
+(** Build the observation used by direct [masc_keeper_msg] turns.
+
+    This intentionally reads durable room/task state, including pending
+    verification counts, while suppressing transient board/message events and
+    cursor updates. Direct operator messages should not advance autonomous
+    cursors, inherit unrelated room chatter, or synthesize scheduled
+    scheduled timer signals, but they must still see the durable work
+    signals that drive tool-use contracts. *)
+val observe_direct_keeper_msg :
+  allowed_tool_names:string list option ->
+  config:Coord.config ->
+  meta:Keeper_types.keeper_meta ->
+  world_observation
+
 (** Non-mutating probe for the smart-heartbeat gate.
 
     Returns [true] when durable room state already contains work that should
@@ -257,13 +270,16 @@ val effective_scheduled_autonomous_cooldown :
   base_cooldown:int -> since_last:int ->
   ?consecutive_noop_count:int -> unit -> int
 
-(** Backward-compatible alias for the pre-rename helper name. *)
-val effective_proactive_cooldown :
-  base_cooldown:int -> since_last:int ->
-  ?consecutive_noop_count:int -> unit -> int
-
 val provider_cooldown_remaining_sec_for_cascade :
-  cascade_name:Keeper_cascade_profile.runtime_name -> int option
+  cascade_name:Cascade_name.t -> int option
+
+val provider_capacity_blocked_task_count :
+  ?provider_cooldown_remaining_sec:
+    (cascade_name:Cascade_name.t -> int option) ->
+  meta:Keeper_types.keeper_meta ->
+  claimable_task_count:int ->
+  unit ->
+  int
 
 val entropic_oscillation_interval_sec : int
 (** Minimum scheduled-autonomous silence before entropy injection can wake a
@@ -278,16 +294,13 @@ val should_inject_entropic_oscillation :
 
 val keeper_cycle_decision :
   ?provider_cooldown_remaining_sec:
-    (cascade_name:Keeper_cascade_profile.runtime_name -> int option) ->
+    (cascade_name:Cascade_name.t -> int option) ->
   meta:Keeper_types.keeper_meta -> world_observation -> keeper_cycle_decision
 
 val unified_turn_decision :
   ?provider_cooldown_remaining_sec:
-    (cascade_name:Keeper_cascade_profile.runtime_name -> int option) ->
+    (cascade_name:Cascade_name.t -> int option) ->
   meta:Keeper_types.keeper_meta -> world_observation -> keeper_cycle_decision
 
 val should_run_keeper_cycle :
-  meta:Keeper_types.keeper_meta -> world_observation -> bool
-
-val should_run_unified_turn :
   meta:Keeper_types.keeper_meta -> world_observation -> bool

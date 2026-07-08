@@ -1,5 +1,286 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- RFC-0109 Phase D: introduced `Cdal_evidence_gate` layered decision
+  module that consults `Cdal_verdict_gate.lookup_latest_verdict` before
+  falling back to the legacy substring shim in
+  `Tool_task_completion_review`. Analysis-only tasks (no contract)
+  bypass the evidence gate — the operator-visible
+  `keeper_task_done` open-loop block no longer fires when the keeper
+  has nothing to attest beyond completion. Violated/Inconclusive
+  verdicts now reject with typed `findings[]` and
+  `completeness_gaps[]` in the workflow_rejection payload instead of
+  the opaque "include pr_url..." hint string.
+- RFC-0109 Phase A: introduced `Masc_mcp_cdal_runtime.Criteria` typed
+  sum (Keeper_turn_capture_v1, Contract_catalog_invariants,
+  Verification_request, Persona_probe, Free) and migrated
+  `Risk_contract.eval_criteria` away from opaque `Yojson.Safe.t`. Wire
+  format preserved via legacy `kind` field + new `criteria_kind` tag.
+  Amends §4.1 of the RFC to match the live producer inventory and adds
+  Phase D (Task evidence gate ↔ CDAL verdict) targeting the
+  `keeper_task_done` open-loop block pain.
+
+### Changed
+- `Keeper_tools_oas_workflow.workflow_rejection_payload_json` and
+  `Tool_task_payloads.workflow_rejection_payload_json` accept a new
+  optional `~extra_fields:(string * Yojson.Safe.t) list` so the typed
+  CDAL verdict payload can be embedded in the rejection envelope
+  without a schema break (RFC-0109 Phase D).
+
+## [0.19.31] - 2026-05-26
+
+### Changed
+- Retired legacy keeper tool surfaces, including the active PR review helper
+  wrappers and stale keeper interface aliases, so PR
+  workflows route through the configured keeper/sandbox/provider binding.
+- Continued legacy alias purging across board sort-order, MCP join-state, and
+  keeper identity facade surfaces.
+- Tightened task claim readiness/recovery handling with typed decisions and
+  tolerated degraded retry cascade receipts without relying on legacy aliases.
+- Improved runtime operator visibility by exposing MCP tool call IO previews
+  and defaulting OAS event retention for dashboard/runtime inspection.
+
+## [0.19.30] - 2026-05-24
+
+### Changed
+- Bumped the downstream OAS `agent_sdk` pin from `v0.198.0` to
+  `v0.198.1` and raised the dependency floor to `agent_sdk >= 0.198.1`.
+- Bumped the downstream OAS `agent_sdk` pin from `v0.196.17` to
+  `v0.198.0` and raised the dependency floor to `agent_sdk >= 0.198.0`.
+- Continued Keeper Tool/Backend boundary cleanup by retiring the
+  `Keeper_docker_read` module surface in favor of
+  `Keeper_sandbox_read_backend`, keeping tool callers behind
+  `Keeper_sandbox_read_runner`, and adding source guards for the old module
+  name.
+## [0.19.29] - 2026-05-24
+
+### Changed
+- Bumped `agent_sdk` (OAS) minimum from `0.196.10` to `0.196.16`.
+- Continued Keeper Tool/Backend boundary cleanup by routing file read tools
+  through `Keeper_sandbox_read_runner` and moving file-tool route labels to
+  sandbox runner facades.
+
+## [0.19.28] - 2026-05-21
+
+### Changed
+- Bumped `agent_sdk` (OAS) pin from `v0.196.7` to `v0.196.8` and SHA from
+  `609600d8` to `8ea10c7b` (origin/main HEAD). Picks up `feat(error): carry
+  completion contract violation detail` (#1660), `test(cascade): cover capacity
+  admission fast-fail` (#1659), and CLI/capabilities refactors (#1662, #1663).
+
+## [0.19.27] - 2026-05-20
+
+### Changed
+- Reduced local build friction by adding no-write/custom-output dependency
+  graph inspection and narrowing two structural tests away from the broad
+  `masc_test_deps` bundle.
+- Continued shell path/name cleanup by purging forbidden-character legacy
+  naming, reusing the path token scan for directory materialization, and
+  renaming the path argument token selector.
+- Trimmed dashboard dead surface area by removing unused components and common
+  UI modules.
+
+### Fixed
+- Repaired the tier-admission metric label export that broke the main build
+  after the cascade saturation wire-in.
+- Corrected dashboard runtime truth around paused Keeper counts, crashed-phase
+  SSOT handling, and tool-quality trend rendering.
+- Rolled up status-only board automation posts so board history stays readable.
+
+## [0.19.26] - 2026-05-20
+
+### Added
+- RFC-0153 Phase A/B for cascade saturation: added the typed `Cascade_saturation_signal`, wired tier admission into keeper attempts, and emitted the new saturation metric.
+- RFC-0148 closed-sum `tool_error` module (7 variants) with codemod adoption at six LLM-facing sites.
+- RFC-0142 `Json_field` typed extraction helper for boundary parsing.
+- RFC-0141 `Field_resolution` typed TOML extractor in `repo_manager`.
+- RFC-0143 typed `catalog_metadata_query` bridge for `keeper_cascade_profile`.
+- RFC-0139 dashboard agent-status typed SSOT module.
+- RFC-0135 keeper-operational-state typed SSOT promotion across vocab outliers.
+- Typed `drain_outcome` sum for background tasks and a typed `validator_stage` enum in `exec_core` (RFC-0092 Cluster C).
+
+### Changed
+- Bumped the downstream OAS `agent_sdk` pin to `v0.196.7` and raised the dependency floor accordingly.
+- Promoted multiple permissive `_ ->` and string-keyed fallbacks to typed closed-sum splits (RFC-0070, RFC-0092, RFC-0093, RFC-0126 discipline).
+- Replaced raw try/with handlers with `int_of_string_opt`-style total parsers and named the JSON shape in `of_json` errors across several boundary sites.
+
+### Fixed
+- RFC-0106 cancel-safe discipline: propagate `Eio.Cancel.Cancelled` instead of swallowing it in `fd_accountant` and several N-of-M boundary sites.
+- `cdal_loader` boundary parsing: split `Yojson.Json_error` from the catch-all in `read_json_file` and preserve `Sys_error` reason in `File_not_found`.
+- `worker_helper` / `worker_runtime_helper_protocol`: labelled bare `Failure` handlers and split `run_result_of_yojson` failure modes.
+- `ide_annotation_types`: kind-aware parse errors with total integer parsers; exposed JSON shape in two `of_json` errors.
+- `cascade_http_probe`: log HTTP transport failures instead of returning silent `None`.
+- `mode_enforcer` / `anti_rationalization` / `eval_harness`: kind-aware boundary parse errors and bounded entry dumps.
+- Build break in `test_cascade_saturation_signal_phase_a2` from an `Unix.unsetenv` reference (no such stdlib function) and a wrong `Masc_mcp.Env_config_keeper` qualifier.
+
+## [0.19.25] - 2026-05-17
+
+### Added
+- Added the RFC-0109 `Bounded_proc` helper and tests for time-bounded subprocess execution.
+- Added the RFC-0107 `Masc_http_client.Pool` interface skeleton for the next connection-pool implementation lane.
+- Exposed FD accountant metrics through Prometheus, including coverage for the new metric names.
+- Documented RFC-0108's PR/worktree operation safety gates and in-process atomic JSONL append direction.
+
+### Changed
+- Migrated additional cancel-safe shell, sandbox, response, and host-FD probe paths onto `Cancel_safe` helpers.
+- Bumped the downstream OAS `agent_sdk` pin to `main@308152ee` (`v0.196.1`) and raised the dependency floor to `agent_sdk >= 0.196.1`, covering the provider-timeout evidence release wave.
+
+### Fixed
+- Blocked Docker keeper shell runs during host FD hotspot pressure and added Darwin maxfilesperproc visibility plus best-effort Docker one-shot cleanup.
+- Serialized `system_log` JSONL writes and trajectory appends with per-path mutex/fresh-fd handling, then removed the unsafe append-fd cache path.
+- Removed remaining inline atomic helpers from `dated_jsonl` and `trajectory` so those paths use the shared `Fs_compat` surface.
+- Restored the `home_dir` test reference left behind by the config-surface rename.
+- Counted `tool_keeper` `cache_ttl_seconds` environment parse fallbacks through Prometheus.
+- Replaced the CDAL runtime health inline error envelope with the shared `Tool_args` helper.
+- Routed CDAL proof-store health path checks through the `Proof_store` owner API.
+- Removed the backend mutex metrics log suffix that tripped the OCaml comment terminator lint.
+- Split keeper shell-op resource classification parsing from the explicit shell fallback, and added the `Types_core` interface required by the OCaml structure ratchet.
+- Replaced raw `error_kind:string` signatures in keeper memory validation and WebSocket parse metrics with closed typed variants.
+- Kept keeper compaction observe sequencing in the correct branch and closed the snapshot-eviction match-arm regression that broke the main binary build.
+- Parallelized safe lazy startup tasks and added tool/cache flusher outcome counters for clearer startup and dispatch diagnostics.
+- Added the auto-upgrade dispatch and `Mcp-Session-Id` 404 handling path for the RFC-0100 server session lane.
+
+## [0.19.24] - 2026-05-17
+
+### Added
+- Documented RFC-0105's OpenAI-compatible boundary typed error mapping for tool validation and provider/runtime failure surfaces.
+- Added RFC-0106's cancel-safe `try`/`with` discipline draft for callback and cleanup paths.
+- Added Docker playground FD-hotspot operator tooling:
+  `scripts/docker-playground-fd-status.sh` surfaces worktree fanout and
+  `lsof` holders under `.masc/playground/docker`, while
+  `scripts/cleanup-docker-playground-worktrees.sh` dry-runs/applies
+  conservative stale clean worktree cleanup for #15931, with explicit
+  `--include-broken` handling for old non-git orphan directories.
+
+### Fixed
+- Wired the `Sandbox_exec` slot at non-Docker spawn callsites and gated keeper admission on system FD pressure, so fleet startup respects host-level descriptor pressure.
+- Closed setup file descriptors on process spawn failure.
+- Preserved typed PR evidence through task handling and prevented long-run workload stampedes.
+- Deduplicated keeper goal repair and added janitor auto-stagnate threshold handling.
+- Split background-task drain failures into typed handling for `drain_fd_to_buf` instead of silently swallowing read-side errors.
+- Failed closed on tool validation failures, tagged fabricated pair-repair messages, and re-raised `Eio.Cancel.Cancelled` from the keeper compaction-start callback.
+- Swept cursor-covered reaction stimuli so already-advanced keeper cursors do not leave stale pending work.
+
+## [0.19.23] - 2026-05-17
+
+### Changed
+- Promoted the RFC-0099 / RFC-0101 closeout docs to Active after the session-close and FD-accountant runtime lanes merged.
+- Bumped the downstream OAS `agent_sdk` pin to `main@79262f37` (`v0.195.0`) and raised the dependency floor to `agent_sdk >= 0.195.0`, covering the OAS body-timeout release wave.
+- Updated the unified keeper metrics fixture for the latest tool-candidate and health fields.
+- Removed the policy tool known-name adapter now that unified tool resolution owns the current path.
+
+### Fixed
+- Streamed large JSONL restore reads and removed the keeper-health legacy alias now that callers use the current health fields.
+- Split binary build identity from repository checkout identity in `/health`, so stale executables no longer masquerade as the current checkout.
+
+## [0.19.22] - 2026-05-17
+
+### Changed
+- Bumped the downstream OAS `agent_sdk` pin to `main@5f8e07b7` (`v0.194.1`) and raised the dependency floor to `agent_sdk >= 0.194.1`.
+- Moved the OAS pin note out of the older 0.19.20 changelog section so release history matches merge chronology.
+- Captured the follow-on runtime wave: required-tool candidate hotfix, force-done/release schema-audit enforcement, dashboard A0.2 atdts PoC, current goal-loop verify fixture, and chunked first-flush for POST `/mcp` JSON responses.
+
+## [0.19.21] - 2026-05-17
+
+### Added
+- `lib/server/`: SSE close frames and `Session_lifecycle` publisher hook for the RFC-0099 session close path.
+- `lib/keeper/`: required-tool candidate surfacing, Docker sandbox room-state exposure, and disk-pressure circuit breaker support for the keeper resource-gate lane.
+- `lib/admission/`: Tool-resource-gate snapshots are exposed through the admission queue for the PR-6 resource-gate lane.
+- `scripts/`: lint coverage for OCaml block-comment terminator traps so `_*)`-style failures are caught before PR merge.
+
+### Changed
+- Runtime configuration now continues purging legacy path/default fallback surfaces, including repo-config fallback removal and legacy path default cleanup.
+- Log retention defaults are opt-in disabled as part of the RFC-0103 closeout path.
+- Cascade legacy-runner worker tuning constants are lifted to SSOT, and the obsolete swarm harness entrypoint is removed.
+- RFC-0004 docs now record Phase A0.1 completion and add the Phase A0.2 implementation plan while additional SSE event arms move onto typed emitters.
+
+### Fixed
+- Keeper/tool gates: lane semaphores, generic required-tool gate behavior, typed handoff-context vocabulary, and tool-input validation exception qualification.
+- Process/tool task reliability: background task reserve/release wiring into spawn, stale `pr_url` blob cleanup, and the OCaml comment terminator regression in `tool_task`.
+- Transport/runtime visibility: cascade HTTP probe silent JSON parse drops now warn/count, and board-post validation stays at the correct boundary.
+
+## [0.19.20] - 2026-05-17
+
+### Added
+- `lib/keeper/keeper_reaction_ledger.ml`: keeper-local Reaction Ledger summaries are exposed through runtime health and dashboard runtime-resolution payloads, so pending stimuli show as degraded/operator-action-required instead of disappearing into post-turn internals.
+- `lib/server/fd_accountant.ml`: 4-kind FD accounting pool with Docker spawn throttle delegation for the RFC-0101 fleet pressure path.
+- `lib/sse_event/`: typed SSE event migration for tool/turn and handoff/context/replacement/slot arms, with byte-level tests covering the new RFC-0004 PR-3/PR-4 event emitters.
+- `docs/rfc/0101-fd-accountant-generic-pool.md` and RFC-0089 inventory partition updates document the next FD-accountant and close-prep lanes.
+
+### Changed
+- `lib/dashboard/` and dashboard runtime trust views label system-blocked states as `Blocked` rather than human `Pause`, separating operator pauses from runtime blockers.
+- MCP server internals remove the legacy `respond_mcp_*` / `mcp_internal_error_json` factories from the active response path.
+- Cascade max-token handling clamps model/provider output ceilings explicitly.
+- Cascade qwen configuration declares chat-template thinking support explicitly and removes the legacy `cap_auto_resolved_max_tokens` alias from active cascade code and historical DD-020 notes.
+
+### Fixed
+- `lib/keeper/keeper_agent_run.ml`: captured CDAL proof files are persisted into keeper run outputs.
+- `lib/server/server_mcp_transport_ws.ml`: silent websocket JSON parse drops now increment metrics and emit warnings.
+- Runtime base-path handling no longer falls back to `ME_ROOT`.
+- Release notes now cover the completed world-reactivity closeout wave, including Runtime Lens proof surfacing, required-tool route failure splitting, Reaction Ledger health, and CDAL proof persistence.
+
+## [0.19.19] - 2026-05-17
+
+### Added
+- `docs/rfc/0004-phase-a0-1-implementation-plan.md`: RFC-0004 Phase A0.1 implementation plan — sub-PR sequencing (PR-0 through PR-4), byte-equal golden test protocol, atd schema candidate for SSE wire envelope.
+- `lib/sse_event_poc/`: byte-equal PoC sublib (atdgen + atdgen-runtime, `(optional)`) demonstrating 3-way byte-equal output (`` `Assoc `` + `Yojson.Safe.to_string` vs hand-coded module vs atdgen `-j -j-std`) for `agent_started` payload. Gated behind `with-test` to avoid leaking atdgen into production opam install.
+- `test/sse_event_poc/test_sse_event_poc.ml`: 3-way byte-equal Alcotest fixture (PASS, single run, byte-identical across all three emit paths).
+- `docs/rfc/RFC-0004-shared-contract-ocaml-ts.md`: Resume note (2026-05-17), Phase A0 sprint A0.1-A0.5 분할 table, drift surface quantification (SSE event types 60+→68 over 12 months, 4 drift categories with 3 silent pass).
+
+### Changed
+- `dashboard/src/components/ide/ide-context-lens.ts`: defensive `?? ''` null coalescing on `link.label.trim()` and `anchor.surface.trim()` to stop runtime crash from SSE schema drift (`TypeError: Cannot read properties of null (reading 'trim')`, observed 2026-05-17). Marked WORKAROUND; root removal once RFC-0004 Phase A0.4 (Zod-from-JSON-Schema payload nested validation) lands.
+
+### Notes
+- No production runtime change; PoC sublib is test-only via `(optional)` + opam `:with-test`.
+
+## [0.19.18] - 2026-05-17
+
+### Added
+- `specs/keeper-state-machine/KeeperCompactionCooldown.tla`: TLA+ model for keeper continuity cooldown behavior, with clean and buggy TLC configs wired into `scripts/tla-check.sh`.
+- `masc_keeper_continuity_no_state_total` and `masc_keeper_tool_pair_repair_total`: counters for no-STATE continuity cooldown advancement and keeper-local tool-pair repair.
+
+### Changed
+- `lib/keeper/keeper_compact_policy.{ml,mli}`: exposes pure `decide_compaction`, keeps tool-heavy emergency compaction eligible during cooldown, and isolates pre-compact dashboard health telemetry failures.
+- `scripts/harness/workload/keeper_continuity_validation.sh`: reads the current `masc_keeper_status.meta.*` schema and validates checkpoint truth from trace checkpoint paths.
+
+### Fixed
+- `lib/keeper/keeper_post_turn.ml`: no-STATE continuity passes now advance `last_continuity_update_ts`, preventing repeated cooldown misses.
+- `lib/keeper/keeper_run_tools.ml`: removes OAS synthetic dangling-tool repair from the keeper reducer path and records local tool-pair repair instead.
+
+## [0.19.17] - 2026-05-11
+
+### Fixed
+- `lib/keeper/keeper_telemetry_consumer.ml`: drain loop now yields between iterations (`Eio.Time.sleep clock 0.1`). The fiber introduced by #14491 saturated a single Eio domain at ~100% CPU because `Agent_sdk_metrics_bridge.drain` is non-blocking and the loop recursed without sleeping. Co-located fibers (HTTP handlers, lazy startup tasks) starved — server boot stalled at `lazy_task: starting restore_sessions`, `/health` timed out, and HTTP handlers never responded despite ports being LISTEN. Mirrors the sibling drain loops in `keeper_compact_audit`, `cascade_event_bridge`, and `server_bootstrap_loops` keeper-lifecycle, all of which already sleep between drains. PR #14499.
+
+## [0.19.16] - 2026-05-07
+
+### Added
+- `lib/alignment_score.{ml,mli}`: backend OCaml implementation of Master Report section 3.3 Alignment Score (AS) formula - Dim03 P2 first slice. 10 raw metrics (TRC/COV/CMP/CRN/DBT/TMP/DIR/COH/BND/CNF), default weights summing to 1.0, normalization with 5 distinct patterns (linear, distance-from-1, complement, midpoint, complement-with-clamp), 5-step grade A/B/C/D/F, 5 warning flags. JSON codec with stable keys for the dashboard score panel. Pure OCaml, no Eio, no I/O. RFC-0035 PR-6.
+- `test/test_alignment_score.ml`: 16 alcotest cases covering weights-sum invariant, overweight custom-weight clamping, ideal-metrics -> 100/A/no-warnings, worst-metrics -> low/F, rounded displayed-score grade consistency, normalization on each axis, out-of-range clamping, grade boundaries (90/75/60/40), floating precision at grade boundaries, all 5 warnings, no false warnings on ideal, and JSON-shape contract.
+
+### Fixed (vs Master Report TS reference)
+- `normalized.TMP > 150 -> Behind_schedule` was structurally impossible (normalized cap is 100); replaced with raw `tmp > 1.5`.
+- `normalized.DBT > 50 -> High_debt` had inverted semantics (normalized.DBT large = low debt); replaced with raw `dbt > 0.5`.
+
+## [0.19.15] - 2026-05-07
+
+### Added
+- `lib/chronicle_librarian.{ml,mli}`: in-memory chronicle-event store with keyword-search retrieval — Master Report Dim02 P1 §2.4 Librarian Agent first slice. Reuses `Cognitive_gravity.rank` for ordering, no new ranking primitive. Exposes `empty / add / of_list / to_list / len`, three filter helpers (`filter_by_event_type / filter_by_session / filter_by_time_range`), and a deterministic tokeniser. Pure OCaml, no Eio, no I/O. Vector embedder + Responder + Proactive Summary deferred to PR-6+. RFC-0035 PR-5.
+- `test/test_chronicle_librarian.ml`: 11 alcotest cases (tokenise basic, search empty/single/relevance/limit/recency-default/recency-explicit, filter event_type/session/time_range, add insertion order).
+
+### Changed
+- `docs/rfc/RFC-0035-cognitive-ide-roadmap.md`: PR-stack table marks PR-5 in-flight (this PR). PR-4 still in-flight pending merge.
+
+## [0.19.14] - 2026-05-07
+
+### Added
+- `lib/chronicle_event.{ml,mli}`: backend OCaml schema for the chronicle event stream — Master Report Dim02 P1 ChronicleEvent. JSON-shape compatible with the dashboard read model `dashboard/src/components/chronicle/chronicle-types.ts` (camelCase: eventType, displayName, sessionId, parentEventId, relatedEventIds, projectState, filesChanged, statedGoal, inferredIntent). 21 event types, 4 actor kinds, 7 target kinds. Custom yojson codec (not [@@deriving]) so the wire format stays string-level stable across pin bumps. RFC-0035 PR-4.
+- `test/test_chronicle_event.ml`: 10 alcotest cases covering the full round-trip of every variant in all three taxonomies, full event JSON round-trip, dashboard camelCase key contract, optional-intent absent semantics, decode-rejects on unknown eventType / missing required field, and well-formedness invariant.
+
+### Changed
+- `docs/rfc/RFC-0035-cognitive-ide-roadmap.md`: mapping table Dim02 row updated — `chronicle_event` is now in-flight (PR-4) on the lib side. PR-stack table extended to mark PR-4 as in-flight and PR-5 (Librarian retriever) as the next P1 item.
 
 ## [0.19.13] - 2026-05-06
 
@@ -801,7 +1082,7 @@ Follow-up to v0.18.1 ProviderTerminal rescue. This release collects a wave of ke
 - `keeper`: cap cascade rotation at 1 for `required_tool_contract_violation` so a single proactive contract miss can't cycle through every provider (#10851).
 - `coord/task`: emit warn when a task crosses the 5-cycle oscillation threshold so operators see escalation candidates (#10719, #10920).
 - `server/autoboot`: per-task boot guard so a single hung lazy task can't block keeper boot — restore_sessions now degrades gracefully instead of hanging the boot pipeline (#10857).
-- `boot`: start `Oas_worker_cascade` actor consumer fiber that was dropped in a refactor and left the cascade actor without a reader (#10895).
+- `boot`: start `Cascade_legacy_runner` actor consumer fiber that was dropped in a refactor and left the cascade actor without a reader (#10895).
 - `cascade-filter`: per-provider rejection diagnostics for #10681 so cascade-skip reasons are visible per provider, not aggregate (#10852).
 - `keeper-shell-docker`: detect `gh --repo X api Y` LLM-hallucinated form and self-correct (108 events / day pre-fix, #10855, #10900).
 - `keeper-shell-docker`: replace `List.hd` with pattern match (Health ratchet, #10905).
@@ -872,7 +1153,7 @@ The v0.18.0 tag exists but its GitHub release workflow failed: the OAS pin bump 
 
 ### Changed (refactor)
 - Design system PR-CS5 → PR-CS12: ActionButton/Select migration across runtime-monitor (#10722), connector-quick-bind (#10717), governance-monitor (#10715), agent-profile (#10705), memory-post-detail (#10702), tool-picker (#10694), error-panel (#10687), autoresearch (#10683).
-- Rename `Oas_sse_bridge` → `Oas_event_bridge` (transport-agnostic, #10711).
+- Rename `Oas_sse_bridge` → `Cascade_event_bridge` (transport-agnostic, #10711).
 
 ### Chore
 - OAS pin: bump SHA to `97b8a603` (OAS #1201 TurnReady event, #10704, #10709).
@@ -921,7 +1202,7 @@ Aggregate of 103 commits since v0.16.0 (42 feat / 24 fix / 15 perf / 15 refactor
 - Topbar variant API unified (Phase 3 consistency, #10505); SectionHeading primitive extracted (#10476).
 
 ### Changed (refactor)
-- SSOT consolidation: cohort_key moved to source-of-truth module (#10618); 12 deprecated re-exports dropped from `Keeper_exec_context` (#10616); KeeperSandbox/DockerPlayground aliased to `Env_config_sandbox` (#10536); 5 Alerting/Pr_review timeout literals migrated to SSOT (#10502); 4 Sandbox/Turn_sandbox timeout literals migrated (#10486); 3 sandbox hardcoded constants migrated (#10551); personality I/O consolidated via samchon-style harness (#10538). Alerting default 15→20s (#10615).
+- SSOT consolidation: cohort_key moved to source-of-truth module (#10618); 12 deprecated re-exports dropped from `Keeper_context_runtime` (#10616); KeeperSandbox/DockerPlayground aliased to `Env_config_sandbox` (#10536); 5 Alerting/Pr_review timeout literals migrated to SSOT (#10502); 4 Sandbox/Turn_sandbox timeout literals migrated (#10486); 3 sandbox hardcoded constants migrated (#10551); personality I/O consolidated via samchon-style harness (#10538). Alerting default 15→20s (#10615).
 - Yojson hygiene: drop unused decoder for `agent_identity.t` + `post_eval_result` (#10526); lint exempts encoder-only deriving from option-default rule (#10537).
 - Bumped `agent_sdk` floor to 0.177.0 (#10608) after raising cap to <0.178.0 to align with pinned SHA v0.177.0 (#10592).
 
@@ -1130,14 +1411,14 @@ Aggregate of 185 commits since v0.14.0 (26 feat / 93 fix / 30 perf-refactor-obs-
   replaced by two: `local` runs on the host with filesystem scoped to the
   keeper playground; `docker` runs in the hardened container. Git credential
   mounting is no longer a separate profile — when `sandbox_profile=docker` and
-  `keeper_bash` cmd starts with `git`/`gh`, the dispatcher transparently
-  upgrades to network=inherit with gh/git credential mounts for that one
-  command. Response JSON carries `git_creds_enabled` so observers can tell
-  which path fired. Old profile strings still load via a compat layer that
+  typed Bash targets `git`/`gh`, the dispatcher transparently upgrades to
+  network=inherit with gh/git credential mounts for that one command. Response
+  JSON carries `git_creds_enabled` so observers can tell which path fired. Old
+  profile strings still load via a compat layer that
   warns and maps (`legacy_local→local`, `docker_hardened|docker_with_git→docker`);
   the compat arm is removable once state JSON/TOML files are migrated. See
   RFC-0006 §8 Addendum.
-- **OAS pin bump → `main@3dabe7a8` (`v0.164.0`).** `scripts/oas-agent-sdk-pin.sh` now follows `jeong-sik/oas` `main` instead of the older `codex/glm-coding-plan-cascade` branch, and the dependency floor in `dune-project` / `masc_mcp.opam` is raised to `agent_sdk >= 0.164.0`. This matches the upstream version-boundary fix where current OAS `main` advertises `0.164.0` after post-`0.163.0` public API growth, so downstream pin metadata no longer conflates branch head with the older `0.163.0` line.
+- **OAS pin bump → `main@3dabe7a8` (`v0.164.0`).** `scripts/oas-agent-sdk-pin.sh` now follows `jeong-sik/oas` `main` instead of the older retired cascade branch, and the dependency floor in `dune-project` / `masc_mcp.opam` is raised to `agent_sdk >= 0.164.0`. This matches the upstream version-boundary fix where current OAS `main` advertises `0.164.0` after post-`0.163.0` public API growth, so downstream pin metadata no longer conflates branch head with the older `0.163.0` line.
 
 ### Added
 
@@ -1160,7 +1441,7 @@ Aggregate of 185 commits since v0.14.0 (26 feat / 93 fix / 30 perf-refactor-obs-
   new fields — one per `Parsed.reason_too_complex` variant plus
   dedicated `too_complex_parse_error`, `too_complex_parse_aborted`,
   and `too_complex_other` buckets.  The shadow-observer in
-  `keeper_exec_shell.ml` feeds the `parse_tag` string (e.g.
+  `agent_tool_shell_runtime.ml` feeds the `parse_tag` string (e.g.
   `"too_complex:redirect"`) through the new
   `Legendary_counters.incr_too_complex_by_tag` routing table
   whenever `diff=Shadow_cannot_parse`; unknown tags collapse into
@@ -1493,7 +1774,7 @@ Aggregate of 185 commits since v0.14.0 (26 feat / 93 fix / 30 perf-refactor-obs-
   script `scripts/sweep-tool-error-signatures.sh` (#8767) buckets daily
   `tool_calls/*.jsonl` failures by normalized signature so the impact
   of prompt changes is measurable. Shipped:
-  - `keeper_exec_shell` — raise gh op timeout floor 5s → 15s (#8712),
+  - `agent_tool_shell_runtime` — raise gh op timeout floor 5s → 15s (#8712),
     hint on gh `Could not resolve to a Repository` from playground cwd
     (#8734), Good:/Bad: examples for 5 readonly-shell categories
     (#8704).
@@ -2094,10 +2375,10 @@ No code changes. Bump captures the documentation/hygiene cycle as a tagged relea
 
 ### Fixed
 
-- Keeper: redirect `gh` to keeper_shell op=gh (#7474), demote
+- Keeper: redirect `gh` to shell execution (#7474), demote
   semaphore_wait logs to INFO (#7472), add admin tools to Keeper_denied
   surface (#7455), hand off after overflow retry (#7435), accept both
-  `pr_number` and `number` in keeper_pr_review (#7476).
+  `pr_number` and `number` in the retired PR review helper (#7476).
 - CI: pin `ocaml/setup-ocaml` to avoid upstream opam-binary regression
   (#7499).
 - Dashboard: activity_graph events_shown vs events_store_total (#7502).
@@ -2192,7 +2473,7 @@ had the full Phase 2 release to migrate.
 - **Keeper features**: social transition reasons exposed + cross-turn state
   (#7399, #7395); magentic ledger social model + TLA+ spec (#7426, #7430);
   campaign FSM harness (#7385); `sangsu` cascade profile — local-first Ollama +
-  GLM fallback (#7404); pipe support in `masc_code_shell` (#7393).
+  GLM fallback (#7404); pipe support in command execution (#7393).
 
 ### Changed
 
@@ -2245,7 +2526,7 @@ had the full Phase 2 release to migrate.
 
 ### Removed
 
-- `keeper_pr_submit` tool + hardened `gh`/dashboard flows (#7389).
+- Retired PR submit helper + hardened `gh`/dashboard flows (#7389).
 - 18 dead permission entries (#7434); dead tool references
 - Dead `Blocked` variant from `turn_outcome` (#7346).
 - Dead functions from `keeper_status_bridge` (#7403, #7406).
@@ -2556,7 +2837,7 @@ had the full Phase 2 release to migrate.
 
 ### Changed
 - Eliminate vendor hardcoding outside provider_adapter boundary (#6495)
-- Root cause fixes for JSONL parsing, keeper_github repo, preset validation (#6457)
+- Root cause fixes for JSONL parsing, retired GitHub repo helper, preset validation (#6457)
 
 ### Fixed
 - Restore loopback cross-port relaxation in auth (#6504)
@@ -2668,7 +2949,7 @@ had the full Phase 2 release to migrate.
 ### Added
 - OAS exit_condition plumbing — boring gate exits Agent.run early after 8+ idle turns (#5988)
 - Configurable boring exit threshold via Runtime_params (#5997)
-- Tool schemas for autonomy pipeline: keeper_pr_submit, keeper_preflight_check, keeper_pr_review_* (#5996)
+- Tool schemas for the historical autonomy pipeline (#5996)
 - Keeper read-only tool classification with Tool_dispatch mirroring (#5983)
 - Retry-safe tool metadata — board tools registered with Mod_inline + idempotent flags (#5973)
 - Self-repo --base-path guard — rejects runtime state in source repo (#5992)

@@ -5,14 +5,13 @@
     surface without failing this test.
 
     The Step 9 unblock at [config/tool_policy.toml]
-    [\[presets.research\]] is what makes
-    [keeper_shell op=git_clone] / [op=gh pr view] / [op=gh pr create]
-    reach the research-tier toolset.  Before Step 9, analyst / scholar /
-    verifier keepers could only share opinions on the board.  After
-    Step 9, the capability is opened (the risk-tiered approval gate
-    in [keeper_routine_allowlist.ml] still queues high-risk ops for
-    operator confirmation).  This test is the regression sentinel for
-    that decision. *)
+    [\[presets.research\]] is what makes delivery-class filesystem,
+    file-search, and execute tooling reach the research-tier toolset.  Before Step
+    9, analyst / scholar / verifier keepers could only share opinions on
+    the board.  After Step 9, the capability is opened and the
+    risk-tiered approval gate still queues high-risk ops for operator
+    confirmation.  This test is the regression sentinel for that
+    decision. *)
 
 open Masc_mcp
 
@@ -90,35 +89,29 @@ let test_research_preset_includes_delivery_groups () =
         (fun group ->
           assert_group_in_line ~preset:"research" ~group line)
         [
-          "coding_shard";
-          "coding";
-          "github";
-          "github_review";
-          "shell";
+          "execute";
+          "search_files";
           "filesystem_write";
         ]
 
-(** Sanity baseline: coding preset has the same delivery groups.  If
-    this test fails, the TOML schema or the [coding] preset shape
+(** Sanity baseline: delivery preset keeps the production work groups.  If
+    this test fails, the TOML schema or the [delivery] preset shape
     changed and the [research] expectation likely needs revisiting
     in the same PR. *)
-let test_coding_preset_baseline () =
+let test_delivery_preset_baseline () =
   let path = locate_tool_policy_toml () in
   let content = read_file path in
-  match extract_preset_groups_line ~preset:"coding" content with
+  match extract_preset_groups_line ~preset:"delivery" content with
   | None ->
       Alcotest.fail
-        "could not find [presets.coding].groups in tool_policy.toml"
+        "could not find [presets.delivery].groups in tool_policy.toml"
   | Some line ->
       List.iter
         (fun group ->
-          assert_group_in_line ~preset:"coding" ~group line)
+          assert_group_in_line ~preset:"delivery" ~group line)
         [
-          "coding_shard";
-          "coding";
-          "github";
-          "github_review";
-          "shell";
+          "execute";
+          "search_files";
           "filesystem_write";
         ]
 
@@ -142,9 +135,9 @@ let () =
           Alcotest.test_case "includes delivery groups (Step 9)" `Quick
             test_research_preset_includes_delivery_groups;
         ] );
-      ( "coding_preset",
+      ( "delivery_preset",
         [
           Alcotest.test_case "baseline delivery groups" `Quick
-            test_coding_preset_baseline;
+            test_delivery_preset_baseline;
         ] );
     ]

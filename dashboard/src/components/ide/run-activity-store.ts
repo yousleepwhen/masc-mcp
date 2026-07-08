@@ -7,6 +7,8 @@
  */
 
 import { signal } from '@preact/signals'
+import { hasNonEmptyStringField, isPositiveSafeInteger, isRecord } from '../common/normalize'
+import { isStringArray } from '../../lib/type-guards'
 
 const DEFAULT_MAX_EVENTS = 200
 const RUN_ACTIVITY_VERBS = [
@@ -24,6 +26,21 @@ const RUN_ACTIVITY_VERB_SET = new Set<string>(RUN_ACTIVITY_VERBS)
 
 export type RunActivityVerb = (typeof RUN_ACTIVITY_VERBS)[number]
 
+export interface RunActivityContext {
+  readonly file_path?: string
+  readonly line?: number
+  readonly goal_id?: string
+  readonly task_id?: string
+  readonly board_post_id?: string
+  readonly comment_id?: string
+  readonly pr_id?: string
+  readonly git_ref?: string
+  readonly log_id?: string
+  readonly session_id?: string
+  readonly operation_id?: string
+  readonly worker_run_id?: string
+}
+
 export interface RunActivityEvent {
   readonly id: string
   readonly run_id: string
@@ -32,6 +49,9 @@ export interface RunActivityEvent {
   readonly target: string
   readonly timestamp_ms: number
   readonly detail?: string
+  readonly kind?: string
+  readonly tags?: ReadonlyArray<string>
+  readonly context?: RunActivityContext
 }
 
 export interface RunActivityStore {
@@ -110,31 +130,48 @@ export function createRunActivityStore(
   }
 }
 
-type UnknownRecord = Record<string, unknown>
-
 function normalizeMaxEvents(value: number | undefined): number {
-  if (typeof value === 'number' && Number.isSafeInteger(value) && value > 0) return value
+  if (isPositiveSafeInteger(value)) return value
   return DEFAULT_MAX_EVENTS
 }
 
 function validEventForRun(event: unknown, runId: string): event is RunActivityEvent {
   if (!isRecord(event)) return false
   if (event.run_id !== runId) return false
-  if (!hasNonEmptyString(event, 'id')) return false
-  if (!hasNonEmptyString(event, 'keeper_id')) return false
-  if (!hasNonEmptyString(event, 'target')) return false
+  if (!hasNonEmptyStringField(event, 'id')) return false
+  if (!hasNonEmptyStringField(event, 'keeper_id')) return false
+  if (!hasNonEmptyStringField(event, 'target')) return false
   if (!isRunActivityVerb(event.verb)) return false
   if (event.detail !== undefined && typeof event.detail !== 'string') return false
+  if (event.kind !== undefined && typeof event.kind !== 'string') return false
+  if (event.tags !== undefined && !isStringArray(event.tags)) return false
+  if (event.context !== undefined && !isRunActivityContext(event.context)) return false
   return Number.isFinite(event.timestamp_ms)
 }
 
-function isRecord(value: unknown): value is UnknownRecord {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
+
+function isRunActivityContext(value: unknown): value is RunActivityContext {
+  if (!isRecord(value)) return false
+  return optionalNonEmptyString(value.file_path)
+    && optionalPositiveInteger(value.line)
+    && optionalNonEmptyString(value.goal_id)
+    && optionalNonEmptyString(value.task_id)
+    && optionalNonEmptyString(value.board_post_id)
+    && optionalNonEmptyString(value.comment_id)
+    && optionalNonEmptyString(value.pr_id)
+    && optionalNonEmptyString(value.git_ref)
+    && optionalNonEmptyString(value.log_id)
+    && optionalNonEmptyString(value.session_id)
+    && optionalNonEmptyString(value.operation_id)
+    && optionalNonEmptyString(value.worker_run_id)
 }
 
-function hasNonEmptyString(record: UnknownRecord, key: string): boolean {
-  const value = record[key]
-  return typeof value === 'string' && value.trim() !== ''
+function optionalNonEmptyString(value: unknown): boolean {
+  return value === undefined || (typeof value === 'string' && value.trim() !== '')
+}
+
+function optionalPositiveInteger(value: unknown): boolean {
+  return value === undefined || isPositiveSafeInteger(value)
 }
 
 function isRunActivityVerb(value: unknown): value is RunActivityVerb {

@@ -17,11 +17,10 @@ module Float = Stdlib.Float
 
 (** Tool_local_runtime_http -- HTTP helpers for local runtime probing. *)
 
+let default_timeout_sec = 10
+
 include Tool_local_runtime_core
 
-let trim_to_option raw =
-  let trimmed = String.trim raw in
-  if String.equal trimmed "" then None else Some trimmed
 
 let split_http_body_and_status body =
   match String.rindex_opt body '\n' with
@@ -44,7 +43,7 @@ let append_headers args headers =
   in
   List.rev_append header_args_rev args
 
-let http_get_text_with_status_with_headers ?(timeout_sec = 10) ?(headers = []) url =
+let http_get_text_with_status_with_headers ?(timeout_sec = default_timeout_sec) ?(headers = []) url =
   let argv =
     append_headers
       [
@@ -60,12 +59,13 @@ let http_get_text_with_status_with_headers ?(timeout_sec = 10) ?(headers = []) u
       headers
   in
   let status, body =
-    Masc_exec.Exec_gate.run_argv_with_status
-      ~actor:"tool/local_runtime"
-      ~raw_source:(String.concat " " (List.map Filename.quote argv))
-      ~summary:"tool local runtime http get"
-      ~timeout_sec:(Stdlib.Float.of_int (max 1 timeout_sec))
-      argv
+    Fd_accountant.with_slot ~kind:Sandbox_exec (fun () ->
+      Masc_exec.Exec_gate.run_argv_with_status
+        ~actor:(Masc_exec.Agent_id.of_string "tool/local_runtime")
+        ~raw_source:(String.concat " " (List.map Filename.quote argv))
+        ~summary:"tool local runtime http get"
+        ~timeout_sec:(Stdlib.Float.of_int (max 1 timeout_sec))
+        argv)
   in
   match status with
   | Unix.WEXITED 0 ->
@@ -81,7 +81,7 @@ let http_get_text_with_status_with_headers ?(timeout_sec = 10) ?(headers = []) u
 let http_get_text_with_status ?timeout_sec url =
   http_get_text_with_status_with_headers ?timeout_sec url
 
-let http_get_json_with_status ?(timeout_sec = 10) url =
+let http_get_json_with_status ?(timeout_sec = default_timeout_sec) url =
   match http_get_text_with_status ~timeout_sec url with
   | Error _ as err -> err
   | Ok (http_status, payload) -> (
@@ -109,12 +109,13 @@ let http_post_json_text_with_status_with_headers ~timeout_sec ?(headers = []) ~u
       headers
   in
   let status, body =
-    Masc_exec.Exec_gate.run_argv_with_status
-      ~actor:"tool/local_runtime"
-      ~raw_source:(String.concat " " (List.map Filename.quote argv))
-      ~summary:"tool local runtime http post"
-      ~timeout_sec:(Stdlib.Float.of_int (max 1 timeout_sec))
-      argv
+    Fd_accountant.with_slot ~kind:Sandbox_exec (fun () ->
+      Masc_exec.Exec_gate.run_argv_with_status
+        ~actor:(Masc_exec.Agent_id.of_string "tool/local_runtime")
+        ~raw_source:(String.concat " " (List.map Filename.quote argv))
+        ~summary:"tool local runtime http post"
+        ~timeout_sec:(Stdlib.Float.of_int (max 1 timeout_sec))
+        argv)
   in
   match status with
   | Unix.WEXITED 0 ->
@@ -147,4 +148,4 @@ let int_member json key =
 
 let string_member json key =
   let open Yojson.Safe.Util in
-  Option.bind (member key json |> to_string_option) trim_to_option
+  Option.bind (member key json |> to_string_option) String_util.trim_to_option

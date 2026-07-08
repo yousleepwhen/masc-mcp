@@ -3,6 +3,10 @@ open Masc_mcp
 
 let () = Server_startup_state.mark_state_ready ~backend_mode:"test"
 
+let tuple_of_tool_result result =
+  Tool_result.is_success result, Tool_result.message result
+;;
+
 let temp_dir () =
   let dir = Filename.temp_file "test_keeper_meta_listing_" "" in
   Unix.unlink dir;
@@ -53,6 +57,30 @@ let write_json path json =
 
 let write_file path content =
   Out_channel.with_open_bin path (fun oc -> output_string oc content)
+
+let write_minimal_cascade_toml config_root =
+  write_file
+    (Filename.concat config_root "cascade.toml")
+    {|[providers.custom]
+protocol = "provider_d-http"
+endpoint = "http://127.0.0.1:9/v1"
+
+[models.mock]
+api-name = "mock"
+max-context = 128000
+tools-support = true
+
+[custom.mock]
+
+[tier.primary]
+members = ["custom.mock"]
+
+[tier-group.primary]
+tiers = ["primary"]
+
+[routes.keeper_turn]
+target = "tier-group.primary"
+|}
 
 let write_keeper_toml_exn ?autoboot_enabled config ~name =
   let keepers_dir =
@@ -120,7 +148,14 @@ let write_corrupt_keeper_meta_exn config ~name =
 
 let write_keeper_meta_exn ?(autoboot_enabled = true)
     ?(social_model = "bdi_speech_v1")
-    ?(last_social_transition_reason = "") config ~name ~trace_id =
+    ?(last_social_transition_reason = "")
+    ?(paused = false)
+    ?active_goal_ids config ~name ~trace_id =
+  let active_goal_ids =
+    match active_goal_ids with
+    | Some goal_ids -> goal_ids
+    | None -> [ "goal-" ^ name ]
+  in
   let json =
     `Assoc
       [
@@ -131,7 +166,9 @@ let write_keeper_meta_exn ?(autoboot_enabled = true)
         ("social_model", `String social_model);
         ("last_social_transition_reason", `String last_social_transition_reason);
         ("autoboot_enabled", `Bool autoboot_enabled);
-        ("active_goal_ids", `List [ `String ("goal-" ^ name) ]);
+        ("paused", `Bool paused);
+        ( "active_goal_ids",
+          `List (List.map (fun goal_id -> `String goal_id) active_goal_ids) );
       ]
   in
   let meta =
@@ -150,6 +187,30 @@ let register_keeper_offline_exn config ~name =
         (Keeper_registry.register_offline ~base_path:config.base_path name meta)
   | Ok None -> fail ("expected keeper meta for " ^ name)
   | Error e -> fail ("read_meta failed: " ^ e)
+
+let mark_task_done_by_title config ~title ~agent_name =
+  let backlog = Coord.read_backlog config in
+  let seen = ref false in
+  let tasks =
+    List.map
+      (fun (task : Masc_domain.task) ->
+        if String.equal task.title title then (
+          seen := true;
+          {
+            task with
+            task_status =
+              Masc_domain.Done
+                {
+                  assignee = agent_name;
+                  completed_at = Masc_domain.now_iso ();
+                  notes = Some "done";
+                };
+          })
+        else task)
+      backlog.tasks
+  in
+  if not !seen then fail ("expected task to mark done: " ^ title);
+  Coord.write_backlog config { backlog with tasks; version = backlog.version + 1 }
 
 let parse_json_exn body =
   try Yojson.Safe.from_string body
@@ -179,6 +240,35 @@ let keeper_ctx env sw config agent_name : _ Tool_keeper.context =
     net = None;
   }
 
+let test_read_meta_resolved_rejects_meta_aliases () =
+  Eio_main.run @@ fun env ->
+  ensure_fs env;
+  with_clean_base_path_env @@ fun () ->
+  let base_dir = temp_dir () in
+  Fun.protect
+    ~finally:(fun () ->
+      Config_dir_resolver.reset ();
+      Keeper_registry.clear ();
+      Keeper_runtime.reset_test_state base_dir;
+      cleanup_dir base_dir)
+    (fun () ->
+      let config = Coord.default_config base_dir in
+      (* See test setup: initialized state is not needed for this direct meta lookup. *)
+      ignore (Coord.init config ~agent_name:(Some "operator"));
+      write_keeper_meta_exn config ~name:"alpha-beta" ~trace_id:"trace-alpha";
+      List.iter
+        (fun alias ->
+          match Keeper_types.read_meta_resolved config alias with
+          | Ok None -> ()
+          | Error e -> fail ("read_meta_resolved failed: " ^ e)
+          | Ok (Some (resolved_name, _)) ->
+            fail
+              (Printf.sprintf
+                 "meta alias %s unexpectedly resolved to %s"
+                 alias
+                 resolved_name))
+        [ "alpha_beta"; "keeper-alpha-beta-agent" ])
+
 let test_keeper_listing_ignores_sidecar_json_files () =
   Eio_main.run @@ fun env ->
   ensure_fs env;
@@ -197,6 +287,7 @@ let test_keeper_listing_ignores_sidecar_json_files () =
       write_keeper_toml_exn config ~name:"sangsu";
       write_keeper_toml_exn config ~name:"dot.name";
       let config_root = Filename.concat (Coord.masc_root_dir config) "config" in
+      write_minimal_cascade_toml config_root;
       Unix.putenv "MASC_CONFIG_DIR" config_root;
       Config_dir_resolver.reset ();
       write_keeper_meta_exn config ~name:"sangsu" ~trace_id:"trace-sangsu";
@@ -213,7 +304,8 @@ let test_keeper_listing_ignores_sidecar_json_files () =
         [ "dot.name"; "sangsu" ] keepalive_names;
       let ctx = keeper_ctx env sw config "operator" in
       let ok, body =
-        Keeper_status.handle_keeper_list ctx (`Assoc [ ("limit", `Int 10) ])
+        tuple_of_tool_result
+          (Keeper_status.handle_keeper_list ctx (`Assoc [ ("limit", `Int 10) ]))
       in
       check bool "keeper status list ok" true ok;
       let json = parse_json_exn body in
@@ -229,7 +321,7 @@ let test_keeper_listing_ignores_sidecar_json_files () =
           Tool_keeper.dispatch ctx ~name:"masc_keeper_list"
             ~args:(`Assoc [ ("limit", `Int 10) ])
         with
-        | Some result -> result
+        | Some result -> tuple_of_tool_result result
         | None -> fail "expected masc_keeper_list dispatch"
       in
       check bool "tool keeper list ok without registry entries" true ok;
@@ -252,7 +344,7 @@ let test_keeper_listing_ignores_sidecar_json_files () =
           Tool_keeper.dispatch ctx ~name:"masc_keeper_list"
             ~args:(`Assoc [ ("limit", `Int 10); ("detailed", `Bool true) ])
         with
-        | Some result -> result
+        | Some result -> tuple_of_tool_result result
         | None -> fail "expected masc_keeper_list dispatch (detailed)"
       in
       check bool "tool keeper list (detailed) ok without registry entries" true
@@ -260,7 +352,11 @@ let test_keeper_listing_ignores_sidecar_json_files () =
       let json_detailed = parse_json_exn body_detailed in
       let listed_detailed =
         Yojson.Safe.Util.(
-          json_detailed |> member "keepers" |> to_list |> filter_string)
+          json_detailed |> member "keepers" |> to_list
+          |> List.filter_map (fun row ->
+                 match row |> member "name" with
+                 | `String name -> Some name
+                 | _ -> None))
       in
       check (list string)
         "tool keeper list (detailed) includes persisted keepers"
@@ -271,7 +367,7 @@ let test_keeper_listing_ignores_sidecar_json_files () =
       check int
         "tool keeper list (detailed) rows include persisted keepers" 2
         Yojson.Safe.Util.(
-          json_detailed |> member "items" |> to_list |> List.length))
+          json_detailed |> member "keepers" |> to_list |> List.length))
 
 let test_bootable_keeper_names_skip_autoboot_disabled_meta () =
   Eio_main.run @@ fun env ->
@@ -290,6 +386,7 @@ let test_bootable_keeper_names_skip_autoboot_disabled_meta () =
       ignore (Coord.init config ~agent_name:(Some "operator"));
       write_keeper_toml_exn config ~name:"sangsu";
       let config_root = Filename.concat (Coord.masc_root_dir config) "config" in
+      write_minimal_cascade_toml config_root;
       Unix.putenv "MASC_CONFIG_DIR" config_root;
       Config_dir_resolver.reset ();
       write_keeper_meta_exn
@@ -297,6 +394,90 @@ let test_bootable_keeper_names_skip_autoboot_disabled_meta () =
       let names = Keeper_runtime.bootable_keeper_names config in
       check bool "autoboot disabled sangsu excluded from bootable list" false
         (List.mem "sangsu" names))
+
+let test_bootable_keeper_names_use_declarative_autoboot_true_over_stale_meta () =
+  Eio_main.run @@ fun env ->
+  ensure_fs env;
+  with_clean_base_path_env @@ fun () ->
+  Eio.Switch.run @@ fun _sw ->
+  let base_dir = temp_dir () in
+  Fun.protect
+    ~finally:(fun () ->
+      Config_dir_resolver.reset ();
+      Keeper_registry.clear ();
+      Keeper_runtime.reset_test_state base_dir;
+      cleanup_dir base_dir)
+    (fun () ->
+      let config = Coord.default_config base_dir in
+      ignore (Coord.init config ~agent_name:(Some "operator"));
+      write_keeper_toml_exn ~autoboot_enabled:true config ~name:"verifier";
+      let config_root = Filename.concat (Coord.masc_root_dir config) "config" in
+      write_minimal_cascade_toml config_root;
+      Unix.putenv "MASC_CONFIG_DIR" config_root;
+      Config_dir_resolver.reset ();
+      write_keeper_meta_exn
+        ~autoboot_enabled:false config ~name:"verifier" ~trace_id:"trace-verifier";
+      let bootable_names = Keeper_runtime.bootable_keeper_names config in
+      check bool "declarative autoboot true restores bootable keeper" true
+        (List.mem "verifier" bootable_names);
+      let keepalive_names = Keeper_types.keepalive_keeper_names config in
+      check bool "declarative autoboot true restores keepalive keeper" true
+        (List.mem "verifier" keepalive_names);
+      let exclusions =
+        Keeper_runtime.autoboot_excluded_keeper_reasons config
+        |> List.map (fun Keeper_runtime.{ keeper_name; reason } ->
+          keeper_name, reason)
+      in
+      check (list (pair string string))
+        "declarative autoboot true clears stale disabled exclusion"
+        []
+        exclusions)
+
+let test_autoboot_exclusion_reasons_explain_skipped_keepers () =
+  Eio_main.run @@ fun env ->
+  ensure_fs env;
+  with_clean_base_path_env @@ fun () ->
+  Eio.Switch.run @@ fun _sw ->
+  let base_dir = temp_dir () in
+  Fun.protect
+    ~finally:(fun () ->
+      Config_dir_resolver.reset ();
+      Keeper_registry.clear ();
+      Keeper_runtime.reset_test_state base_dir;
+      cleanup_dir base_dir)
+    (fun () ->
+      let config = Coord.default_config base_dir in
+      ignore (Coord.init config ~agent_name:(Some "operator"));
+      write_keeper_toml_exn config ~name:"active";
+      write_keeper_toml_exn config ~name:"disabled";
+      write_keeper_toml_exn config ~name:"paused";
+      let config_root = Filename.concat (Coord.masc_root_dir config) "config" in
+      write_minimal_cascade_toml config_root;
+      Unix.putenv "MASC_CONFIG_DIR" config_root;
+      Config_dir_resolver.reset ();
+      write_keeper_meta_exn
+        config
+        ~name:"active"
+        ~trace_id:"trace-active";
+      write_keeper_meta_exn
+        ~autoboot_enabled:false
+        config
+        ~name:"disabled"
+        ~trace_id:"trace-disabled";
+      write_keeper_meta_exn
+        ~paused:true
+        config
+        ~name:"paused"
+        ~trace_id:"trace-paused";
+      let exclusions =
+        Keeper_runtime.autoboot_excluded_keeper_reasons config
+        |> List.map (fun Keeper_runtime.{ keeper_name; reason } ->
+          keeper_name, reason)
+      in
+      check (list (pair string string))
+        "autoboot exclusion reasons"
+        [ "disabled", "autoboot_disabled"; "paused", "paused" ]
+        exclusions)
 
 let test_declarative_autoboot_disabled_skips_boot_without_meta () =
   Eio_main.run @@ fun env ->
@@ -315,6 +496,7 @@ let test_declarative_autoboot_disabled_skips_boot_without_meta () =
       ignore (Coord.init config ~agent_name:(Some "operator"));
       write_keeper_toml_exn ~autoboot_enabled:false config ~name:"sangsu";
       let config_root = Filename.concat (Coord.masc_root_dir config) "config" in
+      write_minimal_cascade_toml config_root;
       Unix.putenv "MASC_CONFIG_DIR" config_root;
       Config_dir_resolver.reset ();
       let bootable_names = Keeper_runtime.bootable_keeper_names config in
@@ -342,17 +524,13 @@ let test_autoboot_policy_resync_from_declarative_toml () =
       ignore (Coord.init config ~agent_name:(Some "operator"));
       write_keeper_toml_exn ~autoboot_enabled:false config ~name:"sangsu";
       let config_root = Filename.concat (Coord.masc_root_dir config) "config" in
-      let cascade_path = Filename.concat config_root "cascade.json" in
-      write_file
-        cascade_path
-        {|{
-  "big_three_models": ["test-only:model"]
-}|};
+      let cascade_path = Filename.concat config_root "cascade.toml" in
+      write_minimal_cascade_toml config_root;
       Unix.putenv "MASC_CONFIG_DIR" config_root;
       Config_dir_resolver.reset ();
       Cascade_catalog_runtime.install_snapshot_for_tests
         ~source_path:cascade_path
-        ~profile_names:[ Keeper_config.default_cascade_name ];
+        ~profile_names:[ (Keeper_config.default_cascade_name ()) ];
       write_keeper_meta_exn
         ~autoboot_enabled:true config ~name:"sangsu" ~trace_id:"trace-sangsu";
       match Keeper_runtime.ensure_keeper_meta config "sangsu" with
@@ -380,6 +558,7 @@ let test_keeper_up_uses_toml_autoboot_default () =
       ignore (Coord.init config ~agent_name:(Some "operator"));
       write_keeper_toml_exn ~autoboot_enabled:false config ~name:keeper_name;
       let config_root = Filename.concat (Coord.masc_root_dir config) "config" in
+      write_minimal_cascade_toml config_root;
       Unix.putenv "MASC_CONFIG_DIR" config_root;
       Config_dir_resolver.reset ();
       let ctx = keeper_ctx env sw config "operator" in
@@ -388,7 +567,7 @@ let test_keeper_up_uses_toml_autoboot_default () =
           Tool_keeper.dispatch ctx ~name:"masc_keeper_up"
             ~args:(`Assoc [ ("name", `String keeper_name) ])
         with
-        | Some result -> result
+        | Some result -> tuple_of_tool_result result
         | None -> fail "expected masc_keeper_up dispatch"
       in
       check bool "keeper_up ok" true ok;
@@ -397,6 +576,127 @@ let test_keeper_up_uses_toml_autoboot_default () =
           check bool "autoboot_enabled defaulted from TOML" false
             meta.autoboot_enabled
       | Ok None -> fail "keeper meta missing after keeper_up"
+      | Error e -> fail ("read_meta failed: " ^ e))
+
+let test_keeper_up_update_resyncs_declarative_profile_defaults () =
+  Eio_main.run @@ fun env ->
+  ensure_fs env;
+  with_clean_base_path_env @@ fun () ->
+  Eio.Switch.run @@ fun sw ->
+  let base_dir = temp_dir () in
+  let keeper_name = "toml-update-defaults" in
+  Fun.protect
+    ~finally:(fun () ->
+      Keeper_keepalive.stop_keepalive keeper_name;
+      Config_dir_resolver.reset ();
+      Keeper_registry.clear ();
+      Keeper_runtime.reset_test_state base_dir;
+      cleanup_dir base_dir)
+    (fun () ->
+      let config = Coord.default_config base_dir in
+      ignore (Coord.init config ~agent_name:(Some "operator"));
+      let config_root = Filename.concat (Coord.masc_root_dir config) "config" in
+      let keepers_dir = Filename.concat config_root "keepers" in
+      Fs_compat.mkdir_p keepers_dir;
+      Fs_compat.save_file
+        (Filename.concat keepers_dir (keeper_name ^ ".toml"))
+        {|[keeper]
+goal = "fresh goal"
+short_goal = "fresh short"
+mid_goal = "fresh mid"
+long_goal = "fresh long"
+instructions = "fresh instructions"
+sandbox_profile = "local"
+autoboot_enabled = false
+proactive_enabled = true
+proactive_idle_sec = 120
+proactive_cooldown_sec = 240
+per_provider_timeout = 120.0
+tool_denylist = ["keeper_task_claim", "masc_claim_next", "masc_transition"]
+
+[keeper.tool_access]
+kind = "preset"
+preset = "delivery"
+also_allow = ["masc_tasks", "masc_transition"]
+|};
+      write_minimal_cascade_toml config_root;
+      Unix.putenv "MASC_CONFIG_DIR" config_root;
+      Config_dir_resolver.reset ();
+      let stale_meta =
+        match
+          Masc_test_deps.meta_of_json_fixture
+            (`Assoc
+              [
+                ("name", `String keeper_name);
+                ("agent_name", `String ("keeper-" ^ keeper_name ^ "-agent"));
+                ("trace_id", `String "trace-toml-update-defaults");
+                ("goal", `String "stale goal");
+                ("short_goal", `String "stale short");
+                ("mid_goal", `String "stale mid");
+                ("long_goal", `String "stale long");
+                ("instructions", `String "stale instructions");
+                ("autoboot_enabled", `Bool true);
+                ( "tool_access",
+                  `Assoc
+                    [
+                      ("kind", `String "preset");
+                      ("preset", `String "research");
+                      ("also_allow", `List []);
+                    ] );
+              ])
+        with
+        | Ok meta -> meta
+        | Error e -> fail ("meta_of_json failed: " ^ e)
+      in
+      (match Keeper_types.write_meta ~force:true config stale_meta with
+       | Ok () -> ()
+       | Error e -> fail ("write_meta failed: " ^ e));
+      let ctx = keeper_ctx env sw config "operator" in
+      let ok, _body =
+        match
+          Tool_keeper.dispatch ctx ~name:"masc_keeper_up"
+            ~args:(`Assoc [ ("name", `String keeper_name) ])
+        with
+        | Some result -> tuple_of_tool_result result
+        | None -> fail "expected masc_keeper_up dispatch"
+      in
+      check bool "keeper_up update ok" true ok;
+      match Keeper_types.read_meta config keeper_name with
+      | Ok (Some meta) ->
+          check string "goal resynced" "fresh goal" meta.goal;
+          check string "short_goal resynced" "fresh short" meta.short_goal;
+          check string "mid_goal resynced" "fresh mid" meta.mid_goal;
+          check string "long_goal resynced" "fresh long" meta.long_goal;
+          check string "instructions resynced" "fresh instructions"
+            meta.instructions;
+          check bool "autoboot_enabled resynced" false
+            meta.autoboot_enabled;
+          check bool "proactive enabled resynced" true meta.proactive.enabled;
+          check int "proactive idle resynced" 120 meta.proactive.idle_sec;
+          check int "proactive cooldown resynced" 240
+            meta.proactive.cooldown_sec;
+          check
+            (option string)
+            "tool preset resynced"
+            (Some "delivery")
+            (Keeper_types.tool_access_preset meta.tool_access
+             |> Option.map Keeper_types.tool_preset_to_string);
+          check
+            (list string)
+            "tool allowlist resynced"
+            [ "masc_tasks"; "masc_transition" ]
+            (Keeper_types.tool_access_also_allowlist meta.tool_access);
+          check
+            (option (float 0.0001))
+            "per provider timeout resynced"
+            (Some 120.0)
+            meta.per_provider_timeout_s;
+          check
+            (list string)
+            "tool denylist resynced"
+            [ "keeper_task_claim"; "masc_claim_next"; "masc_transition" ]
+            meta.tool_denylist
+      | Ok None -> fail "keeper meta missing after keeper_up update"
       | Error e -> fail ("read_meta failed: " ^ e))
 
 let test_keeper_list_normalizes_unknown_social_model () =
@@ -424,7 +724,7 @@ let test_keeper_list_normalizes_unknown_social_model () =
           Tool_keeper.dispatch ctx ~name:"masc_keeper_list"
             ~args:(`Assoc [ ("limit", `Int 10); ("detailed", `Bool true) ])
         with
-        | Some result -> result
+        | Some result -> tuple_of_tool_result result
         | None -> fail "expected masc_keeper_list dispatch"
       in
       check bool "tool keeper list ok" true ok;
@@ -466,7 +766,7 @@ let test_keeper_list_exposes_last_social_transition_reason () =
           Tool_keeper.dispatch ctx ~name:"masc_keeper_list"
             ~args:(`Assoc [ ("limit", `Int 10); ("detailed", `Bool true) ])
         with
-        | Some result -> result
+        | Some result -> tuple_of_tool_result result
         | None -> fail "expected masc_keeper_list dispatch"
       in
       check bool "tool keeper list ok" true ok;
@@ -498,6 +798,7 @@ let test_keeper_persona_audit_reports_durable_live_persona_keeper () =
         ~persona_name:"analyst";
       write_keeper_meta_exn config ~name:"analyst" ~trace_id:"trace-analyst";
       let config_root = Filename.concat (Coord.masc_root_dir config) "config" in
+      write_minimal_cascade_toml config_root;
       Unix.putenv "MASC_CONFIG_DIR" config_root;
       Config_dir_resolver.reset ();
       (match Keeper_types.read_meta config "analyst" with
@@ -513,7 +814,7 @@ let test_keeper_persona_audit_reports_durable_live_persona_keeper () =
           Tool_keeper.dispatch ctx ~name:"masc_keeper_persona_audit"
             ~args:(`Assoc [ ("name", `String "analyst") ])
         with
-        | Some result -> result
+        | Some result -> tuple_of_tool_result result
         | None -> fail "expected masc_keeper_persona_audit dispatch"
       in
       check bool "tool audit ok" true ok;
@@ -547,6 +848,151 @@ let test_keeper_persona_audit_reports_durable_live_persona_keeper () =
           check int "no issues" 0
             Yojson.Safe.Util.(item |> member "issues" |> to_list |> List.length))
 
+let test_keeper_persona_audit_reports_dormant_autoboot_disabled_keeper () =
+  Eio_main.run @@ fun env ->
+  ensure_fs env;
+  with_clean_base_path_env @@ fun () ->
+  Eio.Switch.run @@ fun sw ->
+  let base_dir = temp_dir () in
+  Fun.protect
+    ~finally:(fun () ->
+      Config_dir_resolver.reset ();
+      Keeper_registry.clear ();
+      Keeper_runtime.reset_test_state base_dir;
+      cleanup_dir base_dir)
+    (fun () ->
+      let config = Coord.default_config base_dir in
+      ignore (Coord.init config ~agent_name:(Some "operator"));
+      write_persona_profile_exn config ~name:"dormant";
+      write_keeper_persona_toml_exn config ~name:"dormant"
+        ~persona_name:"dormant" ~autoboot_enabled:false;
+      write_keeper_meta_exn config ~name:"dormant" ~trace_id:"trace-dormant"
+        ~autoboot_enabled:false;
+      let config_root = Filename.concat (Coord.masc_root_dir config) "config" in
+      write_minimal_cascade_toml config_root;
+      Unix.putenv "MASC_CONFIG_DIR" config_root;
+      Config_dir_resolver.reset ();
+      let ctx = keeper_ctx env sw config "operator" in
+      let ok, body =
+        match
+          Tool_keeper.dispatch ctx ~name:"masc_keeper_persona_audit"
+            ~args:(`Assoc [ ("name", `String "dormant") ])
+        with
+        | Some result -> tuple_of_tool_result result
+        | None -> fail "expected masc_keeper_persona_audit dispatch"
+      in
+      check bool "tool audit ok" true ok;
+      let json = parse_json_exn body in
+      check int "summary ok" 1
+        Yojson.Safe.Util.(json |> member "summary" |> member "ok" |> to_int);
+      check int "summary registry missing" 0
+        Yojson.Safe.Util.(
+          json |> member "summary" |> member "registry_missing" |> to_int);
+      check int "summary dormant" 1
+        Yojson.Safe.Util.(
+          json |> member "summary" |> member "dormant_autoboot_disabled"
+          |> to_int);
+      check int "summary autoboot disabled" 1
+        Yojson.Safe.Util.(
+          json |> member "summary" |> member "autoboot_disabled" |> to_int);
+      match audit_item_by_name json "dormant" with
+      | None -> fail "expected dormant audit item"
+      | Some item ->
+          check bool "item ok" true
+            Yojson.Safe.Util.(item |> member "ok" |> to_bool);
+          check bool "dormant flag" true
+            Yojson.Safe.Util.(item |> member "dormant" |> to_bool);
+          check string "dormant reason" "autoboot_disabled"
+            Yojson.Safe.Util.(item |> member "dormant_reason" |> to_string);
+          check int "no issues" 0
+            Yojson.Safe.Util.(item |> member "issues" |> to_list |> List.length))
+
+let test_keeper_persona_audit_flags_stale_active_goal_ids () =
+  Eio_main.run @@ fun env ->
+  ensure_fs env;
+  with_clean_base_path_env @@ fun () ->
+  Eio.Switch.run @@ fun sw ->
+  let base_dir = temp_dir () in
+  Fun.protect
+    ~finally:(fun () ->
+      Config_dir_resolver.reset ();
+      Keeper_registry.clear ();
+      Keeper_runtime.reset_test_state base_dir;
+      cleanup_dir base_dir)
+    (fun () ->
+      let config = Coord.default_config base_dir in
+      ignore (Coord.init config ~agent_name:(Some "operator"));
+      write_persona_profile_exn config ~name:"analyst";
+      write_keeper_persona_toml_exn config ~name:"analyst"
+        ~persona_name:"analyst";
+      let stale_goal, _ =
+        match Goal_store.upsert_goal config ~title:"Finished scoped goal" () with
+        | Ok payload -> payload
+        | Error msg -> fail msg
+      in
+      let other_goal, _ =
+        match Goal_store.upsert_goal config ~title:"Open global goal" () with
+        | Ok payload -> payload
+        | Error msg -> fail msg
+      in
+      write_keeper_meta_exn config ~name:"analyst" ~trace_id:"trace-analyst"
+        ~active_goal_ids:[ stale_goal.id ];
+      ignore
+        (Coord_task.add_task ~goal_id:stale_goal.id config
+           ~title:"Done scoped task" ~priority:3 ~description:"desc");
+      ignore
+        (Coord_task.add_task ~goal_id:other_goal.id config
+           ~title:"Open global task" ~priority:1 ~description:"desc");
+      mark_task_done_by_title config ~title:"Done scoped task"
+        ~agent_name:"keeper-analyst-agent";
+      let config_root = Filename.concat (Coord.masc_root_dir config) "config" in
+      write_minimal_cascade_toml config_root;
+      Unix.putenv "MASC_CONFIG_DIR" config_root;
+      Config_dir_resolver.reset ();
+      (match Keeper_types.read_meta config "analyst" with
+       | Ok (Some meta) ->
+           ignore
+             (Keeper_registry.register ~base_path:config.base_path "analyst"
+                meta)
+       | Ok None -> fail "expected analyst meta"
+       | Error e -> fail ("read_meta failed: " ^ e));
+      let ctx = keeper_ctx env sw config "operator" in
+      let ok, body =
+        match
+          Tool_keeper.dispatch ctx ~name:"masc_keeper_persona_audit"
+            ~args:(`Assoc [ ("name", `String "analyst") ])
+        with
+        | Some result -> tuple_of_tool_result result
+        | None -> fail "expected masc_keeper_persona_audit dispatch"
+      in
+      check bool "tool audit ok" true ok;
+      let json = parse_json_exn body in
+      check int "summary stale active goal ids" 1
+        Yojson.Safe.Util.(
+          json |> member "summary" |> member "stale_active_goal_ids" |> to_int);
+      match audit_item_by_name json "analyst" with
+      | None -> fail "expected analyst audit item"
+      | Some item ->
+          let issues =
+            Yojson.Safe.Util.(item |> member "issues") |> string_list_of_json
+          in
+          let scope = Yojson.Safe.Util.(item |> member "active_goal_scope") in
+          check bool "flags stale active goals" true
+            (List.mem "stale_active_goal_ids" issues);
+          check bool "item not ok" false
+            Yojson.Safe.Util.(item |> member "ok" |> to_bool);
+          check int "scoped tasks counted" 1
+            Yojson.Safe.Util.(scope |> member "scoped_task_count" |> to_int);
+          check int "scoped open tasks counted" 0
+            Yojson.Safe.Util.(scope |> member "scoped_open_task_count" |> to_int);
+          check int "scoped terminal tasks counted" 1
+            Yojson.Safe.Util.(
+              scope |> member "scoped_terminal_task_count" |> to_int);
+          check int "global open tasks counted" 1
+            Yojson.Safe.Util.(scope |> member "global_open_task_count" |> to_int);
+          check bool "scope marked stale" true
+            Yojson.Safe.Util.(scope |> member "stale" |> to_bool))
+
 let test_keeper_persona_audit_flags_missing_persona_runtime () =
   Eio_main.run @@ fun env ->
   ensure_fs env;
@@ -565,6 +1011,7 @@ let test_keeper_persona_audit_flags_missing_persona_runtime () =
       write_keeper_persona_toml_exn config ~name:"ghost"
         ~persona_name:"missing-persona";
       let config_root = Filename.concat (Coord.masc_root_dir config) "config" in
+      write_minimal_cascade_toml config_root;
       Unix.putenv "MASC_CONFIG_DIR" config_root;
       Config_dir_resolver.reset ();
       let ctx = keeper_ctx env sw config "operator" in
@@ -573,7 +1020,7 @@ let test_keeper_persona_audit_flags_missing_persona_runtime () =
           Tool_keeper.dispatch ctx ~name:"masc_keeper_persona_audit"
             ~args:(`Assoc [ ("name", `String "ghost") ])
         with
-        | Some result -> result
+        | Some result -> tuple_of_tool_result result
         | None -> fail "expected masc_keeper_persona_audit dispatch"
       in
       check bool "tool audit ok" true ok;
@@ -629,6 +1076,7 @@ let test_keeper_persona_audit_flags_runtime_meta_parse_error () =
       write_keeper_persona_toml_exn config ~name:"broken" ~persona_name:"broken";
       write_corrupt_keeper_meta_exn config ~name:"broken";
       let config_root = Filename.concat (Coord.masc_root_dir config) "config" in
+      write_minimal_cascade_toml config_root;
       Unix.putenv "MASC_CONFIG_DIR" config_root;
       Config_dir_resolver.reset ();
       let ctx = keeper_ctx env sw config "operator" in
@@ -637,7 +1085,7 @@ let test_keeper_persona_audit_flags_runtime_meta_parse_error () =
           Tool_keeper.dispatch ctx ~name:"masc_keeper_persona_audit"
             ~args:(`Assoc [ ("name", `String "broken") ])
         with
-        | Some result -> result
+        | Some result -> tuple_of_tool_result result
         | None -> fail "expected masc_keeper_persona_audit dispatch"
       in
       check bool "tool audit ok" true ok;
@@ -691,7 +1139,7 @@ let test_keeper_list_preserves_known_social_model () =
           Tool_keeper.dispatch ctx ~name:"masc_keeper_list"
             ~args:(`Assoc [ ("limit", `Int 10); ("detailed", `Bool true) ])
         with
-        | Some result -> result
+        | Some result -> tuple_of_tool_result result
         | None -> fail "expected masc_keeper_list dispatch"
       in
       check bool "tool keeper list ok" true ok;
@@ -731,16 +1179,26 @@ let () =
     [
       ( "listing",
         [
+          test_case "read_meta_resolved rejects meta aliases" `Quick
+            test_read_meta_resolved_rejects_meta_aliases;
           test_case "keeper_names and keeper_list ignore sidecar json" `Quick
             test_keeper_listing_ignores_sidecar_json_files;
           test_case "bootable list skips autoboot-disabled meta" `Quick
             test_bootable_keeper_names_skip_autoboot_disabled_meta;
+          test_case
+            "bootable list uses declarative autoboot true over stale meta"
+            `Quick
+            test_bootable_keeper_names_use_declarative_autoboot_true_over_stale_meta;
+          test_case "autoboot exclusion reasons explain skipped keepers" `Quick
+            test_autoboot_exclusion_reasons_explain_skipped_keepers;
           test_case "declarative autoboot-disabled keeper skips boot without meta"
             `Quick test_declarative_autoboot_disabled_skips_boot_without_meta;
           test_case "autoboot policy resyncs from declarative TOML" `Quick
             test_autoboot_policy_resync_from_declarative_toml;
           test_case "keeper_up uses TOML autoboot default" `Quick
             test_keeper_up_uses_toml_autoboot_default;
+          test_case "keeper_up update resyncs declarative profile defaults"
+            `Quick test_keeper_up_update_resyncs_declarative_profile_defaults;
           test_case "tool keeper list normalizes unknown social model" `Quick
             test_keeper_list_normalizes_unknown_social_model;
           test_case "tool keeper list preserves known social model" `Quick
@@ -751,6 +1209,11 @@ let () =
             `Quick test_keeper_list_exposes_last_social_transition_reason;
           test_case "keeper persona audit reports durable live keeper" `Quick
             test_keeper_persona_audit_reports_durable_live_persona_keeper;
+          test_case "keeper persona audit reports dormant autoboot-disabled keeper"
+            `Quick
+            test_keeper_persona_audit_reports_dormant_autoboot_disabled_keeper;
+          test_case "keeper persona audit flags stale active goal ids" `Quick
+            test_keeper_persona_audit_flags_stale_active_goal_ids;
           test_case "keeper persona audit flags missing persona runtime" `Quick
             test_keeper_persona_audit_flags_missing_persona_runtime;
           test_case "keeper persona audit flags runtime meta parse error" `Quick

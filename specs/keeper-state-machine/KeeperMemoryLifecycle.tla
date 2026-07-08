@@ -12,43 +12,44 @@
 \*   - handoff clears stale short-term notes,
 \*   - each tier stays within its configured bound.
 \*
-\* OCaml <-> TLA+ mapping (see #8642 family):
+\* OCaml <-> TLA+ mapping (see #8642 family).  Cited by symbol name, not
+\* line number — iter 64 N-2.a convention; the previous keeper_memory_policy.ml
+\* line-number anchors had drifted +46 (the horizon constants are now
+\* near the top of keeper_memory_policy.ml; see the kml-r8 memo below).
+\* See docs/tla-audit/kml-r8-memory-lifecycle-lineref-drift-2026-05-12.md
 \*
 \*   spec variable    | OCaml field / source                              | location
 \*   -----------------+--------------------------------------------------+--------
-\*   short_mem        | rows with horizon = "short_term"                 | lib/keeper/keeper_memory_policy.ml:155
-\*   mid_mem          | rows with horizon = "mid_term"                   | lib/keeper/keeper_memory_policy.ml:156
-\*   long_mem         | rows with horizon = "long_term"                  | lib/keeper/keeper_memory_policy.ml:157
+\*   short_mem        | rows with horizon = "short_term"                 | lib/keeper/keeper_memory_policy.ml — `short_term_horizon`
+\*   mid_mem          | rows with horizon = "mid_term"                   | lib/keeper/keeper_memory_policy.ml — `mid_term_horizon`
+\*   long_mem         | rows with horizon = "long_term"                  | lib/keeper/keeper_memory_policy.ml — `long_term_horizon`
 \*   open_short       | unresolved short-term notes (open_question kind) | lib/keeper/keeper_memory_bank.ml
 \*   provenanced      | rows with non-empty trace_id / source            | lib/keeper/keeper_memory_bank.ml
 \*   generation       | snapshot.generation field                        | snapshot record
 \*   overflowed       | derived: short_mem cardinality > MaxShort        | runtime check
 \*
-\* Tier vocabulary (string-typed, intentionally not a variant today):
-\*   lib/keeper/keeper_memory_policy.ml:155-157
+\* Tier vocabulary (string-typed, intentionally not a variant today) —
+\* the horizon string constants in lib/keeper/keeper_memory_policy.ml:
 \*     `let short_term_horizon = "short_term"`
 \*     `let mid_term_horizon   = "mid_term"`
 \*     `let long_term_horizon  = "long_term"`
 \*
 \* Producer (kind -> tier classification):
 \*   lib/keeper/keeper_memory_policy.ml:memory_horizon_of_kind_opt  (strict)
-\*   lib/keeper/keeper_memory_policy.ml:memory_horizon_of_kind      (back-compat wrapper)
+\*   lib/keeper/keeper_memory_bank.ml:memory_horizon_of_kind_exn  (strict write wrapper)
 \*   lib/keeper/keeper_memory_policy.ml:memory_horizon_of_json_opt  (JSON variant)
 \*
 \* Persistence / promotion sites:
-\*   lib/keeper/keeper_memory_bank.ml:append_memory_notes_from_reply   — writes via memory_horizon_of_kind
-\*   lib/keeper/keeper_memory_recall.ml:read_recent_memory_texts       — recall path, same horizon fn
+\*   lib/keeper/keeper_memory_bank.ml:append_memory_notes_from_reply   — writes via memory_horizon_of_kind_exn
+\*   lib/keeper/keeper_memory_recall.ml:read_recent_memory_texts_result  — recall path, same horizon fn
 \*   lib/keeper/keeper_compact_policy.ml    overflow + handoff scheduling
 \*   lib/keeper/keeper_compact_audit.ml     ledger trail (provenance source)
 \*
-\* SCOPE DRIFT (worth knowing, NOT a spec violation):
-\*   memory_horizon_of_kind silently routes unknown kinds to mid_term_horizon
-\*   (lib/keeper/keeper_memory_policy.ml:memory_horizon_of_kind  `| None -> mid_term_horizon`).
-\*   The spec invariants (ProvenanceRequired, RecoveryBounded, NoSilentLoss)
-\*   hold regardless of WHICH tier a note lands in -- the drift is UPSTREAM
-\*   of the spec vocabulary. A typo'd kind ("goalss") gets the wrong tier
-\*   with no signal. Tracked separately for the standard #8605 wire-string
-\*   fix template (strict _opt + warn-and-default wrapper).
+\* Resolved producer drift:
+\*   Unknown memory kinds now fail through the strict producer path instead of
+\*   silently routing to mid_term_horizon. The spec invariants
+\*   (ProvenanceRequired, RecoveryBounded, NoSilentLoss) still hold regardless
+\*   of which valid tier a note lands in.
 \*
 \* Bug Model (BuggyCompactOverflow already in this spec):
 \*   Clean cfg : NoSilentLoss holds (lost_notes = {}).

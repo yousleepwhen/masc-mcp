@@ -3,7 +3,7 @@
 let () = Masc_mcp.Server_startup_state.mark_state_ready ~backend_mode:"test"
 let () =
   let base_path = Masc_test_deps.find_project_root () in
-  ignore (Result.get_ok (Masc_mcp.Keeper_exec_tools.init_policy_config ~base_path))
+  ignore (Result.get_ok (Masc_mcp.Agent_tool_dispatch_runtime.init_policy_config ~base_path))
 
 module Lib = Masc_mcp
 
@@ -93,7 +93,7 @@ let request target =
     returns a minimal {"status":"initializing"} JSON without namespace/execution/command data. *)
 let warm_execution_cache () =
   Lib.Server_dashboard_http_cache.mark_cached_surface_success
-    Lib.Server_dashboard_http._execution_cache
+    Lib.Server_dashboard_http.execution_cache
     (`Assoc [("status", `String "ok")])
 
 let warm_meta_cognition_summary (config : Lib.Coord.config) =
@@ -108,7 +108,7 @@ let warm_meta_cognition_summary (config : Lib.Coord.config) =
     (Printf.sprintf "shell:coord=%s:" config.base_path)
 
 let expire_execution_warmup () =
-  let surface = Lib.Server_dashboard_http._execution_cache in
+  let surface = Lib.Server_dashboard_http.execution_cache in
   Lib.Server_dashboard_http_cache.invalidate_cached_surface surface;
   let stale_attempt_ts = Unix.gettimeofday () -. 120.0 in
   surface.last_attempt_unix <- Some stale_attempt_ts;
@@ -135,8 +135,8 @@ let create_keeper env sw config name =
                 ("autoboot_enabled", `Bool false);
           ])
   with
-  | Some (true, _) -> ()
-  | Some (false, err) -> fail err
+  | Some result when Tool_result.is_success result -> ()
+  | Some result -> fail (Tool_result.message result)
   | None -> fail "missing masc_keeper_up dispatch"
 
 let test_dashboard_namespace_truth_empty_room () =
@@ -167,6 +167,32 @@ let test_dashboard_namespace_truth_empty_room () =
         check int "namespace counts expose total runtimes"
           0
           (json |> member "root" |> member "counts" |> member "total_runtimes" |> to_int);
+        check string "runtime count authority is namespace truth"
+          "namespace_truth_read_model"
+          (json |> member "root" |> member "runtime_count_authority" |> member "source" |> to_string);
+        check bool "runtime counts do not arbitrate through shell"
+          false
+          (json |> member "root" |> member "runtime_count_authority"
+           |> member "shell_arbitration_allowed" |> to_bool);
+        check string "canonical dashboard surface"
+          "/api/v1/dashboard/namespace-truth"
+          (json |> member "dashboard_surface" |> to_string);
+        check string "read model source"
+          "namespace_truth_read_model"
+          (json |> member "source" |> to_string);
+        check string "retention scope"
+          "dashboard_namespace_truth"
+          (json |> member "retention" |> member "scope" |> to_string);
+        check bool "generated_at_iso present"
+          true
+          (match json |> member "generated_at_iso" with
+          | `String value -> String.length value > 0
+          | _ -> false);
+        check bool "room-truth alias retired"
+          false
+          (json |> member "dashboard_aliases" |> to_list
+           |> List.map to_string
+           |> List.mem "/api/v1/dashboard/room-truth");
         check bool "readiness status exposed"
           true
           (String.length (json |> member "readiness" |> member "status" |> to_string) > 0);
@@ -282,8 +308,8 @@ let test_dashboard_namespace_truth_mixed_runtime_counts () =
       ignore (Lib.Coord.init config ~agent_name:None);
       ignore
         (Lib.Coord.join config
-           ~agent_name:"codex-test-agent"
-           ~agent_type_override:(Some "codex")
+           ~agent_name:"agent_code-test-agent"
+           ~agent_type_override:(Some "agent_code")
            ~capabilities:["typescript"]
            ());
       ignore
@@ -376,8 +402,8 @@ let test_dashboard_namespace_truth_promotes_meta_cognition_focus () =
       warm_execution_cache ();
       Eio.Switch.run (fun sw ->
         Lib.Dashboard_cache.invalidate_all ();
-        Atomic.set Lib.Server_dashboard_http._shell_warmed false;
-        Atomic.set Lib.Server_dashboard_http._last_good_shell (`Assoc []);
+        Atomic.set Lib.Server_dashboard_http.shell_warmed false;
+        Atomic.set Lib.Server_dashboard_http.last_good_shell (`Assoc []);
         warm_meta_cognition_summary config;
         let json =
           Lib.Server_dashboard_http.dashboard_namespace_truth_http_json
@@ -483,6 +509,72 @@ let test_namespace_truth_cached_snapshot_matches_http_projection_blocks () =
           [ "namespace"; "execution"; "meta_cognition"; "command"; "operator"; "focus" ];
       ))
 
+let test_dashboard_namespace_truth_warm_request_uses_stale_shell () =
+  let dir = test_dir () in
+  let original_last_good = Atomic.get Lib.Server_dashboard_http.last_good_shell in
+  let original_warmed = Atomic.get Lib.Server_dashboard_http.shell_warmed in
+  Fun.protect
+    ~finally:(fun () ->
+      Atomic.set Lib.Server_dashboard_http.last_good_shell original_last_good;
+      Atomic.set Lib.Server_dashboard_http.shell_warmed original_warmed;
+      cleanup_dir dir)
+    (fun () ->
+      Eio_main.run @@ fun env ->
+      Fs_compat.set_fs (Eio.Stdenv.fs env);
+      let state = Lib.Mcp_server_eio.create_state ~test_mode:true ~base_path:dir () in
+      let config = state.Lib.Mcp_server.room_config in
+      warm_execution_cache ();
+      let cached_shell =
+        `Assoc
+          [
+            ( "status",
+              `Assoc
+                [
+                  ("project", `String "ready");
+                  ("generated_at", `String "2026-05-18T00:00:00Z");
+                ] );
+            ( "counts",
+              `Assoc
+                [
+                  ("agents", `Int 7);
+                  ("tasks", `Int 0);
+                  ("keepers", `Int 2);
+                  ("total_runtimes", `Int 9);
+                ] );
+            ( "paths",
+              `Assoc [ ("effective_base_path", `String config.base_path) ] );
+            ("configured_keepers", `Int 2);
+            ("meta_cognition", `Null);
+          ]
+      in
+      Atomic.set Lib.Server_dashboard_http.last_good_shell cached_shell;
+      Atomic.set Lib.Server_dashboard_http.shell_warmed true;
+      Eio.Switch.run (fun sw ->
+        let json =
+          Lib.Server_dashboard_http.dashboard_namespace_truth_http_json
+            ~state ~sw ~clock:(Eio.Stdenv.clock env)
+            (request "/api/v1/dashboard/namespace-truth")
+        in
+        let open Yojson.Safe.Util in
+        check int "warm request uses cached shell counts"
+          7
+          (json |> member "root" |> member "counts" |> member "agents" |> to_int);
+        check string "warm request reports stale-while-revalidate"
+          "stale_while_revalidate"
+          (json |> member "projection_diagnostics" |> member "cache_mode" |> to_string);
+        check string "warm request shell source is last-good"
+          "last_good_shell"
+          (json |> member "projection_diagnostics" |> member "shell_source" |> to_string);
+        check string "runtime authority documents stale shell as fallback"
+          "shell_last_good_only_when_namespace_unavailable"
+          (json |> member "root" |> member "runtime_count_authority"
+           |> member "fallback_policy" |> to_string);
+        check int "authority reports configured/live keeper delta"
+          0
+          (json |> member "root" |> member "runtime_count_authority"
+           |> member "configured_minus_live_keepers" |> to_int)
+      ))
+
 let test_dashboard_namespace_truth_cold_cache_falls_back_to_partial_truth () =
   let dir = test_dir () in
   Fun.protect
@@ -525,13 +617,13 @@ let test_last_good_shell_fallback_preserves_counts () =
       let state = Lib.Mcp_server_eio.create_state ~test_mode:true ~base_path:dir () in
       ignore (Lib.Coord.init state.Lib.Mcp_server.room_config ~agent_name:None);
       warm_execution_cache ();
-      (* Warm the shell cache so _last_good_shell gets populated. *)
+      (* Warm the shell cache so last_good_shell gets populated. *)
       Lib.Server_dashboard_http.warm_shell_cache state;
-      let last_good = Atomic.get Lib.Server_dashboard_http._last_good_shell in
+      let last_good = Atomic.get Lib.Server_dashboard_http.last_good_shell in
       check bool "last good shell is non-empty after warm"
         true
         (last_good <> `Assoc []);
-      (* Now verify that _last_good_shell has namespace counts. *)
+      (* Now verify that last_good_shell has namespace counts. *)
       let open Yojson.Safe.Util in
       let counts = last_good |> member "counts" in
       check bool "last good shell contains counts block"
@@ -539,7 +631,7 @@ let test_last_good_shell_fallback_preserves_counts () =
         (counts <> `Null);
       (* Verify namespace-truth snapshot_from_caches uses the stale shell data
          even when the warmed flag is false (cold path, simulating timeout). *)
-      Atomic.set Lib.Server_dashboard_http._shell_warmed false;
+      Atomic.set Lib.Server_dashboard_http.shell_warmed false;
       let snapshot =
         match Lib.Server_dashboard_http.namespace_truth_snapshot_from_caches state with
         | Some json -> json
@@ -547,24 +639,25 @@ let test_last_good_shell_fallback_preserves_counts () =
       in
       let ns_counts = snapshot |> member "root" |> member "counts" in
       (* Shell was warmed once then reset; snapshot_from_caches should still
-         produce a valid namespace block via the _last_good_shell fallback. *)
+         produce a valid namespace block via the last_good_shell fallback. *)
       check bool "namespace counts block present in fallback snapshot"
         true
         (ns_counts <> `Null);
       (* Restore warmed state for subsequent tests. *)
-      Atomic.set Lib.Server_dashboard_http._shell_warmed true)
+      Atomic.set Lib.Server_dashboard_http.shell_warmed true)
 
 let test_namespace_truth_snapshot_hash_ignores_generated_at () =
   Fun.protect
     ~finally:(fun () ->
-      Lib.Server_dashboard_http._last_namespace_truth_snapshot_hash := None)
+      Lib.Server_dashboard_http.last_namespace_truth_snapshot_hash := None)
     (fun () ->
-      Lib.Server_dashboard_http._last_namespace_truth_snapshot_hash := None;
+      Lib.Server_dashboard_http.last_namespace_truth_snapshot_hash := None;
       Eio_main.run @@ fun _env ->
       let snapshot ~generated_at ~active_sessions =
         `Assoc
           [
             ("generated_at", `String generated_at);
+            ("generated_at_iso", `String generated_at);
             ( "namespace",
               `Assoc [ ("status", `String "ready"); ("counts", `Assoc [("agents", `Int 1)]) ]
             );
@@ -608,6 +701,8 @@ let () =
             test_dashboard_namespace_truth_does_not_auto_post_meta_digest;
           test_case "cached snapshot matches HTTP projection blocks" `Quick
             test_namespace_truth_cached_snapshot_matches_http_projection_blocks;
+          test_case "warm request uses stale shell while refreshing" `Quick
+            test_dashboard_namespace_truth_warm_request_uses_stale_shell;
           test_case "expired execution warmup falls back to partial truth" `Quick
             test_dashboard_namespace_truth_cold_cache_falls_back_to_partial_truth;
           test_case "last-good shell fallback preserves namespace counts" `Quick

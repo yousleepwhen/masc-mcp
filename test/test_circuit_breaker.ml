@@ -1,6 +1,18 @@
 open Alcotest
 
 module CB = Masc_mcp.Keeper_failure_circuit_breaker
+module KAP = Masc_mcp.Keeper_alerting_path
+module PCE = Masc_mcp.Keeper_path_check_error
+
+let path_not_found_msg raw =
+  KAP.rejection_to_user_message (KAP.Not_found_relative { raw })
+;;
+
+let path_not_allowed_msg raw =
+  KAP.rejection_to_user_message (KAP.Outside_sandbox { raw })
+;;
+
+let json_error error = Yojson.Safe.to_string (`Assoc [ "ok", `Bool false; "error", `String error ])
 
 let contains haystack needle =
   let nl = String.length needle and hl = String.length haystack in
@@ -14,13 +26,37 @@ let contains haystack needle =
 
 let test_classify_path_not_found () =
   check bool "path_not_found from prefix" true
-    (CB.classify_error "path_not_found_under_allowed_roots: /foo" = CB.Path_not_found);
+    (CB.classify_error (path_not_found_msg "/foo") = CB.Path_not_found);
+  check bool "path_not_found from JSON error field" true
+    (CB.classify_error (json_error (path_not_found_msg "/foo")) = CB.Path_not_found);
   check bool "path_not_found from NSFD" true
     (CB.classify_error "No such file or directory" = CB.Path_not_found)
 
 let test_classify_path_not_allowed () =
-  check bool "path_not_allowed" true
-    (CB.classify_error "path_not_in_allowed_paths: /x" = CB.Path_not_allowed)
+  check bool "path_not_allowed from typed rejection" true
+    (CB.classify_error (path_not_allowed_msg "/x") = CB.Path_not_allowed);
+  check bool "path_not_allowed from JSON error field" true
+    (CB.classify_error (json_error (path_not_allowed_msg "/x")) = CB.Path_not_allowed);
+  check bool "outside project root is path_not_allowed" true
+    (CB.classify_error
+       (KAP.rejection_to_user_message (KAP.Outside_project_root { raw = "../x" }))
+     = CB.Path_not_allowed);
+  check bool "legacy path_not_in_allowed no longer drives KCB" true
+    (CB.classify_error "path_not_in_allowed_paths: /x" = CB.Other)
+
+let test_classify_typed_path_check_prefixes () =
+  let cwd_msg =
+    PCE.to_message (PCE.Cwd_not_directory { path = ".worktrees/missing"; hint = None })
+  in
+  check bool "typed cwd_not_directory prefix" true
+    (CB.classify_error cwd_msg = CB.Cwd_not_directory);
+  let blocked_msg =
+    PCE.to_message
+      (PCE.Path_outside_whitelist
+         { path = "/etc/passwd"; for_keeper_command = true })
+  in
+  check bool "typed path blocked prefix" true
+    (CB.classify_error blocked_msg = CB.Path_not_allowed)
 
 let test_classify_other () =
   check bool "other" true
@@ -28,37 +64,38 @@ let test_classify_other () =
 
 let test_no_hint_under_threshold () =
   CB.record_success ~keeper_name:"t1";
-  let r1 = CB.maybe_enrich_error ~keeper_name:"t1" ~error_msg:"path_not_found: /a" in
+  let r1 = CB.maybe_enrich_error ~keeper_name:"t1" ~error_msg:(path_not_found_msg "/a") in
   check bool "1st: no hint" true (not (contains r1 "CIRCUIT BREAKER"));
-  let r2 = CB.maybe_enrich_error ~keeper_name:"t1" ~error_msg:"path_not_found: /b" in
+  let r2 = CB.maybe_enrich_error ~keeper_name:"t1" ~error_msg:(path_not_found_msg "/b") in
   check bool "2nd: no hint" true (not (contains r2 "CIRCUIT BREAKER"))
 
 let test_hint_at_threshold () =
   CB.record_success ~keeper_name:"t2";
-  ignore (CB.maybe_enrich_error ~keeper_name:"t2" ~error_msg:"path_not_found: /a");
-  ignore (CB.maybe_enrich_error ~keeper_name:"t2" ~error_msg:"path_not_found: /b");
-  let r3 = CB.maybe_enrich_error ~keeper_name:"t2" ~error_msg:"path_not_found: /c" in
+  ignore (CB.maybe_enrich_error ~keeper_name:"t2" ~error_msg:(path_not_found_msg "/a"));
+  ignore (CB.maybe_enrich_error ~keeper_name:"t2" ~error_msg:(path_not_found_msg "/b"));
+  let r3 = CB.maybe_enrich_error ~keeper_name:"t2" ~error_msg:(path_not_found_msg "/c") in
   check bool "3rd: HAS hint" true (contains r3 "CIRCUIT BREAKER");
   check bool "mentions playground" true (contains r3 "playground");
-  check bool "mentions ls" true (contains r3 "keeper_shell op=ls")
+  check bool "mentions typed public Execute ls" true
+    (contains r3 "Execute executable='ls' argv=['.']")
 
 let test_reset_on_success () =
   CB.record_success ~keeper_name:"t3";
-  ignore (CB.maybe_enrich_error ~keeper_name:"t3" ~error_msg:"path_not_found: /a");
-  ignore (CB.maybe_enrich_error ~keeper_name:"t3" ~error_msg:"path_not_found: /b");
+  ignore (CB.maybe_enrich_error ~keeper_name:"t3" ~error_msg:(path_not_found_msg "/a"));
+  ignore (CB.maybe_enrich_error ~keeper_name:"t3" ~error_msg:(path_not_found_msg "/b"));
   CB.record_success ~keeper_name:"t3";
-  let r = CB.maybe_enrich_error ~keeper_name:"t3" ~error_msg:"path_not_found: /c" in
+  let r = CB.maybe_enrich_error ~keeper_name:"t3" ~error_msg:(path_not_found_msg "/c") in
   check bool "after reset: no hint" true (not (contains r "CIRCUIT BREAKER"))
 
 let test_class_change_resets () =
-  ignore (CB.maybe_enrich_error ~keeper_name:"t4" ~error_msg:"path_not_found: /a");
-  ignore (CB.maybe_enrich_error ~keeper_name:"t4" ~error_msg:"path_not_found: /b");
-  ignore (CB.maybe_enrich_error ~keeper_name:"t4" ~error_msg:"path_not_in_allowed_paths: /x");
-  let r = CB.maybe_enrich_error ~keeper_name:"t4" ~error_msg:"path_not_in_allowed_paths: /y" in
+  ignore (CB.maybe_enrich_error ~keeper_name:"t4" ~error_msg:(path_not_found_msg "/a"));
+  ignore (CB.maybe_enrich_error ~keeper_name:"t4" ~error_msg:(path_not_found_msg "/b"));
+  ignore (CB.maybe_enrich_error ~keeper_name:"t4" ~error_msg:(path_not_allowed_msg "/x"));
+  let r = CB.maybe_enrich_error ~keeper_name:"t4" ~error_msg:(path_not_allowed_msg "/y") in
   check bool "class switch: no hint at 2nd" true (not (contains r "CIRCUIT BREAKER"))
 
 let test_snapshot () =
-  ignore (CB.maybe_enrich_error ~keeper_name:"t5" ~error_msg:"path_not_found: /a");
+  ignore (CB.maybe_enrich_error ~keeper_name:"t5" ~error_msg:(path_not_found_msg "/a"));
   match CB.snapshot_json () with
   | `List entries -> check bool "has entries" true (List.length entries > 0)
   | _ -> Alcotest.fail "expected list"
@@ -153,7 +190,7 @@ let test_classify_snapshot_round_trip () =
   (* Force a keeper with count>0 into the real state, snapshot, classify. *)
   CB.record_success ~keeper_name:"rt1";
   ignore (CB.maybe_enrich_error
-            ~keeper_name:"rt1" ~error_msg:"path_not_found: /x");
+            ~keeper_name:"rt1" ~error_msg:(path_not_found_msg "/x"));
   let json = CB.snapshot_json () in
   match CB.classify_snapshot_json json with
   | Error msg -> Alcotest.fail ("round-trip failed: " ^ msg)
@@ -176,7 +213,7 @@ let test_display_state_of_matches_snapshot () =
   let name = "p2-alpha" in
   CB.record_success ~keeper_name:name;
   ignore (CB.maybe_enrich_error
-            ~keeper_name:name ~error_msg:"path_not_found: /a");
+            ~keeper_name:name ~error_msg:(path_not_found_msg "/a"));
   let direct = CB.display_state_of ~keeper_name:name in
   check string "direct lookup = warning" "warning" (display_state_str direct);
   let json = CB.snapshot_json () in
@@ -190,19 +227,16 @@ let test_display_state_of_clears_after_success () =
   let name = "p2-beta" in
   CB.record_success ~keeper_name:name;
   ignore (CB.maybe_enrich_error
-            ~keeper_name:name ~error_msg:"path_not_found: /a");
+            ~keeper_name:name ~error_msg:(path_not_found_msg "/a"));
   CB.record_success ~keeper_name:name;
   let s = CB.display_state_of ~keeper_name:name in
   check string "after success, back to clean" "clean" (display_state_str s)
 
 let trip_keeper name =
   CB.record_success ~keeper_name:name;
-  ignore (CB.maybe_enrich_error
-            ~keeper_name:name ~error_msg:"path_not_found: /a");
-  ignore (CB.maybe_enrich_error
-            ~keeper_name:name ~error_msg:"path_not_found: /b");
-  ignore (CB.maybe_enrich_error
-            ~keeper_name:name ~error_msg:"path_not_found: /c")
+  ignore (CB.maybe_enrich_error ~keeper_name:name ~error_msg:(path_not_found_msg "/a"));
+  ignore (CB.maybe_enrich_error ~keeper_name:name ~error_msg:(path_not_found_msg "/b"));
+  ignore (CB.maybe_enrich_error ~keeper_name:name ~error_msg:(path_not_found_msg "/c"))
 
 let test_display_state_of_success_closes_trip () =
   let name = "p2-trip-success-closes" in
@@ -241,9 +275,9 @@ let test_fingerprint_truncates () =
   check bool "has ellipsis" true (contains fp "…")
 
 let test_fingerprint_does_not_fake_truncation_after_space_collapse () =
-  let padded = (String.make 200 ' ') ^ "keeper_shell failed" in
+  let padded = (String.make 200 ' ') ^ "tool_search_files failed" in
   let fp = CB.fingerprint_of_error ~max_len:50 padded in
-  check bool "keeps content" true (contains fp "keeper_shell failed");
+  check bool "keeps content" true (contains fp "tool_search_files failed");
   check bool "no fake ellipsis" false (contains fp "…")
 
 let test_recent_failures_empty_for_unknown () =
@@ -307,11 +341,46 @@ let test_recent_failures_survive_trip () =
   let r = CB.recent_failures_of ~keeper_name:name in
   check int "3 signatures retained post-trip" 3 (List.length r)
 
+let test_observed_failure_records_memory_without_tripping () =
+  let name = "sig-observed-workflow" in
+  CB.record_success ~keeper_name:name;
+  CB.record_observed_failure ~keeper_name:name
+    ~error_msg:
+      "{\"failure_class\":\"workflow_rejection\",\"error\":\"tool_execute_command_shape_blocked\"}";
+  CB.record_observed_failure ~keeper_name:name
+    ~error_msg:
+      "{\"failure_class\":\"workflow_rejection\",\"error\":\"tool_execute_command_shape_blocked\",\"shape_block\":\"pipe_or_redirect\"}";
+  let recent = CB.recent_failures_of ~keeper_name:name in
+  check int "observed failures are retained" 2 (List.length recent);
+  check string "observed failure does not trip or warn" "clean"
+    (display_state_str (CB.display_state_of ~keeper_name:name))
+
+let test_prompt_failures_include_fleet_observed_failure () =
+  let source = "sig-fleet-source" in
+  let fresh = "sig-fleet-fresh" in
+  let fingerprint =
+    "{\"failure_class\":\"workflow_rejection\",\"error\":\"tool_execute_command_shape_blocked\",\"shape_block\":\"chaining\"}"
+  in
+  CB.record_success ~keeper_name:source;
+  CB.record_success ~keeper_name:fresh;
+  CB.record_observed_failure ~keeper_name:source ~error_msg:fingerprint;
+  let recent = CB.recent_failures_for_prompt ~keeper_name:fresh in
+  check bool "fresh keeper sees fleet failure" true
+    (List.exists
+       (fun (sig_ : CB.failure_signature) ->
+          String_util.contains_substring sig_.fingerprint
+            "tool_execute_command_shape_blocked")
+       recent);
+  check string "fresh keeper remains clean" "clean"
+    (display_state_str (CB.display_state_of ~keeper_name:fresh))
+
 let () =
   run "Circuit_breaker" [
     "classify", [
       test_case "path_not_found" `Quick test_classify_path_not_found;
       test_case "path_not_allowed" `Quick test_classify_path_not_allowed;
+      test_case "typed path-check prefixes" `Quick
+        test_classify_typed_path_check_prefixes;
       test_case "other" `Quick test_classify_other;
     ];
     "signatures", [
@@ -329,6 +398,10 @@ let () =
         `Quick test_snapshot_json_exposes_recent_failures;
       test_case "recent_failures survive trip"
         `Quick test_recent_failures_survive_trip;
+      test_case "observed failure records memory without tripping"
+        `Quick test_observed_failure_records_memory_without_tripping;
+      test_case "prompt failures include fleet observed failure"
+        `Quick test_prompt_failures_include_fleet_observed_failure;
     ];
     "threshold", [
       test_case "no hint under threshold" `Quick test_no_hint_under_threshold;

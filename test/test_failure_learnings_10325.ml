@@ -23,8 +23,7 @@ let with_tmp_base_dir f =
     Fun.protect
       ~finally:(fun () ->
         try
-          let cmd = Printf.sprintf "rm -rf %s" (Filename.quote base) in
-          ignore (Sys.command cmd)
+          Fs_compat.remove_tree base
         with _ -> ())
       (fun () -> f base)
   in
@@ -51,7 +50,7 @@ let extract_failure_learnings ~error_kind ~error_message =
 let test_no_generic_boilerplate () =
   let learnings =
     extract_failure_learnings
-      ~error_kind:"oas_timeout_budget"
+      ~error_kind:"provider_timeout"
       ~error_message:"keeper exceeded budget after 12 turns"
   in
   List.iter
@@ -72,7 +71,7 @@ let test_kind_and_message_emitted_as_tags () =
   in
   let has_kind =
     List.exists
-      (fun s -> s = "failure_kind: oas_timeout_budget")
+      (fun s -> s = "failure_kind: provider_timeout")
       learnings
   in
   let has_message_tag =
@@ -82,6 +81,14 @@ let test_kind_and_message_emitted_as_tags () =
   in
   check bool "failure_kind entry emitted" true has_kind;
   check bool "error_preview entry emitted" true has_message_tag
+
+let test_timeout_budget_loop_kind_canonicalized () =
+  let learnings =
+    extract_failure_learnings
+      ~error_kind:"oas_timeout_budget_loop" ~error_message:""
+  in
+  check (list string) "legacy loop kind canonicalized"
+    [ "failure_kind: provider_timeout_loop" ] learnings
 
 let test_unspecified_kind_when_both_blank () =
   let learnings =
@@ -106,6 +113,8 @@ let () =
              test_no_generic_boilerplate;
            test_case "kind and message become tag entries" `Quick
              test_kind_and_message_emitted_as_tags;
+           test_case "legacy timeout budget loop kind is canonicalized" `Quick
+             test_timeout_budget_loop_kind_canonicalized;
            test_case "unspecified sentinel when both blank" `Quick
              test_unspecified_kind_when_both_blank;
            test_case "only error_kind when message blank" `Quick

@@ -3,8 +3,15 @@ import reactHooks from 'eslint-plugin-react-hooks'
 import tseslint from 'typescript-eslint'
 
 const TARGET_FILES = [
+  'design-system/headless-preact/use-inline-suggestion.ts',
+  'design-system/headless-preact/use-collaboration.ts',
+  'src/api/dashboard-cascade.ts',
+  'src/api/dashboard.ts',
   'src/api/gate.ts',
   'src/api/goal-loop.ts',
+  'src/api/schemas/cascade.ts',
+  'src/api/schemas/dashboard-config.ts',
+  'src/api/schemas/provider-logs.ts',
   'src/api/transport-health.ts',
   'src/components/common/async-container.ts',
   'src/components/common/empty-state.ts',
@@ -15,26 +22,63 @@ const TARGET_FILES = [
   'src/components/goal-loop-panel.ts',
   'src/components/harness-health-state.ts',
   'src/components/harness-health.ts',
+  'src/components/journey-panel.ts',
+  'src/components/journey-waterfall-state.ts',
   'src/components/keeper-tool-call-inspector.ts',
   'src/components/keeper-tool-telemetry.ts',
   'src/components/logs.ts',
   'src/components/mission.ts',
   'src/components/runtime-monitor.ts',
+  'src/components/session-trace/session-trace-live-store.ts',
+  'src/components/status.ts',
   'src/components/transport-health.ts',
+  'src/dashboard-ws.ts',
   'src/goal-loop-status.ts',
   'src/lib/async-state.ts',
   'src/components/common/normalize.ts',
+  'src/runtime-counts.ts',
+  'src/schemas/sse.ts',
+  'src/sse.ts',
+  'src/tab-refresh.ts',
+  'src/types/sse.ts',
 ]
 
 const TEST_FILES = [
+  'design-system/headless-preact/use-inline-suggestion.test.ts',
+  'design-system/headless-preact/use-collaboration.test.ts',
+  'design-system/headless-preact/use-tabs.test.ts',
+  'src/api/schemas/cascade.test.ts',
+  'src/api/schemas/dashboard-config.test.ts',
+  'src/cb-shared-telemetry-source.test.ts',
   'src/components/common/markdown.test.ts',
+  'src/components/common/rich-content.test.ts',
+  'src/components/common/window.test.ts',
+  'src/components/common/cytoscape-fsm.test.ts',
+  'src/components/auth-status.test.ts',
   'src/components/connector-status.test.ts',
   'src/components/fleet-fsm-matrix.test.ts',
   'src/components/goal-loop-panel.test.ts',
+  'src/components/ide/ide-activity-panel.test.ts',
+  'src/components/journey-panel.test.ts',
+  'src/components/journey-waterfall-state.test.ts',
   'src/components/keeper-tool-call-inspector.test.ts',
+  'src/components/logs.test.ts',
+  'src/components/session-trace/session-trace-state.test.ts',
   'src/components/transport-health.test.ts',
+  'src/dashboard-ws.test.ts',
   'src/goal-loop-status.test.ts',
   'src/lib/async-state.test.ts',
+  'src/runtime-counts.test.ts',
+  'src/schemas/sse.test.ts',
+  'src/sse-store.test.ts',
+]
+
+const DEFAULT_PROJECT_FILES = [
+  'design-system/headless-preact/use-inline-suggestion.ts',
+  'design-system/headless-preact/use-inline-suggestion.test.ts',
+  'design-system/headless-preact/use-collaboration.ts',
+  'design-system/headless-preact/use-collaboration.test.ts',
+  'design-system/headless-preact/use-tabs.test.ts',
 ]
 
 export default tseslint.config(
@@ -50,7 +94,9 @@ export default tseslint.config(
         ...globals.node,
       },
       parserOptions: {
-        projectService: true,
+        projectService: {
+          allowDefaultProject: DEFAULT_PROJECT_FILES,
+        },
         tsconfigRootDir: import.meta.dirname,
       },
     },
@@ -82,7 +128,9 @@ export default tseslint.config(
         ...globals.node,
       },
       parserOptions: {
-        projectService: true,
+        projectService: {
+          allowDefaultProject: DEFAULT_PROJECT_FILES,
+        },
         tsconfigRootDir: import.meta.dirname,
       },
     },

@@ -11,7 +11,7 @@
     - memory bank / episodes: [Keeper_agent_run] tail after [Agent.run]
     - hebbian: task lifecycle in [Coord_task]
 
-    Extracted from Keeper_exec_context as part of #4955 god-file split. *)
+    Extracted from Keeper_context_runtime as part of #4955 god-file split. *)
 
 (** Outcome of the compaction step. [applied] iff a compaction
     strategy actually ran; [trigger] is the gate label that fired
@@ -20,7 +20,7 @@ type compaction_event =
   { attempted : bool
   ; applied : bool
   ; failure_reason : string option
-  ; trigger : string option
+  ; trigger : Compaction_trigger.t option
   ; decision : Keeper_compact_policy.compaction_decision
   ; before_tokens : int
   ; after_tokens : int
@@ -66,17 +66,6 @@ type overflow_retry_recovery =
     is enriched with an ["autonomous_meta"] sub-tree carrying the
     suspended {!Autonomous_bridge} state. Off-mode behaviour is
     unchanged (zero impact). *)
-val apply_post_turn_lifecycle :
-  on_compaction_started:(unit -> unit) ->
-  on_handoff_started:(unit -> unit) ->
-  base_dir:string ->
-  meta:Keeper_types.keeper_meta ->
-  model:string ->
-  primary_model_max_tokens:int ->
-  current_turn_overflow_blocker:string option ->
-  checkpoint:Agent_sdk.Checkpoint.t option ->
-  post_turn_lifecycle
-
 val apply_post_turn_lifecycle_with_resilience_handles :
   resilience_audit_store:Shared_audit.Store.t option ->
   resilience_strategy_executor:Resilience.Recovery.strategy_executor option ->
@@ -86,15 +75,13 @@ val apply_post_turn_lifecycle_with_resilience_handles :
   meta:Keeper_types.keeper_meta ->
   model:string ->
   primary_model_max_tokens:int ->
-  current_turn_overflow_blocker:string option ->
+  current_turn_blocker_info:Keeper_types.blocker_info option ->
   checkpoint:Agent_sdk.Checkpoint.t option ->
   post_turn_lifecycle
-(** Variant of {!apply_post_turn_lifecycle} for callers that own
-    concrete resilience recovery handles.
+(** Apply the keeper post-turn lifecycle with explicit resilience handles.
 
-    Valid combinations of the two new arguments are:
-    - both [None]: equivalent to {!apply_post_turn_lifecycle}; no
-      audit envelope, no recovery side effect (legacy path).
+    Valid combinations of the two resilience arguments are:
+    - both [None]: no audit envelope, no recovery side effect.
     - both [Some]: the feature-flagged resilience wire-in writes a
       durable [RecoveryAttempted] envelope through the audit store
       before invoking the executor, preserving auditability.
@@ -125,7 +112,7 @@ val forced_overflow_retry_meta :
   now_ts:float ->
   Keeper_types.keeper_meta
 
-(** Reload the latest OAS / legacy checkpoint and apply forced
+(** Reload the canonical OAS checkpoint and apply forced
     compaction so the turn can retry from a smaller context.
     Returns [None] when no checkpoint exists, when compaction did
     not actually shrink the token count, or when the recovery save

@@ -149,7 +149,7 @@ These are repeating misclassifications observed in `git log --grep='demote\|prom
 | Pattern | Message describes successful coercion, parse, or validation (`tool_input_validation coerced args`, `validated request`) AND severity is `Info` |
 | Why wrong | Successful validation is the contract — logging it is logging "the system worked". Volume × zero signal. |
 | Correct | `Debug`. Reserve `Info` for validation **failures** that auto-recovered. |
-| Origin | `Log.Misc.info "tool_input_validation coerced args for keeper_shell"` — emitted on every tool call, ~1k+/h fleet-wide. |
+| Origin | `Log.Misc.info "tool_input_validation coerced args for tool_execute"` — emitted on every tool call, ~1k+/h fleet-wide. |
 
 ## 4. Lint
 
@@ -159,7 +159,7 @@ These are repeating misclassifications observed in `git log --grep='demote\|prom
 |------|---------|--------|
 | L1 | `Log\.[A-Z][a-z]+\.(info\|warn).*silent` | Silent fallback should be `Error` (§ 3.1) |
 | L2 | `Log\.[A-Z][a-z]+\.info.*operator_broadcast` | Operator broadcast is `Warn`/`Error` (§ 3.2) |
-| L3 | `Log\.[A-Z][a-z]+\.error.*(contract violated\|gh_command_shape\|JSON parse failed)` | Model behavior is `Warn` (§ 3.3) |
+| L3 | `Log\.[A-Z][a-z]+\.error.*(contract violated\|gh_cli_shape\|JSON parse failed)` | Model behavior is `Warn` (§ 3.3) |
 | L4 | `Log\.[A-Z][a-z]+\.info.*(watchdog tick\|keepalive\|heartbeat)` | Periodic ticks are `Debug` (§ 3.4) |
 | L5 | `Log\.[A-Z][a-z]+\.info.*(coerced\|validated)` | Validation success is `Debug` (§ 3.5) |
 

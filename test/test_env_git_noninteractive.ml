@@ -165,7 +165,7 @@ let test_filter_environment () =
   assert_false "GIT_CONFIG_COUNT stripped"
     (List.exists (fun e -> String.starts_with ~prefix:"GIT_CONFIG_COUNT=" e) out_list)
 
-let test_compose_base_with_gh_config_rehomes_git_config () =
+let test_compose_base_with_repo_cli_config_rehomes_git_config () =
   with_env "HOME" "/operator/home" @@ fun () ->
   with_env "GH_CONFIG_DIR" "/operator/gh" @@ fun () ->
   with_env "GIT_CONFIG_GLOBAL" "/operator/.gitconfig" @@ fun () ->
@@ -175,7 +175,7 @@ let test_compose_base_with_gh_config_rehomes_git_config () =
   let dir = "/tmp/masc-root/gh" in
   let bundle_root = Filename.dirname dir in
   let out =
-    Keeper_gh_env.compose_base_with_gh_config ~dir |> Array.to_list
+    Repo_cli_credentials.compose_base_with_repo_cli_config ~dir |> Array.to_list
   in
   assert_contains ~msg:"HOME rehomed to bundle root"
     out ("HOME=" ^ bundle_root);
@@ -224,26 +224,32 @@ let test_no_forgotten_git_askpass_literals () =
     | None -> Sys.getcwd ()
   in
   let lib_dir = Filename.concat root "lib" in
-  let cmd =
-    Printf.sprintf
-      "rg --no-messages -l 'GIT_ASKPASS|GIT_TERMINAL_PROMPT' %s \
-       --glob '!env_git_noninteractive.*' \
-       --glob '*.ml' --glob '*.mli' || true"
-      (Filename.quote lib_dir)
+  let argv =
+    [|
+      "rg";
+      "--no-messages";
+      "-l";
+      "GIT_ASKPASS|GIT_TERMINAL_PROMPT";
+      lib_dir;
+      "--glob";
+      "!env_git_noninteractive.*";
+      "--glob";
+      "*.ml";
+      "--glob";
+      "*.mli";
+    |]
   in
-  let ic = Unix.open_process_in cmd in
-  let rec drain acc =
-    try drain (input_line ic :: acc)
-    with End_of_file -> List.rev acc
+  let lines, _status =
+    With_process.with_process_args_in "rg" argv
+      With_process.drain_lines
   in
-  let lines = drain [] in
-  let _ = Unix.close_process_in ic in
   let offenders =
     List.filter
       (fun line ->
         let base = Filename.basename line in
         base <> "env_git_noninteractive.ml"
-        && base <> "env_git_noninteractive.mli")
+        && base <> "env_git_noninteractive.mli"
+        && base <> "env_keeper_scrub.ml")
       lines
   in
   if offenders <> [] then
@@ -263,7 +269,7 @@ let () =
   test_scrub_exact_match_only ();
   test_scrub_and_pass_disjoint ();
   test_filter_environment ();
-  test_compose_base_with_gh_config_rehomes_git_config ();
+  test_compose_base_with_repo_cli_config_rehomes_git_config ();
   test_no_forgotten_git_askpass_literals ();
   (* Silence unused-value warning if a helper is unused in a future edit. *)
   let _ = assert_list_eq in

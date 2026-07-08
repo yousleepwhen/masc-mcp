@@ -13,29 +13,18 @@ let default_max_len = 200
 let denied_tool_infixes =
   ["_auth"; "_encryption"; "_credential"; "_secret"]
 
-let contains_substring ~sub s =
-  let sub_len = String.length sub in
-  let s_len = String.length s in
-  if sub_len > s_len then false
-  else
-    let rec loop i =
-      if i > s_len - sub_len then false
-      else if String.sub s i sub_len = sub then true
-      else loop (i + 1)
-    in
-    loop 0
 
 let sensitive_key_markers =
   [ "token"; "secret"; "password"; "passwd"; "api_key"; "apikey"; "key" ]
 
 let is_sensitive_key key =
   let lower = String.lowercase_ascii key in
-  List.exists (fun marker -> contains_substring ~sub:marker lower)
+  List.exists (fun marker -> String_util.contains_substring lower marker)
     sensitive_key_markers
 
 let is_denied_tool ~tool_name =
   let lower = String.lowercase_ascii tool_name in
-  List.exists (fun infix -> contains_substring ~sub:infix lower) denied_tool_infixes
+  List.exists (fun infix -> String_util.contains_substring lower infix) denied_tool_infixes
 
 (** Sensitive value patterns — matches API keys, tokens, long hex strings.
     24+ contiguous alphanumeric/base64 characters. *)
@@ -103,6 +92,20 @@ let redact_tool_input ~tool_name (input : Yojson.Safe.t) : string option =
 let redact_tool_output ~tool_name (output : string) : string option =
   if is_denied_tool ~tool_name then None
   else Some (redact_preview output)
+
+let redacted_tool_input_json ~tool_name input =
+  if is_denied_tool ~tool_name then None
+  else Some (input |> redact_json_value |> preview_json_strings)
+
+let redacted_tool_output_json ~tool_name output =
+  if is_denied_tool ~tool_name then None
+  else
+    let redacted =
+      try Yojson.Safe.from_string output |> redact_json_value |> preview_json_strings
+      with
+      | Yojson.Json_error _ -> `String (redact_preview output)
+    in
+    Some redacted
 
 let build_tool_call_trace_json ?tool_use_id ~tool_name ~input
     ~(output : string option) ~(is_error : bool option) () : Yojson.Safe.t =

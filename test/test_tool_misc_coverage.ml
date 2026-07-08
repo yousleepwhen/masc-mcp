@@ -7,7 +7,7 @@ let () = Mirage_crypto_rng_unix.use_default ()
 let () = Server_startup_state.mark_state_ready ~backend_mode:"test"
 let () =
   let base_path = Masc_test_deps.find_project_root () in
-  ignore (Result.get_ok (Keeper_exec_tools.init_policy_config ~base_path))
+  ignore (Result.get_ok (Agent_tool_dispatch_runtime.init_policy_config ~base_path))
 
 let str_contains s sub =
   let len_s = String.length s in
@@ -43,11 +43,7 @@ let with_env name value_opt f =
 let with_isolated_runtime_env f =
   with_env "MASC_BASE_PATH" None (fun () ->
     with_env "MASC_BASE_PATH_INPUT" None (fun () ->
-      with_env "MASC_STORAGE_TYPE" None (fun () ->
-        with_env "MASC_POSTGRES_URL" None (fun () ->
-          with_env "DATABASE_URL" None (fun () ->
-            with_env "SUPABASE_DB_URL" None (fun () ->
-              with_env "SB_PG_URL" None f))))))
+      with_env "MASC_STORAGE_TYPE" None f))
 
 (* Test registry — each [test] call appends; final [let ()] dispatches
    via Alcotest.run.  Per-test Eio scope for code paths that use Eio.Mutex. *)
@@ -86,11 +82,11 @@ let () = test "dispatch_dashboard" (fun () ->
   ignore (Coord.add_task second_room ~title:"second task" ~priority:1 ~description:"");
   let args = `Assoc [] in
   match Tool_misc.dispatch ctx ~name:"masc_dashboard" ~args with
-  | Some (success, result) ->
-      assert success;
-      assert (str_contains result "MASC Dashboard");
-      assert (str_contains result "Namespace: default (flattened)");
-      assert (not (str_contains result "second-room"));
+  | Some result ->
+      assert (Tool_result.is_success result);
+      assert (str_contains (Tool_result.message result) "MASC Dashboard");
+      assert (str_contains (Tool_result.message result) "Namespace: default (flattened)");
+      assert (not (str_contains (Tool_result.message result) "second-room"));
   | None -> failwith "dispatch returned None"
   | exception Effect.Unhandled _ ->
       Printf.printf "  (skipped: Eio runtime not available)\n"
@@ -101,10 +97,10 @@ let () = test "dispatch_dashboard_compact" (fun () ->
   let ctx = make_test_ctx () in
   let args = `Assoc [("compact", `Bool true)] in
   match Tool_misc.dispatch ctx ~name:"masc_dashboard" ~args with
-  | Some (success, result) ->
-      assert success;
-      assert (str_contains result "MASC [");
-      assert (str_contains result "ATTENTION:");
+  | Some result ->
+      assert (Tool_result.is_success result);
+      assert (str_contains (Tool_result.message result) "MASC [");
+      assert (str_contains (Tool_result.message result) "ATTENTION:");
   | None -> failwith "dispatch returned None"
   | exception Effect.Unhandled _ ->
       Printf.printf "  (skipped: Eio runtime not available)\n"
@@ -117,11 +113,11 @@ let () = test "dispatch_dashboard_current_scope" (fun () ->
   ignore (Coord.add_task focused ~title:"focus task" ~priority:2 ~description:"");
   let args = `Assoc [("scope", `String "current")] in
   match Tool_misc.dispatch ctx ~name:"masc_dashboard" ~args with
-  | Some (success, result) ->
-      assert success;
-      assert (str_contains result "MASC Dashboard");
-      assert (str_contains result "Namespace: default (flattened)");
-      assert (not (str_contains result "focus-room"))
+  | Some result ->
+      assert (Tool_result.is_success result);
+      assert (str_contains (Tool_result.message result) "MASC Dashboard");
+      assert (str_contains (Tool_result.message result) "Namespace: default (flattened)");
+      assert (not (str_contains (Tool_result.message result) "focus-room"))
   | None -> failwith "dispatch returned None"
   | exception Effect.Unhandled _ ->
       Printf.printf "  (skipped: Eio runtime not available)\n"
@@ -131,9 +127,9 @@ let () = test "dispatch_dashboard_invalid_scope" (fun () ->
   let ctx = make_test_ctx () in
   let args = `Assoc [("scope", `String "everywhere")] in
   match Tool_misc.dispatch ctx ~name:"masc_dashboard" ~args with
-  | Some (success, result) ->
-      assert (not success);
-      assert (str_contains result "Invalid dashboard scope")
+  | Some result ->
+      assert (not (Tool_result.is_success result));
+      assert (str_contains (Tool_result.message result) "Invalid dashboard scope")
   | None -> failwith "dispatch returned None"
 )
 
@@ -142,9 +138,9 @@ let () = test "dispatch_gc" (fun () ->
   let ctx = make_test_ctx () in
   let args = `Assoc [("days", `Int 7)] in
   match Tool_misc.dispatch ctx ~name:"masc_gc" ~args with
-  | Some (success, result) ->
-      assert success;
-      assert (String.length result > 0)
+  | Some result ->
+      assert (Tool_result.is_success result);
+      assert (String.length (Tool_result.message result) > 0)
   | None -> failwith "dispatch returned None"
 )
 
@@ -153,9 +149,9 @@ let () = test "dispatch_gc_default" (fun () ->
   let ctx = make_test_ctx () in
   let args = `Assoc [] in
   match Tool_misc.dispatch ctx ~name:"masc_gc" ~args with
-  | Some (success, result) ->
-      assert success;
-      assert (String.length result > 0)
+  | Some result ->
+      assert (Tool_result.is_success result);
+      assert (String.length (Tool_result.message result) > 0)
   | None -> failwith "dispatch returned None"
 )
 
@@ -164,9 +160,9 @@ let () = test "dispatch_cleanup_zombies" (fun () ->
   let ctx = make_test_ctx () in
   let args = `Assoc [] in
   match Tool_misc.dispatch ctx ~name:"masc_cleanup_zombies" ~args with
-  | Some (success, result) ->
-      assert success;
-      assert (String.length result > 0)
+  | Some result ->
+      assert (Tool_result.is_success result);
+      assert (String.length (Tool_result.message result) > 0)
   | None -> failwith "dispatch returned None"
 )
 
@@ -174,9 +170,9 @@ let () = test "dispatch_web_search_requires_query" (fun () ->
   let ctx = make_test_ctx () in
   let args = `Assoc [] in
   match Tool_misc.dispatch ctx ~name:"masc_web_search" ~args with
-  | Some (success, result) ->
-      assert (not success);
-      let json = parse_json result in
+  | Some result ->
+      assert (not (Tool_result.is_success result));
+      let json = parse_json (Tool_result.message result) in
       assert (Yojson.Safe.Util.member "status" json = `String "error");
       assert (Yojson.Safe.Util.member "message" json = `String "query is required")
   | None -> failwith "dispatch returned None"
@@ -187,9 +183,9 @@ let () = test "dispatch_web_search_rejects_long_query" (fun () ->
   let query = String.make 501 'a' in
   let args = `Assoc [ ("query", `String query) ] in
   match Tool_misc.dispatch ctx ~name:"masc_web_search" ~args with
-  | Some (success, result) ->
-      assert (not success);
-      let json = parse_json result in
+  | Some result ->
+      assert (not (Tool_result.is_success result));
+      let json = parse_json (Tool_result.message result) in
       assert (Yojson.Safe.Util.member "status" json = `String "error");
       assert
         (Yojson.Safe.Util.member "message" json
@@ -201,9 +197,9 @@ let () = test "dispatch_web_search_rejects_secret_like_query" (fun () ->
   let ctx = make_test_ctx () in
   let args = `Assoc [ ("query", `String "Authorization: Bearer secret-token") ] in
   match Tool_misc.dispatch ctx ~name:"masc_web_search" ~args with
-  | Some (success, result) ->
-      assert (not success);
-      let json = parse_json result in
+  | Some result ->
+      assert (not (Tool_result.is_success result));
+      let json = parse_json (Tool_result.message result) in
       assert (Yojson.Safe.Util.member "status" json = `String "error");
       assert
         (Yojson.Safe.Util.member "message" json
@@ -380,27 +376,27 @@ let () = test "web_search_provider_plan_prefers_configured_official_provider" (f
 )
 
 let () = test "web_search_simulate_for_test_falls_back_after_error" (fun () ->
-  let success, result =
+  let result =
     Tool_misc.web_search_simulate_for_test ~query:"ocaml eio" ~limit:3
       [
         ("brave", `Error "provider failed");
         ("duckduckgo", `Hits [ ("Eio", "https://example.com/eio", "Fiber runtime") ]);
       ]
   in
-  assert success;
-  let json = parse_json result in
+  assert (Tool_result.is_success result);
+  let json = parse_json ((Tool_result.message result)) in
   let result_json = Yojson.Safe.Util.member "result" json in
   assert (Yojson.Safe.Util.member "engine" result_json = `String "duckduckgo");
   assert (Yojson.Safe.Util.member "result_count" result_json = `Int 1)
 )
 
 let () = test "web_search_simulate_for_test_reports_all_failures" (fun () ->
-  let success, result =
+  let result =
     Tool_misc.web_search_simulate_for_test ~query:"ocaml eio" ~limit:3
       [ ("brave", `Empty); ("bing_rss", `Error "rss unavailable") ]
   in
-  assert (not success);
-  let json = parse_json result in
+  assert (not (Tool_result.is_success result));
+  let json = parse_json ((Tool_result.message result)) in
   assert (Yojson.Safe.Util.member "status" json = `String "error");
   assert
     (str_contains
@@ -452,102 +448,13 @@ let () = test "redact_transport_error_detail" (fun () ->
      = "forbidden response")
 )
 
-let () = test "dispatch_webrtc_offer" (fun () ->
-  let ctx = make_test_ctx () in
-  let args =
-    `Assoc
-      [
-        ("agent_name", `String "offer-agent");
-        ("ice_candidates", `List [ `String "candidate:127.0.0.1:5000" ]);
-        ("dtls_fingerprint", `String "sha-256:AA:BB:CC");
-      ]
-  in
-  match Tool_misc.dispatch ctx ~name:"masc_webrtc_offer" ~args with
-  | Some (success, result) ->
-      assert success;
-      let json = parse_json result in
-      let offer_id = Yojson.Safe.Util.(json |> member "offer_id" |> to_string) in
-      assert (String.length offer_id > 0);
-      ignore (Server_webrtc_transport.cleanup_expired_offers ~max_age_s:0.0 ())
-  | None -> failwith "dispatch returned None"
-)
-
-let () = test "dispatch_webrtc_answer" (fun () ->
-  let ctx = make_test_ctx () in
-  let offer_args =
-    `Assoc
-      [
-        ("agent_name", `String "offer-agent");
-        ("ice_candidates", `List [ `String "candidate:127.0.0.1:5001" ]);
-      ]
-  in
-  let offer_result =
-    match Tool_misc.dispatch ctx ~name:"masc_webrtc_offer" ~args:offer_args with
-    | Some (true, result) -> parse_json result
-    | Some (false, result) -> failwith result
-    | None -> failwith "offer dispatch returned None"
-  in
-  let offer_id =
-    Yojson.Safe.Util.(offer_result |> member "offer_id" |> to_string)
-  in
-  let answer_args =
-    `Assoc
-      [
-        ("offer_id", `String offer_id);
-        ("agent_name", `String "answer-agent");
-        ("ice_candidates", `List [ `String "candidate:127.0.0.1:5002" ]);
-      ]
-  in
-  match Tool_misc.dispatch ctx ~name:"masc_webrtc_answer" ~args:answer_args with
-  | Some (success, result) ->
-      assert success;
-      let json = parse_json result in
-      let peer_id = Yojson.Safe.Util.(json |> member "peer_id" |> to_string) in
-      assert (String.length peer_id > 0);
-      Server_webrtc_transport.remove_peer peer_id
-  | None -> failwith "dispatch returned None"
-)
-
-let () = test "dispatch_webrtc_offer_disabled" (fun () ->
-  with_env "MASC_WEBRTC_ENABLED" (Some "0") (fun () ->
-    let ctx = make_test_ctx () in
-    let args =
-      `Assoc
-        [
-          ("agent_name", `String "offer-agent");
-          ("ice_candidates", `List [ `String "candidate:127.0.0.1:5000" ]);
-        ]
-    in
-    match Tool_misc.dispatch ctx ~name:"masc_webrtc_offer" ~args with
-    | Some (success, result) ->
-        assert (not success);
-        assert (str_contains result "webrtc transport disabled")
-    | None -> failwith "dispatch returned None"))
-
-let () = test "dispatch_webrtc_answer_disabled" (fun () ->
-  with_env "MASC_WEBRTC_ENABLED" (Some "0") (fun () ->
-    let ctx = make_test_ctx () in
-    let args =
-      `Assoc
-        [
-          ("offer_id", `String "offer-1");
-          ("agent_name", `String "answer-agent");
-          ("ice_candidates", `List [ `String "candidate:127.0.0.1:5002" ]);
-        ]
-    in
-    match Tool_misc.dispatch ctx ~name:"masc_webrtc_answer" ~args with
-    | Some (success, result) ->
-        assert (not success);
-        assert (str_contains result "webrtc transport disabled")
-    | None -> failwith "dispatch returned None"))
-
 let () = test "dispatch_tool_admin_snapshot" (fun () ->
   let ctx = make_test_ctx () in
   let args = `Assoc [] in
   match Tool_misc.dispatch ctx ~name:"masc_tool_admin_snapshot" ~args with
-  | Some (success, result) ->
-      assert success;
-      let json = parse_json result in
+  | Some result ->
+      assert (Tool_result.is_success result);
+      let json = parse_json (Tool_result.message result) in
       assert (Yojson.Safe.Util.member "tool_inventory" json <> `Null);
       assert (Yojson.Safe.Util.member "auth" json <> `Null);
       assert (Yojson.Safe.Util.member "http_auth_strict" (Yojson.Safe.Util.member "auth" json) <> `Null);
@@ -570,8 +477,8 @@ let () = test "dispatch_tool_admin_update_rejects_mode" (fun () ->
       ]
   in
   match Tool_misc.dispatch ctx ~name:"masc_tool_admin_update" ~args with
-  | Some (success, _result) ->
-      assert (not success)
+  | Some result ->
+      assert (not (Tool_result.is_success result))
   | None -> failwith "dispatch returned None"
 )
 
@@ -587,9 +494,9 @@ let () = test "dispatch_tool_admin_update_auth" (fun () ->
       ]
   in
   match Tool_misc.dispatch ctx ~name:"masc_tool_admin_update" ~args with
-  | Some (success, result) ->
-      assert success;
-      let json = parse_json result in
+  | Some result ->
+      assert (Tool_result.is_success result);
+      let json = parse_json (Tool_result.message result) in
       assert (Yojson.Safe.Util.(json |> member "section" |> to_string) = "auth");
       let cfg = Auth.load_auth_config ctx.config.base_path in
       assert cfg.enabled;
@@ -610,9 +517,9 @@ let () = test "dispatch_tool_admin_update_auth_rejects_removed_default_role" (fu
       ]
   in
   match Tool_misc.dispatch ctx ~name:"masc_tool_admin_update" ~args with
-  | Some (success, result) ->
-      assert (not success);
-      assert (str_contains result "default_role is no longer supported");
+  | Some result ->
+      assert (not (Tool_result.is_success result));
+      assert (str_contains (Tool_result.message result) "default_role is no longer supported");
       let after = Auth.load_auth_config ctx.config.base_path in
       assert (after.enabled = before.enabled);
       assert (after.require_token = before.require_token);
@@ -651,7 +558,7 @@ let () = test "dispatch_tool_admin_update_keeper_policy" (fun () ->
                 ("autoboot_enabled", `Bool false);
               ])
       with
-      | Some (true, _) -> (
+      | Some result when Tool_result.is_success result -> (
           (* keeper_policy section removed with policy_mode purge —
              admin_update should reject the section *)
           let args =
@@ -662,10 +569,10 @@ let () = test "dispatch_tool_admin_update_keeper_policy" (fun () ->
               ]
           in
           match Tool_misc.dispatch ctx ~name:"masc_tool_admin_update" ~args with
-          | Some (false, _msg) -> () (* expected: section no longer supported *)
-          | Some (true, _) -> failwith "keeper_policy section should be rejected"
+          | Some inner when not (Tool_result.is_success inner) -> () (* expected: section no longer supported *)
+          | Some _ -> failwith "keeper_policy section should be rejected"
           | None -> failwith "dispatch returned None")
-      | Some (false, err) -> failwith err
+      | Some result -> failwith (Tool_result.message result)
       | None -> failwith "keeper up dispatch returned None")
 )
 

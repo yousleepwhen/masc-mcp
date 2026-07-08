@@ -12,7 +12,7 @@ let resolved_agent_names ~(config : Coord.config) ~(agent_name : string) =
     | Sys_error _ | Yojson.Json_error _ -> agent_name
     | exn ->
       Prometheus.inc_counter
-        Prometheus.metric_keeper_reconcile_failures
+        Keeper_metrics.(to_string ReconcileFailures)
         ~labels:[("keeper", agent_name); ("phase", "resolve_agent")]
         ();
       Log.Keeper.warn
@@ -27,7 +27,7 @@ let task_id_of_owned_active_task ~(keeper_name : string) (task : Masc_domain.tas
   | Ok task_id -> Some task_id
   | Error msg ->
     Prometheus.inc_counter
-      Prometheus.metric_keeper_reconcile_failures
+      Keeper_metrics.(to_string ReconcileFailures)
       ~labels:[("keeper", keeper_name); ("phase", "task_id_parse")]
       ();
     Log.Keeper.warn
@@ -35,7 +35,12 @@ let task_id_of_owned_active_task ~(keeper_name : string) (task : Masc_domain.tas
       keeper_name task.id msg;
     None
 
-let owned_active_task_ids_for_meta ~(config : Coord.config)
+type owned_active_task =
+  { task_id : Keeper_id.Task_id.t
+  ; task : Masc_domain.task
+  }
+
+let owned_active_tasks_for_meta ~(config : Coord.config)
     ~(meta : Keeper_types.keeper_meta) =
   let names = resolved_agent_names ~config ~agent_name:meta.agent_name in
   let matches assignee = List.mem assignee names in
@@ -47,21 +52,18 @@ let owned_active_task_ids_for_meta ~(config : Coord.config)
          | Masc_domain.InProgress { assignee; _ }
            when matches assignee ->
              task_id_of_owned_active_task ~keeper_name:meta.name task
+             |> Option.map (fun task_id -> { task_id; task })
          | Masc_domain.Claimed _
          | Masc_domain.InProgress _
          | Masc_domain.AwaitingVerification _
          | Masc_domain.Todo
          | Masc_domain.Done _
          | Masc_domain.Cancelled _ -> None)
-    |> List.sort_uniq (fun a b ->
-         String.compare
-           (Keeper_id.Task_id.to_string a)
-           (Keeper_id.Task_id.to_string b))
   with
   | Eio.Cancel.Cancelled _ as e -> raise e
   | exn ->
     Prometheus.inc_counter
-      Prometheus.metric_keeper_reconcile_failures
+      Keeper_metrics.(to_string ReconcileFailures)
       ~labels:[("keeper", meta.name); ("phase", "owned_tasks_query")]
       ();
     Log.Keeper.warn
@@ -69,16 +71,49 @@ let owned_active_task_ids_for_meta ~(config : Coord.config)
       meta.name (Printexc.to_string exn);
     []
 
+let active_status_rank = function
+  | Masc_domain.InProgress _ -> 0
+  | Masc_domain.Claimed _ -> 1
+  | Masc_domain.AwaitingVerification _
+  | Masc_domain.Todo
+  | Masc_domain.Done _
+  | Masc_domain.Cancelled _ -> 2
+
+let current_task_rank (meta : Keeper_types.keeper_meta) task_id =
+  match meta.current_task_id with
+  | Some current when Keeper_id.Task_id.equal current task_id -> 0
+  | Some _ | None -> 1
+
+let compare_owned_active_task ~(meta : Keeper_types.keeper_meta) a b =
+  let cmp = compare (current_task_rank meta a.task_id) (current_task_rank meta b.task_id) in
+  if cmp <> 0
+  then cmp
+  else (
+    let cmp = compare (active_status_rank a.task.task_status) (active_status_rank b.task.task_status) in
+    if cmp <> 0
+    then cmp
+    else (
+      let cmp = compare a.task.priority b.task.priority in
+      if cmp <> 0
+      then cmp
+      else (
+        let cmp = String.compare a.task.created_at b.task.created_at in
+        if cmp <> 0
+        then cmp
+        else
+          String.compare
+            (Keeper_id.Task_id.to_string a.task_id)
+            (Keeper_id.Task_id.to_string b.task_id))))
+
 let owned_active_task_id_for_meta ~(config : Coord.config)
     ~(meta : Keeper_types.keeper_meta) =
-  match owned_active_task_ids_for_meta ~config ~meta with
-  | [ task_id ] -> Some task_id
+  match owned_active_tasks_for_meta ~config ~meta with
+  | [ { task_id; _ } ] -> Some task_id
   | [] -> None
-  | task_ids ->
-    Log.Keeper.warn
-      "keeper:%s has %d active owned tasks; leaving current_task_id unset until one task is explicit"
-      meta.name (List.length task_ids);
-    None
+  | tasks ->
+    (match List.sort (compare_owned_active_task ~meta) tasks with
+     | selected :: _ -> Some selected.task_id
+     | [] -> None)
 
 let merge_current_task_id ~(latest : Keeper_types.keeper_meta)
     ~(caller : Keeper_types.keeper_meta) =
@@ -110,7 +145,7 @@ let sync_current_task_id_from_backlog ~(config : Coord.config)
      | Ok () -> ()
      | Error msg ->
        Prometheus.inc_counter
-         Prometheus.metric_keeper_write_meta_failures
+         Keeper_metrics.(to_string WriteMetaFailures)
          ~labels:[("keeper", meta.name); ("phase", "reconcile_task_id")]
          ();
        Log.Keeper.warn
@@ -120,7 +155,17 @@ let sync_current_task_id_from_backlog ~(config : Coord.config)
           | Some task_id -> Keeper_id.Task_id.to_string task_id
           | None -> "(cleared)")
          msg);
-    Log.Keeper.info
+    (* RFC-0142 / audit 2026-05-21 §10.2: this is the success path of a
+       routine drift correction, firing on every observed delta between
+       keeper_meta.current_task_id and backlog ownership.  Live measurement
+       on 5/21 captured 1,183 events/day across the fleet — none of them
+       individually actionable (the WARN branch above + the
+       [metric_keeper_write_meta_failures] counter already cover the
+       failure case).  Demoted to DEBUG so the high-volume verbose path
+       no longer drowns the INFO stream; raise back to INFO only if a
+       per-keeper thrash investigation needs structured timing without
+       a debug-level subscription. *)
+    Log.Keeper.debug
       "keeper:%s reconciled current_task_id=%s from backlog ownership"
       meta.name
       (match desired with

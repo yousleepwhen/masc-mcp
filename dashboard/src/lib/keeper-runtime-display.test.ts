@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { KEEPER_RUNTIME_BLOCKER_CLASSES } from '../types'
 import type { Keeper, KeeperRuntimeBlockerClass } from '../types'
 import {
   keeperActivityDisplay,
   keeperDisplayModel,
   keeperDisplayStatus,
+  keeperPauseDisplay,
   keeperRuntimeBlockerHint,
   keeperRuntimeBlockerLabel,
 } from './keeper-runtime-display'
@@ -20,6 +22,11 @@ function makeKeeper(overrides: Partial<Keeper> = {}): Keeper {
 describe('keeperDisplayStatus', () => {
   it('returns paused when keeper.paused is true', () => {
     expect(keeperDisplayStatus(makeKeeper({ paused: true }))).toBe('paused')
+  })
+
+  it('returns paused when phase or pipeline carries pause truth', () => {
+    expect(keeperDisplayStatus(makeKeeper({ status: 'offline', phase: 'Paused' }))).toBe('paused')
+    expect(keeperDisplayStatus(makeKeeper({ status: 'offline', pipeline_stage: 'paused' }))).toBe('paused')
   })
 
   it('returns unknown for null keeper', () => {
@@ -99,58 +106,93 @@ describe('keeperDisplayStatus', () => {
 })
 
 describe('keeperDisplayModel', () => {
-  it('keeps CLI/provider runtime labels intact for active auto profiles', () => {
+  it('redacts active runtime labels', () => {
     expect(
       keeperDisplayModel({
-        active_model_label: 'claude_code:auto',
-        active_model: 'claude',
-        model: 'claude',
+        active_model_label: 'cli-tool-d:auto',
+        active_model: 'agent-llm-a',
+        model: 'agent-llm-a',
       }),
-    ).toEqual({ label: '현재 모델', value: 'claude_code:auto' })
+    ).toBeNull()
   })
 
-  it('keeps active runtime labels ahead of metrics-series fallback', () => {
+  it('does not fall back to metrics-series model labels', () => {
     expect(
       keeperDisplayModel({
-        active_model: 'claude_code:auto',
+        active_model: 'cli-tool-d:auto',
         metrics_series: [
-          { model_used: 'openai:gpt-5.4' },
-          { model_used: 'anthropic:claude-sonnet-4-6' },
+          { model_used: 'provider-d:gpt-5.4' },
+          { model_used: 'provider-a:model-a-sonnet' },
         ],
       }),
-    ).toEqual({ label: '현재 모델', value: 'claude_code:auto' })
+    ).toBeNull()
   })
 
-  it('skips placeholder model sentinels before falling back to active runtime labels', () => {
+  it('redacts even non-placeholder legacy labels', () => {
     expect(
       keeperDisplayModel({
         last_model_used: 'unknown',
-        active_model: 'claude_code:auto',
-        model: 'claude',
+        active_model: 'cli-tool-d:auto',
+        model: 'agent-llm-a',
       }),
-    ).toEqual({ label: '현재 모델', value: 'claude_code:auto' })
+    ).toBeNull()
   })
 
-  it('skips expanded exact placeholders without hiding provider auto labels', () => {
+  it('redacts provider auto labels and primary model labels', () => {
     expect(
       keeperDisplayModel({
         last_model_used_label: 'default',
         last_model_used: 'auto',
-        active_model_label: 'codex_cli:auto',
-        primary_model: 'openai:gpt-5.4',
+        active_model_label: 'cli-tool-a:auto',
+        primary_model: 'provider-d:gpt-5.4',
       }),
-    ).toEqual({ label: '현재 모델', value: 'codex_cli:auto' })
+    ).toBeNull()
   })
 
-  it('uses the latest metrics model when structured runtime model is absent', () => {
+  it('redacts metrics-only model labels', () => {
     expect(
       keeperDisplayModel({
         metrics_series: [
-          { model_used: 'openai:gpt-5.4' },
-          { model_used: 'anthropic:claude-sonnet-4-6' },
+          { model_used: 'provider-d:gpt-5.4' },
+          { model_used: 'provider-a:model-a-sonnet' },
         ],
       }),
-    ).toEqual({ label: '최근 모델', value: 'anthropic:claude-sonnet-4-6' })
+    ).toBeNull()
+  })
+})
+
+describe('keeperPauseDisplay', () => {
+  it('returns null for active keepers', () => {
+    expect(keeperPauseDisplay(makeKeeper({ status: 'active', phase: 'Running' }))).toBeNull()
+  })
+
+  it('surfaces blocker, next action, diagnostic, and raw axes for paused keepers', () => {
+    const display = keeperPauseDisplay(makeKeeper({
+      status: 'paused',
+      phase: 'Paused',
+      pipeline_stage: 'paused',
+      paused: true,
+      runtime_blocker_class: 'fiber_unresolved',
+      attention_reason: 'paused',
+      next_human_action: 'inspect_blocker_before_resume',
+      diagnostic: {
+        health_state: 'offline',
+        next_action_path: 'recover',
+        last_reply_status: 'unknown',
+        continuity_state: 'not_running',
+      },
+    }))
+
+    expect(display).toMatchObject({
+      reason: 'Fiber 미해결',
+      nextAction: 'inspect blocker before resume',
+      diagnostic: 'offline/not running',
+    })
+    expect(display?.detail).toContain('원인 Fiber 미해결')
+    expect(display?.detail).toContain('다음 inspect blocker before resume')
+    expect(display?.detail).toContain('진단 offline/not running')
+    expect(display?.title).toContain('paused=true')
+    expect(display?.title).toContain('status=paused')
   })
 })
 
@@ -162,6 +204,24 @@ describe('keeperRuntimeBlockerLabel', () => {
     expect(keeperRuntimeBlockerLabel('tool_required_unsatisfied')).toBe(
       '필수 도구 미충족',
     )
+  })
+
+  it('labels the 9 RFC-0062 SDK blocker variants', () => {
+    expect(keeperRuntimeBlockerLabel('sdk_max_turns_exceeded')).toBe('SDK 최대 턴 초과')
+    expect(keeperRuntimeBlockerLabel('sdk_token_budget_exceeded')).toBe('SDK 토큰 예산 초과')
+    expect(keeperRuntimeBlockerLabel('sdk_cost_budget_exceeded')).toBe('SDK 비용 예산 초과')
+    expect(keeperRuntimeBlockerLabel('sdk_unrecognized_stop_reason')).toBe('SDK 미식별 정지 사유')
+    expect(keeperRuntimeBlockerLabel('sdk_idle_detected')).toBe('SDK Idle 감지')
+    expect(keeperRuntimeBlockerLabel('sdk_tool_retry_exhausted')).toBe('SDK 도구 재시도 소진')
+    expect(keeperRuntimeBlockerLabel('sdk_guardrail_violation')).toBe('SDK 가드레일 위반')
+    expect(keeperRuntimeBlockerLabel('sdk_tripwire_violation')).toBe('SDK Tripwire 위반')
+    expect(keeperRuntimeBlockerLabel('sdk_exit_condition_met')).toBe('SDK 종료 조건 충족')
+  })
+
+  it('SSOT regression guard — every literal in KEEPER_RUNTIME_BLOCKER_CLASSES has a non-null label', () => {
+    for (const cls of KEEPER_RUNTIME_BLOCKER_CLASSES) {
+      expect(keeperRuntimeBlockerLabel(cls), `missing label for ${cls}`).not.toBeNull()
+    }
   })
 })
 
@@ -184,6 +244,15 @@ describe('keeperRuntimeBlockerHint', () => {
     ).toBe('액션 가능한 신호에 필요한 keeper 도구 호출이 충족되지 않았습니다.')
   })
 
+  it('explains admission queue waits as keeper FIFO waits, not OAS waits', () => {
+    expect(
+      keeperRuntimeBlockerHint(makeKeeper({
+        runtime_blocker_class: 'admission_queue_wait_timeout',
+        runtime_blocker_summary: 'admission_queue_wait_timeout',
+      })),
+    ).toBe('Keeper admission FIFO 대기 시간이 초과되었습니다.')
+  })
+
   const registryBlockerHintCases: Array<[KeeperRuntimeBlockerClass, string]> = [
     [
       'stale_termination_storm',
@@ -200,6 +269,26 @@ describe('keeperRuntimeBlockerHint', () => {
     [
       'exception',
       'Keeper 런타임 예외가 기록되어 로그와 최근 turn 상태 확인이 필요합니다.',
+    ],
+    [
+      'awaiting_operator',
+      '진행을 위해 운영자의 승인, 결정, 또는 게이트 해제가 필요합니다.',
+    ],
+    [
+      'awaiting_sandbox_egress',
+      '샌드박스 네트워크 또는 push egress 정책 때문에 keeper가 진행하지 못하고 있습니다.',
+    ],
+    [
+      'supervisor_paused',
+      'Supervisor가 keeper를 일시정지한 상태라 재개 조건을 확인해야 합니다.',
+    ],
+    [
+      'synthetic_stall',
+      '실제 STATE 없이 합성된 진행 기록만 남아 최근 턴 산출물을 재확인해야 합니다.',
+    ],
+    [
+      'self_imposed_idle',
+      'Keeper가 관찰 또는 대기만 계획하고 있어 다음 실행 지시가 필요할 수 있습니다.',
     ],
   ]
 
@@ -270,5 +359,32 @@ describe('keeperActivityDisplay', () => {
       timestamp: null,
       ageSeconds: 75,
     })
+  })
+
+  // SSOT regression guard: keeper detail에서 헤드라인(last_heartbeat raw),
+  // 사이드바(activityDisplay), 헤더(created_at raw)가 서로 다른 필드를 읽어
+  // "26초 전 / 18시간 전 / 27일 전"이 동시에 렌더링되던 문제.
+  // 동일 keeper 입력에 대해 helper가 단일 source/timestamp/ageSeconds를
+  // 반환해야 모든 surface가 동일 값을 표시할 수 있다.
+  it('picks a single freshest source when heartbeat, turn, and created_at all coexist', () => {
+    const result = keeperActivityDisplay({
+      // 26초 전 — freshest, 우승해야 함
+      last_heartbeat: '2026-04-24T17:59:34Z',
+      // 18시간 전
+      last_turn_ago_s: 18 * 3600,
+      // 27일 전 — 활동 후보가 있을 때는 절대 선택되면 안 됨
+      created_at: '2026-03-28T18:00:00Z',
+    })
+    expect(result.source).toBe('heartbeat')
+    expect(result.timestamp).toBe('2026-04-24T17:59:34Z')
+    expect(result.ageSeconds).toBe(26)
+  })
+
+  it('falls back to created_at only when every activity candidate is absent', () => {
+    const result = keeperActivityDisplay({
+      created_at: '2026-03-28T18:00:00Z',
+    })
+    expect(result.source).toBe('created')
+    expect(result.label).toBe('생성')
   })
 })

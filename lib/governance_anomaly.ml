@@ -80,7 +80,7 @@ let batch_span_hours entries =
             (min min_t t, max max_t t))
           (first_t, first_t) rest
       in
-      let span_h = (max_t -. min_t) /. 3600.0 in
+      let span_h = (max_t -. min_t) /. Masc_time_constants.hour in
       max span_h 0.0167
 
 let activity_volume_of_batch entries =
@@ -111,7 +111,7 @@ let failure_rate_of_batch entries =
         (fun e ->
           match e.Audit_log.outcome with
           | Audit_log.Failure _ -> true
-          | _ -> false)
+          | Audit_log.Success -> false)
         entries
     in
     float_of_int (List.length failures) /. float_of_int n
@@ -136,7 +136,7 @@ let batch_entries ~batch_hours entries =
     let sorted =
       List.sort (fun a b -> Float.compare a.Audit_log.timestamp b.Audit_log.timestamp) entries
     in
-    let span_sec = float_of_int batch_hours *. 3600.0 in
+    let span_sec = float_of_int batch_hours *. Masc_time_constants.hour in
     let rec split batch_start batch_acc acc = function
       | [] ->
           let final = List.rev batch_acc in
@@ -161,7 +161,7 @@ let build_profile ~config ~agent_id ~window_days =
   in
   if List.length entries < 3 then None
   else
-    let cutoff = Unix.gettimeofday () -. (float_of_int window_days *. 86400.0) in
+    let cutoff = Unix.gettimeofday () -. (float_of_int window_days *. Masc_time_constants.day) in
     let recent = List.filter (fun e -> e.Audit_log.timestamp >= cutoff) entries in
     if List.length recent < 3 then None
     else
@@ -244,13 +244,18 @@ let baseline_dir base_path =
 let profile_path base_path agent_id =
   Filename.concat (baseline_dir base_path) (agent_id ^ ".json")
 
-let ensure_dir path = Fs_compat.mkdir_p path
-
 let save_profile ~base_path (profile : behavioral_profile) =
   let path = profile_path base_path profile.agent_id in
-  ensure_dir (Filename.dirname path);
+  Fs_compat.mkdir_p (Filename.dirname path);
   let json = profile_json profile in
   Fs_compat.save_file path (Yojson.Safe.pretty_to_string json)
+
+let persistence_surface = "governance_anomaly_profile"
+
+let record_persistence_read_drop ~reason () =
+  Prometheus.inc_counter Prometheus.metric_persistence_read_drops
+    ~labels:[("surface", persistence_surface); ("reason", reason)]
+    ()
 
 let load_profile ~base_path ~agent_id =
   let path = profile_path base_path agent_id in
@@ -259,8 +264,15 @@ let load_profile ~base_path ~agent_id =
     match Safe_ops.read_file_safe path with
     | Error msg ->
         Log.Misc.warn "governance_anomaly: failed to read profile %s: %s" path msg;
+        record_persistence_read_drop
+          ~reason:Safe_ops.persistence_read_drop_reason_entry_load_error ();
         None
     | Ok content -> (
+        let invalid_payload () =
+          record_persistence_read_drop
+            ~reason:Safe_ops.persistence_read_drop_reason_invalid_payload ();
+          None
+        in
         try
           let json = Yojson.Safe.from_string content in
           match json with
@@ -340,13 +352,18 @@ let load_profile ~base_path ~agent_id =
                           hourly_dist;
                           updated_at;
                         }
-                  | _ -> None)
-              | _ -> None)
-          | _ -> None
+                  | _ -> invalid_payload ())
+              | _ -> invalid_payload ())
+          | _ -> invalid_payload ()
         with
-        | Yojson.Json_error _ -> None
+        | Yojson.Json_error _ ->
+            record_persistence_read_drop
+              ~reason:Safe_ops.persistence_read_drop_reason_entry_load_error ();
+            None
         | exn ->
             Log.Governance.warn "load_profile parse error: %s" (Printexc.to_string exn);
+            record_persistence_read_drop
+              ~reason:Safe_ops.persistence_read_drop_reason_invalid_payload ();
             None)
 
 (* ── Deviation detection ──────────────────────────────────── *)
@@ -358,21 +375,22 @@ let detect_deviations ~profile ~entries ~threshold =
     let observed_diversity = tool_diversity_of_batch entries in
     let observed_token = token_volume_of_batch entries in
     let observed_failure = failure_rate_of_batch entries in
-    let deviations = ref [] in
-    let add dimension observed expected stat =
+    let check dimension observed stat =
       let z = z_score ~observed ~mean:stat.mean ~stddev:stat.stddev in
       if abs_float z >= threshold then
-        deviations :=
-          { dimension; observed; expected = stat.mean; z_score = z; severity = severity_of_z z }
-          :: !deviations
+        Some
+          { dimension; observed; expected = stat.mean
+          ; z_score = z; severity = severity_of_z z }
+      else None
     in
-    add "activity_volume" observed_activity profile.activity_volume.mean profile.activity_volume;
-    add "tool_diversity" observed_diversity profile.tool_diversity.mean profile.tool_diversity;
-    (match (observed_token, profile.token_volume) with
-    | Some obs, Some stat -> add "token_volume" obs stat.mean stat
-    | _ -> ());
-    add "failure_rate" observed_failure profile.failure_rate.mean profile.failure_rate;
-    List.rev !deviations
+    List.filter_map Fun.id
+      [ check "activity_volume" observed_activity profile.activity_volume
+      ; check "tool_diversity" observed_diversity profile.tool_diversity
+      ; (match (observed_token, profile.token_volume) with
+         | Some obs, Some stat -> check "token_volume" obs stat
+         | None, _ | _, None -> None)
+      ; check "failure_rate" observed_failure profile.failure_rate
+      ]
 
 (* ── Top-level convenience ────────────────────────────────── *)
 
@@ -392,7 +410,7 @@ let check_agent ~config ~agent_id ~window_days ~threshold =
     | None -> None
     | Some profile ->
         save_profile ~base_path:config.Coord.base_path profile;
-        let cutoff = Unix.gettimeofday () -. 3600.0 in
+        let cutoff = Unix.gettimeofday () -. Masc_time_constants.hour in
         let recent = List.filter (fun e -> e.Audit_log.timestamp >= cutoff) entries in
         let deviations = detect_deviations ~profile ~entries:recent ~threshold in
         let overall_risk = List.fold_left (fun acc d -> max_risk acc d.severity) Low deviations in

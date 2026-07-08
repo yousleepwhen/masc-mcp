@@ -7,23 +7,31 @@ import { useSignal } from '@preact/signals'
 import { fetchKeeperToolCalls } from '../api/dashboard'
 import type { ToolCallEntry, ToolCallsResponse, TelemetryFreshnessMetadata } from '../api/dashboard'
 import { formatTimeHms } from '../lib/format-time'
+import { formatMsCompact } from '../lib/format-number'
 import { LoadingState } from './common/feedback-state'
+import { asRecord, mergeRouteRecord, hasRouteContext, type MutableRouteContext } from './common/normalize'
 import { SectionCap } from './common/section-cap'
-import { toolCategory, formatDuration, durationColor } from './tool-call-shared'
+import { toolCategory, durationColor } from './tool-call-shared'
 import { useManagedAsyncResource } from '../lib/use-managed-async-resource'
 import { parseToolBlobMarker } from '../lib/tool-blob-marker'
 import { CopyIdButton } from './common/copy-id-button'
 import { TextInput } from './common/input'
 import { ringFocusClasses } from './common/ring'
-import { sourceHealthClass, freshnessText } from './common/source-health'
+import { coverageGapDisplay, sourceHealthClass, freshnessText } from './common/source-health'
+import {
+  openIdeContextRouteLink,
+  routeLinksForContext,
+  type IdeContextRouteLink,
+} from './ide/ide-context-lens'
 
 // Delegated to lib/format-time (SSOT)
 const formatTimestamp = formatTimeHms
 
 function FreshnessLine({ data }: { data: TelemetryFreshnessMetadata }) {
+  const gap = coverageGapDisplay(data)
   return html`
     <div class="text-3xs text-[var(--color-fg-disabled)]">
-      <span class="font-mono">${data.source ?? 'tool_call_io'}</span>
+      <span class="font-mono">${data.source ?? '(unknown source)'}</span>
       <span class="mx-1" aria-hidden="true">·</span>
       <span class="font-mono ${sourceHealthClass(data.health)}">${data.health ?? 'unknown'}</span>
       <span class="mx-1" aria-hidden="true">·</span>
@@ -31,6 +39,12 @@ function FreshnessLine({ data }: { data: TelemetryFreshnessMetadata }) {
       ${typeof data.entry_count === 'number' ? html`
         <span class="mx-1" aria-hidden="true">·</span>
         <span>${data.entry_count.toLocaleString()} rows</span>
+      ` : null}
+      ${gap ? html`
+        <div class="mt-1 font-mono text-[var(--color-status-warn)]">${gap.summary}</div>
+        ${gap.details.length > 0 ? html`
+          <div class="mt-0.5 break-all font-mono text-[var(--color-fg-muted)]">${gap.details.join(' · ')}</div>
+        ` : null}
       ` : null}
     </div>
   `
@@ -52,6 +66,53 @@ function tryPrettyJson(s: string): string | null {
   } catch {
     return null
   }
+}
+
+function parseInputRecord(input: string): Record<string, unknown> | null {
+  try {
+    return asRecord(JSON.parse(input))
+  } catch {
+    return null
+  }
+}
+
+function mergeToolInputContext(
+  context: MutableRouteContext,
+  input: unknown,
+  depth = 0,
+): void {
+  if (depth > 4) return
+  if (typeof input === 'string') {
+    mergeToolInputContext(context, parseInputRecord(input), depth + 1)
+    return
+  }
+  const record = asRecord(input)
+  if (!record) return
+  const failureEnvelope = asRecord(record.failure_envelope)
+  mergeRouteRecord(context, asRecord(record.context))
+  mergeRouteRecord(context, asRecord(record.evidence_ref))
+  mergeRouteRecord(context, asRecord(failureEnvelope?.evidence_ref))
+  mergeRouteRecord(context, asRecord(record.tool_args))
+  mergeToolInputContext(context, record.input, depth + 1)
+  mergeRouteRecord(context, record, true)
+}
+
+function toolCallRouteLinks(entry: ToolCallEntry): ReadonlyArray<IdeContextRouteLink> {
+  const context: MutableRouteContext = {}
+  mergeToolInputContext(context, entry.input)
+  if (!hasRouteContext(context)) return []
+  const links = routeLinksForContext({
+    ...context,
+    surface: 'Tool',
+    label: entry.tool,
+    sourceId: `tool:${entry.keeper}:${entry.ts}:${entry.tool}`,
+    keeperId: entry.keeper,
+    telemetry: context.logId !== undefined
+      || context.sessionId !== undefined
+      || context.operationId !== undefined
+      || context.workerRunId !== undefined,
+  })
+  return links.some(link => link.label !== 'Keeper') ? links : []
 }
 
 // Tool output may be (a) a raw string, (b) a JSON blob we logged as a string,
@@ -112,6 +173,7 @@ function ToolCallRow({ entry }: { entry: ToolCallEntry }) {
   const cat = toolCategory(entry.tool)
   const formattedInput = formatInput(entry.input)
   const formattedOutput = formatOutput(entry.output)
+  const routeLinks = toolCallRouteLinks(entry)
 
   return html`
     <div
@@ -127,7 +189,7 @@ function ToolCallRow({ entry }: { entry: ToolCallEntry }) {
         <span class="font-mono text-[var(--color-fg-secondary)] flex-shrink-0 w-16">${formatTimestamp(entry.ts)}</span>
         <span class="font-mono font-medium text-[var(--color-fg-secondary)] truncate flex-1" title=${entry.tool}>${entry.tool}</span>
         <span class=${`font-mono flex-shrink-0 w-16 text-right ${durationColor(entry.duration_ms)}`}>
-          ${formatDuration(entry.duration_ms)}
+          ${formatMsCompact(entry.duration_ms)}
         </span>
         <span class=${`flex-shrink-0 w-5 text-center ${entry.success ? 'text-[var(--color-status-ok)]' : 'text-[var(--color-status-err)]'}`}>
           ${entry.success ? 'O' : 'X'}
@@ -141,6 +203,28 @@ function ToolCallRow({ entry }: { entry: ToolCallEntry }) {
         <div class="px-3 pb-3 space-y-2">
           ${entry.model ? html`
             <div class="text-3xs text-[var(--color-fg-muted)]">model: <span class="text-[var(--color-fg-secondary)] font-mono">${entry.model}</span></div>
+          ` : null}
+          ${routeLinks.length > 0 ? html`
+            <div class="flex items-center justify-between gap-2 rounded-[var(--r-1)] border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2.5 py-2">
+              <span class="min-w-0 truncate text-3xs font-mono text-[var(--color-fg-muted)]" title=${routeLinks.map(link => link.evidence).join(' · ')}>
+                ${routeLinks.map(link => link.evidence).join(' · ')}
+              </span>
+              <div class="flex shrink-0 flex-wrap justify-end gap-1">
+                ${routeLinks.map(link => html`
+                  <button
+                    key=${link.id}
+                    type="button"
+                    data-testid=${link.label === 'Code' ? 'keeper-tool-code-link' : undefined}
+                    class=${`keeper-tool-route-link rounded-[var(--r-1)] border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 py-1 text-3xs font-semibold text-[var(--color-accent-fg)] hover:border-[var(--color-accent-border)] hover:bg-[var(--color-bg-hover)] ${ringFocusClasses()}`}
+                    title=${link.evidence}
+                    aria-label=${`Open ${link.evidence}`}
+                    onClick=${() => openIdeContextRouteLink(link)}
+                  >
+                    ${link.label}
+                  </button>
+                `)}
+              </div>
+            </div>
           ` : null}
           <${CopyableToolCallBlock}
             title="입력"

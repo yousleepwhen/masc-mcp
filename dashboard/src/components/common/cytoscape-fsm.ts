@@ -5,6 +5,7 @@ import { html } from 'htm/preact'
 import { useEffect, useRef, useState } from 'preact/hooks'
 import type cytoscape from 'cytoscape'
 import { InlineSpinner } from './inline-spinner'
+import { getCytoscape, type CyCore } from './cytoscape-loader'
 
 // Types for graph spec (consumed by all 3 FSM builders)
 export interface FsmNode {
@@ -33,7 +34,10 @@ export interface FsmGraphSpec {
 // strings are rejected. Resolve once per render against `:root` and
 // pass literal hex/rgb values into the stylesheet.
 // Fallback values mirror the Cockpit Design System defaults from
-// tokens.generated.css so SSR / missing-CSS degrades gracefully.
+// `styles/tokens.generated.ts` so SSR / missing-CSS degrades gracefully.
+// A parallel `TOKEN_FALLBACKS` table lives in `components/git-graph-view.ts`
+// for the git-graph cytoscape view; keep entries that appear in both
+// tables in sync with the design-system source.
 const TOKEN_FALLBACKS: Record<string, string> = {
   '--color-bg-0': '#0c0b08',
   '--color-bg-1': '#141210',
@@ -103,18 +107,6 @@ interface CytoscapeFsmProps {
   spec: FsmGraphSpec
   height?: string
   class?: string
-}
-
-// Lazy-load Cytoscape for graph-heavy panels.
-type CyCore = cytoscape.Core
-
-let cyPromise: Promise<typeof cytoscape> | null = null
-
-function getCytoscape(): Promise<typeof cytoscape> {
-  if (!cyPromise) {
-    cyPromise = import('cytoscape').then(m => m.default ?? m)
-  }
-  return cyPromise
 }
 
 function buildElements(spec: FsmGraphSpec) {

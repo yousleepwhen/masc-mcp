@@ -1,4 +1,4 @@
-import type { Agent, BoardPost } from './core'
+import type { Agent, BoardPost, StopCause } from './core'
 import type { OperatorAttentionItem, OperatorRecommendedAction } from './dashboard-mission'
 import type { BoardMonitoring, GovernanceMonitoring, GovernanceDecisionItem, GovernanceTimelineEvent, GovernanceJudgeSummary, GovernanceJudgment, KeeperApprovalQueueItem, KeeperApprovalRule, PendingConfirmation, PendingConfirmSummary } from './governance'
 
@@ -112,9 +112,177 @@ export interface DashboardRuntimeResolution {
   workspace_git_commit: string | null
   resolved_base_git_commit: string | null
   source_mismatch: boolean
+  server_workspace_mismatch: boolean
   diagnostics: DashboardRuntimeDiagnostic[]
   build: ServerBuildIdentity
   keeper_runtime: KeeperRuntimeResolved | null
+  fleet_safety: DashboardFleetSafetyHealth | null
+  fd_accountant: DashboardFdAccountant | null
+  cdal: DashboardCdalHealth | null
+}
+
+export interface DashboardFdAccountant {
+  fd_open: number | null
+  fd_limit: number | null
+  pressure_active: boolean | null
+}
+
+export interface DashboardFleetSafetyHealth {
+  keeper_fibers: number | null
+  paused_keepers: number | null
+  paused_keepers_health: DashboardPausedKeepersHealth | null
+  keeper_fleet_no_fibers: boolean | null
+  keeper_fd_pressure: DashboardFleetPressureHealth | null
+  keeper_fleet_safety: DashboardFleetPressureHealth | null
+  keeper_reaction_ledger: DashboardKeeperReactionLedgerHealth | null
+}
+
+export interface DashboardBlockerClassObject {
+  name: string
+  reason?: unknown
+}
+
+export type DashboardBlockerClass = string | DashboardBlockerClassObject
+
+export interface DashboardBlockerInfo {
+  klass: DashboardBlockerClass | null
+  detail: string | null
+}
+
+export interface DashboardPausedKeeperDetail {
+  name: string
+  autoboot_enabled: boolean | null
+  pause_kind: string | null
+  auto_resume_after_sec: number | null
+  persisted_auto_resume_after_sec: number | null
+  auto_resume_source: string | null
+  paused_elapsed_sec: number | null
+  auto_resume_remaining_sec: number | null
+  last_blocker: DashboardBlockerInfo | null
+  missing_pause_root_cause: boolean | null
+}
+
+export interface DashboardPausedKeeperReadError {
+  keeper: string
+  error: string
+}
+
+export interface DashboardPausedKeepersHealth {
+  count: number | null
+  names: string[]
+  running_count: number | null
+  running_names: string[]
+  durable_count: number | null
+  durable_names: string[]
+  autoboot_enabled_count: number | null
+  autoboot_enabled_names: string[]
+  details: DashboardPausedKeeperDetail[]
+  read_error_count: number | null
+  read_errors: DashboardPausedKeeperReadError[]
+}
+
+export interface DashboardCdalProofCompleteness {
+  scan_limit: number | null
+  run_dir_entries_seen: number | null
+  scan_truncated: boolean | null
+  run_dirs_scanned: number | null
+  completed_run_dirs: number | null
+  incomplete_run_dirs: number | null
+  stale_incomplete_run_dirs: number | null
+  terminal_incomplete_run_dirs: number | null
+  missing_manifest_run_dirs: number | null
+  missing_contract_run_dirs: number | null
+  stale_incomplete_grace_seconds: number | null
+  sample_stale_incomplete_run_ids: string[]
+  sample_terminal_incomplete_run_ids: string[]
+}
+
+export interface DashboardCdalProofStoreHealth {
+  root: string | null
+  proofs_dir: string | null
+  exists: boolean | null
+  latest_activity_at: string | null
+  latest_activity_unix: number | null
+  age_seconds: number | null
+  status: string | null
+  completeness: DashboardCdalProofCompleteness | null
+}
+
+export interface DashboardCdalTaskScopeHealth {
+  status: string | null
+  recent_limit: number | null
+  recent_rows: number | null
+  task_id_rows: number | null
+  missing_task_scope_rows: number | null
+  legacy_unscoped_rows: number | null
+  current_writer_missing_task_scope_rows: number | null
+  missing_task_scope: boolean | null
+  partial_task_scope: boolean | null
+  current_writer_missing_task_scope: boolean | null
+}
+
+export interface DashboardCdalHealth {
+  writer_status: string | null
+  operator_action_required: boolean | null
+  proof_store_path_drift: boolean | null
+  proof_store: DashboardCdalProofStoreHealth | null
+  task_scope: DashboardCdalTaskScopeHealth | null
+}
+
+export interface DashboardKeeperReactionLedgerPendingKeeper {
+  keeper_name: string
+  pending_stimulus_count: number
+  pending_stimulus_ids: string[]
+}
+
+export interface DashboardKeeperReactionLedgerHealth {
+  status: string | null
+  operator_action_required: boolean | null
+  keeper_count: number | null
+  row_count: number | null
+  stimulus_count: number | null
+  reaction_count: number | null
+  turn_started_count: number | null
+  cursor_ack_count: number | null
+  execution_receipt_count: number | null
+  terminal_reason_count: number | null
+  operator_escalation_count: number | null
+  unknown_reaction_count: number | null
+  cursor_swept_stimulus_count: number | null
+  legacy_cursor_swept_stimulus_count: number | null
+  pending_stimulus_count: number | null
+  read_error_count: number | null
+  pending_by_keeper: DashboardKeeperReactionLedgerPendingKeeper[]
+}
+
+export interface DashboardFleetPressureHealth {
+  status: string | null
+  reason: string | null
+  blocker?: string | null
+  admission_blocked: boolean | null
+  admission_blocked_keepers: number | null
+  blocked_keepers: number | null
+  blocked_count: number | null
+  bootable_keeper_count?: number | null
+  running_keeper_fiber_count?: number | null
+  healthy_running_keeper_fiber_count?: number | null
+  failing_keeper_fiber_count?: number | null
+  executable_keeper_fiber_count?: number | null
+  minimum_running_fibers?: number | null
+  no_running_fibers?: boolean | null
+  no_executable_keeper_fibers?: boolean | null
+  low_running_fiber_margin?: boolean | null
+  reaction_capacity_below_target?: boolean | null
+  reaction_capacity_shortfall_count?: number | null
+  executable_reaction_capacity_below_target?: boolean | null
+  executable_reaction_capacity_shortfall_count?: number | null
+  paused_keeper_count?: number | null
+  autoboot_enabled_keeper_count?: number | null
+  paused_autoboot_enabled_keeper_count?: number | null
+  effective_reaction_capacity_count?: number | null
+  executable_reaction_capacity_count?: number | null
+  target_reaction_capacity_count?: number | null
+  operator_action_required?: boolean | null
 }
 
 export interface DashboardShellResponse {
@@ -132,6 +300,24 @@ export interface DashboardShellResponse {
   auth?: DashboardShellAuthSummary | null
   config_resolution?: DashboardConfigResolution | null
   runtime_resolution?: DashboardRuntimeResolution | null
+}
+
+export interface DashboardBootstrapSliceError {
+  error: string
+  slice?: string
+}
+
+export type DashboardBootstrapSlice<T> = T | DashboardBootstrapSliceError
+
+export interface DashboardBootstrapResponse {
+  served_at?: string
+  milestone?: number
+  shell?: DashboardBootstrapSlice<DashboardShellResponse>
+  execution?: DashboardBootstrapSlice<DashboardExecutionResponse>
+  planning?: DashboardBootstrapSlice<DashboardPlanningResponse>
+  namespace_truth?: DashboardBootstrapSlice<DashboardNamespaceTruthResponse>
+  goals?: DashboardBootstrapSlice<DashboardGoalsTreeResponse>
+  goal_loop_status?: DashboardBootstrapSlice<Record<string, unknown>>
 }
 
 export interface DashboardNamespaceTruthAttentionSummary {
@@ -207,12 +393,41 @@ export interface DashboardAttentionEvent {
   provenance?: string | null
 }
 
+export interface DashboardNamespaceTruthRetention {
+  scope?: string
+  coordination_root?: string
+  workspace_path?: string
+  shell_input?: string
+  execution_input?: string
+  command_input?: string
+  cache_policy?: string
+}
+
+export interface DashboardRuntimeCountAuthority {
+  source?: string
+  authority?: string
+  configured_authority?: string
+  fallback_policy?: string
+  shell_arbitration_allowed?: boolean
+  live_total_runtimes?: number
+  live_keepers?: number
+  configured_keepers?: number
+  configured_minus_live_keepers?: number
+  count_roles?: Record<string, string>
+}
+
 export interface DashboardNamespaceTruthResponse {
   generated_at?: string
+  generated_at_iso?: string
+  dashboard_surface?: string
+  dashboard_aliases?: string[]
+  source?: string
+  retention?: DashboardNamespaceTruthRetention
   root: {
     status?: ServerStatus | null
     counts?: DashboardShellResponse['counts']
     configured_keepers?: number
+    runtime_count_authority?: DashboardRuntimeCountAuthority
     provenance?: string | null
   }
   execution?: {
@@ -294,6 +509,7 @@ export interface DashboardExecutionQueueItem {
   attention_reason?: string | null
   next_human_action?: string | null
   terminal_reason_code?: string | null
+  stop_cause?: StopCause | null
   runtime_trust?: GoalKeeperTrustSummary | null
   top_handoff?: DashboardExecutionHandoff | null
   intervene_handoff?: DashboardExecutionHandoff | null
@@ -304,7 +520,6 @@ export interface DashboardExecutionSessionBrief {
   session_id: string
   goal: string
   namespace?: string | null
-  room?: string | null
   status?: string
   health?: string
   member_names: string[]
@@ -534,6 +749,39 @@ export interface GoalTreeTask {
   updated_at: string
 }
 
+export interface GoalTaskSummary {
+  total: number
+  done: number
+  open: number
+  terminal: number
+  awaiting_verification: number
+  cancelled: number
+  unassigned: number
+  completion_pct: number | null
+  by_status: Record<string, number>
+  by_linkage_source: Record<string, number>
+}
+
+export interface GoalCompletionSummary {
+  state: string
+  pct: number | null
+  pct_source: string
+  attainment_state: string
+  attainment_basis: string
+  task_total: number
+  task_done: number
+  task_open: number
+  is_complete: boolean
+  is_terminal: boolean
+  ready_to_request_completion: boolean
+  gate: 'none' | 'verification' | 'approval' | string
+  requires_verifier: boolean
+  requires_completion_approval: boolean
+  active_verification_request: boolean
+  blocking_source: GoalTreeNode['blocking_source']
+  blocking_reason: string
+}
+
 export interface GoalVerificationVote {
   principal: {
     kind: string
@@ -601,6 +849,12 @@ export interface GoalKeeperTrustApprovalState {
   state?: string | null
   summary?: string | null
   pending_count?: number | null
+  pending_first?: {
+    id?: string | null
+    tool_name?: string | null
+    task_id?: string | null
+    blocker_class?: string | null
+  } | null
 }
 
 export interface GoalKeeperTrustExecutionSummary {
@@ -610,8 +864,10 @@ export interface GoalKeeperTrustExecutionSummary {
   missing_required_tools?: string[] | null
   requested_tools?: string[] | null
   tools_used?: string[] | null
+  unexpected_tools?: string[] | null
   requested_tool_count?: number | null
   tools_used_count?: number | null
+  unexpected_tool_count?: number | null
   provider_attempt_count?: number | null
   provider_fallback_applied?: boolean | null
   provider_selected_model?: string | null
@@ -661,6 +917,7 @@ export interface GoalTreeNode {
   priority: number
   metric: string | null
   target_value: string | null
+  require_completion_approval: boolean
   due_date: string | null
   parent_goal_id: string | null
   convergence: number
@@ -669,6 +926,8 @@ export interface GoalTreeNode {
   tasks: GoalTreeTask[]
   task_count: number
   task_done_count: number
+  task_summary?: GoalTaskSummary
+  completion_summary?: GoalCompletionSummary
   verification_summary: GoalVerificationSummary
   effective_verifier_policy?: GoalVerificationRequest['policy_snapshot'] | null
   active_verification_request?: GoalVerificationRequest | null

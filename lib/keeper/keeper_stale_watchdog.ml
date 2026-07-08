@@ -4,7 +4,7 @@
     [Keeper_keepalive]. Both modules call [fork_stale_watchdog] through
     this shared implementation.
 
-    Three stall detection modes — see {!Keeper_registry.stale_kill_class}:
+    Four stall detection modes — see {!Keeper_registry.stale_kill_class}:
     1. [Idle_turn]: [last_turn_ts] older than the idle threshold while
        the keeper phase is [Running] but no [current_turn_observation]
        is recorded, with no recent keepalive skip verdict proving the
@@ -13,7 +13,9 @@
        and ran past [timeout_threshold] seconds — covers the
        "Orphaned Streaming" pattern (executor FSM analysis §4 I2:
        [in_turn_age > grace_period → in_turn_stale]).
-    3. [Noop_failure_loop]: turns kept firing but produced no tool
+    3. [Mid_turn_no_progress]: a turn is still within the outer turn
+       cap, but streaming/tool progress has gone silent.
+    4. [Noop_failure_loop]: turns kept firing but produced no tool
        calls; the keepalive's [consecutive_noop_count] reached the
        watchdog threshold — catches keepers in LLM timeout loops where
        [last_turn_ts] stays fresh because each failed turn updates it.
@@ -119,10 +121,54 @@ let stale_kill_class_label (cls : Keeper_registry.stale_kill_class) : string =
   match cls with
   | Idle_turn _ -> "idle_turn"
   | In_turn_hung _ -> "in_turn_hung"
+  | Mid_turn_no_progress _ -> "mid_turn_no_progress"
   | Noop_failure_loop _ -> "noop_failure_loop"
+
+let should_trigger_noop_failure_loop
+    ~noop_count
+    ~noop_threshold
+    ~started_at
+    ~last_completed_turn_ended_at =
+  noop_count >= noop_threshold
+  && (match last_completed_turn_ended_at with
+      | Some ended_at -> ended_at >= started_at
+      | None -> false)
+
+let should_trigger_noop_failure_loop_for_test =
+  should_trigger_noop_failure_loop
+
+type active_turn_stale_status =
+  { active_total_stale : bool
+  ; progress_stale : bool
+  ; active_seconds : float
+  ; since_progress_seconds : float
+  }
+
+let active_turn_stale_status
+    ~now
+    ~started_at
+    ~last_progress_at
+    ~active_turn_timeout_sec
+    ~progress_timeout_sec
+    ~fiber_age
+    ~startup_grace =
+  let active_seconds = now -. started_at in
+  let since_progress_seconds = now -. last_progress_at in
+  let outside_startup_grace = fiber_age >= startup_grace in
+  { active_total_stale =
+      active_seconds > active_turn_timeout_sec && outside_startup_grace
+  ; progress_stale =
+      since_progress_seconds > progress_timeout_sec && outside_startup_grace
+  ; active_seconds
+  ; since_progress_seconds
+  }
+;;
+
+let active_turn_stale_status_for_test = active_turn_stale_status
 
 type batch_root_cause =
   | Cascade_unhealthy
+  | Provider_timeout
   | Provider_auth
   | Fd_exhaustion
   | Mixed
@@ -130,6 +176,7 @@ type batch_root_cause =
 
 let batch_root_cause_to_string = function
   | Cascade_unhealthy -> "cascade_unhealthy"
+  | Provider_timeout -> "provider_timeout"
   | Provider_auth -> "provider_auth"
   | Fd_exhaustion -> "fd_exhaustion"
   | Mixed -> "mixed"
@@ -152,15 +199,17 @@ let provider_auth_failure ~code ~detail =
          "permission denied";
        ]
 
+(* RFC-0154 PR-2: substring vocabulary lives in
+   [System_error_class.classify_string] now.  [contains_any_ci] /
+   helper is kept for [provider_auth_failure] etc. *)
 let fd_exhaustion_failure detail =
-  contains_any_ci detail
-    [
-      "too many open files";
-      "file descriptor";
-      "fd leak";
-      "os error 24";
-      "emfile";
-    ]
+  match System_error_class.classify_string detail with
+  | System_error_class.Fd_exhaustion -> true
+  | System_error_class.Disk_exhaustion
+  | System_error_class.Permission_denied
+  | System_error_class.Connection_refused
+  | System_error_class.Timeout
+  | System_error_class.Other _ -> false
 
 let failure_reason_batch_root_cause
     (reason : Keeper_registry.failure_reason) : batch_root_cause option =
@@ -170,14 +219,17 @@ let failure_reason_batch_root_cause
       Some Provider_auth
   | Exception detail when fd_exhaustion_failure detail ->
       Some Fd_exhaustion
+  | Provider_timeout_loop _ ->
+      Some Provider_timeout
   | Stale_turn_timeout _
   | Stale_termination_storm _
   | Stale_fleet_batch _
-  | Oas_timeout_budget_loop _
   | Provider_runtime_error _ ->
       Some Cascade_unhealthy
   | Heartbeat_consecutive_failures _
   | Turn_consecutive_failures _
+  | Turn_overflow_pause
+  | Turn_livelock_pause
   | Tool_required_unsatisfied _
   | Ambiguous_partial_commit _
   | Fiber_unresolved
@@ -226,26 +278,26 @@ let has_recent_skip_observation ~now ~threshold
       reasons <> [] && now -. ts <= threshold
   | None -> false
 
-let pending_oas_timeout_budget_count
+let pending_provider_timeout_count
     (entry : Keeper_registry.registry_entry) : int option =
-  let is_timeout_budget_observation_reason reason =
+  let is_provider_timeout_observation_reason reason =
     List.exists
       (String.equal reason)
-      Keeper_heartbeat_loop.oas_timeout_budget_observation_reasons
+      Keeper_heartbeat_loop.provider_timeout_observation_reasons
   in
-  let has_timeout_observation =
+  let has_provider_timeout_observation =
     match entry.last_skip_observation with
     | Some (_, reasons) ->
-        List.exists is_timeout_budget_observation_reason reasons
+        List.exists is_provider_timeout_observation_reason reasons
     | None -> false
   in
-  match entry.last_failure_reason, has_timeout_observation with
-  | Some (Keeper_registry.Oas_timeout_budget_loop { count }), true -> Some count
+  match entry.last_failure_reason, has_provider_timeout_observation with
+  | Some (Keeper_registry.Provider_timeout_loop { count }), true -> Some count
   | _ -> None
 
 let () =
   Prometheus.register_counter
-    ~name:Prometheus.metric_keeper_stale_termination_by_class
+    ~name:Keeper_metrics.(to_string StaleTerminationByClass)
     ~help:
       "Total stale watchdog terminations broken down by typed kill \
        class (idle_turn | in_turn_hung | noop_failure_loop).  \
@@ -257,11 +309,11 @@ let () =
 
 let () =
   Prometheus.register_counter
-    ~name:Prometheus.metric_keeper_oas_timeout_budget_watchdog_termination
+    ~name:Keeper_metrics.(to_string ProviderTimeoutWatchdogTermination)
     ~help:
       "Total watchdog terminations that preserved an unresolved \
-       oas_timeout_budget failure reason instead of reclassifying the \
-       keeper as an idle stale stall. Labels: keeper."
+       timeout failure evidence instead of reclassifying the keeper as \
+       an idle stale stall. Labels: keeper."
     ()
 
 (* #10765 phase 2: fleet-wide batch termination detection.
@@ -276,12 +328,16 @@ let () =
    individually unless an operator notices.
 
    Track recent terminations across all keepers in a small bounded
-   window.  When the number of distinct keepers in the window
-   reaches the threshold we emit a fleet-tier ERROR, a Prometheus
-   counter labelled by the low-cardinality [batch_root_cause], and
-   latch the affected keepers into [Stale_fleet_batch].  The supervisor
-   then pauses/backs off those keepers instead of restarting each one
-   into the same systemic failure mode. *)
+   window.  When the number of distinct keepers in the window reaches
+   the threshold we emit a fleet-tier WARN and a Prometheus counter
+   labelled by the low-cardinality [batch_root_cause].
+
+   This is deliberately observation-only.  A fleet-wide stale burst is a
+   useful signal for operators and provider/cascade health, but it is not
+   itself a keeper terminal reason.  Keepers retain their per-keeper
+   watchdog reason so the supervisor can apply the normal restart/dead
+   budget instead of amplifying one shared upstream hiccup into a durable
+   fleet pause. *)
 let batch_window_sec = Env_config_keeper.KeeperWatchdog.batch_window_sec
 let batch_threshold = Env_config_keeper.KeeperWatchdog.batch_threshold
 let batch_terminations : (string * float) list Atomic.t = Atomic.make []
@@ -305,68 +361,21 @@ let reset_batch_terminations_for_test () =
 
 let record_batch_termination_for_test = record_batch_termination
 
-let stamp_stale_fleet_batch_meta ~config ~keeper_name ~distinct_count
-    ~root_reason =
-  let base_path = config.Coord.base_path in
-  match Keeper_registry.get ~base_path keeper_name with
-  | None -> ()
-  | Some entry ->
-    let root_text =
-      root_reason
-      |> Option.map Keeper_registry.failure_reason_to_string
-      |> Option.value ~default:"none"
-    in
-    let blocker =
-      Printf.sprintf "stale_fleet_batch(distinct_count=%d root_cause=%s)"
-        distinct_count root_text
-    in
-    let meta =
-      { entry.meta with
-        runtime =
-          { entry.meta.runtime with
-            last_blocker = blocker;
-            last_blocker_class = Some Stale_fleet_batch;
-          };
-      }
-    in
-    (match
-       write_meta_with_merge
-         ~merge:Keeper_meta_merge.heartbeat_fields_from_disk
-         config meta
-     with
-     | Ok () -> ()
-     | Error err ->
-       Prometheus.inc_counter
-         Prometheus.metric_keeper_write_meta_failures
-         ~labels:[("keeper", keeper_name); ("phase", "stale_fleet_batch_stamp")]
-         ();
-       Log.Keeper.warn
-         "%s: stale_fleet_batch meta stamp failed: %s"
-         keeper_name err)
+let effective_startup_grace_sec ~base_grace_sec ~poll_sec ~startup_warmup_sec =
+  Float.max
+    base_grace_sec
+    (Float.of_int (max 0 startup_warmup_sec) +. Float.max 0.0 poll_sec)
 
-let latch_stale_fleet_batch_reasons ~config ~distinct_count keeper_names =
-  let base_path = config.Coord.base_path in
-  List.iter
-    (fun keeper_name ->
-       match Keeper_registry.get ~base_path keeper_name with
-       | None -> ()
-       | Some entry ->
-           (match entry.last_failure_reason with
-            | Some (Keeper_registry.Stale_fleet_batch { distinct_count = n })
-              when n >= distinct_count ->
-                ()
-            | root_reason ->
-                stamp_stale_fleet_batch_meta ~config ~keeper_name
-                  ~distinct_count ~root_reason;
-                Keeper_registry.set_failure_reason ~base_path keeper_name
-                  (Some
-                     (Keeper_registry.Stale_fleet_batch { distinct_count }))))
-    keeper_names
+let should_warn_missing_registry ~captured_paused ~persisted_paused =
+  match persisted_paused with
+  | Some true -> false
+  | Some false -> true
+  | None -> not captured_paused
 
-let latch_stale_fleet_batch_reasons_for_test =
-  latch_stale_fleet_batch_reasons
+let should_warn_missing_registry_for_test = should_warn_missing_registry
 
 let fork_stale_watchdog (ctx : _ context) (meta : keeper_meta)
+    ?(startup_warmup_sec = 0)
     (reg : Keeper_registry.registry_entry) =
   let base_path = ctx.config.base_path in
   let stale_threshold_sec () =
@@ -380,6 +389,15 @@ let fork_stale_watchdog (ctx : _ context) (meta : keeper_meta)
   in
   let grace_period_sec () =
     Env_config_keeper.KeeperWatchdog.grace_period_sec
+  in
+  let progress_timeout_sec () =
+    Env_config_keeper.KeeperWatchdog.progress_timeout_sec
+  in
+  let effective_grace_period_sec () =
+    effective_startup_grace_sec
+      ~base_grace_sec:(grace_period_sec ())
+      ~poll_sec:(watchdog_poll_sec ())
+      ~startup_warmup_sec
   in
   let last_broadcast_ts = ref 0.0 in
   let request_watchdog_stop () =
@@ -401,7 +419,8 @@ let fork_stale_watchdog (ctx : _ context) (meta : keeper_meta)
              when entry.phase = Keeper_state_machine.Running ->
              let last_turn = entry.meta.runtime.usage.last_turn_ts in
              let fiber_age = now -. entry.started_at in
-             let grace_remaining = grace_period_sec () -. fiber_age in
+             let startup_grace = effective_grace_period_sec () in
+             let grace_remaining = startup_grace -. fiber_age in
              (* #10765-followup: separate idle-stale (no turn running) from
                 in-turn-stale (turn running too long).  Production
                 observation (2026-04-26): 9 keepers killed at idle
@@ -409,28 +428,41 @@ let fork_stale_watchdog (ctx : _ context) (meta : keeper_meta)
                 latency=278s.  The previous code looked only at
                 [last_turn_ts] and could fire while a turn was actively
                 running, killing the keeper mid-LLM-call.  Active turns
-                get a separate (larger) threshold so legitimately slow
-                turns aren't mistaken for hangs.  Use
-                [Keeper_runtime_resolved.turn_timeout_sec] as the ceiling
-                so the watchdog never kills a turn still within its
-                configured budget (default 3600s, range [60, 7200]).
-                Previous 600s hardcoded minimum caused fleet-wide
-                termination when local models take 900s+ turns. *)
+                get a separate threshold so legitimately slow turns aren't
+                mistaken for hangs.  Use
+                [Keeper_runtime_resolved.turn_timeout_sec] as the
+                active-turn floor so the watchdog never kills a turn still
+                within its configured budget (default 600s, range [60, 600]).
+                [stale_threshold_sec] may be larger, and the [Float.max]
+                below preserves that deployer patience for watchdog-only
+                stale detection. *)
              let active_turn_timeout_sec =
                let turn_timeout = Keeper_runtime_resolved.turn_timeout_sec () in
                Float.max turn_timeout threshold
              in
+             let progress_timeout = progress_timeout_sec () in
              let active_slot_holder_age = slot_holder_age ~now meta.name in
-             let idle_stale, in_turn_stale, in_turn_age,
-                 idle_skip_suppressed =
+             let idle_stale, active_total_stale, progress_stale, in_turn_age,
+                 since_progress_age, last_progress_kind, idle_skip_suppressed =
                match entry.current_turn_observation with
                | Some obs ->
-                 let elapsed = now -. obs.started_at in
-                 ( false
-                 , elapsed > active_turn_timeout_sec
-                   && fiber_age >= grace_period_sec ()
-                 , elapsed
-                 , false )
+                 let status =
+                   active_turn_stale_status
+                     ~now
+                     ~started_at:obs.started_at
+                     ~last_progress_at:obs.last_progress_at
+                     ~active_turn_timeout_sec
+                     ~progress_timeout_sec:progress_timeout
+                     ~fiber_age
+                     ~startup_grace
+                 in
+                ( false
+                , status.active_total_stale
+                , status.progress_stale
+                , status.active_seconds
+                , status.since_progress_seconds
+                , obs.last_progress_kind
+                , false )
                | None -> (
                  match active_slot_holder_age with
                  | Some elapsed ->
@@ -442,8 +474,11 @@ let fork_stale_watchdog (ctx : _ context) (meta : keeper_meta)
                       still owns slots, causing fleet-wide slot starvation. *)
                    ( false
                    , elapsed > active_turn_timeout_sec
-                     && fiber_age >= grace_period_sec ()
+                     && fiber_age >= startup_grace
+                   , false
                    , elapsed
+                   , 0.0
+                   , None
                    , false )
                  | None ->
                  let skip_observed =
@@ -452,25 +487,41 @@ let fork_stale_watchdog (ctx : _ context) (meta : keeper_meta)
                  let stale =
                    last_turn > 0.0
                    && now -. last_turn > threshold
-                   && fiber_age >= grace_period_sec ()
+                   && fiber_age >= startup_grace
                    && not skip_observed
                  in
-                 (stale, false, 0.0, skip_observed))
+                 (stale, false, false, 0.0, 0.0, None, skip_observed))
              in
+             let in_turn_stale = active_total_stale || progress_stale in
              let noop_count =
                entry.meta.runtime.proactive_rt.consecutive_noop_count
              in
-             let failure_loop = noop_count >= noop_threshold () in
+             let last_completed_turn_ended_at =
+               match entry.last_completed_turn with
+               | Some
+                   ({ ct_ended_at; _ }
+                    : Keeper_registry.completed_turn_observation) ->
+                 Some ct_ended_at
+               | None -> None
+             in
+             let failure_loop =
+               should_trigger_noop_failure_loop
+                 ~noop_count
+                 ~noop_threshold:(noop_threshold ())
+                 ~started_at:entry.started_at
+                 ~last_completed_turn_ended_at
+             in
              let stale = idle_stale || in_turn_stale || failure_loop in
              (* The tick line is a sampled state snapshot. Stale termination
                 and broadcasts below remain ERROR, so INFO does not need every
                 intermediate heartbeat/noop snapshot. *)
              let log_line =
                Printf.sprintf
-                 "%s: watchdog tick noop=%d idle_stale=%b idle_skip_suppressed=%b in_turn_stale=%b in_turn_age=%.0f failure_loop=%b stale=%b last_turn=%.0f fiber_age=%.0f grace_rem=%.0f"
+                 "%s: watchdog tick noop=%d idle_stale=%b idle_skip_suppressed=%b in_turn_stale=%b active_total_stale=%b progress_stale=%b in_turn_age=%.0f since_progress=%.0f progress_timeout=%.0f failure_loop=%b stale=%b last_turn=%.0f fiber_age=%.0f grace_rem=%.0f"
                  meta.name noop_count idle_stale idle_skip_suppressed
-                 in_turn_stale in_turn_age failure_loop stale last_turn
-                 fiber_age grace_remaining
+                 in_turn_stale active_total_stale progress_stale in_turn_age
+                 since_progress_age progress_timeout failure_loop stale
+                 last_turn fiber_age grace_remaining
              in
              Log.Keeper.routine "%s" log_line;
              let cooldown_ok =
@@ -485,8 +536,8 @@ let fork_stale_watchdog (ctx : _ context) (meta : keeper_meta)
                      ~keeper_name:meta.name
                      ~agent_name:meta.agent_name
                      ~cascade_name:
-                       (Keeper_execution_receipt.cascade_name_of_string
-                          meta.cascade_name)
+                       (Cascade_name.of_string_exn
+                          (Keeper_types.cascade_name_of_meta meta))
                      ~trace_id:
                        (Keeper_id.Trace_id.to_string
                           entry.meta.runtime.trace_id)
@@ -499,18 +550,18 @@ let fork_stale_watchdog (ctx : _ context) (meta : keeper_meta)
                  | Eio.Cancel.Cancelled _ as e -> raise e
                  | exn ->
                    Prometheus.inc_counter
-                     Prometheus.metric_keeper_stale_broadcast_emit_failures
+                     Keeper_metrics.(to_string StaleBroadcastEmitFailures)
                      ~labels:[("keeper", meta.name)]
                      ();
                    Log.Keeper.warn
                      "%s: stale broadcast emit failed (restart still triggered): %s"
                      meta.name (Printexc.to_string exn)
                in
-               match pending_oas_timeout_budget_count entry with
+               match pending_provider_timeout_count entry with
                | Some count when idle_stale ->
                  let stall_seconds = now -. last_turn in
                  let failure_reason =
-                   Keeper_registry.Oas_timeout_budget_loop { count }
+                   Keeper_registry.Provider_timeout_loop { count }
                  in
                  Keeper_registry.set_failure_reason ~base_path meta.name
                    (Some failure_reason);
@@ -519,12 +570,12 @@ let fork_stale_watchdog (ctx : _ context) (meta : keeper_meta)
                     root cause for supervisor auto-pause. *)
                  request_watchdog_stop ();
                  Prometheus.inc_counter
-                   Prometheus.metric_keeper_oas_timeout_budget_watchdog_termination
+                   Keeper_metrics.(to_string ProviderTimeoutWatchdogTermination)
                    ~labels:[ ("keeper", meta.name) ]
                    ();
                  Log.Keeper.error
-                   "%s: watchdog terminating fiber (oas_timeout_budget unresolved after idle %.0fs; count=%d; preserving provider timeout root cause) [cascade=%s]"
-                   meta.name stall_seconds count meta.cascade_name;
+                   "%s: watchdog terminating fiber (provider_timeout unresolved after idle %.0fs; count=%d; preserving provider timeout root cause) [cascade=%s]"
+                   meta.name stall_seconds count (Keeper_types.cascade_name_of_meta meta);
                  emit_watchdog_broadcast ~failure_reason:(Some failure_reason)
                    ~stall_seconds
                | _ ->
@@ -557,9 +608,16 @@ let fork_stale_watchdog (ctx : _ context) (meta : keeper_meta)
                   string.  The three sub-causes need different operator
                   actions, so they need different typed labels.  The
                   surrounding [reason_desc] log line still embeds the
-                  same human-readable text via [stale_kill_class_to_string]. *)
+               same human-readable text via [stale_kill_class_to_string]. *)
                let kill_class : Keeper_registry.stale_kill_class =
-                 if in_turn_stale then
+                 if progress_stale then
+                   Mid_turn_no_progress
+                     { active_seconds = in_turn_age
+                     ; since_progress_seconds = since_progress_age
+                     ; progress_timeout_threshold = progress_timeout
+                     ; last_progress_kind
+                     }
+                 else if active_total_stale then
                    In_turn_hung
                      { active_seconds = in_turn_age;
                        timeout_threshold = active_turn_timeout_sec;
@@ -577,11 +635,25 @@ let fork_stale_watchdog (ctx : _ context) (meta : keeper_meta)
                  | In_turn_hung { active_seconds; timeout_threshold } ->
                    Printf.sprintf "active turn hung %.0fs (timeout %.0fs)"
                      active_seconds timeout_threshold
+                 | Mid_turn_no_progress
+                     { active_seconds
+                     ; since_progress_seconds
+                     ; progress_timeout_threshold
+                     ; last_progress_kind
+                     } ->
+                   Printf.sprintf
+                     "active turn made no progress for %.0fs (active %.0fs timeout %.0fs last=%s)"
+                     since_progress_seconds
+                     active_seconds
+                     progress_timeout_threshold
+                     (Keeper_registry.progress_kind_label last_progress_kind)
                  | Noop_failure_loop { noop_count = n } ->
                    Printf.sprintf "failure-loop noop=%d" n
                in
                let stall_seconds =
-                 if in_turn_stale then in_turn_age else now -. last_turn
+                 if progress_stale then since_progress_age
+                 else if in_turn_stale then in_turn_age
+                 else now -. last_turn
                in
                let prior_failure_reason = entry.last_failure_reason in
                let failure_reason =
@@ -606,11 +678,11 @@ let fork_stale_watchdog (ctx : _ context) (meta : keeper_meta)
                request_watchdog_stop ();
                let window_count = record_stale_termination meta.name now in
                Prometheus.inc_counter
-                 Prometheus.metric_keeper_stale_termination_total
+                 Keeper_metrics.(to_string StaleTerminationTotal)
                  ~labels:[ ("keeper", meta.name) ]
                  ();
                Prometheus.inc_counter
-                 Prometheus.metric_keeper_stale_termination_by_class
+                 Keeper_metrics.(to_string StaleTerminationByClass)
                  ~labels:[
                    ("keeper", meta.name);
                    ("class", stale_kill_class_label kill_class);
@@ -618,47 +690,40 @@ let fork_stale_watchdog (ctx : _ context) (meta : keeper_meta)
                  ();
                Log.Keeper.error
                  "%s: stale watchdog terminating fiber (%s) [cascade=%s window_count=%d/6h]"
-                 meta.name reason_desc meta.cascade_name window_count;
+                 meta.name reason_desc (Keeper_types.cascade_name_of_meta meta) window_count;
                if window_count >= escalation_threshold then begin
                  let cascade_recovered () =
                    match ctx.net with
                    | None -> false
                    | Some net ->
                        (match Cascade_catalog_runtime.resolve_named_providers_strict
-                                ~sw:ctx.sw ~net ~cascade_name:meta.cascade_name () with
+                                ~sw:ctx.sw ~net ~cascade_name:(Keeper_types.cascade_name_of_meta meta) () with
                         | Error _ -> false
                         | Ok candidates ->
-                            let healthy =
-                              Cascade_health_filter.filter_healthy ~sw:ctx.sw
-                                ~net candidates
-                            in
-                            let has_recovery_evidence
-                                (p : Llm_provider.Provider_config.t) =
-                              let provider_key =
-                                Provider_adapter.provider_health_key_of_config p
-                              in
-                              match
-                                Cascade_health_tracker.provider_info
-                                  Cascade_health_tracker.global
-                                  ~provider_key
-                              with
-                              | None -> false
-                              | Some info ->
-                                  info.events_in_window > 0
-                                  && info.success_rate > 0.0
-                                  && (not info.in_cooldown)
-                                  && Result.is_ok
-                                       (Cascade_health_tracker.check_circuit_breaker
-                                          Cascade_health_tracker.global
-                                          ~provider_key)
-                            in
-                            List.exists has_recovery_evidence healthy)
+                            (* Strict variant returns a typed rejection
+                               (All_missing_api_key / All_local_unhealthy)
+                               instead of silently emptying the candidate
+                               list.  Either rejection means the cascade
+                               is configurationally broken or has drifted
+                               below the live-fallback threshold, so the
+                               recovery probe should not declare the
+                               cascade healthy. *)
+                            (match
+                               Cascade_health_filter.filter_healthy_strict
+                                 ~sw:ctx.sw ~net candidates
+                             with
+                             | Error _rejection -> false
+                             | Ok healthy ->
+                            healthy
+                            |> Cascade_runtime_candidate.of_provider_configs
+                            |> List.exists
+                                 Cascade_runtime_candidate.has_recovery_evidence))
                  in
                  if cascade_recovered () then
-                   Log.Keeper.info "%s: stale threshold reached, but cascade %s appears healthy. Skipping auto-pause." meta.name meta.cascade_name
+                   Log.Keeper.info "%s: stale threshold reached, but cascade %s appears healthy. Skipping auto-pause." meta.name (Keeper_types.cascade_name_of_meta meta)
                  else begin
                  Prometheus.inc_counter
-                   Prometheus.metric_keeper_stale_termination_threshold_breached
+                   Keeper_metrics.(to_string StaleTerminationThresholdBreached)
                    ~labels:[ ("keeper", meta.name) ]
                    ();
                  (* Phase 2 (#10765): override the [Stale_turn_timeout] latch
@@ -673,7 +738,7 @@ let fork_stale_watchdog (ctx : _ context) (meta : keeper_meta)
                    (Some (Keeper_registry.Stale_termination_storm
                             { count = window_count }));
                  Prometheus.inc_counter
-                   Prometheus.metric_keeper_stale_termination_threshold_breached
+                   Keeper_metrics.(to_string StaleTerminationThresholdBreached)
                    ~labels:[("keeper", meta.name)]
                    ();
                  Log.Keeper.error
@@ -688,8 +753,10 @@ let fork_stale_watchdog (ctx : _ context) (meta : keeper_meta)
                    escalation_threshold
                end
                end;
-               (* #10765 phase 2: fleet batch detection.  See module-level
-                  comment on [batch_terminations] for rationale. *)
+               (* Fleet batch detection is observation-only.  It must not
+                  rewrite per-keeper failure reasons or persist a blocker; the
+                  supervisor can restart each keeper under its normal budget
+                  while operators still get a fleet-wide signal. *)
                let batch = record_batch_termination meta.name now in
                if List.length batch >= batch_threshold then begin
                  let root_cause =
@@ -700,28 +767,40 @@ let fork_stale_watchdog (ctx : _ context) (meta : keeper_meta)
                    batch_root_cause_to_string root_cause
                  in
                  let distinct_count = List.length batch in
-                 latch_stale_fleet_batch_reasons ~config:ctx.config ~distinct_count
-                   batch;
                  Prometheus.inc_counter
-                   Prometheus.metric_keeper_stale_termination_batch
+                   Keeper_metrics.(to_string StaleTerminationBatch)
                    ~labels:[ ("root_cause", root_cause_label) ]
                    ();
-                 Log.Keeper.error
-                   "FLEET BATCH TERMINATION: %d distinct keepers \
+                 Log.Keeper.warn
+                   "FLEET STALE BURST: %d distinct keepers \
                     terminated in last %.0fs [%s] — systemic signal \
-                    root_cause=%s.  \
-                    Affected keepers are latched for auto-pause/backoff \
-                    instead of independent restart.  See #10765, #10474, \
-                    #10745."
+                    root_cause=%s.  Observation-only; keepers retain their \
+                    per-keeper watchdog reason and remain restart-eligible \
+                    under the normal supervisor budget."
                    distinct_count batch_window_sec
                    (String.concat ", " batch) root_cause_label
                end;
                emit_watchdog_broadcast ~failure_reason ~stall_seconds
              end
            | None ->
-             Log.Keeper.warn "%s: watchdog: registry entry NOT FOUND" meta.name
+             let persisted_paused =
+               match read_meta ctx.config meta.name with
+               | Ok (Some latest_meta) -> Some latest_meta.paused
+               | Ok None | Error _ -> None
+             in
+             if should_warn_missing_registry ~captured_paused:meta.paused
+                  ~persisted_paused
+             then
+               Log.Keeper.warn "%s: watchdog: registry entry NOT FOUND" meta.name
+             else begin
+               request_watchdog_stop ();
+               Log.Keeper.routine
+                 "%s: watchdog: registry entry absent for paused keeper; \
+                  stopping orphan watchdog"
+                 meta.name
+             end
            | Some entry ->
-             Log.Keeper.info
+             Log.Keeper.debug
                "%s: watchdog: phase=%s (not Running, skipping)"
                meta.name
                (Keeper_state_machine.phase_to_string entry.phase)
@@ -729,7 +808,7 @@ let fork_stale_watchdog (ctx : _ context) (meta : keeper_meta)
          | Eio.Cancel.Cancelled _ as e -> raise e
          | exn ->
            Prometheus.inc_counter
-             Prometheus.metric_keeper_stale_watchdog_tick_failures
+             Keeper_metrics.(to_string StaleWatchdogTickFailures)
              ~labels:[("keeper", meta.name)]
              ();
            Log.Keeper.warn

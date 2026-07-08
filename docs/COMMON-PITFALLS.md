@@ -263,9 +263,6 @@ Test는 production config와 격리되어야 한다.
 ```lisp
 (env
   (MASC_STORAGE_TYPE filesystem)
-  (MASC_POSTGRES_URL "")
-  (DATABASE_URL "")
-  (SUPABASE_DB_URL "")
   (GRAPHQL_API_KEY "")
   (ZAI_API_KEY ""))
 ```
@@ -500,7 +497,7 @@ bash scripts/validate-keeper-fsm-graph.sh
 | Pitfall Section | Related ADR | Key Takeaway |
 |----------------|-------------|--------------|
 | #8 Feature Flag Registry Duplicates | [ADR-003: Feature Flag Registry Management](ADR-003-FEATURE-FLAG-REGISTRY-MANAGEMENT.md) | Registry는 SSOT, env_name은 전역 고유, concurrent merge는 semantic validation 필요 |
-| Context/Mitosis pattern | [ADR-001: Mitosis vs Compaction](ADR-001-MITOSIS-VS-COMPACTION.md) | Historical: mitosis runtime removed in v2.170+. Context transfer now uses Relay/Handoff system |
+| Context handoff pattern | Keeper/OAS checkpoint and handoff docs | Historical mitosis runtime and ADR were removed. Context transfer now uses Relay/Handoff plus keeper/OAS checkpoint paths |
 | Dashboard Control Surface | [ADR-002: Dashboard Operator Control Surface](ADR-002-DASHBOARD-OPERATOR-CONTROL-SURFACE.md) | `masc_operator_*` quartet가 canonical, generic tool executor는 admin-only |
 
 **Why ADRs?**

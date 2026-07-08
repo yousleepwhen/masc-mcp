@@ -1,12 +1,20 @@
 (** MASC Coord - Core coordination hub.
 
     This module ties together all Coord sub-modules (utils, state, lifecycle,
-    init, status, task, query, agent, portal, worktree, gc). *)
+    init, status, task, query, agent, portal, gc). *)
 
 (** {1 Included sub-modules} *)
 
 include module type of Coord_utils
+include module type of Coord_backlog
+include module type of Coord_bootstrap
+include module type of Coord_identity
+include module type of Coord_task_id
 include module type of Coord_state
+include module type of Coord_bootstrap
+include module type of Coord_identity
+include module type of Coord_task_id
+include module type of Coord_backlog
 include module type of Coord_broadcast
 include module type of Coord_lifecycle
 include module type of Coord_init
@@ -14,7 +22,6 @@ include module type of Coord_status
 include module type of Coord_task
 include module type of Coord_task_schedule
 include module type of Coord_query
-include module type of Coord_worktree
 include module type of Coord_gc
 include module type of Coord_agent
 (** {1 Coord lifecycle (overrides)} *)
@@ -27,10 +34,16 @@ val init : config -> agent_name:string option -> string
 
 module For_testing : sig
   val warn_telemetry_drop :
-    event_family:string -> event_kind:string -> exn -> unit
+    event:Coord_telemetry_drop_event.t -> exn -> unit
   (** Emit the same observable drop marker used when audit/telemetry hooks
       cannot run. Exposed so tests do not depend on backend-specific
-      [Effect.Unhandled] behavior. *)
+      [Effect.Unhandled] behavior.
+
+      RFC-0088 §4 Option A (2026-05-15): the previous
+      [~event_family:string -> ~event_kind:string] surface was replaced
+      by the typed {!Coord_telemetry_drop_event.t} sum. The Prometheus
+      label wire format is unchanged ([family_to_wire] / [kind_to_wire]
+      are byte-for-byte compatible with the prior free-string values). *)
 end
 
 (** {1 FSM drift observability (#9795)} *)
@@ -68,11 +81,16 @@ val record_fsm_drift_with_agent :
 val process_timeout_metric : string
 (** Canonical Prometheus metric for [Process_eio] timeouts
     ([masc_process_timeout_total]).  Labels: [program] (argv0
-    basename, e.g. ["git"], ["gh"]), [timeout_sec] (configured budget,
-    e.g. ["15"], ["60"]).  Exposed so tests and Grafana rules can pin
-    the name. *)
+    basename, e.g. ["git"], ["gh"]), [timeout_bucket] (configured budget
+    bucket, e.g. ["ge_15s_lt_60s"]), [stage] (closed process origins from
+    {!Timeout_origin}: [slot_wait] | [spawn] | [command]).
+    Exposed so tests and Grafana rules can pin the name. *)
 
-val record_process_timeout : program:string -> timeout_sec:float -> unit
+val record_process_timeout :
+  program:string ->
+  timeout_sec:float ->
+  origin:Timeout_origin.t ->
+  unit
 (** Increment {!process_timeout_metric}.  Wired to
     {!Process_eio.process_timeout_observer_fn} at module load so every
     [Eio.Time.Timeout] in [run_argv] / [run_argv_with_stdin] /

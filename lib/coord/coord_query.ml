@@ -6,6 +6,8 @@
 open Masc_domain
 include Coord_utils
 include Coord_state
+open Coord_backlog
+open Coord_identity
 
 let update_priority config ~task_id ~priority =
   ensure_initialized config;
@@ -88,8 +90,7 @@ let load_agents_from_dir config dir ~include_inactive =
   |> List.filter_map (fun name ->
          safe_yield ();
          let path = Filename.concat dir name in
-         let json = read_json config path in
-         match agent_of_yojson json with
+         match read_agent_with_repair config path with
          | Ok agent when include_inactive || agent.status <> Masc_domain.Inactive ->
              Some agent
          | Ok _ | Error _ -> None)
@@ -120,7 +121,7 @@ let get_all_agents config =
     load_agents_from_dir config agents_path ~include_inactive:true
 
 (** Audit tasks: find claimed/in_progress tasks whose assignees are not active agents.
-    Matches assignees by exact name or agent-type prefix (e.g. "claude" matches "claude-xxx").
+    Matches assignees by exact name or agent-type prefix (e.g. "<prefix>" matches "<prefix>-xxx").
     Agents with Inactive status are excluded from the active set. *)
 let audit_orphan_tasks config : (Masc_domain.task * string) list =
   if not (is_initialized config) then []
@@ -177,7 +178,7 @@ let is_valid_filename name =
     c = '_' || c = '-' || c = '.'
   ) name
 
-(** Extract seq number from filename like "000001885_unknown_broadcast.json" or "1664_codex_broadcast.json" *)
+(** Extract seq number from filename like "000001885_unknown_broadcast.json" or "1664_<agent>_broadcast.json" *)
 let extract_seq_from_filename name =
   match String.index_opt name '_' with
   | None -> 0
@@ -239,7 +240,7 @@ let collect_recent_messages config ~msgs_path ~since_seq ~limit ~warn_label =
             | json ->
                 (match message_of_yojson json with
                  | Ok msg when msg.seq > since_seq -> loop (remaining - 1) (msg :: acc) rest
-                 | _ -> loop remaining acc rest)
+                 | Ok _ | Error _ -> loop remaining acc rest)
             | exception (Eio.Cancel.Cancelled _ as e) -> raise e
             | exception e ->
                 Log.legacy_traceln ~level:Log.Warn ~module_name:"Coord"
@@ -278,7 +279,7 @@ let get_all_messages_raw config ~since_seq =
             | json ->
                 (match message_of_yojson json with
                  | Ok msg when msg.seq > since_seq -> loop (msg :: acc) rest
-                 | _ -> loop acc rest)
+                 | Ok _ | Error _ -> loop acc rest)
             | exception (Eio.Cancel.Cancelled _ as e) -> raise e
             | exception e ->
                 Log.legacy_traceln ~level:Log.Warn ~module_name:"Coord"

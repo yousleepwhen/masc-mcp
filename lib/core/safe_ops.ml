@@ -31,23 +31,9 @@ let try_with_log context f =
     Log.Misc.error "%s failed: %s" context (Printexc.to_string e);
     None
 
-(** Execute with default value on failure *)
-let try_with_default ~default context f =
-  match try_with_log context f with
-  | Some v -> v
-  | None -> default
-
 (** Cancel-aware Result wrapper.
     Re-raises [Eio.Cancel.Cancelled] with backtrace; captures other
     exceptions as [Error exn]. *)
-let try_catch f =
-  try Ok (f ())
-  with
-  | Eio.Cancel.Cancelled _ as e ->
-    let bt = Printexc.get_raw_backtrace () in
-    Printexc.raise_with_backtrace e bt
-  | exn -> Error exn
-
 (** Cancel-aware exception handler.
     Re-raises [Eio.Cancel.Cancelled] with backtrace; delegates other
     exceptions to [handler]. *)
@@ -279,10 +265,6 @@ let rec sanitize_json_utf8 (json : Yojson.Safe.t) : Yojson.Safe.t =
       if !changed then `List sanitized_items else json
   | (`Null | `Bool _ | `Int _ | `Intlit _ | `Float _) as other -> other
 
-let sanitize_json_utf8_with_raw raw =
-  let sanitized = sanitize_json_utf8 raw in
-  { raw; sanitized; changed = sanitized != raw }
-
 let count_invalid_utf8_bytes s =
   let len = String.length s in
   let rec loop i count =
@@ -297,9 +279,15 @@ let count_invalid_utf8_bytes s =
   in
   loop 0 0
 
-let repair_utf8_text ?(surface = "persistence") ?path s =
+type utf8_repair_result =
+  { text : string
+  ; invalid_bytes : int
+  ; changed : bool
+  }
+
+let repair_utf8_text_with_stats ?(surface = "persistence") ?path s =
   let invalid_bytes = count_invalid_utf8_bytes s in
-  if invalid_bytes = 0 then s
+  if invalid_bytes = 0 then { text = s; invalid_bytes = 0; changed = false }
   else
     let len = String.length s in
     let buf = Buffer.create len in
@@ -317,7 +305,10 @@ let repair_utf8_text ?(surface = "persistence") ?path s =
     in
     loop 0;
     record_utf8_repair ~surface ~path ~invalid_bytes;
-    Buffer.contents buf
+    { text = Buffer.contents buf; invalid_bytes; changed = true }
+
+let repair_utf8_text ?surface ?path s =
+  (repair_utf8_text_with_stats ?surface ?path s).text
 
 (** Parse JSON with detailed error reporting *)
 let parse_json_safe ~context str : (Yojson.Safe.t, string) result =
@@ -377,6 +368,7 @@ let read_json_file_logged ~label path : Yojson.Safe.t option =
 let persistence_read_drop_reason_list_dir_error = "list_dir_error"
 let persistence_read_drop_reason_entry_load_error = "entry_load_error"
 let persistence_read_drop_reason_invalid_payload = "invalid_payload"
+let persistence_read_drop_reason_json_syntax_error = "json_syntax_error"
 
 let report_persistence_read_drop ~on_drop ~surface ~reason ~path ~detail =
   Log.Misc.warn "[%s] persistence read drop (%s) path=%s: %s"
@@ -418,13 +410,6 @@ let remove_file_logged ?(context = "cleanup") path =
     Log.Misc.error "[%s] Failed to remove %s: %s" context path (Printexc.to_string e)
 
 (** Close channel with logging on failure *)
-let close_in_logged ic =
-  try close_in ic
-  with
-  | Eio.Cancel.Cancelled _ as e -> raise e
-  | e ->
-    Log.Misc.error "Failed to close input channel: %s" (Printexc.to_string e)
-
 (** Get environment variable with logging when invalid *)
 let get_env_int_logged name ~default =
   match Sys.getenv_opt name with
@@ -434,16 +419,6 @@ let get_env_int_logged name ~default =
     | Some n -> n
     | None ->
       Log.Misc.warn "Invalid int for %s=%s, using default %d" name v default;
-      default
-
-let get_env_float_logged name ~default =
-  match Sys.getenv_opt name with
-  | None -> default
-  | Some v ->
-    match float_of_string_safe v with
-    | Some n -> n
-    | None ->
-      Log.Misc.warn "Invalid float for %s=%s, using default %f" name v default;
       default
 
 (** {2 JSON Value Extraction Helpers}
@@ -472,7 +447,7 @@ let json_string ?(default = "") key json =
    string. Prior to 2026-04-18 these fell through to [default] (0), which
    silently produced empty search results or zero-length reads — keepers
    then retried with the same payload and gave up (tool_metrics evidence
-   on 2026-04-17/18 showed this in masc_code_read: offset:"100.0",
+   on 2026-04-17/18 showed this in the legacy code-read path: offset:"100.0",
    limit:"0.0"). Accept numeric strings with strict parsing and fall back
    to [default] only when the string does not parse as a number. Missing
    keys still fall through to [default] — no behaviour change there. *)
@@ -571,21 +546,6 @@ let json_member_opt key json =
   | `Null -> None
   | v -> Some v
 
-(** {1 Tail-recursive list helpers} *)
-
-(** Tail-recursive replacement for [Stdlib.List.concat_map].
-    [Stdlib.List.concat_map f l] is implemented as [concat (map f l)] —
-    neither [map] nor [concat] is tail-recursive, so a list of N elements
-    where [f] returns M-element sub-lists uses O(N + N*M) stack frames.
-    This version uses [fold_left] + [rev_append] — constant stack. *)
-let concat_map_safe (f : 'a -> 'b list) (l : 'a list) : 'b list =
-  List.rev (List.fold_left (fun acc x -> List.rev_append (f x) acc) [] l)
-
-(** Tail-recursive replacement for [Stdlib.List.map].
-    [Stdlib.List.map] builds the result on the stack — O(N) frames.
-    For lists that may exceed ~10K elements, use this instead. *)
-let map_safe (f : 'a -> 'b) (l : 'a list) : 'b list =
-  List.rev (List.rev_map f l)
 
 (** {1 Safe Process Execution} *)
 

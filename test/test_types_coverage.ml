@@ -16,9 +16,9 @@ module Types = Masc_domain
    ============================================================ *)
 
 let test_agent_id_of_string () =
-  let id = Masc_domain.Agent_id.of_string "claude-1" in
+  let id = Masc_domain.Agent_id.of_string "agent_llm_a-1" in
   let s = Masc_domain.Agent_id.to_string id in
-  check string "roundtrip" "claude-1" s
+  check string "roundtrip" "agent_llm_a-1" s
 
 let test_agent_id_equal_same () =
   let id1 = Masc_domain.Agent_id.of_string "agent-x" in
@@ -244,15 +244,15 @@ let test_task_status_to_string_todo () =
   check string "todo" "todo" (Masc_domain.task_status_to_string Masc_domain.Todo)
 
 let test_task_status_to_string_claimed () =
-  let status = Masc_domain.Claimed { assignee = "claude"; claimed_at = "2024-01-01" } in
+  let status = Masc_domain.Claimed { assignee = "agent_llm_a"; claimed_at = "2024-01-01" } in
   check string "claimed" "claimed" (Masc_domain.task_status_to_string status)
 
 let test_task_status_to_string_in_progress () =
-  let status = Masc_domain.InProgress { assignee = "claude"; started_at = "2024-01-01" } in
+  let status = Masc_domain.InProgress { assignee = "agent_llm_a"; started_at = "2024-01-01" } in
   check string "in_progress" "in_progress" (Masc_domain.task_status_to_string status)
 
 let test_task_status_to_string_done () =
-  let status = Masc_domain.Done { assignee = "claude"; completed_at = "2024-01-01"; notes = None } in
+  let status = Masc_domain.Done { assignee = "agent_llm_a"; completed_at = "2024-01-01"; notes = None } in
   check string "done" "done" (Masc_domain.task_status_to_string status)
 
 let test_task_status_to_string_cancelled () =
@@ -273,7 +273,7 @@ let test_task_status_to_yojson_todo () =
   | _ -> fail "expected Assoc"
 
 let test_task_status_to_yojson_claimed () =
-  let status = Masc_domain.Claimed { assignee = "claude"; claimed_at = "2024-01-01T00:00:00Z" } in
+  let status = Masc_domain.Claimed { assignee = "agent_llm_a"; claimed_at = "2024-01-01T00:00:00Z" } in
   let json = Masc_domain.task_status_to_yojson status in
   match json with
   | `Assoc fields ->
@@ -283,7 +283,7 @@ let test_task_status_to_yojson_claimed () =
   | _ -> fail "expected Assoc"
 
 let test_task_status_to_yojson_in_progress () =
-  let status = Masc_domain.InProgress { assignee = "gemini"; started_at = "2024-01-01T12:00:00Z" } in
+  let status = Masc_domain.InProgress { assignee = "provider_f"; started_at = "2024-01-01T12:00:00Z" } in
   let json = Masc_domain.task_status_to_yojson status in
   match json with
   | `Assoc fields ->
@@ -291,7 +291,7 @@ let test_task_status_to_yojson_in_progress () =
   | _ -> fail "expected Assoc"
 
 let test_task_status_to_yojson_done_with_notes () =
-  let status = Masc_domain.Done { assignee = "codex"; completed_at = "2024-01-01"; notes = Some "All tests pass" } in
+  let status = Masc_domain.Done { assignee = "agent_code"; completed_at = "2024-01-01"; notes = Some "All tests pass" } in
   let json = Masc_domain.task_status_to_yojson status in
   match json with
   | `Assoc fields ->
@@ -300,7 +300,7 @@ let test_task_status_to_yojson_done_with_notes () =
   | _ -> fail "expected Assoc"
 
 let test_task_status_to_yojson_done_no_notes () =
-  let status = Masc_domain.Done { assignee = "codex"; completed_at = "2024-01-01"; notes = None } in
+  let status = Masc_domain.Done { assignee = "agent_code"; completed_at = "2024-01-01"; notes = None } in
   let json = Masc_domain.task_status_to_yojson status in
   match json with
   | `Assoc fields ->
@@ -332,29 +332,29 @@ let test_task_status_of_yojson_todo () =
 let test_task_status_of_yojson_claimed () =
   let json = `Assoc [
     ("status", `String "claimed");
-    ("assignee", `String "claude");
+    ("assignee", `String "agent_llm_a");
     ("claimed_at", `String "2024-01-01")
   ] in
   match Masc_domain.task_status_of_yojson json with
-  | Ok (Masc_domain.Claimed { assignee; _ }) -> check string "assignee" "claude" assignee
+  | Ok (Masc_domain.Claimed { assignee; _ }) -> check string "assignee" "agent_llm_a" assignee
   | Ok _ -> fail "expected Claimed"
   | Error e -> fail e
 
 let test_task_status_of_yojson_in_progress () =
   let json = `Assoc [
     ("status", `String "in_progress");
-    ("assignee", `String "gemini");
+    ("assignee", `String "provider_f");
     ("started_at", `String "2024-01-01")
   ] in
   match Masc_domain.task_status_of_yojson json with
-  | Ok (Masc_domain.InProgress { assignee; _ }) -> check string "assignee" "gemini" assignee
+  | Ok (Masc_domain.InProgress { assignee; _ }) -> check string "assignee" "provider_f" assignee
   | Ok _ -> fail "expected InProgress"
   | Error e -> fail e
 
 let test_task_status_of_yojson_done () =
   let json = `Assoc [
     ("status", `String "done");
-    ("assignee", `String "codex");
+    ("assignee", `String "agent_code");
     ("completed_at", `String "2024-01-01");
     ("notes", `String "Done!")
   ] in
@@ -381,46 +381,6 @@ let test_task_status_of_yojson_unknown () =
   | Error _ -> ()
   | Ok _ -> fail "expected Error"
 
-(* ============================================================
-   worktree_info_to_yojson Tests
-   ============================================================ *)
-
-let test_worktree_info_to_yojson () =
-  let wt : Masc_domain.worktree_info = {
-    branch = "feature-x";
-    path = ".worktrees/feature-x";
-    git_root = "/home/user/project";
-    repo_name = "project";
-  } in
-  let json = Masc_domain.worktree_info_to_yojson wt in
-  match json with
-  | `Assoc fields ->
-    check bool "has branch" true (List.mem_assoc "branch" fields);
-    check bool "has path" true (List.mem_assoc "path" fields);
-    check bool "has git_root" true (List.mem_assoc "git_root" fields);
-    check bool "has repo_name" true (List.mem_assoc "repo_name" fields)
-  | _ -> fail "expected Assoc"
-
-(* ============================================================
-   worktree_info_of_yojson Tests
-   ============================================================ *)
-
-let test_worktree_info_of_yojson () =
-  let json = `Assoc [
-    ("branch", `String "main");
-    ("path", `String ".worktrees/main");
-    ("git_root", `String "/repo");
-    ("repo_name", `String "repo");
-  ] in
-  match Masc_domain.worktree_info_of_yojson json with
-  | Ok wt -> check string "branch" "main" wt.branch
-  | Error e -> fail e
-
-let test_worktree_info_of_yojson_missing_field () =
-  let json = `Assoc [("branch", `String "main")] in
-  match Masc_domain.worktree_info_of_yojson json with
-  | Error _ -> ()
-  | Ok _ -> fail "expected Error"
 
 (* ============================================================
    show_task_status Tests
@@ -431,10 +391,10 @@ let test_show_task_status_todo () =
   check bool "non-empty" true (String.length s > 0)
 
 let test_show_task_status_claimed () =
-  let status = Masc_domain.Claimed { assignee = "claude"; claimed_at = "2024-01-01" } in
+  let status = Masc_domain.Claimed { assignee = "agent_llm_a"; claimed_at = "2024-01-01" } in
   let s = Masc_domain.show_task_status status in
   check bool "contains assignee" true
-    (try let _ = Str.search_forward (Str.regexp "claude") s 0 in true
+    (try let _ = Str.search_forward (Str.regexp "agent_llm_a") s 0 in true
      with Not_found -> false)
 
 (* ============================================================
@@ -547,10 +507,9 @@ let test_backlog_to_yojson_with_tasks () =
     priority = 1;
     files = [];
     created_at = "2024-01-15T12:00:00Z";
-    worktree = None;
     created_by = None;
     stage = None;
-    contract = None; handoff_context = None; cycle_count = 0; do_not_reclaim_reason = None;
+    contract = None; handoff_context = None; cycle_count = 0; reclaim_policy = None; do_not_reclaim_reason = None;
   } in
   let b : Masc_domain.backlog = { tasks = [task]; last_updated = "2024-01-15T12:00:00Z"; version = 2 } in
   let json = Masc_domain.backlog_to_yojson b in
@@ -728,9 +687,9 @@ let test_masc_error_already_initialized () =
   check bool "contains already" true (String.length s > 0)
 
 let test_masc_error_agent_not_found () =
-  let s = Masc_domain.masc_error_to_string (Masc_domain.Agent (Masc_domain.Agent_error.NotFound "claude")) in
-  check bool "contains claude" true
-    (try let _ = Str.search_forward (Str.regexp "claude") s 0 in true
+  let s = Masc_domain.masc_error_to_string (Masc_domain.Agent (Masc_domain.Agent_error.NotFound "agent_llm_a")) in
+  check bool "contains agent_llm_a" true
+    (try let _ = Str.search_forward (Str.regexp "agent_llm_a") s 0 in true
      with Not_found -> false)
 
 let test_masc_error_task_not_found () =
@@ -798,7 +757,7 @@ let test_agent_credential_to_yojson () =
   let cred : Masc_domain.agent_credential = {
     id = None;
     agent_id = None;
-    agent_name = "claude";
+    agent_name = "agent_llm_a";
     token = "abc123";
     role = Masc_domain.Worker;
     created_at = "2024-01-15T12:00:00Z";
@@ -816,7 +775,7 @@ let test_agent_credential_to_yojson_with_expiry () =
   let cred : Masc_domain.agent_credential = {
     id = None;
     agent_id = None;
-    agent_name = "claude";
+    agent_name = "agent_llm_a";
     token = "abc123";
     role = Masc_domain.Admin;
     created_at = "2024-01-15T12:00:00Z";
@@ -829,14 +788,14 @@ let test_agent_credential_to_yojson_with_expiry () =
 
 let test_agent_credential_of_yojson_ok () =
   let json = `Assoc [
-    ("agent_name", `String "gemini");
+    ("agent_name", `String "provider_f");
     ("token", `String "xyz");
     ("admin", `Bool false);
     ("created_at", `String "2024-01-15T12:00:00Z");
   ] in
   match Masc_domain.agent_credential_of_yojson json with
   | Ok cred ->
-    check string "agent_name" "gemini" cred.agent_name;
+    check string "agent_name" "provider_f" cred.agent_name;
     check bool "admin=false maps to worker" true (cred.role = Masc_domain.Worker)
   | Error e -> fail ("expected Ok, got: " ^ e)
 
@@ -1185,7 +1144,7 @@ let test_tempo_config_to_yojson () =
     mode = Masc_domain.Slow;
     delay_ms = 100;
     reason = Some "testing";
-    set_by = Some "claude";
+    set_by = Some "agent_llm_a";
     set_at = Some "2024-01-15T12:00:00Z";
   } in
   let json = Masc_domain.tempo_config_to_yojson c in
@@ -1240,7 +1199,7 @@ let test_rate_limit_config_to_yojson () =
   let c : Masc_domain.rate_limit_config = {
     per_minute = 60;
     burst_allowed = 10;
-    priority_agents = ["claude"; "gemini"];
+    priority_agents = ["agent_llm_a"; "provider_f"];
     worker_multiplier = 1.0;
     admin_multiplier = 2.0;
     broadcast_per_minute = 30;
@@ -1319,10 +1278,9 @@ let test_task_to_yojson () =
     priority = 2;
     files = ["file1.ml"; "file2.ml"];
     created_at = "2024-01-15T12:00:00Z";
-    worktree = None;
     created_by = None;
     stage = None;
-    contract = None; handoff_context = None; cycle_count = 0; do_not_reclaim_reason = None;
+    contract = None; handoff_context = None; cycle_count = 0; reclaim_policy = None; do_not_reclaim_reason = None;
   } in
   let json = Masc_domain.task_to_yojson t in
   match json with
@@ -1332,32 +1290,6 @@ let test_task_to_yojson () =
     check bool "has files" true (List.mem_assoc "files" fields)
   | _ -> fail "expected Assoc"
 
-let test_task_to_yojson_with_worktree () =
-  let wt : Masc_domain.worktree_info = {
-    branch = "feature";
-    path = ".worktrees/feature";
-    git_root = "/repo";
-    repo_name = "repo";
-  } in
-  let t : Masc_domain.task = {
-    id = "task-002";
-    title = "Task with Worktree";
-    description = "";
-    task_status = Masc_domain.InProgress { assignee = "claude"; started_at = "2024-01-15T12:00:00Z" };
-    goal_id = None;
-    priority = 1;
-    files = [];
-    created_at = "2024-01-15T12:00:00Z";
-    worktree = Some wt;
-    created_by = None;
-    stage = None;
-    contract = None; handoff_context = None; cycle_count = 0; do_not_reclaim_reason = None;
-  } in
-  let json = Masc_domain.task_to_yojson t in
-  match json with
-  | `Assoc fields ->
-    check bool "has worktree" true (List.mem_assoc "worktree" fields)
-  | _ -> fail "expected Assoc"
 
 let test_task_of_yojson_ok () =
   let json = `Assoc [
@@ -1381,6 +1313,82 @@ let test_task_of_yojson_error () =
   | Error _ -> ()
   | Ok _ -> fail "expected Error (missing title)"
 
+let test_task_reclaim_gate_ignores_free_text_without_policy () =
+  let t : Masc_domain.task = {
+    id = "task-004";
+    title = "Retryable task";
+    description = "";
+    task_status = Masc_domain.Todo;
+    goal_id = None;
+    priority = 1;
+    files = [];
+    created_at = "2024-01-15T12:00:00Z";
+    created_by = None;
+    stage = None;
+    contract = None;
+    handoff_context = None;
+    cycle_count = 9;
+    reclaim_policy = None;
+    do_not_reclaim_reason = Some "worktree path not found";
+  } in
+  match Masc_domain.task_reclaim_gate t with
+  | Masc_domain.Reclaim_gate_open -> ()
+  | Masc_domain.Reclaim_gate_blocked_by_policy reason ->
+    fail ("free text must not block reclaim: " ^ reason)
+
+let test_task_reclaim_gate_blocks_only_typed_policy () =
+  let t : Masc_domain.task = {
+    id = "task-005";
+    title = "Terminal task";
+    description = "";
+    task_status = Masc_domain.Todo;
+    goal_id = None;
+    priority = 1;
+    files = [];
+    created_at = "2024-01-15T12:00:00Z";
+    created_by = None;
+    stage = None;
+    contract = None;
+    handoff_context = None;
+    cycle_count = 0;
+    reclaim_policy = Some Masc_domain.Block_reclaim;
+    do_not_reclaim_reason = Some "operator hard stop";
+  } in
+  match Masc_domain.task_reclaim_gate t with
+  | Masc_domain.Reclaim_gate_blocked_by_policy reason ->
+    check string "reason" "operator hard stop" reason
+  | Masc_domain.Reclaim_gate_open -> fail "typed block policy must close reclaim gate"
+
+
+
+
+let test_task_claim_next_action_policy_block_is_skip () =
+  let t : Masc_domain.task = {
+    id = "task-009";
+    title = "Operator stop";
+    description = "";
+    task_status = Masc_domain.Todo;
+    goal_id = None;
+    priority = 1;
+    files = [];
+    created_at = "2024-01-15T12:00:00Z";
+    created_by = None;
+    stage = None;
+    contract = None;
+    handoff_context = None;
+    cycle_count = 0;
+    reclaim_policy = Some Masc_domain.Block_reclaim;
+    do_not_reclaim_reason = Some "operator hard stop";
+  } in
+  match Masc_domain.task_claim_next_action t with
+  | Masc_domain.Skip_claim (Masc_domain.Claim_block_reclaim_policy reason) ->
+    check string "reason" "operator hard stop" reason;
+    check bool "claimable" false (Masc_domain.task_claim_next_action_is_claimable t)
+  | Masc_domain.Claim_now ->
+    fail "typed policy block must skip claim"
+  | Masc_domain.Skip_claim (Masc_domain.Claim_block_not_todo _) ->
+    fail "todo task should not be classified as not-todo"
+
 (* ============================================================
    a2a_task_to/of_yojson Tests
    ============================================================ *)
@@ -1388,8 +1396,8 @@ let test_task_of_yojson_error () =
 let test_a2a_task_to_yojson () =
   let t : Masc_domain.a2a_task = {
     a2a_id = "a2a-001";
-    from_agent = "claude";
-    to_agent = "gemini";
+    from_agent = "agent_llm_a";
+    to_agent = "provider_f";
     a2a_message = "Please review this";
     a2a_status = Masc_domain.A2APending;
     a2a_result = None;
@@ -1407,8 +1415,8 @@ let test_a2a_task_to_yojson () =
 let test_a2a_task_to_yojson_with_result () =
   let t : Masc_domain.a2a_task = {
     a2a_id = "a2a-002";
-    from_agent = "gemini";
-    to_agent = "claude";
+    from_agent = "provider_f";
+    to_agent = "agent_llm_a";
     a2a_message = "Task completed";
     a2a_status = Masc_domain.A2ACompleted;
     a2a_result = Some "Done successfully";
@@ -1427,7 +1435,7 @@ let test_a2a_task_of_yojson_ok () =
   let json = `Assoc [
     ("id", `String "a2a-003");
     ("from", `String "ollama");
-    ("to", `String "claude");
+    ("to", `String "agent_llm_a");
     ("message", `String "Help needed");
     ("status", `String "running");
     ("result", `Null);
@@ -1452,8 +1460,8 @@ let test_a2a_task_of_yojson_error () =
 
 let test_portal_to_yojson () =
   let p : Masc_domain.portal = {
-    portal_from = "claude";
-    portal_target = "gemini";
+    portal_from = "agent_llm_a";
+    portal_target = "provider_f";
     portal_opened_at = "2024-01-15T12:00:00Z";
     portal_status = Masc_domain.PortalOpen;
     task_count = 5;
@@ -1469,7 +1477,7 @@ let test_portal_to_yojson () =
 let test_portal_of_yojson_ok () =
   let json = `Assoc [
     ("from", `String "ollama");
-    ("target", `String "codex");
+    ("target", `String "agent_code");
     ("openedAt", `String "2024-01-15T12:00:00Z");
     ("status", `String "open");
     ("taskCount", `Int 3);
@@ -1582,11 +1590,6 @@ let () =
       test_case "done" `Quick test_task_status_of_yojson_done;
       test_case "cancelled" `Quick test_task_status_of_yojson_cancelled;
       test_case "unknown" `Quick test_task_status_of_yojson_unknown;
-    ];
-    "worktree_info", [
-      test_case "to_yojson" `Quick test_worktree_info_to_yojson;
-      test_case "of_yojson" `Quick test_worktree_info_of_yojson;
-      test_case "missing field" `Quick test_worktree_info_of_yojson_missing_field;
     ];
     "show_task_status", [
       test_case "todo" `Quick test_show_task_status_todo;
@@ -1777,9 +1780,10 @@ let () =
     ];
     "task_yojson", [
       test_case "to_yojson" `Quick test_task_to_yojson;
-      test_case "to_yojson with worktree" `Quick test_task_to_yojson_with_worktree;
       test_case "of_yojson ok" `Quick test_task_of_yojson_ok;
       test_case "of_yojson error" `Quick test_task_of_yojson_error;
+      test_case "claim next action policy block is skip" `Quick
+        test_task_claim_next_action_policy_block_is_skip;
     ];
     "a2a_task_yojson", [
       test_case "to_yojson" `Quick test_a2a_task_to_yojson;

@@ -14,7 +14,13 @@
     [observe_telemetry_drop] / [report_telemetry_drop],
     [read_all_events_from_path], [event_to_json], [track], and the
     [nonempty_opt] string utility) are hidden — callers consume the
-    typed event ADT and the convenience emitters / readers only. *)
+    typed event ADT and the convenience emitters / readers only.
+
+    The date-split telemetry store applies bounded retention by default:
+    [MASC_TELEMETRY_RETENTION_DAYS] defaults to 30 and
+    [MASC_TELEMETRY_MAX_BYTES] defaults to 52428800. Positive values override;
+    non-positive values disable the matching bound. The byte cap prunes oldest
+    completed day-files while preserving the current day-file. *)
 
 type config = Coord_utils.config
 
@@ -59,6 +65,7 @@ type event =
       error_message : string option; [@default None]
       exit_code : int option; [@default None]
       stderr_excerpt : string option; [@default None]
+      failure_class : Tool_result.tool_failure_class option; [@default None]
     }
   | Tool_assigned of {
       agent_id : string;
@@ -194,6 +201,7 @@ val track_tool_called :
   ?session_id:string ->
   ?operation_id:string ->
   ?worker_run_id:string ->
+  ?failure_class:Tool_result.tool_failure_class ->
   ?error_kind:error_kind ->
   ?error_message:string ->
   ?exit_code:int ->

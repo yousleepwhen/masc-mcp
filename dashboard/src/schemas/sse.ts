@@ -60,7 +60,6 @@ const FIXED_SSE_EVENT_TYPES = new Set([
   'approval:pending',
   'approval:resolved',
   'project_snapshot',
-  'room_truth_snapshot',
   'namespace_truth_snapshot',
   'execution_snapshot',
   'operator_snapshot',
@@ -106,6 +105,8 @@ const STRING_FIELDS = new Set([
   'event',
   'tool_name',
   'error_text',
+  'tool_args_preview',
+  'tool_output_preview',
   'reason_code',
   'phase',
   'from_state',
@@ -136,7 +137,7 @@ const NUMBER_FIELDS = new Set([
   'total_turns',
 ])
 
-const BOOLEAN_FIELDS = new Set(['success', 'reacted'])
+const BOOLEAN_FIELDS = new Set(['success', 'reacted', 'tool_io_redacted'])
 
 function ok<T>(data: T): SafeParseSuccess<T> {
   return { success: true, data }
@@ -146,9 +147,7 @@ function fail<T = never>(path: string | undefined, message: string): SafeParseRe
   return { success: false, error: { issues: [{ path, message }] } }
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-}
+import { isRecord } from '../lib/type-guards'
 
 function isIgnorableMcpNotification(value: unknown): boolean {
   if (!isRecord(value)) return false

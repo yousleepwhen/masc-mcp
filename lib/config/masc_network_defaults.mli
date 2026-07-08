@@ -23,7 +23,7 @@ val ollama_default_url : string
 val ollama_port_needle : string
 
 (** Ollama native API path for the running-models ("process status")
-    endpoint. Used by {!Cascade_ollama_probe} and
+    endpoint. Used by {!Cascade_http_probe} and
     {!Tool_local_runtime_probe}. *)
 val ollama_api_ps_path : string
 
@@ -41,13 +41,18 @@ val is_ollama_url : string -> bool
 (** [/v1/chat/completions]. *)
 val openai_chat_completions_path : string
 
+(** [/chat/completions] — version-free path for [Provider_config.t] where
+    [base_url] already includes the version segment.  Matches the OAS
+    SDK's internal default in [api_provider_d.ml]. *)
+val chat_completions_path : string
+
 (** [/v1/models]. *)
 val openai_models_path : string
 
 (** {1 CLI sentinel transport} *)
 
 (** ["cli:"] — prefix marking a CLI-backed transport (e.g.
-    [cli:codex]). *)
+    [cli:agent_code]). *)
 val cli_sentinel_prefix : string
 
 (** Strict prefix match for {!cli_sentinel_prefix}. *)
@@ -77,6 +82,12 @@ val is_loopback_host : string -> bool
 
 (** Convenience for [Uri.host]-style inputs. [None] → [false]. *)
 val is_loopback_host_opt : string option -> bool
+
+val normalize_loopback_base_url : string -> string
+(** Strip trailing slashes from [base_url] and canonicalize loopback
+    aliases that can resolve to IPv6-only sockets in client libraries:
+    ["localhost"] and [[::1]] become {!masc_http_default_host}. Remote
+    hosts and IPv4 literals are preserved. *)
 
 (** {1 Vite dev frontend} *)
 

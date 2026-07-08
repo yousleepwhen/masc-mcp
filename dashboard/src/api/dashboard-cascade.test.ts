@@ -51,10 +51,10 @@ describe('dashboard cascade split', () => {
     )
     vi.stubGlobal('fetch', fetchMock)
 
-    const result = await fetchCascadeStrategyTrace({ limit: 25, cascade: 'big_three' })
+    const result = await fetchCascadeStrategyTrace({ limit: 25, cascade: 'primary' })
 
     expect(fetchMock).toHaveBeenCalledTimes(1)
-    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/v1/cascade/strategy_trace?limit=25&cascade=big_three')
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/v1/cascade/strategy_trace?limit=25&cascade=primary')
     expect(result.events).toEqual([])
   })
 
@@ -87,14 +87,14 @@ describe('dashboard cascade split', () => {
     )
     vi.stubGlobal('fetch', fetchMock)
 
-    const result = await updateKeeperCascade('sojin', 'big_three')
+    const result = await updateKeeperCascade('sojin', 'tier.ollama_cloud_primary')
 
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/v1/keeper/cascade')
     expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ method: 'POST' })
     expect(fetchMock.mock.calls[0]?.[1]?.body).toBe(JSON.stringify({
       keeper: 'sojin',
-      cascade_name: 'big_three',
+      cascade_name: 'tier.ollama_cloud_primary',
     }))
     expect(result.ok).toBe(true)
   })
@@ -103,8 +103,6 @@ describe('dashboard cascade split', () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({
         updated_at: '2026-04-22T00:00:00Z',
-        config_path: '/tmp/config/cascade.json',
-        source_kind: 'toml',
         source_path: '/tmp/config/cascade.toml',
         validation_status: 'validated',
         validation_errors: [],
@@ -118,13 +116,41 @@ describe('dashboard cascade split', () => {
     )
     vi.stubGlobal('fetch', fetchMock)
 
-    await updateCascadeConfigRaw('[big_three]\nmodels = ["glm-coding:auto"]\n')
+    const sourceText = [
+      '[providers.provider-k-coding]',
+      'protocol = "provider-d-http"',
+      'endpoint = "https://api.z.ai/api/coding/paas/v4"',
+      '',
+      '[models.provider-k-auto]',
+      'api-name = "provider-k-5-turbo"',
+      'max-context = 128000',
+      'tools-support = true',
+      '',
+      '[provider-k-coding.provider-k-auto]',
+      'is-default = true',
+      'max-concurrent = 2',
+      '',
+      '[tier.primary]',
+      'members = ["provider-k-coding.provider-k-auto"]',
+      'strategy = "failover"',
+      '',
+      '[tier-group.primary]',
+      'tiers = ["primary"]',
+      'strategy = "priority_tier"',
+      'fallback = true',
+      '',
+      '[routes.keeper_turn]',
+      'target = "tier-group.primary"',
+      '',
+    ].join('\n')
+
+    await updateCascadeConfigRaw(sourceText)
 
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/v1/cascade/config/raw')
     expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ method: 'POST' })
     expect(fetchMock.mock.calls[0]?.[1]?.body).toBe(JSON.stringify({
-      source_text: '[big_three]\nmodels = ["glm-coding:auto"]\n',
+      source_text: sourceText,
     }))
   })
 })

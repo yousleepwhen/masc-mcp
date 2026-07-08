@@ -5,13 +5,12 @@ import { CARD_STANDARD } from '../common/card'
 import { Select } from '../common/select'
 import { operatorActionBusy, operatorSnapshot } from '../../operator-store'
 import type { OperatorActionDescriptor } from '../../types'
-import { actionTypeLabel, executeAction, normalizeStatus } from './helpers'
+import { actionTypeLabel, executeAction } from './helpers'
+import { isKeeperOperatorTargetable } from '../../lib/keeper-predicates'
 
 const ADAPTED_KEEPER_ACTIONS = new Set([
   'keeper_probe',
   'keeper_recover',
-  'keeper_github_identity_status',
-  'keeper_github_identity_login_prepare',
 ])
 
 const HANDLED_ELSEWHERE_ACTIONS = new Set([
@@ -39,10 +38,6 @@ function actionDescription(action: OperatorActionDescriptor): string {
       return 'Inspect status and diagnostics for the selected keeper.'
     case 'keeper_recover':
       return 'Hand the selected keeper to the recovery flow.'
-    case 'keeper_github_identity_status':
-      return 'Inspect GitHub identity status for the selected keeper.'
-    case 'keeper_github_identity_login_prepare':
-      return 'Generate GitHub login preparation details for the selected keeper.'
     default:
       return 'Available in the server catalog; dedicated UI adapter is still pending.'
   }
@@ -55,8 +50,10 @@ export function KeeperUtilitiesPanel() {
   const actions = (snapshot?.available_actions ?? []).filter(visibleKeeperAction)
   if (actions.length === 0) return null
 
+  // Keep paused keepers action-targetable even if another axis still
+  // carries an offline-ish status.
   const onlineKeepers = (snapshot?.keepers ?? [])
-    .filter(keeper => normalizeStatus(keeper.status) !== 'offline')
+    .filter(isKeeperOperatorTargetable)
   const selectedName = onlineKeepers.some(keeper => keeper.name === selectedKeeper.value)
     ? selectedKeeper.value
     : (onlineKeepers[0]?.name ?? '')
@@ -87,7 +84,7 @@ export function KeeperUtilitiesPanel() {
           value=${selectedName}
           disabled=${busy || onlineKeepers.length === 0}
           options=${onlineKeepers.length === 0
-            ? [{ value: '', label: 'No online keepers' }]
+            ? [{ value: '', label: 'No keeper targets' }]
             : onlineKeepers.map(keeper => ({ value: keeper.name, label: keeper.name }))}
           onInput=${(v: string) => { selectedKeeper.value = v }}
         />

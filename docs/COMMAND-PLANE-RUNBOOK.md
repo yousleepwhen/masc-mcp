@@ -13,11 +13,11 @@ last_verified: 2026-04-23
 >
 > 이 문서는 purge 기간 동안 historical reference로만 남겨집니다.
 
-`masc-mcp`의 usage SSOT.
+Historical Command Plane usage note.
 
-이 문서는 `어떤 MCP tool을 어떤 순서로 써야 하는가`를 정리한다. 기본 delivery 경로는 namespace/task hygiene와 supervisor-driven supervised execution이고, managed operation은 benchmark/compatibility용 보조 경로다.
+이 문서는 retired Command Plane 흐름의 역사적 사용 순서를 정리한다. 기본 delivery 경로는 namespace/task hygiene와 supervisor-driven supervised execution이고, managed operation은 current implementation path가 아니다.
 
-merged 기준 전체 구조 요약은 [MERGED-ARCHITECTURE-SSOT.md](./MERGED-ARCHITECTURE-SSOT.md)를 본다.
+merged 기준 전체 구조 요약은 [spec/SPEC-INDEX.md](./spec/SPEC-INDEX.md)와 [spec/01-system-overview.md](./spec/01-system-overview.md)를 본다.
 
 ## 개념 맵
 
@@ -26,9 +26,9 @@ merged 기준 전체 구조 요약은 [MERGED-ARCHITECTURE-SSOT.md](./MERGED-ARC
 - `task`
   - backlog item. `masc_transition(action="claim")`은 backlog 소유권만 바꾸고 planning `current_task`는 자동으로 안 잡힌다. `masc_claim_next`는 current builds에서 planning `current_task`를 함께 맞춘다.
 - `operation`
-  - managed-operation compatibility lane의 관리 단위. default delivery path는 아니다.
+  - retired managed-operation ledger의 관리 단위. default delivery path는 아니다.
 - `session`
-  - historical supervised implementation execution unit. current codebase treats this as removed and uses command-plane operations/detachments instead.
+  - historical supervised implementation execution unit. current coordination truth is board posts + keeper FSM, not CP session/detachment state.
 - `detachment`
   - scheduler가 materialize한 실행 단위. liveness, runtime binding, heartbeat를 여기서 본다.
 - `policy decision`
@@ -72,7 +72,7 @@ Step-by-step:
 {
   "tool": "masc_join",
   "arguments": {
-    "agent_name": "codex",
+    "agent_name": "agent-code",
     "capabilities": ["ocaml", "dashboard", "documentation"]
   }
 }
@@ -82,7 +82,7 @@ Step-by-step:
 
 ```json
 {
-  "agent": "codex-...",
+  "agent": "agent-code-...",
   "status": "joined"
 }
 ```
@@ -101,9 +101,9 @@ Step-by-step:
 - `masc_plan_get_task`가 `task-058` 반환
 - dashboard에서 claimed task와 current_task가 같은 값으로 보임
 
-## Auxiliary Lane 2. Managed Operation / Benchmark Compatibility
+## Historical Lane 2. Managed Operation / Benchmark Reference
 
-이 경로는 benchmark topology proof와 command-plane compatibility coverage를 위한 보조 경로다. 기본 구현 경로로 취급하지 않는다.
+이 경로는 benchmark topology history를 읽기 위한 보조 기록이다. 기본 구현 경로로 취급하지 않는다.
 
 transport truth를 빠르게 분리하고 싶으면 먼저 `./benchmarks/quick-bench.sh` 또는 `./benchmarks/benchmark.sh`를 쓴다.
 이 두 스크립트는 반드시 `initialize -> notifications/initialized -> Mcp-Session-Id 재사용` 순서를 포함하고, `mcp_session_init`과 runtime lane을 분리해서 기록한다.
@@ -111,152 +111,193 @@ transport truth를 빠르게 분리하고 싶으면 먼저 `./benchmarks/quick-b
 
 기본 운영 가정:
 
-- `masc_operation_start` 기본 workload는 `coding_task`다.
-- `generic`은 deprecated alias로 받아들이되 내부에서는 `coding_task`로 정규화한다.
-- search strategy 기본값은 `best_first_v1`이고, `legacy`는 explicit opt-out이다.
 - `coding_task` stage는 `decompose -> inspect -> implement -> verify -> review`를 canonical graph로 본다.
+- Operation/unit/detachment tool variants were removed (no implementation existed).
 
-1. `masc_unit_define`
-   - company/platoon/squad/agent hierarchy를 만든다.
-2. `masc_operation_start`
-   - benchmark operation을 시작한다.
-3. `masc_dispatch_tick`
-   - scheduler를 한 번 돌려 detachment를 만든다.
-4. `masc_detachment_list` / `masc_detachment_status`
-   - runtime materialization, heartbeat deadline, progress를 확인한다.
-5. `masc_observe_topology` / `masc_observe_operations` / `masc_observe_alerts` / `masc_observe_traces`
-   - 상태와 이상 징후를 읽는다.
-6. `masc_policy_status`
-   - strict action이 pending approval인지 본다.
-7. `masc_policy_approve` or `masc_policy_deny`
-   - 승인이 필요한 move/freeze/kill-switch를 처리한다.
-8. `masc_operation_checkpoint`
-   - durable resume pointer를 남긴다.
-9. `masc_operation_finalize`
-   - 정상 종료 시 operation을 completed로 닫는다.
+1. `masc_operator_snapshot` / `masc_operator_digest`
+   - operator state와 active recommendation을 읽는다.
+2. `masc_operator_action` / `masc_operator_confirm`
+   - preview 후 명시 confirm이 필요한 guided action만 처리한다.
 
 ### Repo Synthesis
 
-repo-synthesis는 `masc_autoresearch_cycle` 내부에서 cycle system을 통해 dispatch된다.
-별도 front-door tool은 retired 되었다 (config.ml retired list 참조).
+repo-synthesis는 새 front-door tool을 만들지 않고, dashboard proof/report
+artifacts를 읽는 방향으로만 유지한다.
 
 - read path:
   - dashboard는 `/api/v1/dashboard/repo-synthesis`와 proof/report artifact를 읽는 read-only surface
 - raw escape hatch:
-  - 이후 세부 조율은 `masc_dispatch_tick`, `masc_operator_digest`, command-plane truth surfaces로 내려간다.
+  - 이후 세부 조율은 `masc_operator_digest`와 keeper/runtime surfaces로 내려간다.
 
-### 첫 번째 concrete example: 12-worker live harness
+### 첫 번째 concrete example: 18+ keeper fleet evidence
 
-가장 먼저 검증할 예시는 research-radar가 아니라 `synthetic live harness`다.
+가장 먼저 검증할 예시는 research-radar가 아니라 runtime truth가 남은
+keeper fleet이다. 예전 `team-session`/public `swarm` proof lane과 compatibility
+entrypoint는 retired 되었고, keeper production-readiness gate만 남긴다.
 
 실행 순서:
 
-1. 로컬 OpenAI-compatible runtime endpoint를 준비하고 `LLAMA_SERVER_URL` 또는 `OAS_LOCAL_LLM_URL`로 노출한다.
-2. `anthropic-proxy` 또는 호환 local provider를 `127.0.0.1:3034`에 둔다.
-3. repo root에서 아래를 실행한다.
+1. live keeper mutation/probe를 실행해 runtime manifests, receipts,
+   checkpoints, memory rows, tool-call logs를 남긴다.
+2. repo root에서 아래를 실행한다.
 
 ```bash
-scripts/harness_agent_swarm_live.sh
+scripts/harness/workload/agent_swarm_live.sh
 ```
-
-권장 시작 명령:
-
-```bash
-LLAMA_PRESET=qwen35-hot ~/me/scripts/llama-server.sh restart
-```
-
-hot runtime contract:
-
-- `qwen35-hot`는 `ctx=262144`를 유지한다.
-- bootstrap 단계의 외부 health check는 `/health`를 볼 수 있지만, proof/artifact 판단은 `masc_runtime_verify`만 사용한다.
-- slot 수나 ctx가 기대치보다 낮으면 자동 downgrade 없이 바로 실패한다.
 
 기본 프로파일:
 
-- 12 workers
-- lanes: `official`, `research`, `reviews`
-- roles: `discover`, `verify`, `summarize`, `audit`
-- topology: `company -> platoon -> squad`
-- operation target: single managed squad
+- 18 keepers
+- keeper별 terminal turns >= 3
+- keeper별 successful provider turns >= 3
+- receipt/checkpoint/provider-closure/memory/tool-log coverage = 100%
 
 성공 기준:
 
-- `peak_hot_slots >= 10`
-- `joined_workers = 12`
-- `current_task_bound = 12`
-- `fresh_heartbeats = 12`
-- `completed_workers = 12`
-- `final_markers_seen = 12`
-- `provider_reachable = true`
-- `actual_slots >= expected_slots`
-- `actual_ctx = expected_ctx = 262144`
-- `summary.pass = true`
+- observed keepers >= 18
+- terminal turns >= 54
+- successful provider turns >= 54
+- per-keeper evidence minimums all satisfied
+- missing linked artifacts = 0
+- `summary.status = PASS`
 
 확인 위치:
 
-- HTTP projection `GET /api/v1/command-plane/swarm?...` 는 read-model surface로 남아 있지만 canonical harness path는 아니다.
-- dashboard `Command Plane -> swarm`
+- `logs/keeper_fleet_readiness/<run-id>/summary.json`
+- `logs/keeper_fleet_readiness/<run-id>/summary.md`
+- direct gate: `scripts/keeper-production-readiness-gate.py --json ...`
 
-runtime contract 확인:
+### Docker Playground FD Hotspot
 
-- `masc_runtime_verify(expected_model=<MODEL>, expected_slots=12, expected_ctx=262144)`
-- blocker code는 `provider_unreachable`, `provider_model_mismatch`, `slot_count_insufficient`, `ctx_mismatch` 중 하나로 고정된다.
+macOS Docker Desktop can retain file descriptors for shared files under
+`.masc/playground/docker`. When stale keeper repo worktrees accumulate there,
+the hotspot can approach `kern.maxfilesperproc` even while MASC's own process
+FD count and `/health.status` look healthy.
 
-runtime blocker 예시:
+Inspect the current Docker playground fanout and any host process with open FDs
+inside it:
 
-- `provider_unreachable`
-- `provider_model_mismatch`
-- `slot_count_insufficient`
-- `ctx_mismatch`
+```bash
+scripts/docker-playground-fd-status.sh --root "$MASC_BASE_PATH/.masc/playground/docker"
+```
+
+The runtime admission guard keeps Docker playground hotspot blocking disabled by
+default (`MASC_KEEPER_HOST_FD_HOTSPOT_HEADROOM=0`). The macOS system probe
+reports `kern.num_files`, which is host-wide, not a per-process Docker Desktop
+FD count; using it as a hard per-process hotspot proxy can false-block normal
+runtime when `kern.maxfilesperproc` is merely near the current host-wide file
+count. Keep the script above as the default visibility path. Set a positive
+`MASC_KEEPER_HOST_FD_HOTSPOT_HEADROOM` only for a deliberately conservative
+operator session.
+
+The status script prints `Top worktree fanout by keeper/repo` and a
+`top_fanout_cleanup_dry_run_command=` for the largest keeper/repo bucket. Use
+that targeted dry-run first when `worktree_entries` is high but
+`top_holder_fd_count=0`; it separates broad playground pressure from an active
+Docker Desktop FD holder spike.
+
+For a broader host check, `scripts/nofile-status.sh` includes this same Docker
+playground section when `MASC_BASE_PATH` or `MASC_DOCKER_PLAYGROUND_ROOT` is
+set. Its `hotspot_status=warning` output is advisory: review the printed
+cleanup dry-run command before removing anything.
+
+If `top_holder_fd_count` remains high after stale worktree cleanup, Docker
+Desktop's macOS file sharing layer may still be retaining already-removed
+shared-file FDs. In that case the status script prints
+`docker_desktop_restart_recommended=true`; verify no critical containers are
+running, restart Docker Desktop, then rerun the status check.
+
+Review stale clean worktree candidates first:
+
+```bash
+scripts/cleanup-docker-playground-worktrees.sh \
+  --root "$MASC_BASE_PATH/.masc/playground/docker" \
+  --repo masc-mcp \
+  --days 7
+```
+
+Apply only after reviewing the `CANDID` lines:
+
+```bash
+scripts/cleanup-docker-playground-worktrees.sh \
+  --root "$MASC_BASE_PATH/.masc/playground/docker" \
+  --repo masc-mcp \
+  --days 7 \
+  --apply
+```
+
+The cleanup path is conservative: dry-run by default, skips dirty or
+runtime-referenced worktrees, removes clean git worktrees through
+`git worktree remove`, and leaves branches intact.
+
+If the dry-run reports `BROKEN` entries, review them separately. They are not
+removed unless the operator explicitly opts in:
+
+```bash
+scripts/cleanup-docker-playground-worktrees.sh \
+  --root "$MASC_BASE_PATH/.masc/playground/docker" \
+  --repo masc-mcp \
+  --days 7 \
+  --include-broken
+```
+
+Then apply with both `--include-broken` and `--apply` only after confirming the
+`BROKEN_CANDID` paths are stale orphan directories.
+
+### Local Dune FD Containment
+
+Local OCaml verification must go through the repo wrapper:
+
+```bash
+scripts/dune-local.sh build <target>
+```
+
+The wrapper serializes local Dune builds across worktrees. Shared server
+startup (`start-masc-mcp.sh`), local production deploys, and the contract
+harness bootstrap also route rebuilds through this wrapper. A direct `dune
+build`, `dune test`, `dune exec`, or `dune clean` bypasses that machine-wide
+lock and can recreate host-wide FD pressure or mutate `_build` outside the
+shared lock even when every cooperative build uses `DUNE_JOBS=1`.
+
+Inspect live pressure and bypasses:
+
+```bash
+scripts/nofile-status.sh
+```
+
+`potential bare dune bypasses` should be `none`. If a row appears, stop that
+process and rerun the command via `scripts/dune-local.sh`. New wrapper
+invocations fail fast while a live unwrapped Dune process exists, unless the
+operator explicitly sets `MASC_DUNE_ALLOW_BARE_DUNE=1` for a one-off emergency.
+
+When a misbehaving session is repeatedly spawning unwrapped local builds, use an
+explicit remediation mode instead of running full `lsof` dumps:
+
+```bash
+scripts/nofile-status.sh --kill-bare-dune
+scripts/nofile-status.sh --watch 2 --kill-bare-dune --kill-repo-scans
+```
+
+The kill flags only target rows already classified by the status script:
+unwrapped Dune bypasses and broad `find`/`bfs` scans over `~/me` or `masc-mcp`.
+Wrapped `scripts/dune-local.sh` builds remain visible but are not terminated.
+
+`orphaned dune-local lock waiters` should also be `none`. A PPID 1 `lockf` or
+`flock` row is no longer attached to the agent session that started it; after
+confirming it is not the current lock holder, terminate the orphaned waiter so it
+does not take the Dune lock later and extend the local build queue.
+
+대표 failure class:
+
+- `keeper_count < expected_keepers`
+- `keeper <name> success_provider_turns < min`
+- `provider_closure_pct < 100`
+- `tool_log_coverage_pct < 100`
+- `missing_artifacts > 0`
 
 ### 최소 HTTP 예시
 
-```http
-POST /api/v1/command-plane/operations
-x-masc-agent-name: codex
-Content-Type: application/json
-
-{
-  "assigned_unit_id": "squad-research-normalize",
-  "objective": "Normalize and verify latest AI research items",
-  "autonomy_level": "L4_Autonomous",
-  "policy_class": "guarded"
-}
-```
-
-예상 응답 핵심 필드:
-
-```json
-{
-  "status": "ok",
-  "result": {
-    "operation_id": "op-...",
-    "trace_id": "trace-...",
-    "status": "active"
-  }
-}
-```
-
-주의:
-
-- HTTP mutating call에서 `x-masc-agent` 또는 `x-masc-agent-name`, 혹은 `agent_name` query를 안 주면 actor가 `dashboard`로 기록된다.
-- trace / operation `created_by` attribution이 중요하면 header를 반드시 붙인다.
-
-그 다음 바로:
-
-```http
-POST /api/v1/command-plane/dispatch/tick
-Content-Type: application/json
-
-{
-  "operation_id": "op-..."
-}
-```
-
-예상 상태 변화:
-
-- `masc_detachment_list`에 detachment가 생김
-- dashboard `Operations`에서 detachment card가 보임
+Operation/unit/detachment command-plane HTTP endpoints were removed (no tool implementation existed).
 
 ## Golden Path 3. Supervised Execution
 
@@ -269,7 +310,7 @@ Content-Type: application/json
 1. `masc_operator_snapshot`
 2. `masc_operator_digest`
    - namespace/session 상태를 operator-friendly하게 요약한다.
-   - command-plane search/microarch signal은 여기서 먼저 읽고, 더 자세한 정보가 필요할 때만 full command-plane surface로 내려간다.
+   - current operator context는 board posts, keeper FSM, and dashboard read models에서 읽는다.
 3. `masc_operator_action`
 4. `masc_operator_confirm`
 5. ~`masc_team_session_events` (removed)~
@@ -294,11 +335,7 @@ Removed. `masc_team_session_*` tool family, `team_session_swarm_runner.ml`, and 
 - agent가 roster에 없다: `masc_join`
 - task는 claimed인데 current_task가 없다: `masc_plan_set_task`
 - agent가 stale/zombie처럼 보인다: `masc_heartbeat`
-- managed unit가 없다: `masc_unit_define`
-- operation이 없다: `masc_operation_start`
-- active op는 있는데 detachment가 없다: `masc_dispatch_tick`
-- strict action이 멈춰 있다: `masc_policy_status` -> `masc_policy_approve` or `masc_policy_deny`
-- detachment가 stalled다: `masc_dispatch_tick`, 필요 시 `masc_policy_status`
+- strict action이 멈춰 있다: `masc_operator_snapshot` 후 `masc_operator_confirm`
 
 ## 자주 틀리는 포인트
 
@@ -335,7 +372,7 @@ Removed. `masc_team_session_*` tool family, `team_session_swarm_runner.ml`, and 
 - operation은 보이는데 runtime이 없음
 
 정리:
-- `masc_dispatch_tick`을 아직 안 돌렸거나
+- operation이 아직 시작되지 않았거나
 - target unit가 blocked/frozen/approval pending 상태일 수 있음
 
 ### 5. worker가 이미 leave 했는데 swarm 화면에서 빠져 보임

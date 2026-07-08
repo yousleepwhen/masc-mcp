@@ -29,6 +29,8 @@ let assoc_without key fields =
 
 let assoc_set key value fields = (key, value) :: assoc_without key fields
 
+;;
+
 let assoc_get key = function
   | `Assoc fields -> List.assoc_opt key fields
   | _ -> None
@@ -39,15 +41,9 @@ let assoc_keys = function
   | _ -> []
 ;;
 
-let trim_nonempty_opt = function
-  | Some raw ->
-    let value = String.trim raw in
-    if value = "" then None else Some value
-  | None -> None
-;;
 
 let json_trimmed_string_opt key json =
-  Safe_ops.json_string_opt key json |> trim_nonempty_opt
+  Safe_ops.json_string_opt key json |> String_util.option_trim
 ;;
 
 let json_string_list_normalized key json =
@@ -159,11 +155,6 @@ let field_catalog_entries =
         "Self-model desires statement. Overrides the keeper environment default."
       ()
   ; field_catalog_entry
-      ~path:"keeper.policy_voice_enabled"
-      ~typ:"boolean"
-      ~field_effect:"Whether persona-created keepers should surface voice tools."
-      ()
-  ; field_catalog_entry
       ~path:"keeper.mention_targets"
       ~typ:"string[]"
       ~default:(`String "[<handle>]")
@@ -199,26 +190,6 @@ let field_catalog_entries =
         ~path:"keeper.shards"
         ~typ:"string[]"
         ~field_effect:"Persona-specific prompt shards applied after keeper creation."
-        ()
-    ; field_catalog_entry
-        ~path:"keeper.work_discovery_enabled"
-        ~typ:"boolean"
-        ~field_effect:"Enables config-driven proactive work scanning for the keeper."
-        ()
-    ; field_catalog_entry
-        ~path:"keeper.work_discovery_sources"
-        ~typ:"string[]"
-        ~field_effect:"Named work discovery sources considered by proactive scanning."
-        ()
-    ; field_catalog_entry
-        ~path:"keeper.work_discovery_interval_sec"
-        ~typ:"integer"
-        ~field_effect:"Interval for proactive work discovery checks."
-        ()
-    ; field_catalog_entry
-        ~path:"keeper.work_discovery_guidance"
-        ~typ:"string"
-        ~field_effect:"Additional guidance used during proactive work discovery."
         ()
     ; field_catalog_entry
         ~path:"keeper.telemetry_feedback_enabled"
@@ -373,10 +344,13 @@ let schema_json ?(include_examples = false) () =
      @ examples)
 ;;
 
-let handle_persona_schema _ctx args =
+(* RFC-0182 §3.1 — ctx-free body shared with Persona_dispatch_ref path. *)
+let handle_persona_schema_no_ctx args =
   let include_examples = get_bool args "include_examples" false in
-  true, Yojson.Safe.to_string (schema_json ~include_examples ())
+  Keeper_types.tool_result_ok (Yojson.Safe.to_string (schema_json ~include_examples ()))
 ;;
+
+let handle_persona_schema _ctx args = handle_persona_schema_no_ctx args
 
 let validate_unknown_keeper_fields keeper_json =
   assoc_keys keeper_json
@@ -402,8 +376,7 @@ let normalize_cascade_name raw =
     | _ -> []
   in
   let known =
-    Keeper_cascade_profile.known_cascades
-    @ Keeper_config.phase_routing_cascade_names
+    Keeper_config.phase_routing_cascade_names
     @ catalog
   in
   if List.mem (String.lowercase_ascii normalized) known
@@ -502,20 +475,13 @@ let normalize_keeper_json ~handle keeper_json =
                    ]
                  in
                  let fields =
-                   [ "will"
-                   ; "needs"
-                   ; "desires"
-                   ; "instructions"
-                   ; "work_discovery_guidance"
-                   ]
+                   [ "will"; "needs"; "desires"; "instructions" ]
                    |> List.fold_left
                         (fun acc key -> add_optional_string key acc keeper_json)
                         fields
                  in
                  let fields =
-                   [ "policy_voice_enabled"
-                   ; "room_signal_prompt_enabled"
-                   ; "work_discovery_enabled"
+                   [ "room_signal_prompt_enabled"
                    ; "telemetry_feedback_enabled"
                    ; "always_approve"
                    ]
@@ -526,7 +492,6 @@ let normalize_keeper_json ~handle keeper_json =
                  let fields =
                    [ "proactive_idle_sec"
                    ; "proactive_cooldown_sec"
-                   ; "work_discovery_interval_sec"
                    ; "telemetry_feedback_window_hours"
                    ; "max_turns_per_call"
                    ; "max_turns_per_call_scheduled_autonomous"
@@ -539,10 +504,7 @@ let normalize_keeper_json ~handle keeper_json =
                    add_optional_float "per_provider_timeout" fields keeper_json
                  in
                  let fields =
-                   [ "tool_denylist"
-                   ; "shards"
-                   ; "work_discovery_sources"
-                   ]
+                   [ "tool_denylist"; "shards" ]
                    |> List.fold_left
                         (fun acc key -> add_optional_string_list key acc keeper_json)
                         fields
@@ -559,7 +521,11 @@ let normalize_keeper_json ~handle keeper_json =
                  in
                  `Assoc (List.rev fields))
               cascade_name_result)))
-  | _ -> Error "profile.keeper must be an object"
+  | other ->
+    Error
+      (Printf.sprintf
+         "profile.keeper must be an object (received %s)"
+         (Json_util.kind_name other))
 ;;
 
 let normalize_profile ~handle profile =
@@ -587,7 +553,11 @@ let normalize_profile ~handle profile =
            |> assoc_set "keeper" keeper
          in
          Ok (`Assoc (List.rev top_fields)))
-    | _ -> Error "profile must be a JSON object")
+    | other ->
+      Error
+        (Printf.sprintf
+           "profile must be a JSON object (received %s)"
+           (Json_util.kind_name other)))
 ;;
 
 let ensure_personas_root root =
@@ -651,74 +621,26 @@ let save_result_to_json ?(dry_run = false) result =
     ]
 ;;
 
-let handle_persona_save _ctx args =
+(* RFC-0182 §3.1 — ctx-free body shared with Persona_dispatch_ref path. *)
+let handle_persona_save_no_ctx args =
   let handle = get_string args "handle" "" |> String.trim in
   let overwrite = get_bool args "overwrite" false in
   let dry_run = get_bool args "dry_run" false in
   match assoc_get "profile" args with
-  | None -> false, error_response_typed ~code:Validation_error "profile is required"
+  | None ->
+    Keeper_types.tool_result_error
+      (error_response_typed ~code:Validation_error "profile is required")
   | Some profile ->
     (match save_persona ~overwrite ~dry_run ~handle profile with
-     | Error msg -> false, error_response_typed ~code:Validation_error msg
-     | Ok result -> true, Yojson.Safe.to_string (save_result_to_json ~dry_run result))
+     | Error msg ->
+       Keeper_types.tool_result_error (error_response_typed ~code:Validation_error msg)
+     | Ok result ->
+       Keeper_types.tool_result_ok (Yojson.Safe.to_string (save_result_to_json ~dry_run result)))
 ;;
 
-let ascii_slug_char = function
-  | 'A' .. 'Z' as c -> Some (Char.lowercase_ascii c)
-  | 'a' .. 'z' as c -> Some c
-  | '0' .. '9' as c -> Some c
-  | ('.' | '_' | '-') as c -> Some c
-  | ' ' | '\t' | '\n' | '\r' -> Some '-'
-  | _ -> None
-;;
+let handle_persona_save _ctx args = handle_persona_save_no_ctx args
 
-let collapse_dashes raw =
-  let b = Buffer.create (String.length raw) in
-  let last_dash = ref false in
-  String.iter
-    (fun c ->
-       if Char.equal c '-'
-       then (
-         if not !last_dash then Buffer.add_char b c;
-         last_dash := true)
-       else (
-         Buffer.add_char b c;
-         last_dash := false))
-    raw;
-  Buffer.contents b
-;;
-
-let trim_dashes raw =
-  let len = String.length raw in
-  let rec left i =
-    if i >= len then len else if Char.equal raw.[i] '-' then left (i + 1) else i
-  in
-  let rec right i =
-    if i < 0 then -1 else if Char.equal raw.[i] '-' then right (i - 1) else i
-  in
-  let l = left 0 in
-  let r = right (len - 1) in
-  if l > r then "" else String.sub raw l (r - l + 1)
-;;
-
-let handle_from_concept concept =
-  let b = Buffer.create (String.length concept) in
-  String.iter
-    (fun c ->
-       match ascii_slug_char c with
-       | Some normalized -> Buffer.add_char b normalized
-       | None -> ())
-    concept;
-  let candidate = Buffer.contents b |> collapse_dashes |> trim_dashes in
-  let candidate =
-    if String.length candidate > 48
-    then String.sub candidate 0 48 |> trim_dashes
-    else candidate
-  in
-  if Keeper_config.validate_name candidate
-  then candidate
-  else "persona-" ^ String.sub (Digest.to_hex (Digest.string concept)) 0 8
-;;
+let handle_from_concept = Keeper_persona_authoring_slug.handle_from_concept
 
 let normalize_choice_arg ~field ~choices raw =
   let normalized = String.trim raw |> String.lowercase_ascii in
@@ -734,7 +656,7 @@ let normalize_choice_arg ~field ~choices raw =
 ;;
 
 let optional_choice_arg ~field ~choices args =
-  match get_string_opt args field |> trim_nonempty_opt with
+  match get_string_opt args field |> String_util.option_trim with
   | None -> Ok None
   | Some raw ->
     Result.map
@@ -899,7 +821,7 @@ let field_explanations_payload json =
 
 let handle_persona_generate ctx args =
   match get_string_required args "concept" with
-  | Error error_json -> false, error_json
+  | Error error_json -> Keeper_types.tool_result_error error_json
   | Ok concept ->
     let requested_handle =
       match get_string_opt args "handle" with
@@ -913,11 +835,14 @@ let handle_persona_generate ctx args =
     in
     if not (Keeper_config.validate_name fallback_handle)
     then
-      ( false
-      , error_response_typed ~code:Validation_error "handle must match [A-Za-z0-9._-]+" )
+      Keeper_types.tool_result_error
+        (error_response_typed
+           ~code:Validation_error
+           "handle must match [A-Za-z0-9._-]+")
     else (
       match selected_archetype_axes_from_args args with
-      | Error msg -> false, error_response_typed ~code:Validation_error msg
+      | Error msg ->
+        Keeper_types.tool_result_error (error_response_typed ~code:Validation_error msg)
       | Ok archetype_axes ->
            let cascade_name =
              get_string args "cascade_name" Archetypes.default_generation_cascade_name
@@ -957,7 +882,7 @@ let handle_persona_generate ctx args =
              Masc_oas_bridge.run_with_caller
                ~caller:Env_config_oas_bridge.Keeper_persona_authoring
                (fun () ->
-                 Oas_worker.run_named
+                 Keeper_turn_driver.run_named
                    ~cascade_name
                    ~goal:prompt
                    ~max_turns:1
@@ -969,24 +894,24 @@ let handle_persona_generate ctx args =
                    ())
            with
            | Error err ->
-             ( false
-             , error_response_typed
-                 ~code:Internal_error
-                 (Printf.sprintf
-                    "persona generation failed: %s"
-                    (Agent_sdk.Error.to_string err)) )
+             Keeper_types.tool_result_error
+               (error_response_typed
+                  ~code:Internal_error
+                  (Printf.sprintf
+                     "persona generation failed: %s"
+                     (Agent_sdk.Error.to_string err)))
            | Ok result ->
-             let raw_text = Oas_response.text_of_response result.Oas_worker.response in
+             let raw_text = Agent_sdk_response.text_of_response result.Cascade_runner.response in
              (try
                 let parsed = Llm_provider.Lenient_json.parse raw_text in
                 let handle = parsed_handle_payload fallback_handle parsed in
                 let profile = parsed_profile_payload parsed in
                 match normalize_profile ~handle profile with
                 | Error msg ->
-                  ( false
-                  , error_response_typed
-                      ~code:Validation_error
-                      (Printf.sprintf "generated profile is invalid: %s" msg) )
+                  Keeper_types.tool_result_error
+                    (error_response_typed
+                       ~code:Validation_error
+                       (Printf.sprintf "generated profile is invalid: %s" msg))
                 | Ok normalized ->
                   let json =
                     `Assoc
@@ -1008,11 +933,10 @@ let handle_persona_generate ctx args =
                         , `Assoc [ "persona_name", `String handle; "dry_run", `Bool true ] )
                       ]
                   in
-                  true, Yojson.Safe.to_string json
+                  Keeper_types.tool_result_ok (Yojson.Safe.to_string json)
               with
               | Yojson.Json_error msg ->
-                ( false
-                , error_response_typed
-                    ~code:Validation_error
-                    (Printf.sprintf "generation did not return parseable JSON: %s" msg) )))
-;;
+                Keeper_types.tool_result_error
+                  (error_response_typed
+                     ~code:Validation_error
+                     (Printf.sprintf "generation did not return parseable JSON: %s" msg)) ))

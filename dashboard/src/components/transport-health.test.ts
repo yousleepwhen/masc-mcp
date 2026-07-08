@@ -7,12 +7,12 @@ import {
   formatHitRate,
   formatAvgBufferedBytes,
   shouldRefreshFromEvent,
-  formatLatency,
+  formatLatencyFromSeconds,
   formatFloat,
   formatIdle,
   compactId,
   statusDot,
-  toneClass,
+  toneTextClass,
   queuePressureTone,
   sseTone,
   transportTone,
@@ -110,8 +110,6 @@ function sampleResponse(overrides?: Partial<Record<string, unknown>>) {
       managed_endpoint: '/mcp/managed',
       operator_endpoint: '/mcp/operator',
       delete_endpoint: '/mcp',
-      legacy_sse_endpoint: '/sse',
-      legacy_messages_endpoint: '/messages',
       default_transport: 'streamable_http',
       supports_post: true,
       supports_sse_upgrade: true,
@@ -542,7 +540,7 @@ describe('shouldRefreshFromEvent', () => {
   })
 })
 
-describe('formatLatency', () => {
+describe('formatLatencyFromSeconds', () => {
   it.each([
     [0, '-'],
     [0.0000005, '1us'],
@@ -550,8 +548,8 @@ describe('formatLatency', () => {
     [0.5, '500.0ms'],
     [1.234, '1.23s'],
     [60, '60.00s'],
-  ] as const)('formatLatency(%s) → %s', (input, expected) => {
-    expect(formatLatency(input)).toBe(expected)
+  ] as const)('formatLatencyFromSeconds(%s) → %s', (input, expected) => {
+    expect(formatLatencyFromSeconds(input)).toBe(expected)
   })
 })
 
@@ -603,13 +601,13 @@ describe('statusDot', () => {
   })
 })
 
-describe('toneClass', () => {
+describe('toneTextClass', () => {
   it.each([
     ['ok', 'text-[var(--color-status-ok)]'],
     ['warn', 'text-[var(--color-status-warn)]'],
     ['bad', 'text-[var(--color-status-err)]'],
-  ] as const)('toneClass(%s) → %s', (input, expected) => {
-    expect(toneClass(input as StatusTone)).toBe(expected)
+  ] as const)('toneTextClass(%s) → %s', (input, expected) => {
+    expect(toneTextClass(input as StatusTone)).toBe(expected)
   })
 })
 
@@ -747,8 +745,6 @@ function makeData(overrides?: Partial<TransportHealthData>): TransportHealthData
       managed_endpoint: '/mcp/managed',
       operator_endpoint: '/mcp/operator',
       delete_endpoint: '/mcp',
-      legacy_sse_endpoint: '/sse',
-      legacy_messages_endpoint: '/messages',
       default_transport: 'streamable_http',
       supports_post: true,
       supports_sse_upgrade: true,

@@ -10,7 +10,9 @@ module Http_client = struct
     | Accept_rejected_capability_mismatch
     | Accept_rejected_terminal
     | Cli_transport_required
+    | Tls_error
     | Network_error
+    | Provider_timeout
     | Provider_terminal
         (** OAS [ProviderTerminal] — provider has signalled a terminal
             condition (e.g. claude_cli [error_max_turns]). Treat as
@@ -19,7 +21,7 @@ module Http_client = struct
             collapsed here because [should_cascade] only needs the
             terminality bit; consumers wanting the message extract it
             via the original [ProviderTerminal] match. *)
-    | Provider_capacity_exhausted
+    | Provider_capacity_backpressure
     | Provider_hard_quota
     | Provider_capability_mismatch
     | Provider_cli_policy_invalid
@@ -51,27 +53,27 @@ module Http_client = struct
         (** Provider explicitly reports that the requested model or
             capability is not supported.
             Originally detected via [contains_ci "does not support"]
-            (M05).  Covers codex_cli [runtime_mcp_auth] /
+            (M05).  Covers cli_tool_a [runtime_mcp_auth] /
             [tool_support] InvalidConfig wrappers built in
             [oas_worker_exec_transport.ml].  Another provider in the
             cascade may support the capability. *)
     | Request_rejected
         (** Provider subprocess exited with a permanent rejection.
             Originally detected via [contains_ci "rejected the request"]
-            (M05).  Canonical case: kimi_cli exit 1 — the auth/config
-            error is Moonshot-specific; other providers are unaffected.
+            (M05).  Canonical case: cli_tool_c exit 1 — the auth/config
+            error is provider-local; other providers are unaffected.
             See masc-mcp #9932. *)
     | Startup_crash
         (** Provider CLI crashed before processing the request.
             Originally detected via [contains_ci "startup crash"] (M05).
-            Covers gemini_cli top-level-await / yoga_wasm and kimi_cli
+            Covers cli_tool_b top-level-await / yoga_wasm and cli_tool_c
             process-title UnicodeDecodeError.  The CLI source marks
             these "so the cascade can move on". *)
 
   let classify_provider_failure_kind =
     let module H = Llm_provider.Http_client in
     function
-    | H.Capacity_exhausted _ -> Provider_capacity_exhausted
+    | H.Capacity_exhausted _ -> Provider_capacity_backpressure
     | H.Hard_quota _ -> Provider_hard_quota
     | H.Capability_mismatch _ -> Provider_capability_mismatch
     | H.Cli_policy_invalid _ -> Provider_cli_policy_invalid
@@ -85,6 +87,7 @@ module Http_client = struct
      needs updating.  Downstream cascade code uses [retryable_error]
      variants, not raw strings. *)
 
+  let needle_http_body_parse_error = "can't find closing"
   let max_scan_bytes = 512
 
   (* Case-insensitive substring check — O(n*m) but the haystack scan is
@@ -115,25 +118,29 @@ module Http_client = struct
       failure marker; [None] for reasons with no recognised marker
       (e.g. [output_schema] violations), which remain terminal
       ([Accept_rejected_terminal]). *)
+  (** Mapping table from string markers to [retryable_error] variants.
+      Keeping needles separate from the matching loop makes the mapping
+      explicit, reduces duplication, and makes new markers a one-line
+      change. *)
+  let accept_rejected_rules : (string list * retryable_error) list =
+    [ [ "does not support"; "required_tool_lane_unavailable" ], Model_unsupported
+    ; [ "rejected the request" ], Request_rejected
+    ; [ "startup crash" ], Startup_crash
+    ]
+
   let classify_accept_rejected reason : retryable_error option =
-    (* Model/capability unsupported — MASC worker-layer wrapping of OAS
-       InvalidConfig errors (#9850). *)
-    if contains_ci_scan_limited ~haystack:reason ~needle:"does not support" then
-      Some Model_unsupported
-    (* kimi_cli permanent auth/config/model rejection (#9932). *)
-    else if contains_ci_scan_limited ~haystack:reason ~needle:"rejected the request" then
-      Some Request_rejected
-    (* gemini_cli / kimi_cli CLI startup failures. *)
-    else if contains_ci_scan_limited ~haystack:reason ~needle:"startup crash" then
-      Some Startup_crash
-    else
-      None
+    List.find_map
+      (fun (needles, err) ->
+         if List.exists (fun needle -> contains_ci_scan_limited ~haystack:reason ~needle) needles
+         then Some err
+         else None)
+      accept_rejected_rules
 
   (** Return [true] when an HTTP 400/422 body signals a provider-side
       JSON parse failure (M04).
       Ollama fails with "can't find closing '}'" on large bodies (~175 KB+). *)
   let is_http_body_parse_error body =
-    contains_ci_scan_limited ~haystack:body ~needle:"can't find closing"
+    contains_ci_scan_limited ~haystack:body ~needle:needle_http_body_parse_error
 
   let classify (err : Llm_provider.Http_client.http_error) :
       cascade_failure_class =
@@ -168,11 +175,14 @@ module Http_client = struct
           Provider_terminal
       | Llm_provider.Http_client.ProviderFailure { kind; _ } ->
           classify_provider_failure_kind kind
-      | Llm_provider.Http_client.NetworkError _ -> Network_error
+      | Llm_provider.Http_client.TimeoutError _ -> Provider_timeout
+      | Llm_provider.Http_client.NetworkError { kind; _ } ->
+          if kind = Llm_provider.Http_client.Tls_error then Tls_error else Network_error
 
   let should_cascade (err : Llm_provider.Http_client.http_error) : bool =
     match classify err with
     | Local_resource_exhaustion
+    | Tls_error
     | Terminal_http _
     | Accept_rejected_terminal
     | Provider_terminal ->
@@ -183,7 +193,8 @@ module Http_client = struct
     | Accept_rejected_capability_mismatch
     | Cli_transport_required
     | Network_error
-    | Provider_capacity_exhausted
+    | Provider_timeout
+    | Provider_capacity_backpressure
     | Provider_hard_quota
     | Provider_capability_mismatch
     | Provider_cli_policy_invalid
@@ -195,6 +206,10 @@ module Http_client = struct
   let error_message (err : Llm_provider.Http_client.http_error) : string =
     match err with
     | Llm_provider.Http_client.NetworkError { message; _ } -> message
+    | Llm_provider.Http_client.TimeoutError { message; phase } ->
+        Printf.sprintf "provider timeout: %s: %s"
+          (Llm_provider.Http_client.timeout_phase_to_label phase)
+          message
     | Llm_provider.Http_client.AcceptRejected { reason } -> reason
     | Llm_provider.Http_client.CliTransportRequired { kind } ->
         Printf.sprintf "%s provider requires a CLI transport" kind
@@ -234,6 +249,9 @@ module Metrics = struct
   let default_request_end ~model_id:_ ~latency_ms:_ = ()
   let default_error ~model_id:_ ~error:_ = ()
   let default_http_status ~provider:_ ~model_id:_ ~status:_ = ()
+  let default_circuit_state ~provider:_ ~model_id:_ ~provider_key:_ ~state:_ =
+    ()
+
   let default_capability_drop ~model_id:_ ~field:_ = ()
   let default_retry ~provider:_ ~model_id:_ ~attempt:_ = ()
 
@@ -241,13 +259,25 @@ module Metrics = struct
       =
     ()
 
+  let default_tool_calls ~provider:_ ~model_id:_ ~count:_ = ()
+
+  let default_streaming_first_chunk ~provider:_ ~model_id:_ ~ttfrc_ms:_ = ()
+
+  let default_streaming_chunk ~provider:_ ~model_id:_ ~chunk_index:_
+      ~inter_chunk_ms:_ =
+    ()
+
   let make ?(on_cache_hit = default_model_hook)
       ?(on_cache_miss = default_model_hook)
       ?(on_request_start = default_model_hook)
       ?(on_request_end = default_request_end) ?(on_error = default_error)
       ?(on_http_status = default_http_status)
+      ?(on_circuit_state = default_circuit_state)
       ?(on_capability_drop = default_capability_drop)
-      ?(on_retry = default_retry) ?(on_token_usage = default_token_usage) ()
+      ?(on_retry = default_retry) ?(on_token_usage = default_token_usage)
+      ?(on_tool_calls = default_tool_calls)
+      ?(on_streaming_first_chunk = default_streaming_first_chunk)
+      ?(on_streaming_chunk = default_streaming_chunk) ()
       : Llm_provider.Metrics.t =
     {
       on_cache_hit;
@@ -256,8 +286,12 @@ module Metrics = struct
       on_request_end;
       on_error;
       on_http_status;
+      on_circuit_state;
       on_capability_drop;
       on_retry;
       on_token_usage;
+      on_tool_calls;
+      on_streaming_first_chunk;
+      on_streaming_chunk;
     }
 end

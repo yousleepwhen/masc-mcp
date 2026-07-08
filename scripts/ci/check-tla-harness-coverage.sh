@@ -8,26 +8,13 @@ cd "$(git rev-parse --show-toplevel)"
 
 known_unchecked_specs() {
   cat <<'EOF'
-specs/boundary/CascadeKeeperRecovery.tla
-specs/boundary/CascadeStrategy.tla
-specs/boundary/CascadeStrategyStateful.tla
-specs/boundary/KeeperRecoveryOrchestration.tla
-specs/boundary/KeeperTurnScheduler.tla
-specs/checkpoint-trim/CheckpointTrim.tla
-specs/closure/ContractClosure.tla
-specs/keeper-state-machine/KeeperConditionsGovernPhase.tla
-specs/keeper-state-machine/KeeperCounterCausality.tla
-specs/keeper-state-machine/KeeperDwellMonotone.tla
-specs/keeper-state-machine/KeeperMemoryLifecycle.tla
-specs/keeper-state-machine/KeeperOutcomesConservation.tla
-specs/keeper-state-machine/KeeperReconcileLiveness.tla
-specs/keeper-state-machine/KeeperSocialModelMagenticLedger.tla
-specs/keeper-state-machine/KeeperWorkPipeline.tla
-# KeeperAdmissionLiveness: cfg-backed spec for admission liveness invariant;
-# wiring into tla-check.sh requires TLC module deps not yet available.
-specs/keeper-state-machine/KeeperAdmissionLiveness.tla
-specs/server-state/ServerState.tla
-specs/social-state-cap/SocialStateCap.tla
+# RFC-0065 cfg-backed specs are design/projection coverage and are not wired
+# into scripts/tla-check.sh yet.
+specs/keeper-state-machine/KeeperCascadeAttemptFSM.tla
+specs/keeper-state-machine/KeeperCascadeRouting.tla
+specs/keeper-state-machine/KeeperPostTurnOrchestration.tla
+specs/keeper-state-machine/KeeperRolloverDecision.tla
+specs/keeper-state-machine/KeeperToolSurface.tla
 EOF
 }
 

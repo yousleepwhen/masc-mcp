@@ -28,7 +28,6 @@ type handler_binding =
   | Direct of Tool_dispatch.handler
   | Shared of Tool_dispatch.handler
   | Tag_dispatch
-  | Match_chain
 
 type t = {
   name : string;
@@ -38,10 +37,10 @@ type t = {
   handler_binding : handler_binding;
   is_read_only : bool;
   requires_join : bool;
+  mcp_context_required : bool;
   is_destructive : bool;
   is_idempotent : bool;
   visibility : Tool_catalog.visibility;
-  lifecycle : Tool_catalog.lifecycle;
   implementation_status : Tool_catalog.implementation_status;
   canonical_name : string option;
   replacement : string option;
@@ -63,10 +62,10 @@ val create :
   handler_binding:handler_binding ->
   ?is_read_only:bool ->
   ?requires_join:bool ->
+  ?mcp_context_required:bool ->
   ?is_destructive:bool ->
   ?is_idempotent:bool ->
   ?visibility:Tool_catalog.visibility ->
-  ?lifecycle:Tool_catalog.lifecycle ->
   ?implementation_status:Tool_catalog.implementation_status ->
   ?canonical_name:string ->
   ?replacement:string ->
@@ -80,16 +79,14 @@ val create :
 (** Build a tool spec. The first five arguments are required (compile error
     if omitted). All optional arguments default to fail-closed values:
     booleans to [false], options to [None], visibility to [Default],
-    lifecycle to [Active], implementation_status to [Real]. *)
+    implementation_status to [Real]. *)
 
 (** {1 Registration} *)
 
 val register : t -> unit
 (** Register a tool spec into all dispatch subsystems atomically:
     - [Tool_dispatch.register_module_tag] (tag + schema)
-    - [Tool_dispatch.init_read_only_set] (if [is_read_only])
-    - [Tool_dispatch.init_requires_join_set] (if [requires_join])
-    - [Tool_catalog.register_metadata] (visibility, lifecycle, semantic flags)
+    - [Tool_catalog.register_metadata] (visibility and semantic flags)
 
     @raise Invalid_argument if [name] is empty. *)
 
@@ -106,7 +103,7 @@ val to_tool_schema : t -> Masc_domain.tool_schema
 val verify_handler_coverage : unit -> string list
 (** Returns tool names that were registered via [register] with [Direct] or
     [Shared] binding but have no handler in [Tool_dispatch]. [Tag_dispatch]
-    and [Match_chain] bindings are excluded. Call after server initialization
-    completes. Empty list means full coverage. *)
+    bindings are excluded. Call after server initialization completes.
+    Empty list means full coverage. *)
 
 val all_registered_names : unit -> string list

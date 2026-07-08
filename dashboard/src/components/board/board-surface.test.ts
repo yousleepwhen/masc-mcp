@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { BoardSurface } from './board-surface'
 import { boardPosts, boardLoading, boardSortMode, boardExcludeSystem, boardExcludeAutomation, boardHiddenCategories, boardAuthorFilter, boardHearthFilter, boardHasMore, boardLoadingMore, messages, shellAuthSummary } from '../../store'
 import { route } from '../../router'
-import { PAGE_SIZE, boardHearths, boardHearthsError, categoryVisibleLimits, contentCategory, newPostHearth, newPostSubmitting, showNewPostForm } from './board-state'
+import { PAGE_SIZE, boardFlairs, boardFlairsError, boardHearths, boardHearthsError, categoryVisibleLimits, contentCategory, newPostFlair, newPostHearth, newPostSubmitting, showNewPostForm, subBoardOptions, subBoardOptionsError } from './board-state'
 import { boardLatencyMetrics, resetBoardLatencyMetrics } from '../../board-metrics'
 import type { BoardPost } from '../../types'
 
@@ -28,6 +28,7 @@ vi.mock('../../api', () => ({
   fetchBoardPost: vi.fn(),
   votePost: vi.fn(),
   fetchBoardHearths: vi.fn().mockResolvedValue([]),
+  fetchSubBoards: vi.fn().mockResolvedValue([]),
   commentPost: vi.fn(),
   createPost: vi.fn(),
 }))
@@ -161,9 +162,17 @@ describe('BoardSurface Component', () => {
     boardHearthFilter.value = ''
     boardHearths.value = [{ name: 'ops', count: 0 }]
     boardHearthsError.value = false
+    boardFlairs.value = [
+      { name: 'insight', emoji: '💡', label: 'Insight' },
+      { name: 'bug', emoji: '🐛', label: 'Bug Report' },
+    ]
+    boardFlairsError.value = false
+    subBoardOptions.value = []
+    subBoardOptionsError.value = false
     resetBoardLatencyMetrics()
     showNewPostForm.value = false
     newPostHearth.value = ''
+    newPostFlair.value = ''
     newPostSubmitting.value = false
     categoryVisibleLimits.value = {
       article: PAGE_SIZE,
@@ -237,6 +246,38 @@ describe('BoardSurface Component', () => {
     expect(screen.getByRole('button', { name: '🔥 리액션 2개' })).toHaveAttribute('aria-pressed', 'true')
   })
 
+  it('keeps reaction controls visible for zero-reaction post cards', () => {
+    boardPosts.value = [
+      makePost({
+        id: 'post-zero-reactions',
+        title: 'Reaction affordance',
+        body: 'content',
+        author: 'ani1999',
+      }),
+    ]
+
+    render(h(BoardSurface, null))
+
+    expect(screen.getByRole('button', { name: '👍 리액션 0개' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '👀 리액션 0개' })).toBeInTheDocument()
+  })
+
+  it('renders flair badges on post cards', () => {
+    boardPosts.value = [
+      makePost({
+        id: 'post-flair',
+        title: 'Flair projection',
+        body: 'content',
+        author: 'ani1999',
+        flair: 'insight',
+      }),
+    ]
+
+    render(h(BoardSurface, null))
+
+    expect(screen.getByText('flair:insight')).toBeInTheDocument()
+  })
+
   it('renders post moderation projection badges', () => {
     boardPosts.value = [
       makePost({
@@ -271,6 +312,53 @@ describe('BoardSurface Component', () => {
     render(h(BoardSurface, null))
 
     expect(screen.getByLabelText('점수 투표 후 공개')).toHaveTextContent('투표 후 공개')
+  })
+
+  it('renders board visibility audit details on post cards', () => {
+    boardPosts.value = [
+      makePost({
+        id: 'post-audit',
+        title: 'Audit visible',
+        body: 'content',
+        author: 'ani1999',
+        votes: null,
+        vote_balance: null,
+        vote_blind: true,
+        comment_count: 13,
+        created_at: '2026-04-17T00:00:00Z',
+        updated_at: '2026-04-17T01:00:00Z',
+      }),
+    ]
+
+    render(h(BoardSurface, null))
+
+    const audit = screen.getByLabelText(/게시글 표시 감사:/)
+    expect(audit).toHaveTextContent('표시 중')
+    expect(audit).toHaveTextContent('내부')
+    expect(audit).toHaveTextContent('댓글 13개')
+    expect(audit).toHaveTextContent('점수 투표 후 공개')
+    expect(audit).toHaveTextContent('최근 갱신됨')
+    expect(audit).toHaveTextContent('정렬 최신순')
+  })
+
+  it('renders contributor quality badges on post cards', () => {
+    boardPosts.value = [
+      makePost({
+        id: 'post-quality',
+        title: 'Quality signal',
+        body: 'content',
+        author: 'ani1999',
+        contributor_quality: {
+          score: 0.72,
+          band: 'strong',
+          source: 'agent_reputation',
+        },
+      }),
+    ]
+
+    render(h(BoardSurface, null))
+
+    expect(screen.getByLabelText('기여자 품질 72점 · 강함')).toHaveTextContent('품질 72')
   })
 
   it('routes the mention inbox focus to the message surface', () => {
@@ -435,8 +523,18 @@ describe('BoardSurface Component', () => {
     render(h(BoardSurface, null))
     fireEvent.click(screen.getByRole('button', { name: '+ 새 글 작성' }))
 
-    expect(screen.getByLabelText('새 글 hearth')).toHaveValue('ops')
+    expect(screen.getByLabelText('새 글 category')).toHaveValue('ops')
     expect(newPostHearth.value).toBe('ops')
+  })
+
+  it('renders explicit flair selection in the post composer', () => {
+    render(h(BoardSurface, null))
+    fireEvent.click(screen.getByRole('button', { name: '+ 새 글 작성' }))
+
+    const flair = screen.getByLabelText('새 글 flair')
+    expect(flair).toBeInTheDocument()
+    fireEvent.change(flair, { target: { value: 'bug' } })
+    expect(newPostFlair.value).toBe('bug')
   })
 
   it('disables compose cancel while a post is submitting', () => {

@@ -1,12 +1,17 @@
 (** Keeper_identity — Trace ID generation, git identity, and keeper-name
     normalization for keeper operations. *)
 
-val generate_trace_id : unit -> string
+val generate_trace_id : ?now:float -> unit -> string
+(** Generate a unique trace ID from an epoch timestamp and monotonic counter.
+    [~now] defaults to [Time_compat.now ()] — pass an explicit value in tests
+    for deterministic output.  The counter guarantees uniqueness even when
+    [now] is pinned to the same value across consecutive calls. *)
 val keeper_git_author : keeper_name:string -> string
 val keeper_git_email : keeper_name:string -> string
 val git_env_for_keeper : keeper_name:string -> string array
 
 val keeper_name_from_agent_name : string -> string option
+val is_keeper_agent_alias : string -> bool
 val canonical_keeper_name_from_agent_name : string -> string option
 val canonical_keeper_name : string -> string option
 
@@ -16,6 +21,11 @@ val strip_keeper_prefix : string -> string option
     [None] otherwise.  Centralises the repeated [String.sub trimmed 0 7 =
     "keeper-"] check so callers no longer embed the literal — Phase A F5
     of the bloodflow restoration plan. *)
+
+val keeper_agent_name : string -> string
+(** [keeper_agent_name name] returns the canonical runtime agent name
+    ["keeper-<name>-agent"], stripping one existing ["keeper-"] prefix first so
+    callers do not double-prefix keeper names. *)
 
 type parsed_identity = {
   keeper_name : string;

@@ -1,5 +1,12 @@
 exception Semaphore_wait_timeout of float
 
+type slot_pool =
+  | Turn_pool
+  | Autonomous_pool
+  | Reactive_pool
+
+val slot_pool_to_string : slot_pool -> string
+
 type semaphore_wait_phase =
   | Autonomous_queue_head
   | Autonomous_slot
@@ -21,6 +28,32 @@ type semaphore_wait_timeout = {
 
 (** Global turn slot cap. Safety ceiling for ALL keeper turns. *)
 val keeper_turn_throttle_limit : int
+
+(** Effective throttle limit after applying the 2x TOML cap (issue #17192).
+    When the env override exceeds 2x the TOML baseline, this is capped to
+    [toml_value * 2]. Otherwise equal to {!keeper_turn_throttle_limit}.
+    The semaphore is initialized with this value, not the raw env limit. *)
+val effective_turn_throttle_limit : int
+
+(** Which configuration layer supplied the effective throttle limit. *)
+type throttle_source =
+  | Env_override
+  | Toml
+  | Default
+
+val keeper_turn_throttle_source : throttle_source
+(** Source of {!keeper_turn_throttle_limit}.
+    - [Env_override] — [MASC_KEEPER_AUTOBOOT_MAX] was set in the process
+      environment; it takes precedence over TOML.
+    - [Toml] — the value came from [keeper_runtime.toml].
+    - [Default] — neither env nor TOML supplied a value; the hardcoded
+      default (32) is in effect.
+
+    @since issue #17192 *)
+
+val throttle_source_to_string : throttle_source -> string
+(** Canonical string representation for logs and JSON surfaces:
+    ["env_override" | "toml" | "default"]. *)
 
 val turn_semaphore : Eio.Semaphore.t
 val autonomous_turn_semaphore : Eio.Semaphore.t
@@ -87,7 +120,7 @@ val force_released_marker_count_for_test : unit -> int
 (** Test-only: inject a marker without touching semaphores, so marker-retention
     behavior can be exercised without creating a double-release path. *)
 val add_force_released_marker_for_test :
-  label:string ->
+  label:slot_pool ->
   keeper_name:string ->
   acquisition_id:int ->
   marked_at:float ->
@@ -137,11 +170,27 @@ val fairness_delay_sec_at : now:float -> keeper_name:string -> float
     [reactive_turn_semaphore]).
 
     Side effects: [Eio.Semaphore.release] on each held semaphore plus
-    [Prometheus.metric_keeper_slot_force_released]. A late-returning
+    [Keeper_metrics.(to_string SlotForceReleased)]. A late-returning
     fiber may double-release; Eio counting semaphores tolerate this
     bounded over-release.
 
-    See [keeper_turn_slot.ml] doc for full design rationale. *)
+    See [keeper_turn_slot.ml] doc for full design rationale.
+
+    {b WORKAROUND (RFC-0125)}: This function only releases the semaphore
+    permit. The underlying stuck OS subprocess (LLM HTTPS read,
+    [docker exec]) keeps running until process restart. The structural
+    fix is RFC-0125 P4 [keeper-level max-turn watchdog]
+    (PR #15964), which cancels the keepalive fiber at a typed wall-clock
+    boundary BEFORE the slot is leaked, so this rescue path stops being
+    reached. Removal target: 30-day soak on
+    stale-watchdog timeout termination metric reaching
+    zero after `MASC_KEEPER_MAX_TURN_WATCHDOG_TIMEOUT_SEC` is enabled
+    fleet-wide. Do not invoke from new call sites. Existing legitimate
+    callers (slated to be unwound under removal target above):
+    - [Keeper_supervisor.force_unresolved_watchdog_crash] — primary
+      watchdog rescue.
+    - [Keeper_keepalive.stop_keepalive] — manual stop path
+      (`lib/keeper/keeper_keepalive.ml`). *)
 val force_release_holder_for : keeper_name:string -> (string * float) list
 
 (** Test-only: stamp a completion time directly (bypasses [Time_compat.now]). *)
@@ -157,13 +206,21 @@ val reset_autonomous_completion_for_test : unit -> unit
 val set_after_acquire_flag_hook_for_test :
   (label:string -> keeper_name:string -> unit) option -> unit
 
-(** PR-M (Leak 9): consecutive [oas_timeout_budget] cycle FAILED strikes
-    per keeper. Promoted to [Keeper_fiber_crash] at this limit.
+(** PR-M (Leak 9): consecutive [provider_timeout] cycle FAILED strikes
+    per keeper. The heartbeat loop feeds this count into
+    [Keeper_failure_policy] before choosing any lifecycle effect.
 
     Counts are stored in an in-process CAS map and can be seeded from the
-    persisted [Oas_timeout_budget_loop] failure reason on the first bump after
+    persisted [Provider_timeout_loop] failure reason on the first bump after
     restart or another process update. *)
-val oas_timeout_budget_strike_limit : int
+val provider_timeout_strike_limit : int
+
+type provider_timeout_strike_outcome =
+  | Provider_timeout_warn
+  | Provider_timeout_soft_backoff
+
+val classify_provider_timeout_strike :
+  strikes:int -> provider_timeout_strike_outcome
 
 val bump_budget_exhaustion_seeded :
   keeper_name:string -> prior_strikes:int -> int

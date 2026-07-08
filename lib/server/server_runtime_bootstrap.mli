@@ -12,8 +12,7 @@ val storage_enforcement_fallback_reason :
   requested:string -> effective:string -> string option
 val note_storage_enforcement_fallback :
   requested:string -> effective:string -> unit
-val ensure_default_oas_cascade_timeout_env : unit -> unit
-val config_bootstrap_mode : unit -> [> `Auto | `Empty | `Skip ]
+val config_bootstrap_mode : unit -> [ `Auto | `Empty | `Skip ]
 val bootstrap_base_path_config_root : base_path:string -> unit
 val startup_config_resolution : base_path:string -> Config_dir_resolver.resolution
 
@@ -43,7 +42,15 @@ val create_server_state :
   net:[> `Generic | `Unix] Eio.Net.ty Eio.Resource.t ->
   proc_mgr:Eio_unix.Process.mgr_ty Eio.Resource.t ->
   fs:Eio.Fs.dir_ty Eio.Path.t ->
+  ?env:Eio_unix.Stdenv.base ->
+  unit ->
   Mcp_server.server_state
+(** [env] is optional for backwards compatibility with existing
+    [create_server_state] callers (tests, MCP execute contexts);
+    when supplied (server bootstrap path), it is recorded into
+    [Eio_context.set_env] so long-lived HTTP consumers like
+    [Masc_http_client.Pool] can lazy-init with the full
+    {!Eio_unix.Stdenv.base}.  RFC-0107 Phase D.2c. *)
 
 val runtime_path_diagnostics :
   ?input_base_path:string ->
@@ -65,38 +72,27 @@ val bootstrap_prompt_state : Mcp_server.server_state -> unit
 val warm_tool_registry_from_telemetry : Mcp_server.server_state -> unit
 val migrate_legacy_dirs : Mcp_server.server_state -> unit
 val startup_prune_jsonl : Mcp_server.server_state -> unit
-val startup_prune_keeper_checkpoints : Mcp_server.server_state -> unit
 val startup_migrate_keeper_histories : Mcp_server.server_state -> unit
 val sync_bootable_keeper_credentials : Mcp_server.server_state -> unit
 
-(** {2 Codex MCP Client Auth} *)
+type lazy_startup_execution =
+  | Parallel
+  | Serial
 
-type codex_mcp_config_sync_status =
-  | Codex_mcp_config_updated
-  | Codex_mcp_config_unchanged
-  | Codex_mcp_config_server_missing
-  | Codex_mcp_config_header_missing
+type lazy_startup_group = {
+  group_name : string;
+  execution : lazy_startup_execution;
+  task_names : string list;
+}
 
-val sync_codex_mcp_auth_header_content :
-  string -> string * codex_mcp_config_sync_status
-(** [sync_codex_mcp_auth_header_content content] rewrites the TOML
-    content of a Codex config file to produce the canonical
-    [[mcp_servers.masc]] shape:
+val lazy_startup_plan : has_legacy_traces:bool -> lazy_startup_group list
+(** Deterministic startup task grouping.  [Parallel] groups contain only
+    tasks whose stores are independent; [Serial] groups preserve ordering for
+    shared tool state and cleanup phases. *)
 
-    - Replaces any [http_headers = \{ ... \}] binding with the
-      canonical Accept + X-MASC-Agent form (removing any hardcoded
-      [Authorization] header inside that table).
-    - Replaces any [bearer_token_env_var = ...] binding with
-      [bearer_token_env_var = "MASC_MCP_TOKEN"].
-    - Drops bare [Authorization = ...] bindings directly in the
-      [[mcp_servers.masc]] section — literal auth headers conflict
-      with [bearer_token_env_var] and would persist raw tokens in
-      the config file.
-    - Inserts missing [http_headers] and [bearer_token_env_var]
-      bindings when the [[mcp_servers.masc]] section is present but
-      lacks them.
-    - Never modifies other sections (e.g., [[mcp_servers.other]]
-      or [[mcp_servers.masc.tools.status]]). *)
+val lazy_startup_task_names : has_legacy_traces:bool -> string list
+(** Flattened task names in the same dependency order used to activate
+    {!Server_startup_state}'s lazy task queue. *)
 
 (** {1 Main Entry Point} *)
 

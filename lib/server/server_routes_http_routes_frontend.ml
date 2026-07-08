@@ -55,17 +55,14 @@ let redirect_to_dashboard reqd =
   respond_redirect ~location:"/dashboard" reqd
 
 let websocket_discovery_handler request reqd =
-  let body =
-    websocket_discovery_json request |> Yojson.Safe.to_string
-  in
-  Http.Response.json body reqd
+  Http.Response.json_value (websocket_discovery_json request) reqd
 
-let webrtc_signaling_handler ~tool_name signaling_fn request reqd =
-  with_tool_auth ~tool_name
+let webrtc_signaling_handler signaling_fn request reqd =
+  with_permission_auth ~permission:Masc_domain.CanBroadcast
     (fun _state _req reqd ->
       if not (Server_webrtc_transport.is_enabled ()) then
-        Http.Response.json ~status:`Not_found
-          {|{"error":"webrtc transport disabled"}|}
+        Http.Response.json_value ~status:`Not_found
+          (`Assoc [ ("error", `String "webrtc transport disabled") ])
           reqd
       else
         Http.Request.read_body_async reqd (fun body_str ->
@@ -73,9 +70,8 @@ let webrtc_signaling_handler ~tool_name signaling_fn request reqd =
           | Ok body ->
               Http.Response.json body reqd
           | Error msg ->
-              Http.Response.json ~status:`Bad_request
-                (Yojson.Safe.to_string
-                   (`Assoc [ ("error", `String msg) ]))
+              Http.Response.json_value ~status:`Bad_request
+                (`Assoc [ ("error", `String msg) ])
                 reqd))
     request reqd
 
@@ -85,16 +81,12 @@ let add_routes ~port ~host router =
   |> Http.Router.get Server_health_paths.liveness liveness_handler
   |> Http.Router.get Server_health_paths.readiness readiness_handler
   |> Http.Router.get "/.well-known/agent.json" (fun request reqd ->
-       with_public_read (fun _state req reqd ->
-         Http.Response.json
-           (Yojson.Safe.to_string (Runtime.agent_card_json req))
-           reqd)
+         with_public_read (fun _state req reqd ->
+         Http.Response.json_value (Runtime.agent_card_json req) reqd)
          request reqd)
   |> Http.Router.get "/.well-known/agent-card.json" (fun request reqd ->
-       with_public_read (fun _state req reqd ->
-         Http.Response.json
-           (Yojson.Safe.to_string (Runtime.agent_card_json req))
-           reqd)
+         with_public_read (fun _state req reqd ->
+         Http.Response.json_value (Runtime.agent_card_json req) reqd)
          request reqd)
   |> Http.Router.get "/ws" websocket_discovery_handler
   |> Http.Router.get "/metrics" (fun request reqd ->
@@ -104,14 +96,6 @@ let add_routes ~port ~host router =
        ) request reqd)
   |> Http.Router.get "/ag-ui/events" handle_ag_ui_events
   |> Http.Router.get "/events/presence" handle_presence_events
-  (* Dashboard sub-routes: must come before the SPA catchall *)
-  |> Http.Router.get "/dashboard/credits" (fun request reqd ->
-       with_canonical_loopback_host ~port
-         (fun request reqd ->
-           with_public_read (fun _state _req reqd ->
-             Http.Response.html (Credits_dashboard.html ()) reqd
-           ) request reqd)
-         request reqd)
   (* Dashboard Bonsai island — static JS bundle and SPA shell.
      Must precede /dashboard/assets/ and /dashboard/ catchalls below. *)
   |> Http.Router.prefix_get "/dashboard/b/assets/"
@@ -198,10 +182,6 @@ let add_routes ~port ~host router =
                  Http.Response.not_found reqd
              ) request reqd)
            request reqd)
-  |> Http.Router.get "/api/v1/credits" (fun request reqd ->
-       with_public_read (fun _state _req reqd ->
-         Http.Response.json (Credits_dashboard.json_api ()) reqd
-       ) request reqd)
   |> Http.Router.get "/api/v1/openapi.json" (fun request reqd ->
        with_public_read (fun _state req reqd ->
          let host_header = Httpun.Headers.get req.Httpun.Request.headers "host" in
@@ -212,9 +192,8 @@ let add_routes ~port ~host router =
          let json =
            Transport.Rest.generate_openapi_document
              ~host:resolved_host ~port:resolved_port ()
-           |> Yojson.Safe.to_string
          in
-         Http.Response.json json reqd
+         Http.Response.json_value json reqd
        ) request reqd)
   |> Http.Router.get "/api/v1/voice/config" (fun request reqd ->
        with_public_read (fun _state _req reqd ->
@@ -222,7 +201,7 @@ let add_routes ~port ~host router =
          let status =
            match status with `OK -> `OK | `Error -> `Internal_server_error
          in
-         Http.Response.json ~status (Yojson.Safe.to_string json) reqd
+         Http.Response.json_value ~status json reqd
        ) request reqd)
   |> Http.Router.get "/" (fun request reqd ->
        match canonical_root_dashboard_location ~default_port:port request with
@@ -246,15 +225,14 @@ let add_routes ~port ~host router =
   |> Http.Router.post "/mcp" handle_post_mcp
   |> Http.Router.post "/mcp/managed"
        (handle_post_mcp ~profile:Server_mcp_transport_http.Managed_agent)
+  |> Http.Router.add ~path:"/mcp" ~methods:[`DELETE]
+       ~handler:handle_delete_mcp
+  |> Http.Router.add ~path:"/mcp/managed" ~methods:[`DELETE]
+       ~handler:(handle_delete_mcp ~profile:Server_mcp_transport_http.Managed_agent)
   |> Http.Router.post "/webrtc/offer"
-       (webrtc_signaling_handler
-          ~tool_name:"masc_webrtc_offer"
-          Server_webrtc_transport.handle_offer_request)
+       (webrtc_signaling_handler Server_webrtc_transport.handle_offer_request)
   |> Http.Router.post "/webrtc/answer"
-       (webrtc_signaling_handler
-          ~tool_name:"masc_webrtc_answer"
-          Server_webrtc_transport.handle_answer_request)
+       (webrtc_signaling_handler Server_webrtc_transport.handle_answer_request)
   |> Http.Router.add ~path:"/graphql" ~methods:[`GET; `POST]
        ~handler:(fun request reqd ->
          with_read_auth (fun _state req reqd -> handle_graphql req reqd) request reqd)
-  |> Http.Router.post "/messages" handle_post_messages

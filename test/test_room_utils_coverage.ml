@@ -27,12 +27,8 @@ let with_env name value f =
 let with_envs bindings f =
   List.fold_right (fun (name, value) acc -> fun () -> with_env name value acc) bindings f ()
 
-let pg_env_bindings ?masc_storage_type ?supabase_db_url ?sb_pg_url () =
-  [
-    ("MASC_STORAGE_TYPE", masc_storage_type);
-    ("SUPABASE_DB_URL", supabase_db_url);
-    ("SB_PG_URL", sb_pg_url);
-  ]
+let storage_env_bindings ?masc_storage_type () =
+  [ ("MASC_STORAGE_TYPE", masc_storage_type) ]
 
 (* ============================================================
    parse_gitdir_to_main_root Tests
@@ -283,10 +279,9 @@ let test_env_opt_home () =
    ============================================================ *)
 
 let test_storage_type_default () =
-  with_envs (pg_env_bindings ()) (fun () ->
+  with_envs (storage_env_bindings ()) (fun () ->
     let storage_type = Coord_utils.storage_type_from_env () in
-    check string "defaults to filesystem when no pg env exists" "filesystem"
-      storage_type)
+    check string "defaults to filesystem" "filesystem" storage_type)
 
 (* ============================================================
    storage_backend Type Tests
@@ -349,39 +344,39 @@ let test_strip_prefix_longer_prefix () =
    ============================================================ *)
 
 let test_contains_substring_true () =
-  check bool "contains" true (Coord_utils.contains_substring "hello world" "world")
+  check bool "contains" true (String_util.contains_substring "hello world" "world")
 
 let test_contains_substring_false () =
-  check bool "not contains" false (Coord_utils.contains_substring "hello world" "xyz")
+  check bool "not contains" false (String_util.contains_substring "hello world" "xyz")
 
 let test_contains_substring_empty_needle () =
   (* Empty string is substring of any string (String.sub s 0 0 = "" always) *)
-  check bool "empty needle" true (Coord_utils.contains_substring "hello" "")
+  check bool "empty needle" true (String_util.contains_substring "hello" "")
 
 let test_contains_substring_empty_haystack () =
-  check bool "empty haystack" false (Coord_utils.contains_substring "" "hello")
+  check bool "empty haystack" false (String_util.contains_substring "" "hello")
 
 let test_contains_substring_both_empty () =
   (* Empty string contains empty string (String.sub "" 0 0 = "") *)
-  check bool "both empty" true (Coord_utils.contains_substring "" "")
+  check bool "both empty" true (String_util.contains_substring "" "")
 
 let test_contains_substring_needle_longer () =
-  check bool "needle longer" false (Coord_utils.contains_substring "ab" "abcdef")
+  check bool "needle longer" false (String_util.contains_substring "ab" "abcdef")
 
 let test_contains_substring_exact () =
-  check bool "exact match" true (Coord_utils.contains_substring "test" "test")
+  check bool "exact match" true (String_util.contains_substring "test" "test")
 
 let test_contains_substring_start () =
-  check bool "at start" true (Coord_utils.contains_substring "hello world" "hello")
+  check bool "at start" true (String_util.contains_substring "hello world" "hello")
 
 let test_contains_substring_end () =
-  check bool "at end" true (Coord_utils.contains_substring "hello world" "world")
+  check bool "at end" true (String_util.contains_substring "hello world" "world")
 
 let test_contains_substring_middle () =
-  check bool "in middle" true (Coord_utils.contains_substring "the quick fox" "quick")
+  check bool "in middle" true (String_util.contains_substring "the quick fox" "quick")
 
 let test_contains_substring_special_chars () =
-  check bool "special chars" true (Coord_utils.contains_substring "a<b>c" "<b>")
+  check bool "special chars" true (String_util.contains_substring "a<b>c" "<b>")
 
 (* ============================================================
    sanitize_html Tests
@@ -421,7 +416,7 @@ let test_sanitize_html_unicode () =
    ============================================================ *)
 
 let test_sanitize_agent_name_normal () =
-  check string "normal name" "claude" (Coord_utils.sanitize_agent_name "claude")
+  check string "normal name" "agent_llm_a" (Coord_utils.sanitize_agent_name "agent_llm_a")
 
 let test_sanitize_agent_name_xss () =
   check string "xss attempt" "&lt;script&gt;" (Coord_utils.sanitize_agent_name "<script>")
@@ -442,22 +437,14 @@ let test_sanitize_message_html () =
 
 let test_storage_type_defaults_to_filesystem () =
   with_envs
-    (pg_env_bindings ())
+    (storage_env_bindings ())
     (fun () ->
       check string "defaults to filesystem" "filesystem"
         (Coord_utils.storage_type_from_env ()))
 
-let test_storage_type_legacy_url_does_not_auto_select () =
-  let url = "postgresql://supabase.example/test_room_utils" in
-  with_envs
-    (pg_env_bindings ~supabase_db_url:url ())
-    (fun () ->
-      check string "legacy url does not trigger postgres" "filesystem"
-        (Coord_utils.storage_type_from_env ()))
-
 let test_storage_type_auto_is_deprecated () =
   with_envs
-    (pg_env_bindings ~masc_storage_type:"auto" ())
+    (storage_env_bindings ~masc_storage_type:"auto" ())
     (fun () ->
       check string "auto falls back to filesystem" "filesystem"
         (Coord_utils.storage_type_from_env ()))
@@ -468,14 +455,14 @@ let test_storage_type_auto_is_deprecated () =
    a Log.Backend.warn surfaced separately) so downstream is exhaustive. *)
 let test_storage_type_unknown_normalised_to_filesystem () =
   with_envs
-    (pg_env_bindings ~masc_storage_type:"postgres" ())
+    (storage_env_bindings ~masc_storage_type:"postgres" ())
     (fun () ->
       check string "unknown postgres normalised to filesystem" "filesystem"
         (Coord_utils.storage_type_from_env ()))
 
 let test_storage_type_typo_normalised_to_filesystem () =
   with_envs
-    (pg_env_bindings ~masc_storage_type:"memoryy" ())
+    (storage_env_bindings ~masc_storage_type:"memoryy" ())
     (fun () ->
       check string "typo memoryy normalised to filesystem" "filesystem"
         (Coord_utils.storage_type_from_env ()))
@@ -534,7 +521,7 @@ let test_safe_filename_unicode () =
    ============================================================ *)
 
 let test_validate_file_path_normal () =
-  match Coord_utils.validate_file_path "agents/claude.json" with
+  match Coord_utils.validate_file_path "agents/agent_llm_a.json" with
   | Ok _ -> ()
   | Error e -> fail ("expected Ok, got: " ^ e)
 
@@ -713,7 +700,6 @@ let () =
     ];
     "storage_backend_selection", [
       test_case "defaults to filesystem" `Quick test_storage_type_defaults_to_filesystem;
-      test_case "legacy url does not auto select" `Quick test_storage_type_legacy_url_does_not_auto_select;
       test_case "auto is deprecated" `Quick test_storage_type_auto_is_deprecated;
       test_case "unknown normalised to filesystem (#8737)" `Quick test_storage_type_unknown_normalised_to_filesystem;
       test_case "typo normalised to filesystem (#8737)" `Quick test_storage_type_typo_normalised_to_filesystem;

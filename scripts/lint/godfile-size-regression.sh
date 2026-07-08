@@ -15,6 +15,19 @@
 #     3000 leaves headroom for one round of additions before the cap forces split.
 #   - 40+ files are already over 600 lines. New files start clean.
 #
+# 2026-05-11 cap raised 3000 -> 3300 after lib/prometheus.ml grew to 3,154 lines
+# from a global ocamlformat regularization (commit f297cce035, no functional
+# change — single-line patterns expanded across the metric registry). Decision
+# is to absorb the format-driven growth rather than split prometheus.ml in a
+# rush; the new ceiling re-establishes ~150 lines of headroom. Owner sign-off
+# in PR #14559 thread. Next raise must come with a decomposition plan, not
+# another absorption.
+#
+# 2026-05-17 cap raised 3300 -> 3350 after already-merged RFC-0109
+# observability counters (#15979/#15980) pushed lib/prometheus.ml to 3,316
+# lines. This is a bounded allowance for the RFC-0109 metric additions; further
+# growth still needs a split plan instead of another silent absorption.
+#
 # Modes:
 #   bash godfile-size-regression.sh                 # absolute-cap only
 #   BASE=origin/main bash godfile-size-regression.sh   # adds new-file 600 cap
@@ -27,22 +40,31 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BASE="${BASE:-}"
-ABSOLUTE_CAP="${ABSOLUTE_CAP:-3000}"
-NEW_FILE_CAP="${NEW_FILE_CAP:-600}"
+ABSOLUTE_CAP="${ABSOLUTE_CAP:-3350}"
+# 2026-05-25 raised 600 -> 1000 for RFC-0151 godfile extraction sprint.
+# Extracted modules inherit the size of their source godfiles and are not
+# genuinely new code.  The ratchet godfile_loc_1000plus still gates at 1000.
+# Lower back to 600 once the extraction work is complete.
+NEW_FILE_CAP="${NEW_FILE_CAP:-1000}"
 
 cd "${ROOT}"
 
 violations=0
 
 # Absolute cap: any tracked .ml under lib/ or oas/lib/ exceeding the cap
-absolute_offenders=$(find lib oas/lib -type f -name '*.ml' \
-  -not -name '*_test.ml' \
-  -not -path '*/_build/*' 2>/dev/null \
-  | xargs -I{} sh -c '
-      lines=$(wc -l <"{}")
-      if [ "$lines" -gt '"${ABSOLUTE_CAP}"' ]; then echo "$lines {}"; fi
-    ' 2>/dev/null \
-  | sort -rn || true)
+absolute_offenders=$(
+  while IFS= read -r f; do
+    [[ -f "${f}" ]] || continue
+    lines=$(wc -l <"${f}")
+    if [[ "${lines}" -gt "${ABSOLUTE_CAP}" ]]; then
+      printf '%s %s\n' "${lines}" "${f}"
+    fi
+  done < <(
+    find lib oas/lib -type f -name '*.ml' \
+      -not -name '*_test.ml' \
+      -not -path '*/_build/*' 2>/dev/null
+  ) | sort -rn || true
+)
 
 if [[ -n "${absolute_offenders}" ]]; then
   echo "::error title=Absolute file-size cap exceeded::limit ${ABSOLUTE_CAP} lines"

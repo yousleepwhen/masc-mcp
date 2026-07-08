@@ -3,11 +3,22 @@ import { describe, expect, it } from 'vitest'
 import {
   DASHBOARD_SURFACES,
   SECTION_REDIRECTS,
+  VISIBLE_DASHBOARD_NAV_ITEMS,
   defaultParamsForTab,
   normalizeRouteParams,
   sectionItemsForTab,
   visibleSectionItemsForTab,
 } from './navigation'
+
+describe('dashboard surface navigation', () => {
+  it('keeps MASC Cockpit routeable but out of primary navigation', () => {
+    const cockpit = DASHBOARD_SURFACES.find(surface => surface.id === 'cockpit')
+
+    expect(cockpit?.hidden).toBe(true)
+    expect(defaultParamsForTab('cockpit')).toEqual({})
+    expect(VISIBLE_DASHBOARD_NAV_ITEMS.map(item => item.id)).not.toContain('cockpit')
+  })
+})
 
 describe('code (IDE plane) navigation', () => {
   it('exposes the production IDE plane in the sidebar', () => {
@@ -29,20 +40,18 @@ describe('code (IDE plane) navigation', () => {
 })
 
 describe('lab navigation', () => {
-  it('contains only research surfaces after Phase 1 reorg', () => {
+  it('contains lab support surfaces', () => {
     expect(defaultParamsForTab('lab')).toEqual({ section: 'tools' })
 
     const labSections = visibleSectionItemsForTab('lab')
 
     expect(labSections.map(item => item.id)).toEqual([
       'tools',
-      'autoresearch',
       'harness',
     ])
 
     expect(labSections.map(item => item.label)).toEqual([
       'Tools',
-      'Autoresearch',
       'Safety Harness',
     ])
   })
@@ -88,19 +97,36 @@ describe('connectors navigation (Phase 7, post-2026-04-30 merge)', () => {
 })
 
 describe('monitoring navigation labels', () => {
-  it('uses design-system chrome labels for consolidated monitoring sections', () => {
+  it('uses keeper-fleet first Monitor IA labels', () => {
     const sections = visibleSectionItemsForTab('monitoring')
     const labelFor = (id: string) => sections.find(item => item.id === id)?.label
 
-    expect(labelFor('journey')).toBe('Journey Map')
-    expect(labelFor('fleet-health')).toBe('Fleet Telemetry')
-    // "Cascade" and "Agent Directory" replaced the duplicated
-    // runtime labels (one section renamed to cascade, the other to
-    // agent directory) so monitoring no longer has two sidebar items
-    // whose labels collide on the same word.
-    expect(labelFor('runtime')).toBe('Cascade')
-    expect(labelFor('agents')).toBe('Agent Directory')
-    expect(labelFor('cognition')).toBe('Cognition')
+    expect(labelFor('agents')).toBe('Keeper Fleet')
+    expect(labelFor('fleet-health')).toBe('Tool Monitor')
+    expect(labelFor('runtime')).toBe('Cascade & Runtime')
+    expect(labelFor('observatory')).toBe('Evidence Timeline')
+    expect(labelFor('transport-health')).toBeUndefined()
+    expect(labelFor('feature-health')).toBeUndefined()
+    expect(labelFor('cognition')).toBeUndefined()
+    expect(labelFor('journey')).toBeUndefined()
+  })
+
+  it('keeps monitoring descriptions concise instead of comma-heavy domain lists', () => {
+    const sections = visibleSectionItemsForTab('monitoring')
+    const descriptions = Object.fromEntries(sections.map(item => [item.id, item.description]))
+
+    expect(descriptions).toMatchObject({
+      agents: 'Live and configured keeper roster.',
+      'fleet-health': 'Tool quality and governance signals.',
+      runtime: 'Cascade and provider health.',
+      observatory: 'Activity and runtime evidence.',
+    })
+
+    for (const item of sections) {
+      const wordCount = item.description.split(/\s+/).filter(Boolean).length
+      expect(wordCount).toBeLessThanOrEqual(7)
+      expect(item.description.split(',').length).toBeLessThanOrEqual(2)
+    }
   })
 
   it('does not expose sessions section (removed in Phase 0 of RFC-MASC-006)', () => {
@@ -110,20 +136,33 @@ describe('monitoring navigation labels', () => {
     expect(ids).not.toContain('sessions')
   })
 
-  it('surfaces fleet-health as consolidated monitoring section (Phase 1)', () => {
+  it('surfaces four primary Monitor lanes and keeps diagnostics routeable', () => {
     const sections = visibleSectionItemsForTab('monitoring')
+    const allSections = sectionItemsForTab('monitoring')
     const ids = sections.map(item => item.id)
+    const allIds = allSections.map(item => item.id)
 
-    expect(ids).toEqual(['journey', 'agents', 'cognition', 'runtime', 'goal-loop', 'fleet-health'])
-    expect(ids).toContain('journey')
-    expect(ids).toContain('cognition')
+    expect(defaultParamsForTab('monitoring')).toEqual({ section: 'agents' })
+    expect(ids).toEqual([
+      'agents', 'fleet-health', 'runtime', 'observatory',
+    ])
+    expect(ids).toContain('agents')
     expect(ids).toContain('fleet-health')
     expect(ids).toContain('runtime')
-    expect(ids).toContain('agents')
-    expect(ids).toContain('goal-loop')
+    expect(ids).toContain('observatory')
+    expect(allIds).toContain('cascade-config')
+    expect(allIds).toContain('doctor')
+    expect(allIds).toContain('transport-health')
+    expect(allIds).toContain('feature-health')
+    expect(allIds).toContain('cognition')
+    expect(ids).not.toContain('journey')
+    expect(ids).not.toContain('cascade-config')
+    expect(ids).not.toContain('doctor')
+    expect(ids).not.toContain('transport-health')
+    expect(ids).not.toContain('feature-health')
+    expect(ids).not.toContain('cognition')
     // Legacy sections removed in Phase 1
     expect(ids).not.toContain('live')
-    expect(ids).not.toContain('observatory')
     expect(ids).not.toContain('git-graph')
     expect(ids).not.toContain('safe-autonomy')
     expect(ids).not.toContain('cost')
@@ -137,21 +176,28 @@ describe('monitoring navigation labels', () => {
     expect(ids).not.toContain('governance')
   })
 
-  it('puts the operator story first before drill-down status surfaces', () => {
+  it('puts keeper fleet first before tool, runtime, and evidence lanes', () => {
     const sections = visibleSectionItemsForTab('monitoring')
-    expect(sections[0]?.id).toBe('journey')
-    expect(sections[1]?.id).toBe('agents')
-    expect(sections[2]?.id).toBe('cognition')
-    expect(sections[3]?.id).toBe('runtime')
-    expect(sections[4]?.id).toBe('goal-loop')
-    expect(sections[5]?.id).toBe('fleet-health')
+    expect(sections.map(section => section.id)).toEqual([
+      'agents',
+      'fleet-health',
+      'runtime',
+      'observatory',
+    ])
   })
 
   it('keeps diagnostic monitoring routes available but hidden from the sidebar', () => {
     const sections = sectionItemsForTab('monitoring')
     const hiddenIds = sections.filter(item => item.hidden).map(item => item.id)
 
-    expect(hiddenIds).toEqual(['observatory', 'memory-subsystems'])
+    expect(hiddenIds).toEqual([
+      'cascade-config',
+      'doctor',
+      'transport-health',
+      'feature-health',
+      'journey',
+      'cognition',
+    ])
   })
 
   it('monitoring sidebar labels are unique (no overloaded term like "런타임")', () => {
@@ -174,9 +220,11 @@ describe('workspace navigation labels', () => {
     const labelFor = (id: string) => sections.find(item => item.id === id)?.label
 
     expect(labelFor('planning')).toBe('Plans & Goals')
+    expect(labelFor('moderation')).toBe('Moderation')
     // goals is no longer a standalone section
     const ids = sections.map(item => item.id)
     expect(ids).not.toContain('goals')
+    expect(ids).toContain('moderation')
   })
 })
 
@@ -219,6 +267,12 @@ describe('normalizeRouteParams backward compat (RFC-MASC-006 Phase 0)', () => {
     expect(normalizeRouteParams('monitoring', { section: 'cost' })).toMatchObject({
       section: 'runtime',
       view: 'cost',
+    })
+  })
+
+  it('redirects legacy runtime cascade view to the dedicated cascade config surface', () => {
+    expect(normalizeRouteParams('monitoring', { section: 'runtime', view: 'cascade' })).toMatchObject({
+      section: 'cascade-config',
     })
   })
 
@@ -359,6 +413,7 @@ describe('consolidation redirects (Phase 1)', () => {
     ['fleet', {}, 'fleet-health', 'comparison', {}],
     ['fsm-hub', {}, 'agents', 'fsm', {}],
     ['metrics', {}, 'runtime', undefined, {}],
+    ['cascade', {}, 'cascade-config', undefined, {}],
   ])(
     'monitoring:%s → %s (view: %s) preserves params',
     (oldSection, extra, expectedSection, expectedView, preserved) => {
@@ -387,10 +442,10 @@ describe('consolidation redirects (Phase 1)', () => {
     expect(result.section).toBe('planning')
   })
 
-  it('command:connectors → operations?view=connectors (Phase 6)', () => {
+  it('does not keep command:connectors as an in-surface redirect', () => {
     const result = normalizeRouteParams('command', { section: 'connectors' })
     expect(result.section).toBe('operations')
-    expect(result.view).toBe('connectors')
+    expect(result.view).toBeUndefined()
   })
 
   it('command:inspector → operations?view=inspector (Phase 6)', () => {

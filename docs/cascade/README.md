@@ -15,7 +15,6 @@ Cascade 레이어 운영/설계 문서 모음. MASC가 LLM provider 선택을 �
 | `docs/observability/cascade-metrics.md` | Prometheus counter, Grafana dashboard, alerting rule |
 | `docs/spec/14-configuration.md` | cascade catalog 스키마 레퍼런스 |
 | `docs/tla-audit/cascade-fsm-gap-2026-04-13.md` | cascade FSM TLA+ 감사 결과 |
-| `specs/boundary/CascadeStrategyStateful.tla` | Phase B sticky/round_robin spec |
 | `specs/bug-models/CascadeLiveness-liveness.cfg` | keeper blocked -> timeout termination liveness guard |
 
 ## 코드 SSOT
@@ -29,20 +28,20 @@ Cascade 레이어 운영/설계 문서 모음. MASC가 LLM provider 선택을 �
 | `lib/cascade/cascade_toml_materializer.ml` | authoring TOML → runtime JSON materialization |
 | `lib/cascade/cascade_health_filter.ml` | `should_cascade_to_next` (에러 분류) |
 | `lib/cascade/cascade_health_tracker.ml` | cooldown, effective weight |
-| `lib/cascade/cascade_state.ml` | sticky state, round_robin cursor |
+| `lib/cascade/cascade_state.ml` | auto-expansion round_robin cursor |
 
 ## Runtime 설정 SSOT
 
-- Live authoring source: `~/.masc/config/cascade.toml` (또는 `$MASC_BASE_PATH/.masc/config/cascade.toml`)
-- Runtime artifact: sibling `cascade.json` materialized from TOML when present
-- Repo fallback: `MASC_ALLOW_REPO_CONFIG_FALLBACK=true` 필요 (기본 OFF)
+- Live authoring source: `<base-path>/.masc/config/cascade.toml` (or `MASC_CONFIG_DIR/cascade.toml` when explicitly overridden)
+- Runtime view: TOML rendered in memory; no sibling `cascade.json` artifact
+- Repo `config/` is a checked-in seed/example source, not an active fallback root.
 
 ## 변경 시 체크리스트
 
 cascade 관련 변경은 최소 3개 축을 함께 수정:
 
 1. **코드**: `lib/cascade/*.ml`
-2. **Spec**: `specs/boundary/CascadeStrategy*.tla` (variant 추가 시)
+2. **Spec**: `specs/boundary/CascadeStrategy.tla` (variant 추가 시)
 3. **문서**: 이 디렉토리 (전략 추가 시) + `docs/observability/cascade-metrics.md` (label 추가 시)
 
 `CascadeLiveness.tla`를 건드릴 때는 `scripts/tla-check.sh`가 clean cfg,

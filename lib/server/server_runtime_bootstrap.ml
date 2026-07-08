@@ -4,57 +4,10 @@ open Server_routes_http
 
 module Mcp_server = Mcp_server
 module Mcp_eio = Mcp_server_eio
-
-let retired_pg_env_keys =
-  [ "MASC_POSTGRES_URL"; "DATABASE_URL"; "SUPABASE_DB_URL"; "SB_PG_URL" ]
-
-let clear_retired_pg_envs () =
-  List.iter
-    (fun key ->
-      match Sys.getenv_opt key |> Env_config_core.trim_opt with
-      | Some _ ->
-          Log.Server.warn
-            "Ignoring retired PG runtime env %s; filesystem-only bootstrap is enforced."
-            key;
-          Unix.putenv key ""
-      | None -> Unix.putenv key "")
-    retired_pg_env_keys
+module Config_root_bootstrap = Server_runtime_config_root_bootstrap
 
 let force_jsonl_fallback_env () =
-  Unix.putenv Env_config_core.storage_type_env_key "filesystem";
-  clear_retired_pg_envs ();
-  let policy_path = "/tmp/gemini_headless_admin_policy.json" in
-  let oc = open_out policy_path in
-  output_string oc "{\"rules\":[{\"name\":\"no_ask_user\",\"effect\":\"deny\",\"condition\":{\"fact\":\"tool\",\"operator\":\"equal\",\"value\":\"ask_user\"}}]}";
-  close_out oc;
-  Unix.putenv "OAS_GEMINI_ADMIN_POLICY" policy_path
-
-
-let () =
-  Prometheus.register_counter
-    ~name:"masc_mcp_audit_no_construct_path_total"
-    ~help:
-      "Boot-time provider × MCP-config-construct audit \
-       (PR-Mp3b / Leak 12): a cascade entry references a provider \
-       with no auto-construct path for the MCP config JSON. The \
-       CLI subprocess starts and the LLM responds, but every \
-       keeper_*/masc_* tool call fails with 'tool not in session's \
-       tool registry'. Labels: provider. Non-zero at boot means an \
-       operator should either remove the provider from the cascade \
-       or add an auto-construct entry."
-    ()
-
-let () =
-  Prometheus.register_counter
-    ~name:"masc_mcp_audit_default_off_total"
-    ~help:
-      "Boot-time provider × MCP-config-construct audit \
-       (PR-Mp3b / Leak 12): a provider has an auto-construct path \
-       but its env flag defaults to off (e.g. codex_cli + \
-       MASC_SYNC_CODEX_MCP_CONFIG=false). Operator must opt in or \
-       the keeper will fail tool calls on this lane. Labels: \
-       provider, env_flag."
-    ()
+  Unix.putenv Env_config_core.storage_type_env_key "filesystem"
 
 let requested_backend_mode () =
   Env_config_core.storage_type ()
@@ -75,185 +28,9 @@ let note_storage_enforcement_fallback ~requested ~effective =
   | Some reason -> Server_startup_state.note_fallback reason
   | None -> ()
 
-let ensure_default_oas_cascade_timeout_env () =
-  match Sys.getenv_opt "OAS_CASCADE_MODEL_TIMEOUT_SEC" |> Env_config_core.trim_opt with
-  | Some _ -> ()
-  | None ->
-      let keeper_oas_timeout_s = Env_config_keeper.KeeperKeepalive.oas_timeout_sec in
-      let derived_timeout_s =
-        Float.max 30.0 (Float.min 120.0 (keeper_oas_timeout_s /. 5.0))
-      in
-      Unix.putenv "OAS_CASCADE_MODEL_TIMEOUT_SEC"
-        (Printf.sprintf "%.0f" derived_timeout_s)
-
-let project_root_from_executable () =
-  let raw_exe =
-    Safe_ops.protect ~default:"" (fun () -> Sys.executable_name)
-  in
-  let exe =
-    if String.equal raw_exe "" then ""
-    else
-      try Unix.realpath raw_exe
-      with Unix.Unix_error _ | Sys_error _ | Invalid_argument _ -> raw_exe
-  in
-  if String.equal exe "" then None
-  else
-    let rec walk_up dir =
-      let parent = Filename.dirname dir in
-      if String.equal parent dir then None
-      else if String.equal (Filename.basename dir) "_build" then Some parent
-      else walk_up parent
-    in
-    walk_up (Filename.dirname exe)
-
-let config_root_from_ancestor start_dir =
-  let rec walk_up dir =
-    let config_root = Filename.concat dir "config" in
-    let tool_policy =
-      Filename.concat config_root Config_dir_resolver.tool_policy_toml_filename
-    in
-    if Sys.file_exists tool_policy then Some config_root
-    else
-      let parent = Filename.dirname dir in
-      if String.equal parent dir then None else walk_up parent
-  in
-  walk_up start_dir
-
-let dedupe_keep_order items =
-  let seen = Hashtbl.create (List.length items) in
-  List.filter
-    (fun item ->
-      if Hashtbl.mem seen item then
-        false
-      else (
-        Hashtbl.add seen item ();
-        true))
-    items
-
-let versioned_config_root_candidates () =
-  let cwd_candidate = Filename.concat (Sys.getcwd ()) "config" in
-  let cwd_ancestor_candidate = config_root_from_ancestor (Sys.getcwd ()) in
-  let exe_candidate =
-    match project_root_from_executable () with
-    | Some root -> Some (Filename.concat root "config")
-    | None -> None
-  in
-  [ Some cwd_candidate; cwd_ancestor_candidate; exe_candidate ]
-  |> List.filter_map (fun x -> x)
-  |> dedupe_keep_order
-  |> List.filter (fun path -> Sys.file_exists path && Sys.is_directory path)
-
-let copy_file_if_missing ~src ~dst =
-  if Sys.file_exists dst then
-    ()
-  else begin
-    Fs_compat.mkdir_p (Filename.dirname dst);
-    Fs_compat.save_file dst (Fs_compat.load_file src)
-  end
-
-let rec copy_missing_tree ~src ~dst =
-  if Sys.is_directory src then begin
-    if Sys.file_exists dst && not (Sys.is_directory dst) then
-      Log.Server.warn
-        "config bootstrap: refusing to replace file with directory (%s -> %s)"
-        src dst
-    else begin
-      Fs_compat.mkdir_p dst;
-      Sys.readdir src
-      |> Array.iter (fun name ->
-             copy_missing_tree
-               ~src:(Filename.concat src name)
-               ~dst:(Filename.concat dst name))
-    end
-  end else if Sys.file_exists dst then
-    ()
-  else
-    copy_file_if_missing ~src ~dst
-
-let config_bootstrap_mode () =
-  match Sys.getenv_opt "MASC_CONFIG_BOOTSTRAP" |> Env_config_core.trim_opt with
-  | Some ("empty" | "EMPTY") -> `Empty
-  | Some ("skip" | "SKIP") -> `Skip
-  | _ -> `Auto
-
-let ensure_config_root_scaffold config_root =
-  Fs_compat.mkdir_p config_root;
-  [ "prompts"; "keepers"; "personas" ]
-  |> List.iter (fun name -> Fs_compat.mkdir_p (Filename.concat config_root name))
-
-(* Explicit base-path workspaces should inherit shared config defaults
-   without silently importing repo keeper manifests into the live root. *)
-let copy_missing_config_root_seed ~src ~dst =
-  Fs_compat.mkdir_p dst;
-  Sys.readdir src
-  |> Array.iter (fun name ->
-         if String.equal name "keepers" then
-           ()
-         else
-           copy_missing_tree
-             ~src:(Filename.concat src name)
-             ~dst:(Filename.concat dst name));
-  Fs_compat.mkdir_p (Filename.concat dst "keepers")
-let bootstrap_base_path_config_root ~base_path =
-  let base_path = Env_config_core.normalize_masc_base_path_input base_path in
-  if Option.is_some (Config_dir_resolver.current_env_config_dir_opt ()) then
-    ()
-  else begin
-    let mode = config_bootstrap_mode () in
-    let config_root =
-      Filename.concat (Common.masc_dir_from_base_path ~base_path) "config"
-    in
-    if mode = `Skip then
-      Log.Server.info "config bootstrap skipped via MASC_CONFIG_BOOTSTRAP=skip"
-    else if Sys.file_exists config_root then
-      if Sys.is_directory config_root then begin
-        ensure_config_root_scaffold config_root;
-        Log.Server.info
-          "preserved existing base-path config root without refilling missing entries: %s"
-          config_root
-      end else
-        Log.Server.warn
-          "base-path config root exists but is not a directory; skipping bootstrap: %s"
-          config_root
-    else if mode = `Empty then begin
-      ensure_config_root_scaffold config_root;
-      Log.Server.info
-        "bootstrapped empty config root (MASC_CONFIG_BOOTSTRAP=empty): %s"
-        config_root
-    end else
-      let source_root =
-        versioned_config_root_candidates () |> List.find_opt Sys.file_exists
-      in
-      (match source_root with
-       | Some source ->
-           copy_missing_config_root_seed ~src:source ~dst:config_root;
-           Log.Server.info
-             "bootstrapped base-path config root: %s <- %s"
-             config_root source
-       | None ->
-           ensure_config_root_scaffold config_root;
-           let cascade_path =
-             Filename.concat config_root Config_dir_resolver.cascade_json_filename
-           in
-           if not (Sys.file_exists cascade_path) then
-             Fs_compat.save_file cascade_path "{}";
-           Log.Server.warn
-             "bootstrapped minimal base-path config root without versioned source: %s"
-             config_root);
-    Config_dir_resolver.reset ()
-  end
-
-let startup_config_resolution ~base_path =
-  Config_dir_resolver.resolve_with
-    Config_dir_resolver.
-      {
-        cwd = Sys.getcwd ();
-        executable_name = Sys.executable_name;
-        env_base_path = Some base_path;
-        env_config_dir = Config_dir_resolver.current_env_config_dir_opt ();
-        env_personas_dir = Config_dir_resolver.current_env_personas_dir_opt ();
-        env_home = Config_dir_resolver.current_env_home_opt ();
-      }
+let config_bootstrap_mode = Config_root_bootstrap.config_bootstrap_mode
+let bootstrap_base_path_config_root = Config_root_bootstrap.bootstrap_base_path_config_root
+let startup_config_resolution = Config_root_bootstrap.startup_config_resolution
 
 (* GC tuning for long-running server with bursty allocation.
 
@@ -289,11 +66,12 @@ let record_tool_policy_init_failure ~base_path msg =
     ~labels:[("base_path", base_path)]
     ();
   Prometheus.inc_counter Prometheus.metric_error_events
-    ~labels:[("type", "missing_config")]
+    ~labels:[("type", Error_event_type.(to_label Missing_config))]
     ();
   Log.Server.error "Fatal tool policy config load failure: %s" msg
 
 let create_server_state ~sw ~base_path ~clock ~mono_clock ~net ~proc_mgr ~fs
+    ?env ()
     : Mcp_server.server_state =
   let input_base_path =
     match String.trim base_path with
@@ -308,8 +86,12 @@ let create_server_state ~sw ~base_path ~clock ~mono_clock ~net ~proc_mgr ~fs
   Eio_context.set_net net;
   Eio_context.set_clock clock;
   Eio_context.set_mono_clock mono_clock;
+  (* RFC-0107 Phase D.2c — record full Eio.Stdenv for piaf-backed
+     Pool in Masc_http_client.  Optional: tests / pre-bootstrap
+     callers may omit [env], in which case Pool falls back to a
+     stub (request returns Error). *)
+  Option.iter Eio_context.set_env env;
   force_jsonl_fallback_env ();
-  ensure_default_oas_cascade_timeout_env ();
   Process_eio.init ~cwd_default:Eio.Path.(fs / base_path) ~proc_mgr ~clock;
   Exec_tap.install_from_env ();
   Unix.putenv
@@ -335,7 +117,7 @@ let create_server_state ~sw ~base_path ~clock ~mono_clock ~net ~proc_mgr ~fs
   Heuristic_metrics.init ~base_path;
   Agent_stress.init ~base_path;
   (* Load tool policy presets from config/tool_policy.toml *)
-  (match Keeper_exec_tools.init_policy_config ~base_path with
+  (match Agent_tool_dispatch_runtime.init_policy_config ~base_path with
    | Ok () -> ()
    | Error msg ->
        record_tool_policy_init_failure ~base_path msg;
@@ -354,7 +136,7 @@ let create_server_state ~sw ~base_path ~clock ~mono_clock ~net ~proc_mgr ~fs
   let path_diagnostics =
     Server_base_path_diagnostics.detect
       ?input_base_path
-      ?env_masc_base_path:(Env_config_core.base_path_raw_opt ())
+      ?env_masc_base_path:((Host_config.from_env ()).base_path_raw)
       ~effective_base_path:state.room_config.base_path
       ~effective_masc_root:(Coord.masc_root_dir state.room_config)
       ()
@@ -362,12 +144,18 @@ let create_server_state ~sw ~base_path ~clock ~mono_clock ~net ~proc_mgr ~fs
   in
   Server_startup_state.note_runtime_resolution ~path_diagnostics
     ~config_resolution;
+  (* RFC-0107 Phase D.4 — wire piaf connection pool Prometheus exporter.
+     Metric registration itself runs at [Prometheus] module load; this
+     call is the explicit dependency-order anchor and warms the snapshot
+     accessor so a misconfigured pool surfaces here rather than at first
+     [/metrics] scrape. *)
+  Pool_metrics.register ();
   state
 
 let runtime_path_diagnostics ?input_base_path (state : Mcp_server.server_state) =
   Server_base_path_diagnostics.detect
     ?input_base_path
-    ?env_masc_base_path:(Env_config_core.base_path_raw_opt ())
+    ?env_masc_base_path:((Host_config.from_env ()).base_path_raw)
     ~effective_base_path:state.room_config.base_path
     ~effective_masc_root:(Coord.masc_root_dir state.room_config)
     ()
@@ -379,343 +167,14 @@ let restore_persisted_sessions (state : Mcp_server.server_state) =
 let reconcile_active_agents_gauge (state : Mcp_server.server_state) =
   Prometheus.reconcile_active_agents_gauge (Coord.masc_dir state.room_config)
 
-(** Migrate legacy directory names: perpetual->traces, resident-keepers->keepers.
-    Moves contents via recursive merge. Conflicting files go to _quarantine/,
-    except keeper meta files where a fresher valid legacy record may replace a
-    stale or invalid current record. *)
-let keeper_meta_updated_ts (meta : Keeper_types.keeper_meta) =
-  Coord_resilience.Time.parse_iso8601_opt meta.updated_at
-  |> Option.value ~default:0.0
 
-let should_promote_legacy_keeper_meta ~legacy_path ~current_path =
-  match
-    Keeper_types.read_meta_file_path legacy_path,
-    Keeper_types.read_meta_file_path current_path
-  with
-  | Ok (Some _legacy), Ok (Some _current) -> (
-      keeper_meta_updated_ts _legacy > keeper_meta_updated_ts _current)
-  | Ok (Some _), Ok None | Ok (Some _), Error _ -> true
-  | _ -> false
+(* Legacy directory migration extracted to
+   [Server_runtime_startup_maintenance] (godfile decomp). *)
+include Server_runtime_startup_maintenance
 
-let migrate_legacy_dirs_with_renames (state : Mcp_server.server_state) renames =
-  let masc_root = Coord.masc_root_dir state.room_config in
-  let quarantine_rel_path ~source_name ~rel_path =
-    if rel_path = "" then source_name else Filename.concat source_name rel_path
-  in
-  let quarantine = Filename.concat masc_root "_quarantine" in
-  let quarantine_replaced_path ~source_name ~rel_path =
-    Filename.concat quarantine
-      (Filename.concat "_replaced"
-         (quarantine_rel_path ~source_name ~rel_path))
-  in
-  let rec migrate_recursive ~source_name ~old_dir ~new_dir ~rel_path
-      ~prefer_root_keeper_meta_conflicts
-      ~prefer_room_flatten_conflicts =
-    if not (Sys.file_exists old_dir) then ()
-    else begin
-      Keeper_types.mkdir_p new_dir;
-      Array.iter (fun name ->
-        let old_path = Filename.concat old_dir name in
-        let new_path = Filename.concat new_dir name in
-        let rel = if rel_path = "" then name else Filename.concat rel_path name in
-        if Sys.is_directory old_path then begin
-          if Sys.file_exists new_path then
-            migrate_recursive ~source_name ~old_dir:old_path ~new_dir:new_path ~rel_path:rel
-              ~prefer_root_keeper_meta_conflicts
-              ~prefer_room_flatten_conflicts
-          else
-            Sys.rename old_path new_path
-        end else begin
-          if Sys.file_exists new_path then begin
-            if prefer_root_keeper_meta_conflicts && rel_path = ""
-               && Filename.check_suffix name ".json"
-               && should_promote_legacy_keeper_meta
-                    ~legacy_path:old_path ~current_path:new_path
-            then begin
-              let replaced_q_path = quarantine_replaced_path ~source_name ~rel_path:rel in
-              Keeper_types.mkdir_p (Filename.dirname replaced_q_path);
-              Sys.rename new_path replaced_q_path;
-              Sys.rename old_path new_path
-            end else if prefer_room_flatten_conflicts then begin
-              let replaced_q_path = quarantine_replaced_path ~source_name ~rel_path:rel in
-              Keeper_types.mkdir_p (Filename.dirname replaced_q_path);
-              Sys.rename new_path replaced_q_path;
-              Sys.rename old_path new_path
-            end else begin
-              let q_path =
-                Filename.concat quarantine
-                  (quarantine_rel_path ~source_name ~rel_path:rel)
-              in
-              Keeper_types.mkdir_p (Filename.dirname q_path);
-              Sys.rename old_path q_path
-            end
-          end else
-            Sys.rename old_path new_path
-        end
-      ) (Sys.readdir old_dir);
-      (try
-        if Array.length (Sys.readdir old_dir) = 0 then
-          Sys.rmdir old_dir
-        else
-          Log.Misc.warn "migrate: old dir not empty after migration: %s" old_dir
-      with Sys_error _ -> ())
-    end
-  in
-  (try
-    List.iter (fun (old_name, new_name) ->
-      let old_dir = Filename.concat masc_root old_name in
-      let new_dir = Filename.concat masc_root new_name in
-      if Sys.file_exists old_dir then begin
-        Log.Misc.info "migrate: %s -> %s" old_name new_name;
-        migrate_recursive ~source_name:old_name ~old_dir ~new_dir ~rel_path:""
-          ~prefer_root_keeper_meta_conflicts:(String.equal new_name "keepers")
-          ~prefer_room_flatten_conflicts:(String.starts_with ~prefix:"rooms/" old_name)
-      end
-    ) renames
-  with
-  | Eio.Cancel.Cancelled _ as e -> raise e
-  | exn ->
-    Log.Misc.error "legacy dir migration failed: %s" (Printexc.to_string exn))
-
-let migrate_legacy_dirs (state : Mcp_server.server_state) =
-  migrate_legacy_dirs_with_renames state
-    [ ("perpetual", "traces"); ("resident-keepers", "keepers") ]
-
-let migrate_legacy_keeper_dirs_blocking (state : Mcp_server.server_state) =
-  migrate_legacy_dirs_with_renames state [ ("resident-keepers", "keepers") ]
-
-let default_room_for_flat_migration = "focus-room"
-
-let legacy_room_candidates rooms_dir =
-  if not (Sys.file_exists rooms_dir) then
-    []
-  else
-    Safe_ops.protect ~default:[] (fun () ->
-      Sys.readdir rooms_dir
-      |> Array.to_list
-      |> List.filter_map (fun room_id ->
-           let room_path = Filename.concat rooms_dir room_id in
-           if Sys.is_directory room_path then
-             let trimmed_room_id = String.trim room_id in
-             if not (String.equal room_id trimmed_room_id) then begin
-               Log.Misc.warn
-                 "migrate: ignoring invalid legacy room dir %S (must not have leading/trailing whitespace)"
-                 room_id;
-               None
-             end else
-               match Coord.validate_room_id room_id with
-               | Ok valid_room_id -> Some valid_room_id
-               | Error msg ->
-                 Log.Misc.warn
-                   "migrate: ignoring invalid legacy room dir %s (%s)" room_id
-                   msg;
-                   None
-           else
-             None))
-
-let infer_current_room_from_legacy_dirs rooms_dir =
-  match legacy_room_candidates rooms_dir with
-  | [ room_id ] ->
-      Log.Misc.info
-        "migrate: current_room unavailable; using only legacy room %s" room_id;
-      Some room_id
-  | room_ids when List.mem default_room_for_flat_migration room_ids ->
-      Log.Misc.info
-        "migrate: current_room unavailable; using legacy room %s"
-        default_room_for_flat_migration;
-      Some default_room_for_flat_migration
-  | [] -> None
-  | room_ids ->
-      Log.Misc.warn
-        "migrate: current_room unavailable and multiple legacy rooms exist (%s); skipping room flatten"
-        (String.concat ", " room_ids);
-      None
-
-let load_current_room_or_default masc_root rooms_dir =
-  let path = Filename.concat masc_root "current_room" in
-  if not (Sys.file_exists path) then
-    infer_current_room_from_legacy_dirs rooms_dir
-  else
-    match Safe_ops.read_file_safe path with
-    | Error msg ->
-        Log.Misc.warn
-          "migrate: failed to read %s (%s); probing legacy room dirs instead"
-          path msg;
-        infer_current_room_from_legacy_dirs rooms_dir
-    | Ok raw -> (
-        match Coord.validate_room_id (String.trim raw) with
-        | Ok room_id -> Some room_id
-        | Error msg ->
-            Log.Misc.warn
-              "migrate: ignoring invalid current_room in %s (%s); probing legacy room dirs instead"
-              path msg;
-            infer_current_room_from_legacy_dirs rooms_dir)
-
-let migrate_room_to_flat (state : Mcp_server.server_state) =
-  let masc_root = Coord.masc_root_dir state.room_config in
-  let rooms_dir = Filename.concat masc_root "rooms" in
-  if not (Sys.file_exists rooms_dir) then ()
-  else begin
-    match load_current_room_or_default masc_root rooms_dir with
-    | Some current_room ->
-        let room_dir = Filename.concat rooms_dir current_room in
-        if Sys.file_exists room_dir && Sys.is_directory room_dir then begin
-          Log.Misc.info "migrate: flattening room %s to .masc/ root" current_room;
-          migrate_legacy_dirs_with_renames state
-            [ (Filename.concat "rooms" current_room, ".") ]
-        end else if current_room = "default" then
-          Log.Misc.info "migrate: legacy rooms/ exists but default room not found (likely already flattened)"
-        else
-          Log.Misc.warn "migrate: rooms/ exists but active room %s not found" current_room
-    | None ->
-        Log.Misc.warn
-          "migrate: rooms/ exists but no safe current room could be inferred; leaving legacy room dirs untouched"
-  end
-
-let migrate_legacy_trace_dirs (state : Mcp_server.server_state) =
-  migrate_legacy_dirs_with_renames state [ ("perpetual", "traces") ]
-
-let audit_keeper_egress_policies (state : Mcp_server.server_state) =
-  (* PR-Eg2b (Leak 11): on every boot, audit each keeper's [egress.json]
-     placement.  Reads only — never writes.  Writes are deferred to the
-     opt-in seed PR (PR-Eg4).  The audit is fail-soft: any unexpected
-     exception is logged and swallowed so a misbehaving keepers/ tree
-     can't keep the server from starting. *)
-  let config = state.Mcp_server.room_config in
-  let keepers_dir = Filename.concat (Coord.masc_root_dir config) "keepers" in
-  let metas =
-    if not (Sys.file_exists keepers_dir) then []
-    else
-      try
-        Sys.readdir keepers_dir
-        |> Array.to_list
-        |> List.filter_map (fun name ->
-            match Keeper_types.read_meta config name with
-            | Ok (Some meta) -> Some meta
-            | Ok None -> None
-            | Error err ->
-                Log.Misc.warn
-                  "[egress_audit:read_meta_failed] keeper=%s err=%s"
-                  name err;
-                None)
-      with exn ->
-        Log.Misc.warn
-          "[egress_audit:enumerate_failed] dir=%s exn=%s"
-          keepers_dir (Printexc.to_string exn);
-        []
-  in
-  if metas = [] then
-    Log.Misc.info
-      "[egress_audit:skip] no keeper metas found at %s" keepers_dir
-  else begin
-    let results = Keeper_egress_audit.audit_all ~config ~metas in
-    let oks, missings, orphans = Keeper_egress_audit.partition results in
-    List.iter (fun r ->
-      Log.Misc.info "%s" (Keeper_egress_audit.format_log_line r))
-      oks;
-    List.iter (fun r ->
-      Log.Misc.warn "%s" (Keeper_egress_audit.format_log_line r);
-      Prometheus.inc_counter Prometheus.metric_egress_audit_missing
-        ~labels:[("keeper", r.Keeper_egress_audit.keeper_name)] ())
-      missings;
-    List.iter (fun r ->
-      Log.Misc.warn "%s" (Keeper_egress_audit.format_log_line r);
-      Prometheus.inc_counter Prometheus.metric_egress_audit_stale_orphan
-        ~labels:[("keeper", r.Keeper_egress_audit.keeper_name)] ())
-      orphans;
-    Log.Misc.info
-      "[egress_audit:summary] total=%d ok=%d missing=%d stale_orphan=%d"
-      (List.length results) (List.length oks)
-      (List.length missings) (List.length orphans)
-  end
-
-let audit_provider_mcp_config_paths (_state : Mcp_server.server_state) =
-  (* PR-Mp3b (Leak 12): on every boot, walk every cascade catalog
-     entry's model strings, extract provider names, and run the SSOT
-     audit (Keeper_mcp_provider_audit) over the deduplicated set.
-
-     Read-only.  Emits one log line per audited provider with a
-     grep-friendly tag plus two Prometheus counters for the failure
-     buckets.  Fail-soft: if the cascade catalog is unloadable the
-     hook logs and returns; cascade load problems surface through
-     other validators (Cascade_catalog_validator) and are not this
-     hook's job to fix. *)
-  let cascade_names =
-    try Keeper_cascade_profile.catalog_names ()
-    with exn ->
-      Log.Misc.warn
-        "[mcp_audit:catalog_load_failed] exn=%s"
-        (Printexc.to_string exn);
-      []
-  in
-  if cascade_names = [] then
-    Log.Misc.info "[mcp_audit:skip] no cascade profiles loaded"
-  else begin
-    let providers =
-      List.concat_map
-        (fun name ->
-          try
-            Cascade_runtime.models_of_cascade_name
-              (Keeper_cascade_profile.Runtime_name name)
-            |> List.filter_map Cascade_runtime.provider_name_of_label
-          with exn ->
-            Log.Misc.warn
-              "[mcp_audit:cascade_models_failed] cascade=%s exn=%s"
-              name (Printexc.to_string exn);
-            [])
-        cascade_names
-      |> List.sort_uniq String.compare
-    in
-    if providers = [] then
-      Log.Misc.info
-        "[mcp_audit:skip] no provider labels resolved from %d cascades"
-        (List.length cascade_names)
-    else begin
-      let results =
-        Keeper_mcp_provider_audit.audit_providers providers
-      in
-      let active, no_path, http_api =
-        Keeper_mcp_provider_audit.partition results
-      in
-      List.iter (fun r ->
-        Log.Misc.info "%s"
-          (Keeper_mcp_provider_audit.format_log_line r);
-        match r.Keeper_mcp_provider_audit.construct with
-        | Auto_construct_active
-            { default_when_unset = false; env_flag; _ } ->
-            Log.Misc.warn
-              "[mcp_audit:default_off] provider=%s env_flag=%s — \
-               operator must set %s=true for this lane to emit MCP \
-               config"
-              r.provider env_flag env_flag;
-            Prometheus.inc_counter
-              "masc_mcp_audit_default_off_total"
-              ~labels:[("provider", r.provider);
-                       ("env_flag", env_flag)] ()
-        | _ -> ())
-        active;
-      List.iter (fun r ->
-        Log.Misc.warn "%s"
-          (Keeper_mcp_provider_audit.format_log_line r);
-        Prometheus.inc_counter
-          "masc_mcp_audit_no_construct_path_total"
-          ~labels:[("provider", r.Keeper_mcp_provider_audit.provider)]
-          ())
-        no_path;
-      List.iter (fun r ->
-        Log.Misc.info "%s"
-          (Keeper_mcp_provider_audit.format_log_line r))
-        http_api;
-      Log.Misc.info
-        "[mcp_audit:summary] cascades=%d providers=%d active=%d \
-         no_construct_path=%d http_api=%d"
-        (List.length cascade_names)
-        (List.length providers)
-        (List.length active)
-        (List.length no_path)
-        (List.length http_api)
-    end
-  end
+(* Credential sync and egress audit extracted to
+   [Server_runtime_startup_credentials] (godfile decomp). *)
+include Server_runtime_startup_credentials
 
 let bootstrap_server_state_blocking (state : Mcp_server.server_state) =
   (* Promote legacy room/keeper state before Coord.init seeds fresh root files.
@@ -726,488 +185,76 @@ let bootstrap_server_state_blocking (state : Mcp_server.server_state) =
      Keeper autoboot and other bootstrap readers should see the canonical paths
      on their first pass, not rely on a later lazy migration task. *)
   migrate_legacy_keeper_dirs_blocking state;
+  (* [create_server_state] normally resets this after config bootstrap, but
+     direct state constructors used by tests and execute contexts can leave a
+     stale process-global config resolution in place. *)
+  Config_dir_resolver.reset ();
   let (_init_msg : string) = Coord.init state.room_config ~agent_name:None in
   audit_keeper_egress_policies state;
-  audit_provider_mcp_config_paths state;
   Mcp_server.set_sse_callback state Sse.broadcast
 
-let sync_admin_token_env (state : Mcp_server.server_state) =
-  let base_path = state.Mcp_server.room_config.base_path in
-  let admin_agent_name =
-    match Auth.read_initial_admin base_path with
-    | Some name ->
-        let trimmed = String.trim name in
-        if trimmed <> "" then trimmed else "admin"
-    | None -> "admin"
+
+type lazy_startup_execution =
+  | Parallel
+  | Serial
+
+type lazy_startup_group = {
+  group_name : string;
+  execution : lazy_startup_execution;
+  task_names : string list;
+}
+
+let lazy_startup_plan ~has_legacy_traces =
+  let initial_groups =
+    [
+      {
+        group_name = "initialize";
+        execution = Parallel;
+        task_names =
+          [
+            "restore_sessions";
+            "reconcile_active_agents";
+            "prompt_bootstrap";
+            "keeper_history_migration";
+          ];
+      };
+      {
+        group_name = "tool_state";
+        execution = Serial;
+        task_names = [ "telemetry_warmup"; "tool_metrics_restore" ];
+      };
+    ]
   in
-  match Env_config_core.admin_token_opt () with
-  | Some raw_token ->
-      let already_synced =
-        match Auth.verify_token base_path ~agent_name:admin_agent_name ~token:raw_token with
-        | Ok cred -> cred.role = Masc_domain.Admin
-        | Error _ -> false
-      in
-      (match
-         Auth.save_raw_token_credential base_path
-           ~agent_name:admin_agent_name ~role:Masc_domain.Admin ~raw_token
-       with
-       | Ok _ ->
-           if already_synced then
-             Log.Server.info
-               "startup admin token verified for %s via %s"
-               admin_agent_name Env_config_core.admin_token_env_key
-           else
-             Log.Server.warn
-               "startup admin token drift repaired for %s via %s"
-               admin_agent_name Env_config_core.admin_token_env_key
-       | Error err ->
-           Log.Server.error
-             "startup admin token sync failed for %s: %s"
-             admin_agent_name
-             (Masc_domain.masc_error_to_string err))
-  | None ->
-      (match
-         Auth.create_token base_path ~agent_name:admin_agent_name ~role:Masc_domain.Admin
-       with
-       | Ok (raw_token, _cred) ->
-           Unix.putenv Env_config_core.admin_token_env_key raw_token;
-           Log.Server.warn
-             "startup minted %s for %s because env was unset"
-             Env_config_core.admin_token_env_key admin_agent_name
-       | Error err ->
-          Log.Server.error
-             "startup admin token mint failed for %s: %s"
-             admin_agent_name
-             (Masc_domain.masc_error_to_string err))
-
-let sync_internal_keeper_token_env (state : Mcp_server.server_state) =
-  let base_path = state.Mcp_server.room_config.base_path in
-  let raw_token = Auth.ensure_internal_keeper_token base_path in
-  Unix.putenv "MASC_INTERNAL_MCP_TOKEN" raw_token;
-  Log.Server.info
-    "startup internal keeper MCP token synced via MASC_INTERNAL_MCP_TOKEN"
-
-let sync_codex_mcp_config_env_key = "MASC_SYNC_CODEX_MCP_CONFIG"
-let codex_config_path_env_key = "MASC_CODEX_CONFIG_PATH"
-
-type codex_mcp_config_sync_status =
-  | Codex_mcp_config_updated
-  | Codex_mcp_config_unchanged
-  | Codex_mcp_config_server_missing
-  | Codex_mcp_config_header_missing
-
-let split_lines_with_trailing_newline content =
-  let has_trailing_newline =
-    String.ends_with ~suffix:"\n" content
-  in
-  let lines = String.split_on_char '\n' content in
-  let lines =
-    if has_trailing_newline then
-      match List.rev lines with
-      | "" :: rest -> List.rev rest
-      | _ -> lines
+  let legacy_groups =
+    if has_legacy_traces then
+      [
+        {
+          group_name = "legacy_trace_migration";
+          execution = Serial;
+          task_names = [ "legacy_trace_dir_migration" ];
+        };
+      ]
     else
-      lines
+      []
   in
-  (lines, has_trailing_newline)
+  let cleanup_groups =
+    [
+      {
+        group_name = "cleanup";
+        execution = Serial;
+        task_names =
+          [
+            "jsonl_prune";
+            "auth_archive_prune";
+          ];
+      };
+    ]
+  in
+  initial_groups @ legacy_groups @ cleanup_groups
 
-let leading_indent line =
-  let rec loop idx =
-    if idx >= String.length line then String.length line
-    else
-      match line.[idx] with
-      | ' ' | '\t' -> loop (idx + 1)
-      | _ -> idx
-  in
-  String.sub line 0 (loop 0)
-
-let is_toml_section_header trimmed =
-  String.length trimmed >= 2 && trimmed.[0] = '['
-
-let is_http_headers_binding trimmed =
-  let key = "http_headers" in
-  let key_len = String.length key in
-  if String.length trimmed < key_len then
-    false
-  else if not (String.equal (String.sub trimmed 0 key_len) key) then
-    false
-  else
-    match String.get trimmed key_len with
-    | exception Invalid_argument _ -> true
-    | ' ' | '\t' | '=' -> true
-    | _ -> false
-
-let is_bearer_token_env_var_binding trimmed =
-  let key = "bearer_token_env_var" in
-  let key_len = String.length key in
-  if String.length trimmed < key_len then
-    false
-  else if not (String.equal (String.sub trimmed 0 key_len) key) then
-    false
-  else
-    match String.get trimmed key_len with
-    | exception Invalid_argument _ -> true
-    | ' ' | '\t' | '=' -> true
-    | _ -> false
-
-let is_authorization_header_binding trimmed =
-  let key = "authorization" in
-  let key_len = String.length key in
-  if String.length trimmed < key_len then
-    false
-  else if
-    not
-      (String.equal
-         (String.lowercase_ascii (String.sub trimmed 0 key_len))
-         key)
-  then
-    false
-  else
-    match String.get trimmed key_len with
-    | exception Invalid_argument _ -> true
-    | ' ' | '\t' | '=' -> true
-    | _ -> false
-
-let codex_mcp_headers_line indent =
-  Printf.sprintf
-    "%shttp_headers = { \"Accept\" = \"application/json, text/event-stream\", \"X-MASC-Agent\" = \"codex-mcp-client\" }"
-    indent
-
-let codex_mcp_bearer_env_line indent =
-  Printf.sprintf "%sbearer_token_env_var = \"MASC_MCP_TOKEN\"" indent
-
-let sync_codex_mcp_auth_header_content content =
-  let lines, has_trailing_newline =
-    split_lines_with_trailing_newline content
-  in
-  let add_missing_section_bindings ~seen_header ~seen_bearer_env ~changed acc =
-    let acc, seen_header, changed =
-      if seen_header then
-        (acc, seen_header, changed)
-      else
-        (codex_mcp_headers_line "" :: acc, true, true)
-    in
-    let acc, seen_bearer_env, changed =
-      if seen_bearer_env then
-        (acc, seen_bearer_env, changed)
-      else
-        (codex_mcp_bearer_env_line "" :: acc, true, true)
-    in
-    (acc, seen_header, seen_bearer_env, changed)
-  in
-  let rec loop ~in_masc_section ~seen_masc_section ~seen_header
-      ~seen_bearer_env ~changed acc =
-    function
-    | [] ->
-        let acc, seen_header, _seen_bearer_env, changed =
-          if in_masc_section then
-            add_missing_section_bindings ~seen_header ~seen_bearer_env ~changed
-              acc
-          else
-            (acc, seen_header, seen_bearer_env, changed)
-        in
-        let status =
-          if not seen_masc_section then
-            Codex_mcp_config_server_missing
-          else if not seen_header then
-            Codex_mcp_config_header_missing
-          else if changed then
-            Codex_mcp_config_updated
-          else
-            Codex_mcp_config_unchanged
-        in
-        let rendered = String.concat "\n" (List.rev acc) in
-        let rendered =
-          if has_trailing_newline then rendered ^ "\n" else rendered
-        in
-        (rendered, status)
-    | line :: rest ->
-        let trimmed = String.trim line in
-        let entering_masc_section =
-          String.equal trimmed "[mcp_servers.masc]"
-        in
-        let leaving_masc_section =
-          in_masc_section
-          && is_toml_section_header trimmed
-          && not entering_masc_section
-        in
-        let acc, seen_header, seen_bearer_env, changed =
-          if leaving_masc_section then
-            add_missing_section_bindings ~seen_header ~seen_bearer_env ~changed
-              acc
-          else
-            (acc, seen_header, seen_bearer_env, changed)
-        in
-        let in_masc_section =
-          if entering_masc_section then true
-          else if leaving_masc_section then false
-          else in_masc_section
-        in
-        let seen_masc_section = seen_masc_section || entering_masc_section in
-        let seen_header, seen_bearer_env =
-          if entering_masc_section then (false, false)
-          else (seen_header, seen_bearer_env)
-        in
-        let line, seen_header, seen_bearer_env, changed =
-          if in_masc_section && is_http_headers_binding trimmed then
-            let next = codex_mcp_headers_line (leading_indent line) in
-            ( next,
-              true,
-              seen_bearer_env,
-              changed || not (String.equal next line) )
-          else if in_masc_section && is_bearer_token_env_var_binding trimmed then
-            let next = codex_mcp_bearer_env_line (leading_indent line) in
-            ( next,
-              seen_header,
-              true,
-              changed || not (String.equal next line) )
-          else
-            (line, seen_header, seen_bearer_env, changed)
-        in
-        (* Drop bare Authorization bindings from [mcp_servers.masc]: a literal
-           Authorization header conflicts with bearer_token_env_var and would
-           persist raw token values in the config file. *)
-        if in_masc_section && is_authorization_header_binding trimmed then
-          loop ~in_masc_section ~seen_masc_section ~seen_header
-            ~seen_bearer_env ~changed:true acc rest
-        else
-          loop ~in_masc_section ~seen_masc_section ~seen_header
-            ~seen_bearer_env ~changed (line :: acc) rest
-  in
-  loop ~in_masc_section:false ~seen_masc_section:false ~seen_header:false
-    ~seen_bearer_env:false ~changed:false [] lines
-
-let codex_config_path_opt () =
-  match Sys.getenv_opt codex_config_path_env_key |> Env_config_core.trim_opt with
-  | Some path -> Some path
-  | None ->
-      Option.map
-        (fun home -> Filename.concat home ".codex/config.toml")
-        (Env_config_core.home_dir_opt ())
-
-let sync_codex_mcp_config ~agent_name =
-  if
-    not
-      (Env_config_core.get_bool ~default:false sync_codex_mcp_config_env_key)
-  then
-    ()
-  else
-    match codex_config_path_opt () with
-    | None ->
-        Log.Server.info
-          "startup skipped Codex MCP config sync: HOME is not set"
-    | Some config_path ->
-        if not (Sys.file_exists config_path) then
-          Log.Server.info
-            "startup skipped Codex MCP config sync: %s does not exist"
-            config_path
-        else
-          try
-            let content = Fs_compat.load_file config_path in
-            let updated, status = sync_codex_mcp_auth_header_content content in
-            (match status with
-             | Codex_mcp_config_updated ->
-                 Auth.save_private_text_file config_path updated;
-                 Log.Server.warn
-                   "startup synced Codex MCP bearer-token env config for %s in %s"
-                   agent_name config_path
-             | Codex_mcp_config_unchanged ->
-                 Log.Server.info
-                   "startup Codex MCP bearer-token env config already current for %s"
-                   agent_name
-             | Codex_mcp_config_server_missing ->
-                 Log.Server.info
-                   "startup skipped Codex MCP config sync: [mcp_servers.masc] missing in %s"
-                   config_path
-             | Codex_mcp_config_header_missing ->
-                 Log.Server.info
-                   "startup skipped Codex MCP config sync: masc http_headers missing in %s"
-                   config_path)
-          with
-          | Eio.Cancel.Cancelled _ as e -> raise e
-          | exn ->
-              Log.Server.error
-                "startup failed Codex MCP config sync for %s: %s"
-                agent_name (Printexc.to_string exn)
-
-let sync_client_token_file ~base_path ~agent_name ~role =
-  let token_file =
-    Filename.concat (Auth.auth_dir base_path) (agent_name ^ ".token")
-  in
-  let existing_credential = Auth.load_credential base_path agent_name in
-  let existing_role =
-    match existing_credential with Some cred -> cred.role | None -> role
-  in
-  let persist_raw_token raw_token =
-    Fs_compat.mkdir_p (Auth.auth_dir base_path);
-    Auth.save_private_text_file token_file raw_token
-  in
-  let create_and_persist ~reason =
-    match
-      Auth.create_token_without_expiry base_path ~agent_name
-        ~role:existing_role
-    with
-    | Ok (raw_token, _cred) ->
-        (try
-           persist_raw_token raw_token;
-           Log.Server.warn
-             "startup %s raw bearer token file for %s at %s"
-             reason agent_name token_file
-         with
-         | Eio.Cancel.Cancelled _ as e -> raise e
-         | exn ->
-           Log.Server.error
-             "startup failed to persist raw bearer token file for %s at %s: %s"
-             agent_name token_file (Printexc.to_string exn))
-    | Error err ->
-        Log.Server.error
-          "startup failed to mint raw bearer token for %s: %s"
-          agent_name (Masc_domain.masc_error_to_string err)
-  in
-  let normalize_existing raw_token (cred : Masc_domain.agent_credential) =
-    try
-      (match cred.expires_at with
-       | None -> ()
-       | Some _ ->
-           Auth.save_credential base_path { cred with expires_at = None };
-           Log.Server.warn
-             "startup removed expiry from MCP client bearer credential for %s"
-             agent_name);
-      persist_raw_token raw_token;
-      Log.Server.info
-        "startup verified raw bearer token file for %s at %s"
-        agent_name token_file
-    with
-    | Eio.Cancel.Cancelled _ as e -> raise e
-    | exn ->
-      Log.Server.error
-        "startup failed to normalize raw bearer token file for %s at %s: %s"
-        agent_name token_file (Printexc.to_string exn)
-  in
-  let current_raw =
-    if Fs_compat.file_exists token_file then
-      try
-        let raw = String.trim (Fs_compat.load_file token_file) in
-        if raw = "" then None else Some raw
-      with
-      | Eio.Cancel.Cancelled _ as e -> raise e
-      | exn ->
-        Log.Server.warn
-          "startup failed to read raw bearer token file for %s at %s: %s"
-          agent_name token_file (Printexc.to_string exn);
-        None
-    else
-      None
-  in
-  (match current_raw with
-   | Some raw_token -> (
-       match Auth.verify_token base_path ~agent_name ~token:raw_token with
-       | Ok cred -> normalize_existing raw_token cred
-       | Error _ -> (
-           match Auth.load_credential base_path agent_name with
-           | Some (cred : Masc_domain.agent_credential)
-             when String.equal cred.token (Auth.sha256_hash raw_token) ->
-               normalize_existing raw_token cred
-           | _ -> create_and_persist ~reason:"repaired"))
-   | None -> create_and_persist ~reason:"created");
-  if String.equal agent_name "codex-mcp-client" then
-    sync_codex_mcp_config ~agent_name
-
-let sync_mcp_client_token_files ~base_path =
-  [
-    ("codex-mcp-client", Masc_domain.Worker);
-    ("claude", Masc_domain.Worker);
-    ("gemini", Masc_domain.Worker);
-  ]
-  |> List.iter (fun (agent_name, role) ->
-         sync_client_token_file ~base_path ~agent_name ~role)
-
-let sync_bootable_keeper_credentials (state : Mcp_server.server_state) =
-  let base_path = state.Mcp_server.room_config.base_path in
-  let keeper_names =
-    Keeper_runtime.bootable_keeper_names state.Mcp_server.room_config
-  in
-  let keeper_agent_names =
-    List.map Keeper_types_profile.keeper_agent_name keeper_names
-  in
-  let synced_count, failed =
-    List.fold_left2
-      (fun (synced_count, failed) keeper_name agent_name ->
-        match Auth.ensure_keeper_credential base_path ~agent_name with
-        | Ok _ -> (synced_count + 1, failed)
-        | Error err ->
-            ( synced_count,
-              (keeper_name, Masc_domain.masc_error_to_string err) :: failed ))
-      (0, []) keeper_names keeper_agent_names
-  in
-  if synced_count > 0 then
-    Log.Server.info
-      "startup verified %d bootable keeper credential(s)"
-      synced_count;
-  List.rev failed
-  |> List.iter (fun (keeper_name, detail) ->
-         Log.Server.error
-           "startup keeper credential sync failed for %s: %s"
-           keeper_name detail);
-  (* #10440: write a short-form alias for each keeper so callers
-     that look up by [agent_name=<keeper_name>] resolve directly
-     instead of falling through to legacy_credential_aliases.
-     Without the alias, 8/14 keepers fail [load_credential] for the
-     short-form lookup path (per the issue's evidence on the live
-     fleet). *)
-  List.iter2
-    (fun keeper_name agent_name ->
-      if not (String.equal keeper_name agent_name) then
-        match
-          Auth.ensure_credential_alias base_path
-            ~canonical_name:agent_name ~alias_name:keeper_name
-        with
-        | Ok () -> ()
-        | Error err ->
-            Log.Server.warn
-              "short-form alias write failed: keeper=%s canonical=%s: %s"
-              keeper_name agent_name
-              (Masc_domain.masc_error_to_string err))
-    keeper_names keeper_agent_names;
-  let rotation_outcomes =
-    Auth.rotate_shared_tokens_for_agents base_path
-      ~agent_names:keeper_agent_names
-  in
-  List.iter
-    (fun (outcome : Auth.rotation_outcome) ->
-      let successes, failures =
-        List.fold_left
-          (fun (ok, failed) (agent_name, result) ->
-             match result with
-             | Ok () -> (agent_name :: ok, failed)
-             | Error err ->
-                 ( ok,
-                   (agent_name, Masc_domain.masc_error_to_string err) :: failed ))
-          ([], []) outcome.rotated_agents
-      in
-      let success_count = List.length successes in
-      if success_count > 0 then begin
-        Prometheus.inc_counter
-          Prometheus.metric_auth_credential_token_rotated
-          ~labels:[
-            ("token_hash_prefix", outcome.token_hash_prefix);
-            ("scope", "bootable_keepers");
-          ]
-          ~delta:(float_of_int success_count)
-          ();
-        Log.Server.warn
-          "#10304 rotated %d bootable keeper credential(s) out of shared \
-           token group %s: [%s]"
-          success_count outcome.token_hash_prefix
-          (String.concat ", " (List.rev successes))
-      end;
-      List.rev failures
-      |> List.iter (fun (agent_name, detail) ->
-             Log.Server.error
-               "#10304 failed to rotate shared keeper credential for %s \
-                (token_hash_prefix=%s): %s"
-               agent_name outcome.token_hash_prefix detail))
-    rotation_outcomes
+let lazy_startup_task_names ~has_legacy_traces =
+  lazy_startup_plan ~has_legacy_traces
+  |> List.concat_map (fun group -> group.task_names)
 
 let bootstrap_prompt_state (state : Mcp_server.server_state) =
   Config_dir_resolver.log_warnings ~context:"ServerBootstrap" ();
@@ -1226,7 +273,7 @@ let bootstrap_prompt_state (state : Mcp_server.server_state) =
   let missing_prompt_files = Prompt_registry.validate_required_prompt_files () in
   if missing_prompt_files <> [] then
     begin
-    Prometheus.inc_counter Prometheus.metric_error_events ~labels:[("type", "missing_config")] ();
+    Prometheus.inc_counter Prometheus.metric_error_events ~labels:[("type", Error_event_type.(to_label Missing_config))] ();
     Log.Misc.error "required prompt files missing: %s"
       (missing_prompt_files
       |> List.map (fun (key, path) -> Printf.sprintf "%s -> %s" key path)
@@ -1235,7 +282,7 @@ let bootstrap_prompt_state (state : Mcp_server.server_state) =
   let invalid_prompt_templates = Prompt_registry.validate_prompt_templates () in
   if invalid_prompt_templates <> [] then
     begin
-    Prometheus.inc_counter Prometheus.metric_error_events ~labels:[("type", "missing_config")] ();
+    Prometheus.inc_counter Prometheus.metric_error_events ~labels:[("type", Error_event_type.(to_label Missing_config))] ();
     Log.Misc.error "prompt templates use unknown variables: %s"
       (invalid_prompt_templates
       |> List.map (fun (key, variable) -> Printf.sprintf "%s -> %s" key variable)
@@ -1269,126 +316,6 @@ let restore_tool_metrics_from_disk (state : Mcp_server.server_state) =
      Log.Misc.warn "tool metrics restore failed: %s (metrics empty until next emission)"
        (Printexc.to_string exn))
 
-let startup_prune_jsonl (state : Mcp_server.server_state) =
-  (try
-     let days =
-       Safe_ops.get_env_int_logged "MASC_JSONL_RETENTION_DAYS" ~default:30
-     in
-     let masc = Coord.masc_dir state.room_config in
-     let prune_dir dir =
-       if Sys.file_exists dir then
-         Dated_jsonl.prune (Dated_jsonl.create ~base_dir:dir ()) ~days
-       else 0
-     in
-     let tool_metrics_dir =
-       Filename.concat state.room_config.base_path "data/tool-metrics"
-     in
-     let total =
-       prune_dir (Filename.concat masc "audit")
-       + prune_dir (Filename.concat masc "telemetry")
-       + prune_dir (Filename.concat (Filename.concat masc "governance") "judgments")
-       + prune_dir tool_metrics_dir
-       + prune_dir (Filename.concat masc "messages")
-       + prune_dir (Filename.concat masc "events")
-       + prune_dir (Filename.concat masc "activity-events")
-       + prune_dir (Filename.concat masc "voice_sessions")
-       + (let keepers = Filename.concat masc "keepers" in
-          if not (Sys.file_exists keepers) then 0
-          else
-            Array.fold_left (fun acc name ->
-              acc
-              + prune_dir (Filename.concat (Filename.concat keepers name) "metrics")
-              + prune_dir (Filename.concat (Filename.concat keepers name) "crash-events")
-            ) 0 (Sys.readdir keepers))
-     in
-     if total > 0 then
-         Log.Misc.info "startup prune: deleted %d old JSONL day-files (retention=%dd)"
-         total days
-   with
-   | Eio.Cancel.Cancelled _ as e -> raise e
-   | exn -> Log.Misc.warn "startup prune failed: %s (next boot retries; disk impact bounded by retention)" (Printexc.to_string exn))
-
-let startup_prune_keeper_checkpoints (state : Mcp_server.server_state) =
-  (try
-     let traces_dir =
-       Filename.concat (Coord.masc_root_dir state.room_config) "traces"
-     in
-     if Sys.file_exists traces_dir then begin
-       let total = ref 0 in
-       Array.iter (fun trace_name ->
-         let trace_dir = Filename.concat traces_dir trace_name in
-         if Sys.is_directory trace_dir then begin
-           let files = Sys.readdir trace_dir |> Array.to_list in
-           let ckpt_files =
-             files
-             |> List.filter (fun f ->
-               let len = String.length f in
-               len > 5 && String.starts_with ~prefix:"ckpt-" f
-               && String.ends_with ~suffix:".json" f)
-             |> List.sort (fun a b -> compare b a)
-           in
-           if List.length ckpt_files > 3 then
-             List.iteri (fun i f ->
-               if i >= 3 then begin
-                 (try Sys.remove (Filename.concat trace_dir f)
-                  with Sys_error _ -> ());
-                 incr total
-               end
-             ) ckpt_files
-         end
-       ) (Sys.readdir traces_dir);
-       if !total > 0 then
-         Log.Misc.info "startup prune: deleted %d old keeper checkpoint files" !total
-     end
-   with
-   | Eio.Cancel.Cancelled _ as e -> raise e
-   | exn ->
-     Log.Misc.warn "startup checkpoint prune failed: %s (next boot retries)"
-       (Printexc.to_string exn))
-
-let startup_migrate_keeper_histories (state : Mcp_server.server_state) =
-  (try
-     let traces_dir =
-       Filename.concat (Coord.masc_root_dir state.room_config) "traces"
-     in
-     if Sys.file_exists traces_dir then begin
-       let moved_total = ref 0 in
-       let dropped_total = ref 0 in
-       let sessions_migrated = ref 0 in
-       Array.iter
-         (fun trace_name ->
-            let trace_dir = Filename.concat traces_dir trace_name in
-            if Sys.is_directory trace_dir then
-              let stats =
-                Keeper_context_core.migrate_session_history_logs
-                  ~session_dir:trace_dir
-              in
-              if stats.moved_lines > 0 || stats.dropped_lines > 0 then begin
-                incr sessions_migrated;
-                moved_total := !moved_total + stats.moved_lines;
-                dropped_total := !dropped_total + stats.dropped_lines;
-                Log.Misc.info
-                  "startup history migration: trace=%s moved=%d dropped=%d kept=%d malformed=%d"
-                  trace_name
-                  stats.moved_lines
-                  stats.dropped_lines
-                  stats.kept_lines
-                  stats.malformed_lines
-              end)
-         (Sys.readdir traces_dir);
-       if !sessions_migrated > 0 then
-         Log.Misc.info
-           "startup history migration: migrated %d session(s), moved %d internal line(s), dropped %d prompt line(s)"
-           !sessions_migrated
-           !moved_total
-           !dropped_total
-     end
-   with
-   | Eio.Cancel.Cancelled _ as e -> raise e
-   | exn ->
-       Log.Misc.warn "startup history migration failed: %s (next boot retries; legacy format readable)"
-         (Printexc.to_string exn))
-
 (* bootstrap_keepers removed: the keeper_autoboot subsystem in
    start_keeper_loops now handles keeper startup in a dedicated
    fiber with a 5-second delay, avoiding runtime bootstrap contention with
@@ -1414,20 +341,6 @@ let run ~sw ~env ~host ~port ~base_path ~make_routes ~make_request_handler
      quick_stat does not walk the heap, so the call cost stays
      bounded next to the request path. *)
   Gc_sampler.run ~sw ~clock ~interval:30.0;
-  let refresh_llama_endpoints () =
-    try
-      let llama_endpoints =
-        Llm_provider.Provider_registry.refresh_llama_endpoints ~sw ~net ()
-      in
-      Log.Server.info "[MASC] Llama endpoints: %s"
-        (String.concat ", " llama_endpoints)
-    with
-    | Eio.Cancel.Cancelled _ as e -> raise e
-    | exn ->
-      Log.Server.warn "llama endpoint refresh skipped during startup: %s"
-        (Printexc.to_string exn)
-  in
-
   (* 1. HTTP socket first — Railway healthcheck can reach /health immediately *)
   let config = Server_bootstrap_http.make_http_config ~host ~port in
   let routes = make_routes ~port:config.port ~host:config.host ~sw ~clock in
@@ -1455,7 +368,6 @@ let run ~sw ~env ~host ~port ~base_path ~make_routes ~make_request_handler
 
   (* 2. All init in background fiber — protected so failures don't kill HTTP *)
   Eio.Fiber.fork ~sw (fun () ->
-    refresh_llama_endpoints ();
     let governance_level = Env_config_core.governance_level () in
     let init_state_blocking () =
       let t0 = Eio.Time.now clock in
@@ -1471,18 +383,22 @@ let run ~sw ~env ~host ~port ~base_path ~make_routes ~make_request_handler
          Prometheus without creating dependency cycles, but the global
          observer refs can be wired before any FileSystem backend writes. *)
       Backend_mutex_metrics.install ();
-      Log.Server.info "Backend_mutex_metrics installed (masc_backend_mutex_*)";
+      Log.Server.info "Backend_mutex_metrics installed (masc_backend_mutex_* metrics)";
       (* Forward Agent_sdk.Log records (per-turn timing from oas#816 and
          any subsequent structured emits) into the masc-mcp log ring so
-         they land in ~/.masc/logs/system_log_*.jsonl alongside
+         they land in <base_path>/.masc/logs/system_log_*.jsonl alongside
          masc-mcp's own records.  Without this, OAS's structured Log
          global sink registry is empty and every Log.info inside
          agent_sdk is a silent drop. *)
-      Oas_log_bridge.install ();
-      Log.Server.info "Oas_log_bridge installed (agent_sdk.Log -> masc structured log)";
+      Agent_sdk_log_bridge.install ();
+      Log.Server.info "Agent_sdk_log_bridge installed (agent_sdk.Log -> masc structured log)";
       let state =
-        create_server_state ~sw ~base_path ~clock ~mono_clock ~net ~proc_mgr ~fs
+        create_server_state ~sw ~base_path ~clock ~mono_clock ~net ~proc_mgr
+          ~fs ~env ()
       in
+      let provider_health = Provider_health.create state.room_config in
+      Provider_health.set_active provider_health;
+      Provider_health.start_probe_fiber ~sw ~env provider_health;
       let format_catalog_validation_error label rejection =
         Printf.sprintf
           "%s: %s"
@@ -1533,11 +449,17 @@ let run ~sw ~env ~host ~port ~base_path ~make_routes ~make_request_handler
       sync_admin_token_env state;
       sync_internal_keeper_token_env state;
       sync_bootable_keeper_credentials state;
-      sync_mcp_client_token_files ~base_path;
       let path_diagnostics =
         runtime_path_diagnostics ~input_base_path:base_path state
       in
       Server_base_path_diagnostics.log_startup_warning path_diagnostics;
+      if Server_base_path_diagnostics.startup_should_abort path_diagnostics then begin
+        Log.Server.error "%s\nStartup guard rejected malformed runtime state."
+          (Option.value path_diagnostics.warning
+             ~default:
+               "startup guard triggered without a diagnostic warning");
+        exit 1
+      end;
       if Server_base_path_diagnostics.strict_violation path_diagnostics then begin
         Log.Server.error "%s\nBase-path strict mode rejected the resolved runtime path configuration."
           (Option.value path_diagnostics.warning
@@ -1575,13 +497,13 @@ let run ~sw ~env ~host ~port ~base_path ~make_routes ~make_request_handler
           if deleted > 0 then
             Prometheus.inc_counter
               Prometheus.metric_fs_atomic_orphans_cleaned
-              ~labels:[ ("size_class", "empty") ]
+              ~labels:[ ("size_class", Atomic_orphan_size_class.(to_label Empty)) ]
               ~delta:(float_of_int deleted)
               ();
           if preserved > 0 then
             Prometheus.inc_counter
               Prometheus.metric_fs_atomic_orphans_cleaned
-              ~labels:[ ("size_class", "with_data") ]
+              ~labels:[ ("size_class", Atomic_orphan_size_class.(to_label With_data)) ]
               ~delta:(float_of_int preserved)
               ();
           if deleted + preserved > 0 then
@@ -1628,22 +550,20 @@ let run ~sw ~env ~host ~port ~base_path ~make_routes ~make_request_handler
       Log.Server.info "Bootstrap completed in %.1fs" (t2 -. t1);
       (* 2026-05-05 deploy-gap audit (#12943 follow-up): warn loudly when
          the running binary is more than [stale_threshold_hours] behind
-         the resolved git commit timestamp.  The 2026-05-05 fleet-stuck
-         recurrence chain spent 7 prompt cycles before noticing the
-         server had been running an 8-hour-old build.  /health already
-         exposes [build.commit_age_seconds]; this WARN forces the same
-         signal into the operator-visible startup log so the next deploy
-         gap is caught at restart instead of after the next outage. *)
+         the build-env commit timestamp.  Runtime repo HEAD is intentionally
+         ignored here: it is checkout truth, not proof that this executable
+         was rebuilt from that commit. *)
       let stale_threshold_hours = 12 in
       let build = Build_identity.current () in
-      (match build.commit_age_seconds with
-       | Some age when age > stale_threshold_hours * 3600 ->
-         let hours = age / 3600 in
+      (match build.binary_commit, build.binary_commit_age_seconds with
+       | Some binary_commit, Some age
+         when age > stale_threshold_hours * Masc_time_constants.hour_int ->
+         let hours = age / Masc_time_constants.hour_int in
          Log.Server.warn
            "Server binary commit %s is %d hours old (>%dh threshold). \
             Rebuild + restart recommended to pick up newer fixes; see \
-            /health build.commit_age_seconds."
-           (Option.value build.commit ~default:"<unknown>")
+            /health build.binary_commit_age_seconds."
+           binary_commit
            hours stale_threshold_hours
        | _ -> ());
       Server_bootstrap_loops.install_tooling ~governance_level state;
@@ -1668,45 +588,54 @@ let run ~sw ~env ~host ~port ~base_path ~make_routes ~make_request_handler
       let has_legacy_traces =
         Sys.file_exists (Filename.concat masc_root "perpetual")
       in
-      let tasks =
-        [
-          ("restore_sessions", fun () -> restore_persisted_sessions state);
-          ("reconcile_active_agents", fun () -> reconcile_active_agents_gauge state);
-          ( "recover_running_sessions",
-            fun () ->
-              match state.Mcp_server.proc_mgr, state.Mcp_server.net with
-              | None, _ ->
-                  Log.Server.warn
-                    "skipping session recovery: process_mgr not available"
-              | Some _process_mgr, None ->
-                  Log.Server.warn
-                    "skipping session recovery: net not available"
-              | Some _process_mgr, Some _net ->
-                  (* Team_session_engine_eio removed — skip recovery *)
-                  ignore (sw, clock, state.Mcp_server.room_config) );
-          ("prompt_bootstrap", fun () -> bootstrap_prompt_state state);
-          ("telemetry_warmup", fun () -> warm_tool_registry_from_telemetry state);
-          ("tool_metrics_restore", fun () -> restore_tool_metrics_from_disk state);
-          ("keeper_history_migration", fun () -> startup_migrate_keeper_histories state);
-        ]
-        @ (if has_legacy_traces then
-             [("legacy_trace_dir_migration", fun () ->
-                 migrate_legacy_trace_dirs state)]
-           else [])
-        @ [
-          ("jsonl_prune", fun () -> startup_prune_jsonl state);
-          ( "keeper_checkpoint_prune",
-            fun () -> startup_prune_keeper_checkpoints state );
-          (* keeper_bootstrap removed: keeper_autoboot subsystem in
-             start_keeper_loops handles this in a dedicated fiber,
-             avoiding bootstrap contention with dashboard refresh loops. *)
-        ]
+      let task_fn = function
+        | "restore_sessions" -> fun () -> restore_persisted_sessions state
+        | "reconcile_active_agents" -> fun () ->
+            reconcile_active_agents_gauge state
+        | "prompt_bootstrap" -> fun () -> bootstrap_prompt_state state
+        | "keeper_history_migration" -> fun () ->
+            startup_migrate_keeper_histories state
+        | "telemetry_warmup" -> fun () ->
+            warm_tool_registry_from_telemetry state
+        | "tool_metrics_restore" -> fun () ->
+            restore_tool_metrics_from_disk state
+        | "legacy_trace_dir_migration" -> fun () ->
+            migrate_legacy_trace_dirs state
+        | "jsonl_prune" -> fun () -> startup_prune_jsonl state
+        | "auth_archive_prune" -> fun () -> startup_prune_auth_archive state
+        | task_name ->
+            raise
+              (Invalid_argument
+                 (Printf.sprintf "unknown lazy startup task: %s" task_name))
       in
-      let task_names = List.map fst tasks in
+      let task_names = lazy_startup_task_names ~has_legacy_traces in
+      let task_groups =
+        lazy_startup_plan ~has_legacy_traces
+        |> List.map (fun group ->
+               (group, List.map (fun name -> (name, task_fn name)) group.task_names))
+      in
+      let execution_to_string = function
+        | Parallel -> "parallel"
+        | Serial -> "serial"
+      in
+      let run_lazy_task_group (group, tasks) =
+        Log.Server.info
+          "lazy_task_group: starting %s (%s, %d tasks)"
+          group.group_name
+          (execution_to_string group.execution)
+          (List.length tasks);
+        (match group.execution with
+         | Parallel ->
+             Eio.Fiber.all
+               (List.map (fun task () -> run_lazy_task task) tasks)
+             |> ignore
+         | Serial -> List.iter run_lazy_task tasks);
+        Log.Server.info "lazy_task_group: finished %s" group.group_name
+      in
       Server_startup_state.activate_lazy
         ~backend_mode:(Coord.backend_name state.room_config)
         ~tasks:task_names;
-      Eio.Fiber.fork ~sw (fun () -> List.iter run_lazy_task tasks)
+      Eio.Fiber.fork ~sw (fun () -> List.iter run_lazy_task_group task_groups)
     in
     try
       Server_startup_state.mark_blocking ~backend_mode:initial_backend_mode;
@@ -1721,11 +650,21 @@ let run ~sw ~env ~host ~port ~base_path ~make_routes ~make_request_handler
       in
       Server_bootstrap_http.print_startup_banner ~config ~resolved_base ~base_path
         ~masc_dir ~path_diagnostics;
-      (* Create Executor_pool for CPU-heavy dashboard compute.
-         Runs in separate OS domains, bypassing fiber contention. *)
-      let exec_pool = Eio.Executor_pool.create ~sw ~domain_count:2 domain_mgr in
-      Server_dashboard_http.set_executor_pool exec_pool;
-      Log.Server.info "Executor_pool created (2 domains) for dashboard";
+      (* Create the shared Domain_pool for dashboard compute and optional
+         keeper offload.  The raw Executor_pool reference remains available
+         for existing dashboard call sites, but new runtime call sites should
+         go through Domain_pool_ref to preserve IO/CPU weight policy. *)
+      let domain_pool =
+        Domain_pool.create
+          ~sw
+          ?domain_count:(Env_config.Executor.domain_count_override ())
+          domain_mgr
+      in
+      Domain_pool_ref.set domain_pool;
+      Server_dashboard_http.set_executor_pool (Domain_pool.executor_pool domain_pool);
+      Log.Server.info
+        "Domain_pool created (%d domains) for dashboard/keeper compute"
+        (Domain_pool.domain_count domain_pool);
       (* Start auxiliary transports before optional warmups and keeper loops.
          Otherwise HTTP can report ready while gRPC/WS startup is still stuck
          behind heavier startup work. *)
@@ -1735,9 +674,12 @@ let run ~sw ~env ~host ~port ~base_path ~make_routes ~make_request_handler
           try Yojson.Safe.from_string args_json
           with Yojson.Json_error _ -> `Assoc []
         in
-        let (success, result_str) =
+        let result =
           Mcp_server_eio_execute.execute_tool_eio ~sw ~clock state
             ~name:tool_name ~arguments
+        in
+        let success = Tool_result.is_success result
+        and result_str = Tool_result.message result
         in
         if not success then
           Log.Server.error "gRPC tool call failed: tool=%s error_bytes=%d"
@@ -1770,10 +712,10 @@ let run ~sw ~env ~host ~port ~base_path ~make_routes ~make_request_handler
                 [
                   ( "snapshot",
                     Server_dashboard_http.cached_surface_json
-                      Server_dashboard_http._operator_snapshot_cache );
+                      Server_dashboard_http.operator_snapshot_cache );
                   ( "digest",
                     Server_dashboard_http.cached_surface_json
-                      Server_dashboard_http._operator_digest_cache );
+                      Server_dashboard_http.operator_digest_cache );
                 ])
         | "transport" ->
             Some (Server_dashboard_http.dashboard_transport_health_snapshot_json ())
@@ -1918,7 +860,7 @@ let run ~sw ~env ~host ~port ~base_path ~make_routes ~make_request_handler
       (* Pre-warm shell cache in a separate fiber so it cannot block
          lazy startup tasks or later keeper loop startup
          (#keeper-bootstrap-stuck). *)
-      Atomic.set Server_dashboard_http._shell_warming true;
+      Atomic.set Server_dashboard_http.shell_warming true;
       Eio.Fiber.fork ~sw (fun () ->
         let outer_timeout_sec =
           Env_config_runtime.Dashboard.shell_prewarm_outer_timeout_sec
@@ -1936,7 +878,11 @@ let run ~sw ~env ~host ~port ~base_path ~make_routes ~make_request_handler
          | Eio.Cancel.Cancelled _ as e -> raise e
          | exn ->
              Log.Dashboard.warn "shell cache pre-warm failed: %s"
-             (Printexc.to_string exn)));
+             (Printexc.to_string exn));
+        (* Full-health scans are heavier than the probe path. Start them after
+           shell prewarm has either succeeded or exhausted its own budget so
+           cold-start diagnostics do not contend with the shell's first render. *)
+        Server_routes_http_runtime.start_full_health_snapshot_refresh_loop ~sw ~clock);
       start_lazy_startup state;
       (match catalog_validation_error with
        | Some detail -> Server_startup_state.mark_degraded ~error:detail
@@ -1973,11 +919,13 @@ let run ~sw ~env ~host ~port ~base_path ~make_routes ~make_request_handler
         (Printexc.to_string exn));
 
   (* 3. Start serving -- /health responds before init completes *)
+  let addr_label = Printf.sprintf "%s:%d" config.host config.port in
   match http_mode with
   | `H2_only ->
-    Server_bootstrap_http.serve_h2 ~sw ~clock ~socket ~h2_request_handler ~h2_error_handler
+    Server_bootstrap_http.serve_h2 ~sw ~clock ~socket ~addr_label
+      ~h2_request_handler ~h2_error_handler
   | `H1_only ->
-    Server_bootstrap_http.serve ~sw ~clock ~socket ~request_handler
+    Server_bootstrap_http.serve ~sw ~clock ~socket ~addr_label ~request_handler
   | `Auto ->
-    Server_bootstrap_http.serve_auto ~sw ~clock ~socket ~request_handler ~h2_request_handler
-      ~h2_error_handler
+    Server_bootstrap_http.serve_auto ~sw ~clock ~socket ~addr_label
+      ~request_handler ~h2_request_handler ~h2_error_handler

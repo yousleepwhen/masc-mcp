@@ -12,6 +12,7 @@ val slot_holder_age_for_test :
 
 type batch_root_cause =
   | Cascade_unhealthy
+  | Provider_timeout
   | Provider_auth
   | Fd_exhaustion
   | Mixed
@@ -27,21 +28,65 @@ val classify_batch_root_cause_for_test :
   Keeper_registry.failure_reason list -> batch_root_cause
 (** Test-only view of the batch root-cause classifier. *)
 
+val should_trigger_noop_failure_loop_for_test :
+  noop_count:int ->
+  noop_threshold:int ->
+  started_at:float ->
+  last_completed_turn_ended_at:float option ->
+  bool
+(** Test-only view of the no-op watchdog gate.  A persisted
+    [consecutive_noop_count] only triggers a no-op failure-loop kill
+    after the current keeper fiber has completed a turn. *)
+
+type active_turn_stale_status = {
+  active_total_stale : bool;
+  progress_stale : bool;
+  active_seconds : float;
+  since_progress_seconds : float;
+}
+
+val active_turn_stale_status_for_test :
+  now:float ->
+  started_at:float ->
+  last_progress_at:float ->
+  active_turn_timeout_sec:float ->
+  progress_timeout_sec:float ->
+  fiber_age:float ->
+  startup_grace:float ->
+  active_turn_stale_status
+(** Test-only view of the active-turn liveness classifier. *)
+
 val reset_batch_terminations_for_test : unit -> unit
 (** Test-only reset for fleet batch termination history. *)
 
 val record_batch_termination_for_test : string -> float -> string list
 (** Test-only wrapper around the fleet batch termination window. *)
 
-val latch_stale_fleet_batch_reasons_for_test :
-  config:Coord.config -> distinct_count:int -> string list -> unit
-(** Test-only wrapper for the batch failure-reason latch. *)
+val effective_startup_grace_sec :
+     base_grace_sec:float
+  -> poll_sec:float
+  -> startup_warmup_sec:int
+  -> float
+(** Effective grace window before stale detection can kill a newly-started
+    keeper.  It must cover the configured watchdog grace and the proactive
+    startup warmup plus one poll interval. *)
+
+val should_warn_missing_registry_for_test :
+  captured_paused:bool -> persisted_paused:bool option -> bool
+(** Test-only view of missing-registry log classification. A missing
+    registry entry is expected once a paused keeper has been pruned from the
+    live registry, so the watchdog should stop its orphan fiber instead of
+    emitting repeated WARN lines. *)
 
 val fork_stale_watchdog :
-  'a context -> keeper_meta -> Keeper_registry.registry_entry -> unit
+     'a context
+  -> keeper_meta
+  -> ?startup_warmup_sec:int
+  -> Keeper_registry.registry_entry
+  -> unit
 (** Fork a stale-turn watchdog fiber for the given keeper.
 
-    Three detection modes — see {!Keeper_registry.stale_kill_class}:
+    Four detection modes — see {!Keeper_registry.stale_kill_class}:
     - [Idle_turn]: [last_turn_ts] older than the idle threshold while
       the keeper phase is [Running] but no [current_turn_observation]
       is recorded.
@@ -49,6 +94,9 @@ val fork_stale_watchdog :
       and ran past [timeout_threshold] seconds — covers the
       "Orphaned Streaming" pattern described in the executor FSM
       analysis (TLA+ I2: [in_turn_age > grace_period → in_turn_stale]).
+    - [Mid_turn_no_progress]: a turn is still within the outer active-turn
+      cap, but its progress timestamp is stale, catching no-first-token and
+      inter-chunk-idle stalls without shortening the total turn budget.
     - [Noop_failure_loop]: turns kept firing but produced no tool
       calls; the keepalive's [consecutive_noop_count] reached the
       watchdog threshold — catches keepers in LLM timeout loops where
@@ -60,5 +108,5 @@ val fork_stale_watchdog :
 
     On detection, sets [fiber_stop] and emits a stale broadcast. The
     supervisor's [sweep_and_recover] picks up the stopped fiber and restarts
-    with exponential backoff, unless a per-keeper stale storm or fleet batch
-    latch routes the keeper to auto-pause/backoff first. *)
+    with exponential backoff, unless a per-keeper stale storm routes the keeper
+    to auto-pause/backoff first. Fleet batch detection is observation-only. *)

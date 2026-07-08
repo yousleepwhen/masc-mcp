@@ -1,15 +1,15 @@
 (* Keeper_turn_cascade_budget — cascade execution types, fail-open rotation,
-   OAS timeout budget resolution, context overflow recovery, keeper pause/resume
+   provider timeout budget resolution, context overflow observation, keeper pause/resume
    sync, partial-commit continue gate, and context budget resolution.
 
    Public sub-module included by [Keeper_unified_turn]. *)
 
 open Keeper_types
-open Keeper_exec_context
+open Keeper_context_runtime
 module EC = Keeper_error_classify
 
 type cascade_execution = {
-  cascade_name : Keeper_cascade_profile.runtime_name;
+  cascade_name : Cascade_name.t;
   max_context_resolution : max_context_resolution;
   max_context : int;
   temperature : float;
@@ -17,8 +17,10 @@ type cascade_execution = {
 }
 
 val fail_open_rotation_cascades_from_catalog :
+  ?excluded_targets:string list ->
   catalog_names:string list ->
   keeper_assignable:string list ->
+  unit ->
   string list option
 
 val active_fail_open_rotation_cascades : unit -> string list option
@@ -31,6 +33,11 @@ val next_fail_open_cascade_for_turn :
   attempted_cascades:string list ->
   Agent_sdk.Error.sdk_error ->
   EC.degraded_retry option
+(** Required-tool retries do not fall through to the generic keeper-assignable
+    rotation catalog. They stay on the base cascade, the configured
+    [routes.tool_required] target, or an explicit [fallback_cascade] hint so
+    request-scoped runtime-MCP turns cannot degrade into manual CLI lanes that
+    cannot carry the request-scoped tool policy. *)
 
 val sdk_error_kind : Agent_sdk.Error.sdk_error -> string
 
@@ -42,15 +49,20 @@ val record_turn_failure_stress :
   err:Agent_sdk.Error.sdk_error ->
   unit
 
-val oas_timeout_guard_sec : float
+val provider_timeout_guard_sec : float
 (** Retry guard floor (seconds). *)
 
-val min_oas_timeout_budget_sec : float
-(** Minimum OAS timeout budget (seconds). *)
+val min_provider_timeout_budget_sec : float
+(** Minimum provider timeout budget (seconds). *)
+
+val first_attempt_degraded_retry_reserve_sec : float
+(** Wall-clock reserve kept from non-retry attempts so one degraded
+    retry can still satisfy [provider_timeout_guard_sec] +
+    [min_provider_timeout_budget_sec]. *)
 
 val sdk_error_kind : Agent_sdk.Error.sdk_error -> string
 
-type oas_timeout_budget_resolution = {
+type provider_timeout_budget = {
   effective_timeout_sec : float;
   adaptive_timeout_sec : float;
   keeper_turn_timeout_sec : float;
@@ -60,17 +72,20 @@ type oas_timeout_budget_resolution = {
   source : string;
 }
 
-val oas_timeout_budget_resolution_to_yojson :
-  oas_timeout_budget_resolution -> Yojson.Safe.t
+val provider_timeout_budget_to_yojson :
+  provider_timeout_budget -> Yojson.Safe.t
 
-val resolve_bounded_oas_timeout_budget_with_turn_budget :
+val resolve_bounded_provider_timeout_budget_with_turn_budget :
   allow_wall_clock_retry_budget:bool ->
   is_retry:bool ->
-  reserve_degraded_retry_budget:bool ->
   estimated_input_tokens:int ->
   max_turns:int ->
   remaining_turn_budget_s:float ->
-  oas_timeout_budget_resolution option
+  provider_timeout_budget option
+(** Resolves the per-provider timeout inside the outer keeper turn
+    budget. Non-retry attempts keep a small degraded-retry reserve when
+    the remaining wall-clock budget is large enough; retry attempts use
+    the remaining per-attempt or one-shot degraded wall-clock budget. *)
 
 val allow_wall_clock_retry_budget_for_attempt :
   is_retry:bool ->
@@ -79,18 +94,18 @@ val allow_wall_clock_retry_budget_for_attempt :
   attempted_cascades:string list ->
   bool
 
-val bounded_oas_timeout_for_turn_budget_with_turn_budget :
+val bounded_provider_timeout_for_turn_budget_with_turn_budget :
   estimated_input_tokens:int ->
   max_turns:int ->
   remaining_turn_budget_s:float ->
   float option
 
-val bounded_oas_timeout_for_turn_budget :
+val bounded_provider_timeout_for_turn_budget :
   estimated_input_tokens:int ->
   remaining_turn_budget_s:float ->
   float option
 
-val oas_retry_budget_available_for_turn :
+val provider_retry_budget_available_for_turn :
   allow_wall_clock_retry_budget:bool ->
   is_retry:bool ->
   estimated_input_tokens:int ->
@@ -98,33 +113,75 @@ val oas_retry_budget_available_for_turn :
   remaining_turn_budget_s:float ->
   bool
 
+(** RFC-OAS-XXX (Team JJ §6) — typed retry admission decision.
+
+    Distinguishes "admission denied before any provider attempt"
+    from "provider attempt ran and OAS server timed out". The
+    existing call surface in [Keeper_unified_turn] emits
+    [Turn_timeout] instead of minting an [Provider_timeout] root cause
+    for the former case, which collapses both semantics into one
+    metric. This function exposes the typed decision so callers can
+    branch on the closed-sum reason. The matching error variant
+    ([Retry_admission_denied]) is RFC-deferred. *)
+
+type retry_admission_denial =
+  Cascade_internal_error.retry_admission_denial =
+  | Retry_budget_below_min of {
+      projected_usable_budget_s : float;
+      min_required_s : float;
+      remaining_turn_budget_s : float;
+      adaptive_timeout_s : float;
+      allow_wall_clock_retry_budget : bool;
+    }
+  | First_attempt_budget_below_min of {
+      projected_usable_budget_s : float;
+      min_required_s : float;
+      remaining_turn_budget_s : float;
+    }
+
+type attempt_kind = First_attempt | Retry_attempt
+
+val retry_admission_denial_to_yojson :
+  retry_admission_denial -> Yojson.Safe.t
+
+val decide_retry_admission_for_turn :
+  remaining_turn_budget_s:float ->
+  attempt_kind:attempt_kind ->
+  allow_wall_clock_retry_budget:bool ->
+  estimated_input_tokens:int ->
+  max_turns:int ->
+  (unit, retry_admission_denial) result
+
 val degraded_retry_slot_phase_budget_sec : float
 (** Maximum outer-slot hold time before degraded cascade rotation is
     suppressed. This is a guardrail for #12888: once the productive
     phase has already consumed this much wall clock, rotation should end
     the cycle instead of holding the same slot for another provider
-    attempt. OAS timeout-budget failures may still rotate to the next
+    attempt. provider-timeout failures may still rotate to the next
     degraded cascade when retry budget remains, because the failed attempt
     already represents the budgeted provider wait. *)
 
 val degraded_retry_slot_phase_available :
   time_spent_in_turn_s:float -> bool
 
-val reclassify_oas_timeout_for_attempt :
-  timeout_budget:oas_timeout_budget_resolution option ->
+val reclassify_provider_timeout_for_attempt :
+  provider_timeout_budget:provider_timeout_budget option ->
   Agent_sdk.Error.sdk_error ->
   Agent_sdk.Error.sdk_error
+(** Preserve upstream structural timeout errors instead of minting a synthetic
+    [Provider_timeout] root cause.  Kept as a named hook while the
+    provider-timeout root-cause ADT is introduced in a later PR. *)
 
 val attempt_watchdog_timeout_sec :
   remaining_turn_budget_s:float ->
-  oas_timeout_budget_resolution ->
+  provider_timeout_budget ->
   float
 (** Wall-clock watchdog for a single cascade attempt.
 
     The watchdog fires after the OAS per-attempt budget plus the normal
     finalization guard, while reserving a small outer-turn margin before the
     enclosing keeper turn wall-clock timeout. This keeps a hung provider
-    attempt on the structured [oas_timeout_budget] path, where degraded cascade
+    attempt on the structured [provider_timeout] path, where degraded cascade
     rotation can still run, instead of falling through to terminal
     [turn_timeout]. *)
 
@@ -147,33 +204,34 @@ val next_fail_open_cascade_for_turn_with_budget :
   Agent_sdk.Error.sdk_error ->
   degraded_retry_budget_decision
 
-type overflow_retry_plan = {
-  retry_max_context : int;
-  retry_generation : int;
-  compaction : compaction_event;
-}
-
 type turn_event_bus_overflow = {
   estimated_tokens : int;
   limit_tokens : int;
 }
 
+type turn_event_bus_compaction = {
+  before_tokens : int;
+  after_tokens : int;
+  tokens_freed : int;
+  phase_hint : string;
+}
+
 type turn_event_bus_summary = {
   correlation_id : string option;
+  run_id : string option;
+  caused_by : string option;
+  event_count : int;
+  payload_kinds : string list;
   overflow_imminent : turn_event_bus_overflow option;
+  context_compact_started_count : int;
+  context_compacted_count : int;
+  last_compaction : turn_event_bus_compaction option;
 }
 
 val empty_turn_event_bus_summary : turn_event_bus_summary
 
 val merge_turn_event_bus_summary :
   turn_event_bus_summary -> turn_event_bus_summary -> turn_event_bus_summary
-
-val recover_context_overflow_retry :
-  meta:keeper_meta ->
-  base_dir:string ->
-  max_cascade_context:int ->
-  error:Agent_sdk.Error.sdk_error ->
-  overflow_retry_plan option
 
 val summarize_turn_event_bus :
   Agent_sdk.Event_bus.event list -> turn_event_bus_summary
@@ -202,6 +260,16 @@ val sync_keeper_paused_state :
     Returns [Error] when disk sync fails so callers can surface the failure
     instead of silently diverging runtime vs persisted state. *)
 
+val sync_keeper_paused_state_with_resume_policy :
+  config:Coord.config ->
+  meta:keeper_meta ->
+  paused:bool ->
+  resume_policy:Keeper_supervisor_pause_policy.crash_pause_resume_policy ->
+  (keeper_meta, string) result
+(** Like {!sync_keeper_paused_state}, but also applies [resume_policy] when
+    pausing so automatic pause paths can enter the supervisor self-healing
+    sweep instead of becoming an indefinite manual pause. *)
+
 val current_keeper_meta :
   config:Coord.config ->
   fallback_meta:keeper_meta ->
@@ -213,8 +281,8 @@ type post_turn_resilience_handles = {
   resilience_audit_store : Shared_audit.Store.t option;
   resilience_strategy_executor : Resilience.Recovery.strategy_executor option;
   sync_lifecycle_meta :
-    Keeper_exec_context.post_turn_lifecycle ->
-    Keeper_exec_context.post_turn_lifecycle;
+    Keeper_context_runtime.post_turn_lifecycle ->
+    Keeper_context_runtime.post_turn_lifecycle;
 }
 (** Runtime handles for the feature-flagged post-turn resilience wire-in.
 

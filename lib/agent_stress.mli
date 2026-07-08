@@ -42,6 +42,9 @@ type stress_kind =
   | Turn_failure of turn_failure (** keeper turn ended in an error/partial outcome *)
   | Fallback_approval            (** anti-rat or post-verifier fell back to approve *)
   | Timeout                      (** OAS/LLM call timed out *)
+  | Provider_timeout             (** provider stream timed out *)
+  | Capacity_pressure            (** admission, cascade, or provider capacity pressure *)
+  | Turn_liveness                (** stale turn, heartbeat, or fiber liveness issue *)
   | Parse_degraded               (** LLM response required fallback parsing *)
   | Task_released                (** agent released a task (gave up) *)
 
@@ -100,4 +103,6 @@ val dashboard_feed_json :
   Yojson.Safe.t list ->
   Yojson.Safe.t
 (** Build the dashboard response carrying both the existing [events] array
-    and the O5 compatibility [agent_stress] board rows. *)
+    and the O5 compatibility [agent_stress] board rows.  The envelope includes
+    [dashboard_surface], [source], and [retention] so operators can tie the
+    board projection back to [.masc/agent_stress.jsonl]. *)

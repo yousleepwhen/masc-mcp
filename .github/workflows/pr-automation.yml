@@ -24,7 +24,10 @@ permissions:
 # feature/ds-v2-dialog-anim-wiring, fix/ir3-checkpoint-error).
 concurrency:
   group: pr-automation-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  # Do not cancel in-flight guard runs. A burst of opened/labeled/ready events can
+  # otherwise leave only CANCELLED Draft Auto-Merge Guard checks during the short
+  # ready-to-merge window for agent PRs.
+  cancel-in-progress: false
 
 jobs:
   draft-automerge-guard:
@@ -38,6 +41,7 @@ jobs:
       - name: Keep draft PRs draft-only unless explicitly approved
         uses: actions/github-script@v9
         env:
+          AGENT_DRAFT_GUARD_MAINTENANCE: ${{ vars.AGENT_DRAFT_GUARD_MAINTENANCE }}
           AGENT_DRAFT_GUARD_TITLE_RE: ${{ vars.AGENT_DRAFT_GUARD_TITLE_RE }}
           AGENT_DRAFT_GUARD_BRANCH_RE: ${{ vars.AGENT_DRAFT_GUARD_BRANCH_RE }}
           AGENT_DRAFT_GUARD_BYPASS_LABELS: ${{ vars.AGENT_DRAFT_GUARD_BYPASS_LABELS }}
@@ -45,6 +49,10 @@ jobs:
           AGENT_DRAFT_GUARD_HUMAN_ACTORS: ${{ vars.AGENT_DRAFT_GUARD_HUMAN_ACTORS }}
         with:
           script: |
+            if (process.env.AGENT_DRAFT_GUARD_MAINTENANCE === "true") {
+              core.info("Maintenance mode active (AGENT_DRAFT_GUARD_MAINTENANCE=true); skipping draft guard.");
+              return;
+            }
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const pr = context.payload.pull_request;
@@ -133,6 +141,44 @@ jobs:
             const presentBypassLabels = labels.filter((label) => bypassLabelSet.has(label));
             const bypassPolicyFailures = [];
             const verifiedBypassLabels = [];
+            const unverifiedBypassLabels = [];
+            const approvalGateMarker = "<!-- masc-human-approval-gate -->";
+            let issueCommentsCache = null;
+            const loadIssueComments = async () => {
+              if (issueCommentsCache !== null) return issueCommentsCache;
+              issueCommentsCache = await github.paginate(github.rest.issues.listComments, {
+                owner,
+                repo,
+                issue_number: pullNumber,
+                per_page: 100
+              });
+              return issueCommentsCache;
+            };
+            const findApprovalGateNear = async (label, labeledAt, previousLabelEventAt) => {
+              const labeledAtMs = Date.parse(labeledAt || "");
+              if (!Number.isFinite(labeledAtMs)) return undefined;
+              const previousLabelEventAtMs = Date.parse(previousLabelEventAt || "");
+              const labelLiteral = `\`${label}\``;
+              const approvalGateWindowMs = 5 * 60 * 1000;
+              const comments = await loadIssueComments();
+              return [...comments].reverse().find((comment) => {
+                const body = comment.body || "";
+                const commentAtMs = Date.parse(comment.created_at || "");
+                const afterPreviousLabelCycle =
+                  !Number.isFinite(previousLabelEventAtMs) ||
+                  commentAtMs > previousLabelEventAtMs;
+                const withinCurrentLabelCycle =
+                  commentAtMs >= labeledAtMs &&
+                  commentAtMs <= labeledAtMs + approvalGateWindowMs;
+                return comment.user?.type === "Bot" &&
+                  Number.isFinite(commentAtMs) &&
+                  afterPreviousLabelCycle &&
+                  withinCurrentLabelCycle &&
+                  body.includes(approvalGateMarker) &&
+                  body.toLowerCase().includes(labelLiteral) &&
+                  body.includes("/actions/runs/");
+              });
+            };
             if (presentBypassLabels.length > 0) {
               const events = await github.paginate(github.rest.issues.listEvents, {
                 owner,
@@ -141,22 +187,32 @@ jobs:
                 per_page: 100
               });
               for (const label of presentBypassLabels) {
-                const latest = [...events].reverse().find((event) =>
+                const matchingEvents = events.filter((event) =>
                   (event.event === "labeled" || event.event === "unlabeled") &&
                   event.label?.name?.toLowerCase() === label
                 );
-                const actor = latest?.actor;
-                const actorName = actor?.login?.toLowerCase();
+                const latestIndex = matchingEvents.length - 1;
+                const latest = latestIndex >= 0 ? matchingEvents[latestIndex] : undefined;
                 if (!latest) {
                   bypassPolicyFailures.push(`${label}: no label event found`);
+                  unverifiedBypassLabels.push(label);
                 } else if (latest.event !== "labeled") {
                   bypassPolicyFailures.push(`${label}: latest event is ${latest.event}`);
-                } else if (actor?.type !== "User") {
-                  bypassPolicyFailures.push(`${label}: actor ${actor?.login || "(unknown)"} is ${actor?.type || "unknown"}, not User`);
-                } else if (!humanActors.includes(actorName)) {
-                  bypassPolicyFailures.push(`${label}: actor ${actor.login} is not in AGENT_DRAFT_GUARD_HUMAN_ACTORS`);
+                  unverifiedBypassLabels.push(label);
                 } else {
-                  verifiedBypassLabels.push(`${label} by ${actor.login}`);
+                  const previousLabelEvent =
+                    latestIndex > 0 ? matchingEvents[latestIndex - 1] : undefined;
+                  const approvalGate = await findApprovalGateNear(
+                    label,
+                    latest.created_at,
+                    previousLabelEvent?.created_at
+                  );
+                  if (!approvalGate) {
+                    bypassPolicyFailures.push(`${label}: missing environment-gated approval for latest label event`);
+                    unverifiedBypassLabels.push(label);
+                  } else {
+                    verifiedBypassLabels.push(`${label} via environment gate`);
+                  }
                 }
               }
             }
@@ -230,7 +286,6 @@ jobs:
             );
             let shouldRestoreDraft = false;
             let shouldDisableAutoMerge = false;
-            let ciGatePolicyFailure = false;
             if (presentHardStopLabels.length > 0) {
               policyFailures.push(`hard-stop label present: ${presentHardStopLabels.join(", ")}`);
               shouldRestoreDraft = !current.isDraft;
@@ -241,10 +296,12 @@ jobs:
               action === "ready_for_review" ||
               action === "auto_merge_enabled";
             // Keep the required Draft Auto-Merge Guard context red for
-            // agent-like PRs until a verified human approval label exists.
+            // every draft PR and agent-like PR until a verified human
+            // approval label exists.
             // A green draft-only check can be reused by a later ready/merge
             // race before the boundary event has a chance to fail closed.
             const approvalRequired =
+              current.isDraft ||
               looksAgentAuthored ||
               unsafeDraftBoundaryAction ||
               hasAutoMergeRequest ||
@@ -284,90 +341,42 @@ jobs:
               core.info(`Draft PR guard soft-failure (${actionName}): ${summary}`);
             };
 
-            if (hasAutoMergeRequest) {
-              const checks = await github.rest.checks.listForRef({
-                owner,
-                repo,
-                ref: pr.head.sha,
-                check_name: "CI Gate",
-                per_page: 100
-              });
-              const ciGateRuns = [...(checks.data.check_runs || [])].sort((a, b) => {
-                const aTime = Date.parse(a.started_at || a.created_at || "") || 0;
-                const bTime = Date.parse(b.started_at || b.created_at || "") || 0;
-                return bTime - aTime;
-              });
-              const latestCiGate = ciGateRuns[0];
-              if (
-                !latestCiGate ||
-                latestCiGate.status !== "completed" ||
-                latestCiGate.conclusion !== "success"
-              ) {
-                const ciGateStatus = latestCiGate
-                  ? `${latestCiGate.status}/${latestCiGate.conclusion || "none"} ${latestCiGate.html_url}`
-                  : "missing";
-                // CI Gate may be missing/pending, or left as cancelled by a
-                // superseded draft run, immediately after auto-merge is
-                // enabled or a synchronize event starts a replacement CI run.
-                // Branch protection still prevents merge until a successful
-                // current-head CI Gate exists, so do not disable auto-merge
-                // for this startup race.
-                const ciGateStartupRaceAction =
-                  action === "auto_merge_enabled" || action === "synchronize";
-                const ciWorkflowActiveCheckNames = new Set([
-                  "PR Sync Check",
-                  "Detect Changed Surfaces",
-                  "Keeper Cwd Leak Gate",
-                  "Meta Guards",
-                  "Health",
-                  "Build and Test",
-                  "Lint",
-                  "Dashboard",
-                  "OCaml Structure Ratchet",
-                  "TLA+ Model Checking",
-                  "CI Gate"
-                ]);
-                let activeHeadChecks = [];
-                if (
-                  ciGateStartupRaceAction &&
-                  latestCiGate?.status === "completed" &&
-                  latestCiGate?.conclusion === "failure"
-                ) {
-                  const refChecks = await github.rest.checks.listForRef({
-                    owner,
-                    repo,
-                    ref: pr.head.sha,
-                    per_page: 100
-                  });
-                  activeHeadChecks = (refChecks.data.check_runs || [])
-                    .filter((run) => run.status !== "completed")
-                    .filter((run) => ciWorkflowActiveCheckNames.has(run.name))
-                    .map((run) => `${run.name}:${run.status}`);
-                }
-                const staleFailedCiGateDuringActiveRun =
-                  ciGateStartupRaceAction &&
-                  latestCiGate?.status === "completed" &&
-                  latestCiGate?.conclusion === "failure" &&
-                  activeHeadChecks.length > 0;
-                const ciGateStartupRace =
-                  ciGateStartupRaceAction &&
-                  (!latestCiGate ||
-                    latestCiGate.status !== "completed" ||
-                    latestCiGate.conclusion === "cancelled" ||
-                    staleFailedCiGateDuringActiveRun);
-                if (ciGateStartupRace) {
-                  const activeSuffix =
-                    activeHeadChecks.length > 0
-                      ? `; active head checks: ${activeHeadChecks.join(", ")}`
-                      : "";
-                  core.info(`CI Gate is ${ciGateStatus} for head ${pr.head.sha}${activeSuffix}; skipping block on ${action} event.`);
+            for (const label of [...new Set(unverifiedBypassLabels)]) {
+              try {
+                await github.rest.issues.removeLabel({
+                  owner,
+                  repo,
+                  issue_number: pullNumber,
+                  name: label
+                });
+                actions.push(`removed unverified bypass label ${label}`);
+              } catch (error) {
+                if (error?.status === 404) {
+                  recordSoftFailure(`remove unverified bypass label ${label}`, error);
                 } else {
-                  policyFailures.push(`CI Gate is not completed successfully for head ${pr.head.sha}: ${ciGateStatus}`);
-                  shouldDisableAutoMerge = true;
-                  ciGatePolicyFailure = true;
+                  recordFailure(`remove unverified bypass label ${label}`, error);
                 }
               }
             }
+
+            if (unverifiedBypassLabels.length > 0 && hardStopLabels.length > 0) {
+              try {
+                await github.rest.issues.addLabels({
+                  owner,
+                  repo,
+                  issue_number: pullNumber,
+                  labels: hardStopLabels
+                });
+                actions.push(`reapplied hard-stop labels: ${hardStopLabels.join(", ")}`);
+              } catch (error) {
+                recordFailure("reapply hard-stop labels", error);
+              }
+            }
+
+            // This guard enforces approval and hard-stop policy only. CI Gate
+            // remains a separate branch-protection requirement for the same
+            // head SHA, so waiting here duplicates that gate and can deadlock
+            // ready/auto-merge events behind long Build/TLA jobs.
 
             if (current.autoMergeRequest && shouldDisableAutoMerge) {
               try {
@@ -446,9 +455,7 @@ jobs:
                 : policyFailures.length > 0
                 ? [
                     "",
-                    ciGatePolicyFailure
-                      ? "Manual action required: restore draft state if needed, add a bypass label only after explicit human approval, and wait for CI Gate success before re-enabling auto-merge."
-                      : "Manual action required: add a bypass label only after explicit human approval."
+                    "Manual action required: add a bypass label only after explicit human approval."
                   ]
                 : softFailures.length > 0
                 ? [
@@ -457,12 +464,7 @@ jobs:
                   ]
                 : [])
             ].join("\n");
-            const comments = await github.paginate(github.rest.issues.listComments, {
-              owner,
-              repo,
-              issue_number: pullNumber,
-              per_page: 100
-            });
+            const comments = await loadIssueComments();
             const existing = comments.find((comment) =>
               comment.user?.type === "Bot" && comment.body?.includes(marker)
             );

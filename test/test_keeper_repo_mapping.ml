@@ -149,6 +149,7 @@ let sample_repo id =
     name = "repo-" ^ id;
     url = "https://github.com/test/" ^ id;
     local_path = "repos/" ^ id;
+    aliases = [];
     default_branch = "main";
     credential_id = "cred-1";
     keepers = [];
@@ -189,8 +190,17 @@ let test_is_allowed_wildcard () =
 let test_is_allowed_no_mapping () =
   with_temp_base_path (fun base_path ->
       Alcotest.(check bool)
-        "no mapping preserves legacy access" true
+        "no mapping denies access" false
         (Keeper_repo_mapping.is_allowed ~keeper_id:"unknown" ~repository_id:"repo-a" ~base_path))
+
+let test_is_allowed_mapping_parse_error () =
+  with_temp_base_path (fun base_path ->
+      write_file
+        (Filename.concat base_path ".masc/config/keeper_repo_mappings.toml")
+        "[mapping.keeper-1]\nrepositories = 42\n";
+      Alcotest.(check bool)
+        "mapping parse error denies access" false
+        (Keeper_repo_mapping.is_allowed ~keeper_id:"keeper-1" ~repository_id:"repo-a" ~base_path))
 
 let test_validate_access_allowed () =
   with_temp_base_path (fun base_path ->
@@ -206,6 +216,15 @@ let test_validate_access_denied () =
       write_mapping base_path "keeper-1" [ "repo-a" ];
       match
         Keeper_repo_mapping.validate_access ~keeper_id:"keeper-1" ~repository_id:"repo-b" ~base_path
+      with
+      | Ok _ -> Alcotest.fail "expected Error"
+      | Error msg ->
+          Alcotest.(check bool) "mentions not allowed" true (contains_substring msg "not allowed"))
+
+let test_validate_access_no_mapping () =
+  with_temp_base_path (fun base_path ->
+      match
+        Keeper_repo_mapping.validate_access ~keeper_id:"unknown" ~repository_id:"repo-a" ~base_path
       with
       | Ok _ -> Alcotest.fail "expected Error"
       | Error msg ->
@@ -667,7 +686,18 @@ let test_apply_mapping_no_mapping () =
       let filtered =
         Keeper_repo_mapping.apply_mapping ~keeper_id:"unknown" ~base_path ~repositories:repos
       in
-      Alcotest.(check int) "no mapping returns all for compatibility" 2 (List.length filtered))
+      Alcotest.(check int) "no mapping returns none" 0 (List.length filtered))
+
+let test_apply_mapping_parse_error () =
+  with_temp_base_path (fun base_path ->
+      write_file
+        (Filename.concat base_path ".masc/config/keeper_repo_mappings.toml")
+        "[mapping.keeper-1]\nrepositories = 42\n";
+      let repos = [ sample_repo "repo-a"; sample_repo "repo-b" ] in
+      let filtered =
+        Keeper_repo_mapping.apply_mapping ~keeper_id:"keeper-1" ~base_path ~repositories:repos
+      in
+      Alcotest.(check int) "mapping parse error returns none" 0 (List.length filtered))
 
 let test_allowed_repositories () =
   with_temp_base_path (fun base_path ->
@@ -692,7 +722,7 @@ let test_save_mapping_creates_config_dir () =
         {
           keeper_id = "keeper-new";
           repository_ids = [ "repo-a"; "repo-b" ];
-          github_credential_id = None;
+          mapped_credential_id = None;
         }
       in
       match Keeper_repo_mapping.save_mapping ~base_path mapping with
@@ -710,7 +740,7 @@ let test_save_mapping_preserves_credential_id () =
         {
           keeper_id = "keeper-new";
           repository_ids = ["*"];
-          github_credential_id = Some "cred-selected";
+          mapped_credential_id = Some "cred-selected";
         }
       in
       match Keeper_repo_mapping.save_mapping ~base_path mapping with
@@ -722,7 +752,7 @@ let test_save_mapping_preserves_credential_id () =
               Alcotest.(check (option string))
                 "credential id"
                 (Some "cred-selected")
-                loaded.github_credential_id
+                loaded.mapped_credential_id
           | Ok rows ->
               Alcotest.failf "expected one mapping, got %d" (List.length rows)))
 
@@ -735,7 +765,7 @@ let test_load_all_trims_credential_id () =
           Alcotest.(check (option string))
             "trimmed credential id"
             (Some "cred-selected")
-            loaded.github_credential_id
+            loaded.mapped_credential_id
       | Ok rows -> Alcotest.failf "expected one mapping, got %d" (List.length rows))
 
 let test_load_all_rejects_non_string_credential_id () =
@@ -911,11 +941,14 @@ let () =
           Alcotest.test_case "explicit list" `Quick test_is_allowed_explicit;
           Alcotest.test_case "wildcard" `Quick test_is_allowed_wildcard;
           Alcotest.test_case "no mapping" `Quick test_is_allowed_no_mapping;
+          Alcotest.test_case "mapping parse error" `Quick
+            test_is_allowed_mapping_parse_error;
         ] );
       ( "validate_access",
         [
           Alcotest.test_case "allowed" `Quick test_validate_access_allowed;
           Alcotest.test_case "denied" `Quick test_validate_access_denied;
+          Alcotest.test_case "no mapping" `Quick test_validate_access_no_mapping;
         ] );
       ( "validate_path_access",
         [
@@ -953,6 +986,8 @@ let () =
           Alcotest.test_case "explicit list" `Quick test_apply_mapping_explicit;
           Alcotest.test_case "wildcard" `Quick test_apply_mapping_wildcard;
           Alcotest.test_case "no mapping" `Quick test_apply_mapping_no_mapping;
+          Alcotest.test_case "mapping parse error" `Quick
+            test_apply_mapping_parse_error;
         ] );
       ( "allowed_repositories",
         [

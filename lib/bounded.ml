@@ -5,13 +5,11 @@
     - Safety: Post-check prevents silent constraint violations
     - Soundness: Typed comparisons with explicit error handling
 
-    Designed based on MAGI review (Gemini + Qwen3 formal verification).
+    Designed based on MAGI review (Provider_f + Qwen3 formal verification).
 *)
 
 (* Fiber-safe random state for jitter calculation *)
 let bounded_rng = Random.State.make_self_init ()
-
-open Spawn
 
 (** Comparison operators for goal conditions *)
 type comparison =
@@ -52,11 +50,6 @@ type constraints = {
   max_tokens: int option;
   max_cost_usd: float option;
   max_time_seconds: float option;
-  token_buffer: int;
-  (* Deprecated since RFC-0028.  Kept on the record so that JSON
-     inputs that still set it parse without raising; no longer
-     consulted by the predictive token check, which now reads
-     {!Usage_history.predict_p95}. *)
   hard_max_iterations: int;    (** Absolute failsafe limit *)
   retry: retry_config;         (** Retry configuration *)
 }
@@ -67,9 +60,6 @@ let default_constraints = {
   max_tokens = Some 100000;
   max_cost_usd = Some 1.0;
   max_time_seconds = Some 300.0;
-  (* Was 5000 pre-RFC-0028.  Now 0 — the predictor consults
-     [Usage_history.predict_p95] instead of this magic constant. *)
-  token_buffer = 0;
   hard_max_iterations = 100;
   retry = default_retry_config;
 }
@@ -84,7 +74,7 @@ module Usage_history = struct
   let min_samples_for_p95 = 10
   let unknown_agent_fallback = 1024
   (* RFC-0028 §4.2.  Conservative upper bound for one cascade turn's
-     output tokens against current defaults (gpt-4o-mini / qwen3-9B /
+     output tokens against current defaults (model-d-mini / qwen3-9B /
      qwen3-35B-A3B).  No formal heuristic_metrics evidence is
      attached today — this gap is acknowledged in the RFC.  Re-measure
      once distribution data lands. *)
@@ -213,7 +203,7 @@ let hard_quota_error_indicators = [
 let message_looks_like_hard_quota_error msg =
   let contains needle = String_util.contains_substring_ci msg needle in
   List.exists contains hard_quota_error_indicators
-  || (contains "claude exited with code 1"
+  || (contains "exited with code 1"
       && contains "\"api_error_status\":429"
       && contains "you've hit your limit")
 
@@ -360,195 +350,6 @@ type bounded_result = {
   warning: string option;
 }
 
-(** Update state from spawn result *)
-let update_state state result =
-  state.turns <- state.turns + 1;
-  state.tokens_in <- state.tokens_in +
-    (Option.value result.input_tokens ~default:0);
-  state.tokens_out <- state.tokens_out +
-    (Option.value result.output_tokens ~default:0);
-  state.cost_usd <- state.cost_usd +.
-    (Option.value result.cost_usd ~default:0.0)
-
-let format_agent_failure ~agent ~turn ~attempts ~msg =
-  let attempt_word = if attempts = 1 then "attempt" else "attempts" in
-  Printf.sprintf
-    "Agent '%s' failed before completing turn %d after %d %s: %s"
-    agent turn attempts attempt_word msg
-
-let format_agent_execution_failure ~agent ~turn ~attempts ~msg =
-  let attempt_word = if attempts = 1 then "attempt" else "attempts" in
-  Printf.sprintf
-    "Agent '%s' execution failed before completing turn %d after %d %s: %s"
-    agent turn attempts attempt_word msg
-
-(** Main bounded execution loop *)
-let bounded_run ~constraints ~goal ~agents ~prompt ~spawn_fn =
-  (* Pre-check: empty agents *)
-  match agents with
-  | [] ->
-      {
-        status = `Error;
-        reason = "No agents available";
-        final_output = None;
-        stats = create_state constraints;
-        history = [];
-        warning = None;
-      }
-  | fallback_agent :: _ ->
-      let state = create_state constraints in
-      let history = ref [] in
-      let sleep_s = Time_compat.sleep in
-
-      let rec loop () =
-        (* 1. Hard limit check (failsafe) *)
-        if state.turns >= constraints.hard_max_iterations then
-          {
-            status = `Constraint_exceeded;
-            reason = Printf.sprintf "Hard iteration limit reached (%d)"
-              constraints.hard_max_iterations;
-            final_output = None;
-            stats = state;
-            history = List.rev !history;
-            warning = None;
-          }
-        else
-          (* 3. Select next agent (round-robin) ahead of the predictive
-             check — RFC-0028 needs the agent key for the per-agent
-             distribution lookup. *)
-          let agent_idx = state.turns mod (List.length agents) in
-          let agent =
-            Option.value ~default:fallback_agent
-              (List.nth_opt agents agent_idx)
-          in
-          (* 2. Predictive constraint check *)
-          match check_constraints_with_buffer ~next_agent:agent state with
-          | Some reason ->
-              {
-                status = `Constraint_exceeded;
-                reason;
-                final_output = None;
-                stats = state;
-                history = List.rev !history;
-                warning = None;
-              }
-          | None ->
-              (* 4. Execute agent with retry logic *)
-            let rec try_spawn attempt =
-              let result =
-                try Ok (spawn_fn agent prompt)
-                with
-                | Eio.Cancel.Cancelled _ as e -> raise e
-                | e -> Error (Printexc.to_string e)
-              in
-              match result with
-              | Ok spawn_result when spawn_result.success ->
-                  (* Success - return result with retry count *)
-                  Ok (spawn_result, attempt)
-              | Ok spawn_result ->
-                  (* Agent returned failure (non-zero exit) *)
-                  let err_msg = spawn_result.output in
-                  if attempt < constraints.retry.max_retries
-                     && is_retryable_error err_msg
-                  then begin
-                    let delay_ms = calc_backoff_delay constraints.retry attempt in
-                    sleep_s (float_of_int delay_ms /. 1000.0);
-                    state.total_retries <- state.total_retries + 1;
-                    try_spawn (attempt + 1)
-                  end else
-                    Error (format_agent_failure
-                      ~agent
-                      ~turn:(state.turns + 1)
-                      ~attempts:(attempt + 1)
-                      ~msg:err_msg)
-              | Error msg ->
-                  (* Exception during spawn *)
-                  if attempt < constraints.retry.max_retries
-                     && is_retryable_error msg
-                  then begin
-                    let delay_ms = calc_backoff_delay constraints.retry attempt in
-                    sleep_s (float_of_int delay_ms /. 1000.0);
-                    state.total_retries <- state.total_retries + 1;
-                    try_spawn (attempt + 1)
-                  end else
-                    Error (format_agent_execution_failure
-                      ~agent
-                      ~turn:(state.turns + 1)
-                      ~attempts:(attempt + 1)
-                      ~msg)
-            in
-
-            match try_spawn 0 with
-            | Error msg ->
-                {
-                  status = `Error;
-                  reason = msg;
-                  final_output = None;
-                  stats = state;
-                  history = List.rev !history;
-                  warning = None;
-                }
-            | Ok (spawn_result, retries_used) ->
-                (* 5. Update state AFTER execution *)
-                update_state state spawn_result;
-                (* RFC-0028: feed the per-agent distribution so future
-                   predictive checks can read this agent's tail.  The
-                   recorder drops zero/negative samples internally. *)
-                (match spawn_result.output_tokens with
-                 | Some tokens ->
-                     Usage_history.record ~agent ~tokens_out:tokens
-                 | None -> ());
-
-                (* 6. Parse output as JSON for goal check *)
-                let output_json =
-                  try Yojson.Safe.from_string spawn_result.output
-                  with Yojson.Json_error _ ->
-                    `Assoc [ ("raw", `String spawn_result.output) ]
-                in
-
-                let goal_met = check_goal output_json goal in
-
-                (* 7. Record history *)
-                let entry = {
-                  turn = state.turns;
-                  agent;
-                  retries = retries_used;
-                  tokens_in = Option.value spawn_result.input_tokens ~default:0;
-                  tokens_out = Option.value spawn_result.output_tokens ~default:0;
-                  cost_usd = Option.value spawn_result.cost_usd ~default:0.0;
-                  elapsed_ms = spawn_result.elapsed_ms;
-                  goal_met;
-                } in
-                history := entry :: !history;
-
-                (* 8. Post-check: did we exceed constraints? *)
-                let warning = check_constraints state in
-
-                if goal_met then
-                  {
-                    status = `Goal_reached;
-                    reason = Printf.sprintf "Goal met: %s" goal.path;
-                    final_output = Some spawn_result.output;
-                    stats = state;
-                    history = List.rev !history;
-                    warning;
-                  }
-                else
-                  match warning with
-                  | Some warn_msg ->
-                      (* Exceeded but return partial result *)
-                      {
-                        status = `Constraint_exceeded;
-                        reason = warn_msg;
-                        final_output = Some spawn_result.output;
-                        stats = state;
-                        history = List.rev !history;
-                        warning;
-                      }
-                  | None -> loop ()
-      in
-      loop ()
-
 (** Convert bounded_result to JSON *)
 let result_to_json result =
   let status_str = match result.status with
@@ -623,8 +424,6 @@ let constraints_of_json json =
       max_tokens = get_int_opt "max_tokens";
       max_cost_usd = get_float_opt "max_cost_usd";
       max_time_seconds = get_float_opt "max_time_seconds";
-      token_buffer =
-        Safe_ops.json_int ~default:default_constraints.token_buffer "token_buffer" json;
       hard_max_iterations =
         Safe_ops.json_int ~default:default_constraints.hard_max_iterations "hard_max_iterations" json;
       retry = retry_config_of_json json;

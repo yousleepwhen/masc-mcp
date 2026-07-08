@@ -7,7 +7,8 @@ open Keeper_types
 
 (** Resolved inference and session context needed before prompt construction. *)
 type run_context =
-  { temperature : float
+  { meta : keeper_meta
+  ; temperature : float
   ; max_tokens : int
   ; context_injector : Agent_sdk.Hooks.context_injector
   ; shared_context : Agent_sdk.Context.t
@@ -18,6 +19,9 @@ type run_context =
   ; ctx_work : working_context
   ; resume_oas_checkpoint : Agent_sdk.Checkpoint.t option
   ; pre_dispatch_compacted : bool
+  ; pre_dispatch_compaction_trigger : string option
+  ; pre_dispatch_compaction_before_tokens : int option
+  ; pre_dispatch_compaction_after_tokens : int option
   ; pre_dispatch_checkpoint_error : Agent_sdk.Error.sdk_error option
   ; start_turn_count : int
   ; receipt_started_at : string
@@ -34,7 +38,7 @@ let prepare_run_context
       ~(meta : keeper_meta)
       ~(base_dir : string)
       ~(max_context : int)
-      ~(cascade_name : Keeper_cascade_profile.runtime_name)
+      ~(cascade_name : Cascade_name.t)
       ?temperature
       ?max_tokens
       ?shared_context
@@ -43,6 +47,7 @@ let prepare_run_context
   =
   let receipt_started_at = Masc_domain.now_iso () in
   let meta = Keeper_agent_tool_surface.sync_current_task_id_from_backlog ~config meta in
+  let profile_defaults = Keeper_types_profile.load_keeper_profile_defaults meta.name in
   (* 0. Resolve inference parameters via Cascade_inference *)
   let temperature =
     match temperature with
@@ -53,14 +58,25 @@ let prepare_run_context
   in
   let max_tokens =
     match max_tokens with
-    | Some t -> t
+    | Some t ->
+      Cascade_inference.cap_max_tokens_to_cascade_ceiling
+        ~cascade_name
+        ~source:"caller_override"
+        t
     | None ->
       Cascade_inference.resolve_max_tokens
         ~cascade_name
           (* 8192 allows complex multi-tool reasoning per turn.
            Cloudflare tunnel 100s is no longer a constraint with
            streaming responses. *)
-        ~fallback:(fun () -> 8192)
+        ~fallback:(fun () ->
+          match
+            Keeper_types_profile.unified_max_tokens_override_of_oas_env
+              ~keeper_name:meta.name
+              profile_defaults.oas_env
+          with
+          | Some value -> value
+          | None -> 8192)
   in
   (* 0b. Create context injector for temporal awareness *)
   let injector_config = Masc_context_injector.default_config () in
@@ -74,10 +90,10 @@ let prepare_run_context
   let session_dir =
     Filename.concat base_dir (Keeper_id.Trace_id.to_string meta.runtime.trace_id)
   in
-  mkdir_p session_dir;
+  let (_ : string) = Keeper_fs.ensure_dir session_dir in
   (* 2. Load checkpoint *)
   let session, ctx_opt =
-    Keeper_exec_context.load_context_from_checkpoint
+    Keeper_context_runtime.load_context_from_checkpoint
       ~max_checkpoint_messages:meta.compaction.max_checkpoint_messages
       ~trace_id:(Keeper_id.Trace_id.to_string meta.runtime.trace_id)
       ~primary_model_max_tokens:max_context
@@ -85,7 +101,6 @@ let prepare_run_context
   in
   let loaded_checkpoint_present = Option.is_some ctx_opt in
   (* 3. Build base system prompt from meta *)
-  let profile_defaults = Keeper_types_profile.load_keeper_profile_defaults meta.name in
   let keeper_oas_context =
     Keeper_types_profile.keeper_oas_context_of_defaults profile_defaults
   in
@@ -122,31 +137,19 @@ let prepare_run_context
          | None -> None)
       meta.active_goal_ids
   in
-  let git_clone_allowed_orgs =
-    Keeper_tool_policy.git_clone_allowed_orgs ()
-  in
-  let git_clone_denied_repos =
-    Keeper_tool_policy.git_clone_denied_repos ()
-  in
-  let git_clone_policy_loaded =
-    Option.is_some git_clone_allowed_orgs
-    && Option.is_some git_clone_denied_repos
-  in
   let base_system_prompt =
     Keeper_prompt.build_keeper_system_prompt
       ~goal:meta.goal
       ~short_goal:meta.short_goal
       ~mid_goal:meta.mid_goal
       ~long_goal:meta.long_goal
-      ~will:meta.will
-      ~needs:meta.needs
-      ~desires:meta.desires
-      ~instructions:meta.instructions
+      ~will:(Option.value profile_defaults.will ~default:meta.will)
+      ~needs:(Option.value profile_defaults.needs ~default:meta.needs)
+      ~desires:(Option.value profile_defaults.desires ~default:meta.desires)
+      ~instructions:
+        (Option.value profile_defaults.instructions ~default:meta.instructions)
       ~persona_extended
       ~keeper_name:meta.name
-      ~allowed_orgs:(Option.value git_clone_allowed_orgs ~default:[])
-      ~denied_repos:(Option.value git_clone_denied_repos ~default:[])
-      ~git_clone_policy_loaded
       ~active_goals
       ()
   in
@@ -155,10 +158,10 @@ let prepare_run_context
     match ctx_opt with
     | Some c -> c
     | None ->
-      Keeper_exec_context.create ~system_prompt:base_system_prompt ~max_tokens:max_context
+      Keeper_context_runtime.create ~system_prompt:base_system_prompt ~max_tokens:max_context
   in
   let ctx_work =
-    Keeper_exec_context.set_system_prompt base_ctx ~system_prompt:base_system_prompt
+    Keeper_context_runtime.set_system_prompt base_ctx ~system_prompt:base_system_prompt
   in
   let checkpoint_hygiene =
     Keeper_agent_checkpoint_hygiene.prepare_resume_checkpoint_for_dispatch
@@ -166,11 +169,11 @@ let prepare_run_context
       ~now_ts:(Time_compat.now ())
       ~loaded_checkpoint_present
       ~save_checkpoint:(fun compacted_ctx ->
-        Keeper_exec_context.save_oas_checkpoint
+        Keeper_context_runtime.save_oas_checkpoint
           ~max_checkpoint_messages:meta.compaction.max_checkpoint_messages
           ~session
           ~agent_name:meta.agent_name
-          ~model:(Keeper_exec_context.checkpoint_model_of_meta meta)
+          ~model:(Keeper_context_runtime.checkpoint_model_of_meta meta)
           ~ctx:compacted_ctx
           ~generation)
       ctx_work
@@ -178,11 +181,22 @@ let prepare_run_context
   let ctx_work = checkpoint_hygiene.context in
   let resume_oas_checkpoint = checkpoint_hygiene.resume_checkpoint in
   let pre_dispatch_compacted = checkpoint_hygiene.compacted in
+  let pre_dispatch_compaction_trigger =
+    match checkpoint_hygiene.trigger with
+    | Some trigger -> Some (Compaction_trigger.to_human trigger)
+    | None -> None
+  in
+  let pre_dispatch_compaction_before_tokens =
+    if checkpoint_hygiene.applied then Some checkpoint_hygiene.before_tokens else None
+  in
+  let pre_dispatch_compaction_after_tokens =
+    if checkpoint_hygiene.applied then Some checkpoint_hygiene.after_tokens else None
+  in
   let pre_dispatch_checkpoint_error =
     match checkpoint_hygiene.save_error with
     | Some detail ->
       Prometheus.inc_counter
-        Prometheus.metric_keeper_run_context_failures
+        Keeper_metrics.(to_string RunContextFailures)
         ~labels:[("keeper", meta.name)]
         ();
       Log.Keeper.error
@@ -195,11 +209,11 @@ let prepare_run_context
     | None -> None
   in
   (let decision =
-     Option.value
-       ~default:
-         (Keeper_compact_policy.compaction_decision_to_string
-            checkpoint_hygiene.decision)
-       checkpoint_hygiene.trigger
+     match checkpoint_hygiene.trigger with
+     | Some trigger -> Compaction_trigger.to_human trigger
+     | None ->
+       Keeper_compact_policy.compaction_decision_to_string
+         checkpoint_hygiene.decision
    in
    let before_ratio =
      if max_context <= 0 then 0.0
@@ -224,7 +238,8 @@ let prepare_run_context
     | Some cp -> cp.turn_count
     | None -> 0
   in
-  { temperature
+  { meta
+  ; temperature
   ; max_tokens
   ; context_injector
   ; shared_context
@@ -235,6 +250,9 @@ let prepare_run_context
   ; ctx_work
   ; resume_oas_checkpoint
   ; pre_dispatch_compacted
+  ; pre_dispatch_compaction_trigger
+  ; pre_dispatch_compaction_before_tokens
+  ; pre_dispatch_compaction_after_tokens
   ; pre_dispatch_checkpoint_error
   ; start_turn_count
   ; receipt_started_at

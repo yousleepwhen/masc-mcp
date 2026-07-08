@@ -6,20 +6,16 @@
 
 import { html } from 'htm/preact'
 import { useEffect, useRef, useState } from 'preact/hooks'
-import { Card } from './common/card'
+import { SectionCard } from './common/card'
 import { EmptyState } from './common/feedback-state'
 import type { ActivityGraphResponse } from '../types'
 import {
-  intensityColor,
   canvasWidth,
   canvasHeight,
   drawHeatmap,
   hitTest,
   DAY_LABELS,
 } from './activity-heatmap-draw'
-
-// Re-export for test consumers that assert on pure functions.
-export { intensityColor, canvasWidth, canvasHeight, hitTest }
 
 interface HeatmapProps {
   data: ActivityGraphResponse
@@ -142,17 +138,14 @@ export function ActivityHeatmap({ data }: HeatmapProps) {
 
   if (total === 0) {
     return html`
-      <${Card} title="활동 히트맵" testId="activity_heatmap">
+      <${SectionCard} label="활동 히트맵" testId="activity_heatmap">
         <${EmptyState}>히트맵을 표시할 이벤트가 없습니다.<//>
       <//>
     `
   }
 
   return html`
-    <${Card} title="활동 히트맵" testId="activity_heatmap">
-      <div class="mb-2">
-        <p class="text-sm text-[var(--color-fg-muted)]">필터링된 전체 이벤트를 기준으로 요일별, 시간대별 활동 밀도를 보여줍니다.</p>
-      </div>
+    <${SectionCard} label="활동 히트맵" testId="activity_heatmap">
       <div ref=${containerRef} class="relative overflow-x-auto bg-[var(--color-bg-surface)] rounded-[var(--r-1)] p-3 contain-content">
         <canvas ref=${canvasRef} class="block" role="img" aria-label="요일별 시간대별 활동 밀도 히트맵" />
         ${tooltip

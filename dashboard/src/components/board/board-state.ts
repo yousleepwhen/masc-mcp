@@ -19,13 +19,14 @@ import {
   loadMoreBoardPosts,
 } from '../../store'
 import {
-  votePost,
-  voteComment,
   fetchBoardHearths,
+  fetchBoardFlairs,
+  fetchSubBoards,
   fetchBoardPost,
   commentPost,
   createPost,
   type BoardHearth,
+  type BoardFlair,
 } from '../../api'
 import { deleteBoardPost } from '../../api/actions'
 import type { BoardComment, BoardPost, BoardSortMode } from '../../types'
@@ -48,9 +49,6 @@ export {
   refreshBoard,
   loadMoreBoardPosts,
 }
-export { votePost }
-export { voteComment }
-export { deleteBoardPost }
 export type { BoardComment, BoardPost, BoardSortMode }
 
 // ── Sort modes ─────────────────────────────────────────────────────
@@ -72,6 +70,14 @@ export const detailPostId = signal<string | null>(null)
 export const boardHearths = signal<BoardHearth[]>([])
 export const boardHearthsLoading = signal(false)
 export const boardHearthsError = signal(false)
+export const boardFlairs = signal<BoardFlair[]>([])
+export const boardFlairsLoading = signal(false)
+export const boardFlairsError = signal(false)
+
+// SubBoard options for post creation dropdown
+export const subBoardOptions = signal<Array<{ slug: string; name: string }>>([])
+export const subBoardOptionsLoading = signal(false)
+export const subBoardOptionsError = signal(false)
 let boardHearthsRequestId = 0
 
 // ── Signals: comments ──────────────────────────────────────────────
@@ -84,6 +90,7 @@ export const showNewPostForm = signal(false)
 export const newPostTitle = signal('')
 export const newPostContent = signal('')
 export const newPostHearth = signal('')
+export const newPostFlair = signal('')
 export const newPostSubmitting = signal(false)
 
 // ── Pagination ─────────────────────────────────────────────────────
@@ -104,6 +111,20 @@ export const deletingPostId = signal<string | null>(null)
 export const selectedPostIds = signal<Set<string>>(new Set())
 export const bulkDeleting = signal(false)
 
+export async function loadSubBoardOptionsForPost(): Promise<void> {
+  subBoardOptionsLoading.value = true
+  subBoardOptionsError.value = false
+  try {
+    const boards = await fetchSubBoards()
+    subBoardOptions.value = boards.map(b => ({ slug: b.slug, name: b.name || b.slug }))
+  } catch (err) {
+    console.warn('[Board] failed to load sub-board options:', err)
+    subBoardOptionsError.value = true
+  } finally {
+    subBoardOptionsLoading.value = false
+  }
+}
+
 export async function refreshBoardHearths(): Promise<void> {
   const requestId = ++boardHearthsRequestId
   boardHearthsLoading.value = true
@@ -121,6 +142,20 @@ export async function refreshBoardHearths(): Promise<void> {
     if (requestId === boardHearthsRequestId) {
       boardHearthsLoading.value = false
     }
+  }
+}
+
+export async function refreshBoardFlairs(): Promise<void> {
+  boardFlairsLoading.value = true
+  try {
+    boardFlairs.value = await fetchBoardFlairs()
+    boardFlairsError.value = false
+  } catch (err) {
+    console.warn('[Board] failed to load flair options:', err)
+    boardFlairsError.value = true
+    showToast('Flair 목록을 불러오지 못했습니다', 'error')
+  } finally {
+    boardFlairsLoading.value = false
   }
 }
 
@@ -302,6 +337,26 @@ export function visibilityLabel(vis: string): string | null {
   }
 }
 
+function visibilityAuditLabel(vis: string | null | undefined): string {
+  if (!vis || vis === 'public') return '공개'
+  return visibilityLabel(vis) ?? vis
+}
+
+export function postVisibilityAuditDetails(post: BoardPost): string {
+  const scoreLabel = post.vote_blind ? '점수 투표 후 공개' : `점수 ${post.votes ?? 0}`
+  const updatedLabel = isUpdated(post) ? '최근 갱신됨' : '원본 작성 시각 기준'
+  return [
+    visibilityAuditLabel(post.visibility),
+    `댓글 ${post.comment_count ?? 0}개`,
+    scoreLabel,
+    updatedLabel,
+  ].join(' · ')
+}
+
+export function postVisibilityAuditLabel(post: BoardPost): string {
+  return `표시 중 · ${postVisibilityAuditDetails(post)}`
+}
+
 export function visibilityBadgeColor(vis: string): string {
   if (vis === 'internal') return 'bg-[var(--color-bg-hover)] text-[var(--purple)] border-[var(--color-border-strong)]'
   return 'bg-[var(--color-bg-elevated)] text-[var(--color-fg-muted)] border-[var(--color-border-default)]'
@@ -376,13 +431,18 @@ export async function submitNewPost() {
   const title = newPostTitle.value.trim()
   const content = newPostContent.value.trim()
   const hearth = newPostHearth.value.trim()
+  const flair = newPostFlair.value.trim()
   if (!title || !content) return
   newPostSubmitting.value = true
   try {
-    await createPost(title, content, commentAuthor.value, { hearth: hearth || undefined })
+    const contentWithFlair = flair
+      ? `[flair:${flair}]\n${content.replace(/^\[flair:[a-z]+\]\s*/i, '')}`
+      : content
+    await createPost(title, contentWithFlair, commentAuthor.value, { hearth: hearth || undefined })
     newPostTitle.value = ''
     newPostContent.value = ''
     newPostHearth.value = ''
+    newPostFlair.value = ''
     showNewPostForm.value = false
     showToast('글을 등록했습니다', 'success')
     refreshBoard()

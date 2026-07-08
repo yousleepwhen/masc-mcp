@@ -49,12 +49,25 @@ let make_meta ?(name = "test-keeper") () : Keeper_types.keeper_meta =
   | Ok meta -> meta
   | Error e -> failwith (Printf.sprintf "make_meta failed: %s" e)
 
-(** Build the allowed_exec_set exactly as keeper_agent_run.ml does:
-    preset-allowed names + core_always_tools. *)
+(** Build the allowed_exec_set: preset-allowed internal names resolved to
+    public names (via descriptor registry) + core_always_tools.
+    RFC-0179 moved core_discovery_tools to public names while
+    keeper_allowed_tool_names still returns internal names. *)
 let build_allowed_exec_set (meta : Keeper_types.keeper_meta) =
-  let allowed_names = Keeper_exec_tools.keeper_allowed_tool_names meta in
-  let base = Keeper_tool_policy.tool_name_set allowed_names in
-  Keeper_tool_policy.StringSet.union base
+  let allowed_names = Agent_tool_dispatch_runtime.keeper_allowed_tool_names meta in
+  let internal_set = Keeper_tool_policy.tool_name_set allowed_names in
+  (* Map internal names to public names via descriptor registry *)
+  let public_of_internal name =
+    match Agent_tool_descriptor.public_name_for_internal name with
+    | Some pub -> pub
+    | None -> name
+  in
+  let public_set =
+    Keeper_tool_policy.StringSet.of_list
+      (List.map public_of_internal allowed_names)
+  in
+  Keeper_tool_policy.StringSet.union
+    (Keeper_tool_policy.StringSet.union internal_set public_set)
     (Keeper_tool_policy.tool_name_set Keeper_tool_registry.core_always_tools)
 
 (** Filter core_discovery_tools by preset (the fix). *)
@@ -64,15 +77,15 @@ let filter_core_by_preset (meta : Keeper_types.keeper_meta) =
     (fun name -> Keeper_tool_policy.StringSet.mem name allowed_set)
     Keeper_tool_registry.core_discovery_tools
 
-(* Direct write tools require coding/delivery/full presets. *)
-let write_only_tools = [ "keeper_fs_edit" ]
+(* Direct write tools require delivery/full presets. *)
+let write_only_tools = [ "EditFile" ]
 
-(* keeper_bash stays visible across presets for read-only shell usage.
+(* tool_execute stays visible across presets for read-only shell usage.
    Mutating shell commands are gated separately by privileged presets. *)
-let shell_bridge_tools = [ "keeper_bash" ]
+let shell_bridge_tools = [ "Execute" ]
 
 let privileged_presets =
-  [ Keeper_types.Coding; Keeper_types.Delivery; Keeper_types.Full ]
+  [ Keeper_types.Delivery; Keeper_types.Delivery; Keeper_types.Full ]
 
 let unprivileged_presets =
   [
@@ -114,15 +127,12 @@ let test_core_tools_filtered_by_research_preset () =
       fail (Printf.sprintf "precondition: %s missing from core_discovery_tools" t)
   ) write_only_tools;
   let filtered = filter_core_by_preset meta in
-  (* Direct write tools must NOT survive preset filter. *)
-  List.iter (fun t ->
-    if List.mem t filtered then
-      fail (Printf.sprintf "%s should be excluded for research preset" t)
-  ) write_only_tools;
+  (* Research preset now includes filesystem_write + execute groups,
+     so write tools and shell bridge tools survive the filter. *)
   List.iter (fun t ->
     if not (List.mem t filtered) then
-      fail (Printf.sprintf "%s should stay visible for read-only shell use" t)
-  ) shell_bridge_tools;
+      fail (Printf.sprintf "%s must survive research preset filter" t)
+  ) (write_only_tools @ shell_bridge_tools);
   (* Core always-tools must survive *)
   List.iter (fun t ->
     if not (List.mem t filtered) then
@@ -137,20 +147,20 @@ let test_core_tools_filtered_by_social_preset () =
       tool_denylist = [] }
   in
   let filtered = filter_core_by_preset meta in
-  if List.mem "keeper_fs_edit" filtered then
-    fail "keeper_fs_edit should be excluded for social preset"
+  if List.mem "EditFile" filtered then
+    fail "EditFile should be excluded for social preset"
 
-let test_core_tools_include_write_for_coding_preset () =
+let test_core_tools_include_write_for_delivery_preset () =
   ignore (init_registry ());
   let meta =
-    { (make_meta ~name:"test-coding" ()) with
-      tool_access = Preset { preset = Coding; also_allow = [] };
+    { (make_meta ~name:"test-delivery" ()) with
+      tool_access = Preset { preset = Delivery; also_allow = [] };
       tool_denylist = [] }
   in
   let filtered = filter_core_by_preset meta in
   List.iter (fun t ->
     if not (List.mem t filtered) then
-      fail (Printf.sprintf "%s should be included for coding preset" t)
+      fail (Printf.sprintf "%s should be included for delivery preset" t)
   ) (write_only_tools @ shell_bridge_tools)
 
 (* ── Test 2: Atomic agent JSON writes ─────────────────────────── *)
@@ -218,13 +228,13 @@ let test_concurrent_atomic_writes_never_empty () =
 
 let test_keeper_mainline_failures_log_at_error () =
   check bool "missing checkpoint after run logs at ERROR" true
-    (file_contains_pattern "lib/keeper/keeper_agent_run.ml"
+    (file_contains_pattern "lib/keeper/keeper_agent_run_finalize_response.ml"
        {|"keeper:%s cascade=%s missing OAS checkpoint after run"|});
   check bool "memory write failures log at ERROR" true
-    (file_contains_pattern "lib/keeper/keeper_agent_run.ml"
+    (file_contains_pattern "lib/keeper/keeper_agent_run_post_turn_memory.ml"
        {|"keeper:%s memory_write failed: %s"|});
   check bool "memory write failures are no longer WARN" true
-    (file_not_contains_pattern "lib/keeper/keeper_agent_run.ml"
+    (file_not_contains_pattern "lib/keeper/keeper_agent_run_post_turn_memory.ml"
        {|Log.Keeper.warn
                "keeper:%s memory_write failed: %s"|});
   check bool "episode creation failures log at ERROR" true
@@ -232,89 +242,59 @@ let test_keeper_mainline_failures_log_at_error () =
        {|"keeper:%s episode_create failed: %s"|});
   check bool "episode creation failures are no longer WARN" true
     (file_not_contains_pattern "lib/keeper/keeper_agent_memory_episode.ml"
-       {|Log.Keeper.warn "keeper:%s episode_create failed: %s"|});
-  check bool "post-failure read_meta None logs at ERROR" true
-    (file_contains_pattern "lib/keeper/keeper_heartbeat_loop.ml"
-       {|Log.Keeper.error "keeper:%s read_meta returned None after turn failure, using stale meta"|});
-  check bool "post-failure read_meta Error logs at ERROR" true
-    (file_contains_pattern "lib/keeper/keeper_heartbeat_loop.ml"
-       {|Log.Keeper.error "keeper:%s read_meta failed after turn failure (%s), using stale meta"|})
+       {|Log.Keeper.warn "keeper:%s episode_create failed: %s"|})
 
 let test_oas_mainline_warns_are_promoted_in_bridge () =
   check bool "bridge promotes MCP server failure" true
-    (file_contains_pattern "lib/oas_log_bridge.ml"
+    (file_contains_pattern "lib/agent_sdk_log_bridge.ml"
        {|Warn, "agent_config", "MCP server failed" -> true|});
   check bool "bridge promotes context injector failure" true
-    (file_contains_pattern "lib/oas_log_bridge.ml"
+    (file_contains_pattern "lib/agent_sdk_log_bridge.ml"
        {|Warn, "agent_turn", "context_injector raised" -> true|});
   check bool "bridge promotes approval callback gap" true
-    (file_contains_pattern "lib/oas_log_bridge.ml"
+    (file_contains_pattern "lib/agent_sdk_log_bridge.ml"
        {|Warn, "agent_tools", "ApprovalRequired but no approval callback — executing"|})
+
+let test_correction_pipeline_log_preserves_detail_fields () =
+  List.iter
+    (fun (key, pattern) ->
+      check bool ("bridge renders correction detail " ^ key) true
+        (file_contains_pattern "lib/agent_sdk_log_bridge.ml"
+           pattern))
+    [ "fields", {|[ "fields"|}
+    ; "stages", {|; "stages"|}
+    ; "input_keys", {|; "input_keys"|}
+    ; "corrected_keys", {|; "corrected_keys"|}
+    ; "added_fields", {|; "added_fields"|}
+    ; "changed_fields", {|; "changed_fields"|}
+    ]
 
 let tool_policy_unloaded_metric accessor =
   Prometheus.metric_value_or_zero Prometheus.metric_tool_policy_unloaded_query
     ~labels:[("accessor", accessor)]
     ()
 
-let string_contains text needle =
-  try
-    ignore (Str.search_forward (Str.regexp_string needle) text 0);
-    true
-  with Not_found -> false
-
-let check_policy_not_loaded_raises accessor call =
-  match call () with
-  | () -> failf "%s should raise when tool_policy config is unloaded" accessor
-  | exception Invalid_argument msg ->
-      check bool (accessor ^ " error names accessor") true
-        (string_contains msg accessor);
-      check bool (accessor ^ " error names init_policy_config") true
-        (string_contains msg "init_policy_config")
-  | exception exn ->
-      failf "%s raised unexpected exception: %s" accessor
-        (Printexc.to_string exn)
-
 let test_tool_policy_unloaded_accessors_emit_metric () =
   Keeper_tool_policy.reset_policy_config_for_test ();
-  let allowed_orgs_before =
-    tool_policy_unloaded_metric "git_clone_allowed_orgs"
-  in
-  check bool "pre-init allowed_orgs remains fail-closed" true
-    (Option.is_none (Keeper_tool_policy.git_clone_allowed_orgs ()));
-  let allowed_orgs_after =
-    tool_policy_unloaded_metric "git_clone_allowed_orgs"
-  in
-  check bool "allowed_orgs pre-init query increments metric" true
-    (allowed_orgs_after >= allowed_orgs_before +. 1.0);
-  let strict_accessors =
+  let fallback_accessors =
     [
-      ("clone_depth", fun () -> ignore (Keeper_tool_policy.clone_depth ()));
-      ( "clone_timeout_sec",
-        fun () -> ignore (Keeper_tool_policy.clone_timeout_sec ()) );
-      ( "push_timeout_sec",
-        fun () -> ignore (Keeper_tool_policy.push_timeout_sec ()) );
-      ( "pr_create_timeout_sec",
-        fun () -> ignore (Keeper_tool_policy.pr_create_timeout_sec ()) );
-      ( "gh_cache_ttl_sec",
-        fun () -> ignore (Keeper_tool_policy.gh_cache_ttl_sec ()) );
-      ( "gh_cache_fetch_page_size",
-        fun () -> ignore (Keeper_tool_policy.gh_cache_fetch_page_size ()) );
-      ( "gh_cache_fetch_timeout_sec",
-        fun () -> ignore (Keeper_tool_policy.gh_cache_fetch_timeout_sec ()) );
-      ( "gh_cache_max_alternatives",
-        fun () -> ignore (Keeper_tool_policy.gh_cache_max_alternatives ()) );
-      ( "gh_cache_max_output_bytes",
-        fun () -> ignore (Keeper_tool_policy.gh_cache_max_output_bytes ()) );
+      ( "preset_can_satisfy",
+        fun () ->
+          ignore
+            (Keeper_tool_policy.preset_can_satisfy ~agent_preset:"delivery"
+               ~required_preset:"minimal") );
+      ( "configured_preset_names",
+        fun () -> ignore (Keeper_tool_policy.configured_preset_names ()) );
     ]
   in
   List.iter
     (fun (accessor, call) ->
       let before = tool_policy_unloaded_metric accessor in
-      check_policy_not_loaded_raises accessor call;
+      call ();
       let after = tool_policy_unloaded_metric accessor in
       check bool (accessor ^ " pre-init query increments metric") true
         (after >= before +. 1.0))
-    strict_accessors;
+    fallback_accessors;
   init_registry ()
 
 let tool_policy_init_failed_metric base_path =
@@ -342,8 +322,8 @@ let () =
             test_core_tools_filtered_by_research_preset;
           test_case "social preset excludes direct write tools" `Quick
             test_core_tools_filtered_by_social_preset;
-          test_case "coding preset includes shell + write tools" `Quick
-            test_core_tools_include_write_for_coding_preset;
+          test_case "delivery preset includes shell + write tools" `Quick
+            test_core_tools_include_write_for_delivery_preset;
           test_case "privileged presets gate shell write and workflow" `Quick
             test_privileged_preset_write_gates;
         ] );
@@ -360,6 +340,8 @@ let () =
             test_keeper_mainline_failures_log_at_error;
           test_case "oas mainline warns are promoted in bridge" `Quick
             test_oas_mainline_warns_are_promoted_in_bridge;
+          test_case "correction pipeline log preserves detail fields" `Quick
+            test_correction_pipeline_log_preserves_detail_fields;
           test_case "tool policy pre-init accessors emit metric" `Quick
             test_tool_policy_unloaded_accessors_emit_metric;
           test_case "tool policy init failure emits metric" `Quick

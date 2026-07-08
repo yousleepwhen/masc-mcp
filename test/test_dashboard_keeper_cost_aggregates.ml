@@ -3,6 +3,7 @@ open Alcotest
 module Coord = Masc_mcp.Coord
 module Dashboard_http_keeper = Masc_mcp.Dashboard_http_keeper
 module Keeper_types = Masc_mcp.Keeper_types
+module Keeper_types_support = Masc_mcp.Keeper_types_support
 
 let test_counter = ref 0
 
@@ -27,7 +28,7 @@ let make_meta name =
           ("name", `String name);
           ("agent_name", `String name);
           ("trace_id", `String ("trace-" ^ name));
-          ("cascade_name", `String Masc_mcp.Keeper_config.default_cascade_name);
+          ("cascade_name", `String Masc_mcp.(Keeper_config.default_cascade_name ()));
           ("last_model_used", `String "test-model");
         ])
   with
@@ -36,7 +37,7 @@ let make_meta name =
 
 let append_metric config keeper_name fields =
   Dated_jsonl.append
-    (Keeper_types.keeper_metrics_store config keeper_name)
+    (Keeper_types_support.keeper_metrics_store config keeper_name)
     (`Assoc fields)
 
 let keeper_item json =
@@ -164,7 +165,7 @@ let test_heartbeat_snapshots_do_not_count_as_cost_samples () =
     (float_field "p95_latency_ms" aggregate);
   match list_field "model_breakdown" aggregate with
   | [ item ] ->
-      check string "model breakdown model" "test-model"
+      check string "model breakdown redacted" "runtime"
         Yojson.Safe.Util.(item |> member "model" |> to_string);
       check (float 0.0001) "model breakdown cost" 0.5
         (float_field "cost_usd" item)

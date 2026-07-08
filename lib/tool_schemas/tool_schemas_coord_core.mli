@@ -3,7 +3,7 @@
 
     Only schemas dispatched by {!Tool_coord} live here. Other
     schemas have been moved to their owning modules
-    ({!Tool_task}, {!Tool_control}, {!Tool_suspend}, {!Tool_plan},
+    ({!Tool_task}, {!Tool_control}, {!Tool_plan},
 
     Issue #8636: [assertion_kind_enum_strings] hand-mirrors
     {!Tool_coord.valid_assertion_strings}; the sync regression test
@@ -12,6 +12,5 @@
 (** Enum of valid [masc_check] assertion strings. *)
 val assertion_kind_enum_strings : string list
 
-(** Tool schemas: [masc_status], [masc_reset], [masc_workflow_guide],
-    [masc_coordination_fsm_snapshot], [masc_check], [masc_heartbeat]. *)
+(** Tool schemas: [masc_status], [masc_reset], [masc_check], [masc_heartbeat]. *)
 val schemas : Masc_domain.tool_schema list

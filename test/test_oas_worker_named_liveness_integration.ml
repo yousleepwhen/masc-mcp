@@ -27,15 +27,17 @@ module Obs = Cascade_attempt_liveness_observer
 
 let env_var = "MASC_CASCADE_ATTEMPT_LIVENESS"
 
+external unsetenv : string -> unit = "masc_test_unsetenv"
+
 let with_env value f =
   let prior = Sys.getenv_opt env_var in
   (match value with
-   | None -> Unix.putenv env_var ""
+   | None -> unsetenv env_var
    | Some v -> Unix.putenv env_var v);
   Cfg.reset_cache_for_test ();
   let restore () =
     (match prior with
-     | None -> Unix.putenv env_var ""
+     | None -> unsetenv env_var
      | Some v -> Unix.putenv env_var v);
     Cfg.reset_cache_for_test ()
   in
@@ -52,12 +54,18 @@ let test_env_off_short_circuits () =
         "off"
         (Cfg.mode_label (Cfg.current_mode ())))
 
-let test_env_observe_default () =
+let test_env_unset_defaults_enforce () =
   with_env None (fun () ->
       Alcotest.(check string)
-        "default -> Observe (RFC §9 Phase A)"
-        "observe"
+        "unset -> Enforce"
+        "enforce"
         (Cfg.mode_label (Cfg.current_mode ())))
+
+let test_env_empty_string_rejected () =
+  with_env (Some "") (fun () ->
+      match Cfg.current_mode () with
+      | _ -> Alcotest.fail "empty string was accepted as a liveness mode"
+      | exception Env_config_core.Config_error _ -> ())
 
 let test_env_enforce () =
   with_env (Some "enforce") (fun () ->
@@ -79,24 +87,27 @@ let observed_value cascade provider outcome =
       ]
     ()
 
+let public_provider = "runtime"
+
 let test_e2e_observe_finalize_emits_observed_total () =
   with_env (Some "observe") (fun () ->
       let cascade = "integ_observe_cascade" in
       let provider = "integ_observe_provider" in
       let mode = Cfg.current_mode () in
-      let budget = Cfg.budget_for_label provider in
+      let budget =
+        (Cfg.budget_for_candidate ~candidate_key:("test:" ^ provider)).budget
+      in
       let obs =
-        Obs.create ~mode ~budget ~cascade_label:cascade
-          ~provider_label:provider ~started_at:0.0
+        Obs.create ~mode ~budget ~cascade_label:cascade ~started_at:0.0 ()
       in
       (* Simulate: provider streamed Done before any chunk -> Success. *)
       let wrapped = Obs.wrap_on_event obs None in
       (match wrapped with
        | Some f -> f Agent_sdk.Types.MessageStop
        | None -> Alcotest.fail "Observe should wrap");
-      let before = observed_value cascade provider "success" in
+      let before = observed_value cascade public_provider "success" in
       Obs.finalize obs;
-      let after = observed_value cascade provider "success" in
+      let after = observed_value cascade public_provider "success" in
       Alcotest.(check (float 1e-6))
         "observed_total{outcome=success} incremented"
         (before +. 1.0) after)
@@ -106,14 +117,15 @@ let test_e2e_off_no_observed_total () =
       let cascade = "integ_off_cascade" in
       let provider = "integ_off_provider" in
       let mode = Cfg.current_mode () in
-      let budget = Cfg.budget_for_label provider in
-      let obs =
-        Obs.create ~mode ~budget ~cascade_label:cascade
-          ~provider_label:provider ~started_at:0.0
+      let budget =
+        (Cfg.budget_for_candidate ~candidate_key:("test:" ^ provider)).budget
       in
-      let before = observed_value cascade provider "wire_error" in
+      let obs =
+        Obs.create ~mode ~budget ~cascade_label:cascade ~started_at:0.0 ()
+      in
+      let before = observed_value cascade public_provider "wire_error" in
       Obs.finalize obs;
-      let after = observed_value cascade provider "wire_error" in
+      let after = observed_value cascade public_provider "wire_error" in
       Alcotest.(check (float 1e-6))
         "Off finalize emits no observed counter" before after)
 
@@ -126,10 +138,12 @@ let test_enforce_registered_switch_kills_attempt_without_tick_clock () =
           try
             Eio.Switch.run (fun attempt_sw ->
                 let mode = Cfg.current_mode () in
-                let budget = Cfg.budget_for_label provider in
+                let budget =
+                  (Cfg.budget_for_candidate ~candidate_key:("test:" ^ provider)).budget
+                in
                 let obs =
                   Obs.create ~mode ~budget ~cascade_label:cascade
-                    ~provider_label:provider ~started_at:0.0
+                    ~started_at:0.0 ()
                 in
                 Obs.register_attempt_switch obs ~sw:attempt_sw;
                 let wrapped = Obs.wrap_on_event obs None in
@@ -154,8 +168,11 @@ let () =
         [
           Alcotest.test_case "off short-circuits" `Quick
             test_env_off_short_circuits;
-          Alcotest.test_case "default observe" `Quick test_env_observe_default;
-          Alcotest.test_case "enforce alias" `Quick test_env_enforce;
+          Alcotest.test_case "unset defaults enforce" `Quick
+            test_env_unset_defaults_enforce;
+          Alcotest.test_case "empty string rejected" `Quick
+            test_env_empty_string_rejected;
+          Alcotest.test_case "enforce" `Quick test_env_enforce;
         ] );
       ( "end to end",
         [

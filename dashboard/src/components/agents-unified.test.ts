@@ -10,8 +10,9 @@ const mockRoute = await vi.hoisted(async () => {
 })
 
 type FilterChip = { key: string; label: ComponentChildren }
+type FilterChipWithCount = FilterChip & { count?: ComponentChildren }
 
-vi.mock('./keeper-detail', () => ({
+vi.mock('./keeper-detail-page', () => ({
   KeeperDetailPage: () => h('div', { 'data-testid': 'keeper-detail-page' }, 'KeeperDetailPage'),
 }))
 vi.mock('./agent-profile', () => ({
@@ -40,20 +41,20 @@ vi.mock('./composite-fsm-flowchart', () => ({
 }))
 vi.mock('./common/filter-chips', () => ({
   FilterChips: ({ chips, value, onChange }: {
-    chips: FilterChip[]
+    chips: FilterChipWithCount[]
     value: string
     onChange: (key: string) => void
   }) =>
     h('div', { 'data-testid': 'filter-chips', 'data-value': value },
-      chips.map((chip) => h('button', { key: chip.key, onClick: () => onChange(chip.key) }, chip.label))
+      chips.map((chip) => h('button', { key: chip.key, onClick: () => onChange(chip.key) }, [
+        chip.label,
+        chip.count != null ? h('span', { 'data-testid': `chip-count-${chip.key}` }, chip.count) : null,
+      ]))
     ),
-}))
-vi.mock('./common/route-link', () => ({
-  RouteLink: ({ children }: { children?: ComponentChildren }) => h('a', null, children),
 }))
 vi.mock('./agent-roster', () => ({
   AgentRoster: ({ keeperFilter }: { keeperFilter: string }) => h('div', { 'data-testid': 'agent-roster', 'data-filter': keeperFilter }, 'AgentRoster'),
-  countRuntimeKinds: vi.fn(() => ({ agents: 0, keepers: 0 })),
+  countRuntimeKinds: vi.fn(() => ({ agents: 0, keepers: 0, pausedKeepers: 0, totalRuntimes: 0 })),
 }))
 
 vi.mock('../router', () => ({
@@ -67,35 +68,22 @@ vi.mock('../store', () => ({
   agents: { value: [] },
   keepers: { value: [] },
   executionLoaded: { value: false },
-  shellCounts: { value: null },
 }))
 vi.mock('../namespace-truth-store', () => ({
   namespaceTruth: { value: null },
 }))
 vi.mock('../runtime-counts', () => ({
+  formatKeeperRosterCount: vi.fn(() => '상세 16 / 활성 4 / 일시정지 12 / 설정 16'),
+  formatRuntimeRosterCount: vi.fn(() => '상세 20 / 활성 8 / 키퍼 설정 16'),
   resolveRuntimeCounts: vi.fn(() => ({
-    totalRuntimes: 0,
-    keepers: 0,
-    agents: 0,
-    configuredKeepers: 0,
+    live: { agents: 4, keepers: 4, pausedKeepers: 12, tasks: 0, totalRuntimes: 8, available: true },
+    configured: { keepers: 16, totalRuntimes: 8, source: 'namespace-truth' },
+    source: 'execution',
   })),
 }))
 
 import { AgentsUnified } from './agents-unified'
-import { resolveRuntimeCounts } from '../runtime-counts'
 
-const mockResolveRuntimeCounts = vi.mocked(resolveRuntimeCounts)
-const runtimeCounts = (
-  overrides: Partial<ReturnType<typeof resolveRuntimeCounts>>,
-): ReturnType<typeof resolveRuntimeCounts> => ({
-  agents: 0,
-  keepers: 0,
-  tasks: 0,
-  totalRuntimes: 0,
-  configuredKeepers: 0,
-  source: 'execution',
-  ...overrides,
-})
 
 describe('AgentsUnified', () => {
   let container: HTMLDivElement
@@ -132,12 +120,16 @@ describe('AgentsUnified', () => {
     expect(roster).not.toBeNull()
     expect(roster!.getAttribute('data-filter')).toBe('all')
     expect(container.querySelector('[data-testid="keeper-spawn-panel"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="chip-count-all"]')?.textContent)
+      .toBe('상세 20 / 활성 8 / 키퍼 설정 16')
+    expect(container.querySelector('[data-testid="chip-count-keepers"]')?.textContent)
+      .toBe('상세 16 / 활성 4 / 일시정지 12 / 설정 16')
   })
 
   it('switches to agents view via filter chips', async () => {
     render(h(AgentsUnified, null), container)
     const btn = Array.from(container.querySelectorAll('button')).find(
-      b => b.textContent?.includes('에이전트'),
+      b => b.textContent?.includes('Agents'),
     )
     expect(btn).not.toBeUndefined()
     await act(async () => {
@@ -167,25 +159,4 @@ describe('AgentsUnified', () => {
     expect(container.querySelector('[data-testid="fsm-hub"]')).not.toBeNull()
   })
 
-  it('shows runtime truth banner when configuredKeeperDelta > 0', () => {
-    mockResolveRuntimeCounts.mockReturnValue(runtimeCounts({
-      totalRuntimes: 5,
-      keepers: 2,
-      agents: 3,
-      configuredKeepers: 4,
-    }))
-    render(h(AgentsUnified, null), container)
-    expect(container.textContent).toContain('runtime truth')
-  })
-
-  it('does not show runtime truth banner when configuredKeeperDelta is 0', () => {
-    mockResolveRuntimeCounts.mockReturnValue(runtimeCounts({
-      totalRuntimes: 5,
-      keepers: 2,
-      agents: 3,
-      configuredKeepers: 2,
-    }))
-    render(h(AgentsUnified, null), container)
-    expect(container.textContent).not.toContain('runtime truth')
-  })
 })

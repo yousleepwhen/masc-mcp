@@ -5,6 +5,7 @@ let () = Mirage_crypto_rng_unix.use_default ()
 
 module V = Masc_mcp.Verification
 module P = Masc_mcp.Prometheus
+module VS = Coord_verification_store
 module CU = Coord_utils
 
 let persistence_surface = "verification"
@@ -141,12 +142,12 @@ let test_evaluate_empty_criteria () =
 (* --- Cross-agent enforcement --- *)
 
 let test_cross_agent_same () =
-  match V.validate_cross_agent ~worker:"claude" ~verifier:"claude" with
+  match V.validate_cross_agent ~worker:"agent_llm_a" ~verifier:"agent_llm_a" with
   | Error _ -> ()
   | Ok () -> Alcotest.fail "same agent should be rejected"
 
 let test_cross_agent_different () =
-  match V.validate_cross_agent ~worker:"claude" ~verifier:"codex" with
+  match V.validate_cross_agent ~worker:"agent_llm_a" ~verifier:"agent_code" with
   | Ok () -> ()
   | Error e -> Alcotest.fail e
 
@@ -156,7 +157,7 @@ let test_create_and_load () =
   with_temp_dir (fun base_path ->
     match V.create_request ~base_path ~task_id:"task-1"
         ~output:(`String "result") ~criteria:[V.Contains "result"]
-        ~worker:"claude" () with
+        ~worker:"agent_llm_a" () with
     | Error e -> Alcotest.fail e
     | Ok req ->
         Alcotest.(check bool) "persisted under .masc/verifications" true
@@ -168,7 +169,7 @@ let test_create_and_load () =
         | Ok loaded ->
             Alcotest.(check string) "id matches" req.id loaded.id;
             Alcotest.(check string) "task_id" "task-1" loaded.task_id;
-            Alcotest.(check string) "worker" "claude" loaded.worker)
+            Alcotest.(check string) "worker" "agent_llm_a" loaded.worker)
 
 let test_list_requests () =
   with_temp_dir (fun base_path ->
@@ -190,6 +191,29 @@ let test_list_requests_missing_dir_stays_quiet () =
       before
       (persistence_counter Safe_ops.persistence_read_drop_reason_list_dir_error))
 
+let test_verifications_dir_resolves_active_store () =
+  with_temp_dir (fun base_path ->
+    let legacy_dir = legacy_verifications_dir base_path in
+    Fs_compat.mkdir_p legacy_dir;
+    Fs_compat.save_file (Filename.concat legacy_dir "vrf-legacy.json")
+      {|{"id":"vrf-legacy","task_id":"task-legacy"}|};
+    let active_dir = active_verifications_dir base_path in
+    let resolved = VS.verifications_dir base_path in
+    Alcotest.(check string) "resolved active store" active_dir resolved;
+    Alcotest.(check bool) "resolved path is not legacy root" false
+      (String.equal legacy_dir resolved))
+
+let test_request_path_ignores_legacy_root_store () =
+  with_temp_dir (fun base_path ->
+    let req_id = "vrf-shadowed" in
+    let legacy_dir = legacy_verifications_dir base_path in
+    Fs_compat.mkdir_p legacy_dir;
+    Fs_compat.save_file (Filename.concat legacy_dir (req_id ^ ".json"))
+      {|{"id":"vrf-shadowed","task_id":"task-legacy"}|};
+    Alcotest.(check string) "request path uses active store"
+      (Filename.concat (active_verifications_dir base_path) (req_id ^ ".json"))
+      (VS.request_path base_path req_id))
+
 let test_list_requests_skips_bad_entries_with_metric () =
   with_temp_dir (fun base_path ->
     let _ = V.create_request ~base_path ~task_id:"t1"
@@ -204,6 +228,22 @@ let test_list_requests_skips_bad_entries_with_metric () =
     Alcotest.(check (float 0.1)) "broken file increments metric" 1.0
       (persistence_counter Safe_ops.persistence_read_drop_reason_entry_load_error
        -. before))
+
+let test_list_requests_ignores_legacy_only_stale_entries () =
+  with_temp_dir (fun base_path ->
+    let legacy_dir = legacy_verifications_dir base_path in
+    Fs_compat.mkdir_p legacy_dir;
+    Fs_compat.save_file (Filename.concat legacy_dir "broken.json") "{not-json";
+    Fs_compat.save_file (Filename.concat legacy_dir "vrf-foreign.json")
+      {|{"id":"vrf-foreign","task_id":"t-foreign","evaluator":"oracle","overall_verdict":"approve"}|};
+    let before =
+      persistence_counter Safe_ops.persistence_read_drop_reason_entry_load_error
+    in
+    let reqs = V.list_requests base_path in
+    Alcotest.(check int) "legacy-only store ignored" 0 (List.length reqs);
+    Alcotest.(check (float 0.1)) "legacy-only stale files stay silent"
+      before
+      (persistence_counter Safe_ops.persistence_read_drop_reason_entry_load_error))
 
 let test_list_requests_ignores_legacy_root_entries () =
   with_temp_dir (fun base_path ->
@@ -226,32 +266,32 @@ let test_list_requests_ignores_legacy_root_entries () =
 let test_assign_verifier () =
   with_temp_dir (fun base_path ->
     match V.create_request ~base_path ~task_id:"t1"
-        ~output:`Null ~criteria:[] ~worker:"claude" () with
+        ~output:`Null ~criteria:[] ~worker:"agent_llm_a" () with
     | Error e -> Alcotest.fail e
     | Ok req ->
-        match V.assign_verifier ~base_path ~req_id:req.id ~verifier:"codex" with
+        match V.assign_verifier ~base_path ~req_id:req.id ~verifier:"agent_code" with
         | Error e -> Alcotest.fail e
         | Ok updated ->
             Alcotest.(check bool) "assigned" true
-              (match updated.status with V.Assigned "codex" -> true | _ -> false))
+              (match updated.status with V.Assigned "agent_code" -> true | _ -> false))
 
 let test_assign_verifier_cross_agent_fail () =
   with_temp_dir (fun base_path ->
     match V.create_request ~base_path ~task_id:"t1"
-        ~output:`Null ~criteria:[] ~worker:"claude" () with
+        ~output:`Null ~criteria:[] ~worker:"agent_llm_a" () with
     | Error e -> Alcotest.fail e
     | Ok req ->
-        match V.assign_verifier ~base_path ~req_id:req.id ~verifier:"claude" with
+        match V.assign_verifier ~base_path ~req_id:req.id ~verifier:"agent_llm_a" with
         | Error _ -> ()
         | Ok _ -> Alcotest.fail "cross-agent violation should fail")
 
 let test_submit_verdict () =
   with_temp_dir (fun base_path ->
     match V.create_request ~base_path ~task_id:"t1"
-        ~output:(`String "good") ~criteria:[] ~worker:"claude" () with
+        ~output:(`String "good") ~criteria:[] ~worker:"agent_llm_a" () with
     | Error e -> Alcotest.fail e
     | Ok req ->
-        match V.submit_verdict ~base_path ~req_id:req.id ~verifier:"codex"
+        match V.submit_verdict ~base_path ~req_id:req.id ~verifier:"agent_code"
             ~verdict:V.Pass with
         | Error e -> Alcotest.fail e
         | Ok updated ->
@@ -260,12 +300,12 @@ let test_submit_verdict () =
             (* verifier must be persisted so the dashboard projection never
                emits "approved with null approved_by" for completed rows. *)
             Alcotest.(check (option string)) "verifier recorded"
-              (Some "codex") updated.verifier)
+              (Some "agent_code") updated.verifier)
 
 let test_submit_verdict_overwrites_unassigned_verifier () =
   with_temp_dir (fun base_path ->
     match V.create_request ~base_path ~task_id:"t1"
-        ~output:(`String "good") ~criteria:[] ~worker:"claude" () with
+        ~output:(`String "good") ~criteria:[] ~worker:"agent_llm_a" () with
     | Error e -> Alcotest.fail e
     | Ok req ->
         Alcotest.(check (option string)) "starts unassigned" None req.verifier;
@@ -281,7 +321,7 @@ let test_auto_verify () =
     match V.create_request ~base_path ~task_id:"t1"
         ~output:(`String "hello world")
         ~criteria:[V.Contains "hello"; V.Not_contains "error"]
-        ~worker:"claude" () with
+        ~worker:"agent_llm_a" () with
     | Error e -> Alcotest.fail e
     | Ok req ->
         match V.auto_verify ~base_path ~req_id:req.id with
@@ -299,7 +339,7 @@ let test_auto_verify_with_custom_fails () =
     match V.create_request ~base_path ~task_id:"t1"
         ~output:(`String "test")
         ~criteria:[V.Custom "check quality"]
-        ~worker:"claude" () with
+        ~worker:"agent_llm_a" () with
     | Error e -> Alcotest.fail e
     | Ok req ->
         match V.auto_verify ~base_path ~req_id:req.id with
@@ -329,15 +369,15 @@ let test_generate_id_no_collisions () =
 let test_pending_for_agent () =
   with_temp_dir (fun base_path ->
     let _ = V.create_request ~base_path ~task_id:"t1"
-        ~output:`Null ~criteria:[] ~worker:"claude" () in
+        ~output:`Null ~criteria:[] ~worker:"agent_llm_a" () in
     let _ = V.create_request ~base_path ~task_id:"t2"
-        ~output:`Null ~criteria:[] ~worker:"codex" ~verifier:"gemini" () in
-    (* codex should see t1 (not own work), not t2 (assigned to gemini) *)
-    let pending = V.pending_for_agent ~base_path ~agent:"codex" in
-    Alcotest.(check int) "codex sees 1 pending" 1 (List.length pending);
-    (* claude should not see t1 (own work) *)
-    let pending_claude = V.pending_for_agent ~base_path ~agent:"claude" in
-    Alcotest.(check int) "claude sees 0 (own work filtered)" 0 (List.length pending_claude))
+        ~output:`Null ~criteria:[] ~worker:"agent_code" ~verifier:"provider_f" () in
+    (* agent_code should see t1 (not own work), not t2 (assigned to provider_f) *)
+    let pending = V.pending_for_agent ~base_path ~agent:"agent_code" in
+    Alcotest.(check int) "agent_code sees 1 pending" 1 (List.length pending);
+    (* agent_llm_a should not see t1 (own work) *)
+    let pending_claude = V.pending_for_agent ~base_path ~agent:"agent_llm_a" in
+    Alcotest.(check int) "agent_llm_a sees 0 (own work filtered)" 0 (List.length pending_claude))
 
 (* --- Attribution conversion tests --- *)
 
@@ -392,7 +432,7 @@ let test_attribution_of_request_derives_origin () =
     (* Build a request with a Custom criterion and a Completed Pass verdict. *)
     match V.create_request ~base_path ~task_id:"t2" ~output:`Null
             ~criteria:[ V.Contains "hello"; V.Custom "must be kind" ]
-            ~worker:"claude" ~verifier:"codex" () with
+            ~worker:"agent_llm_a" ~verifier:"agent_code" () with
     | Error e -> Alcotest.fail ("create failed: " ^ e)
     | Ok req ->
       let completed = { req with status = V.Completed V.Pass } in
@@ -435,8 +475,14 @@ let () =
       Alcotest.test_case "list requests" `Quick test_list_requests;
       Alcotest.test_case "list requests missing dir stays quiet" `Quick
         test_list_requests_missing_dir_stays_quiet;
+      Alcotest.test_case "verifications dir resolves active store" `Quick
+        test_verifications_dir_resolves_active_store;
+      Alcotest.test_case "request path ignores legacy root store" `Quick
+        test_request_path_ignores_legacy_root_store;
       Alcotest.test_case "list requests skips bad entries with metric" `Quick
         test_list_requests_skips_bad_entries_with_metric;
+      Alcotest.test_case "list requests ignores legacy-only stale entries" `Quick
+        test_list_requests_ignores_legacy_only_stale_entries;
       Alcotest.test_case "list requests ignores legacy root entries" `Quick
         test_list_requests_ignores_legacy_root_entries;
       Alcotest.test_case "assign verifier" `Quick test_assign_verifier;

@@ -90,12 +90,12 @@ let make_task ~id ~status =
   ; files = []
   ; created_at = now
   ; created_by = None
-  ; worktree = None
   ; goal_id = None
   ; stage = None
   ; contract = None
   ; handoff_context = None
   ; cycle_count = 0
+  ; reclaim_policy = None
   ; do_not_reclaim_reason = None
   }
 

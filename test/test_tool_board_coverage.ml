@@ -37,7 +37,17 @@ let cleanup () =
 
 let dispatch name args =
   let result = Tool_board.handle_tool name args in
-  (result.success, Tool_result.message result)
+  ((Tool_result.is_success result), (Tool_result.message result))
+
+let dispatch_result name args =
+  Tool_board.handle_tool name args
+
+let check_failure_class name expected result =
+  let actual =
+    (Tool_result.failure_class result)
+    |> Option.map Tool_result.tool_failure_class_to_string
+  in
+  Alcotest.(check (option string)) name expected actual
 
 let make_args pairs = `Assoc pairs
 
@@ -207,10 +217,10 @@ let test_board_actor_identity_keeps_non_keeper_agent () =
   Eio_main.run @@ fun env ->
   Fs_compat.set_fs (Eio.Stdenv.fs env);
   cleanup ();
-  let json = Server_utils.board_actor_identity_json "codex" in
+  let json = Server_utils.board_actor_identity_json "agent_code" in
   Alcotest.(check string) "kind" "agent" (json_member_string json "kind");
-  Alcotest.(check string) "id" "codex" (json_member_string json "id");
-  Alcotest.(check string) "key" "agent:codex" (json_member_string json "key");
+  Alcotest.(check string) "id" "agent_code" (json_member_string json "id");
+  Alcotest.(check string) "key" "agent:agent_code" (json_member_string json "key");
   Alcotest.(check string) "source" "raw_agent"
     (json_member_string json "source")
 
@@ -425,6 +435,50 @@ let test_board_dashboard_json_hides_unvoted_scores_when_blind () =
   Alcotest.(check int) "comment revealed score" 1
     (json_member_int revealed_comment_json "score")
 
+let test_board_dashboard_json_embeds_contributor_quality () =
+  Eio_main.run @@ fun env ->
+  Fs_compat.set_fs (Eio.Stdenv.fs env);
+  cleanup ();
+  let post =
+    match
+      Board_dispatch.create_post ~author:"quality-author"
+        ~content:"quality projection post" ~post_kind:Board.Human_post ()
+    with
+    | Ok post -> post
+    | Error e -> Alcotest.fail (Board.show_board_error e)
+  in
+  let rep =
+    {
+      (Agent_reputation.default_reputation ~agent_name:"quality-author") with
+      overall_score = 0.72;
+      completion_rate = 0.8;
+      response_rate = 0.6;
+      board_posts = 3;
+      board_comments = 5;
+      accountability_score = 0.9;
+      autonomy_level = "elevated";
+      thompson_confidence = 0.7;
+    }
+  in
+  let contributor_quality =
+    Server_utils.board_contributor_quality_json rep
+  in
+  let post_json =
+    Server_utils.board_post_dashboard_json ~contributor_quality
+      ~author_karma:0 post
+  in
+  let quality =
+    match Yojson.Safe.Util.member "contributor_quality" post_json with
+    | `Assoc _ as quality -> quality
+    | _ -> Alcotest.fail "expected contributor_quality object"
+  in
+  Alcotest.(check string) "quality source" "agent_reputation"
+    (json_member_string quality "source");
+  Alcotest.(check string) "quality band" "strong"
+    (json_member_string quality "band");
+  Alcotest.(check int) "quality board posts" 3
+    (json_member_int quality "board_posts")
+
 let test_inline_board_post_author_rewrites_caller_claim () =
   let args =
     make_args
@@ -442,10 +496,7 @@ let test_inline_board_post_author_rewrites_caller_claim () =
     Yojson.Safe.Util.(normalized |> member "author" |> to_string);
   Alcotest.(check string) "caller claim preserved" "analyst"
     Yojson.Safe.Util.(
-      normalized |> member "meta" |> member "caller_supplied_author" |> to_string);
-  Alcotest.(check string) "rewrite reason preserved" "caller_author_mismatch"
-    Yojson.Safe.Util.(
-      normalized |> member "meta" |> member "author_rewrite_reason" |> to_string);
+      normalized |> member "meta" |> member "author_caller_claim" |> to_string);
   Alcotest.(check string) "raw ctx agent preserved" "keeper-velvet-hammer-agent"
     Yojson.Safe.Util.(
       normalized |> member "meta" |> member "author_raw_agent_name" |> to_string);
@@ -468,7 +519,7 @@ let test_inline_board_post_author_accepts_matching_alias () =
     Yojson.Safe.Util.(normalized |> member "author" |> to_string);
   Alcotest.(check bool) "no mismatch claim" true
     Yojson.Safe.Util.(
-      normalized |> member "meta" |> member "caller_supplied_author" = `Null)
+      normalized |> member "meta" |> member "author_caller_claim" = `Null)
 
 (** {2 Group 2: JSON helper functions} *)
 
@@ -581,6 +632,69 @@ let test_post_create_judgment_roundtrip () =
   Alcotest.(check string) "judgment summary kept in meta" summary
     Yojson.Safe.Util.(json |> member "meta" |> member "judgment" |> member "summary" |> to_string)
 
+(** Judgment as JSON List (e.g. [{summary: "...", confidence: 0.9}])
+    was silently dropped before the fix. Issue #16300. *)
+let test_post_create_judgment_list_roundtrip () =
+  Eio_main.run @@ fun env ->
+  Fs_compat.set_fs (Eio.Stdenv.fs env);
+  cleanup ();
+  let ok, body =
+    dispatch "masc_board_post"
+      (make_args
+         [
+           ("content", `String "List-judged board post");
+           ("author", `String "tester");
+           ( "judgment",
+             `List [ `Assoc [ ("summary", `String "list-judged"); ("score", `Float 0.85) ] ] );
+         ])
+  in
+  Alcotest.(check bool) "create ok" true ok;
+  let json = parse_create_response_json body in
+  let judgment_json = Yojson.Safe.Util.(json |> member "meta" |> member "judgment") in
+  (* The List judgment must be preserved, not silently dropped. *)
+  Alcotest.(check bool) "list judgment is a non-null value" true
+    (judgment_json <> `Null);
+  let summary = Yojson.Safe.Util.(judgment_json |> index 0 |> member "summary" |> to_string) in
+  Alcotest.(check string) "list judgment summary preserved" "list-judged" summary
+
+(** Scalar JSON types (Bool, Int, Float, Intlit) for judgment must not
+    silently produce a valid post with judgment absent. They are coerced
+    to strings so the data is preserved. Issue #16300. *)
+let test_post_create_judgment_scalar_types_ignored () =
+  Eio_main.run @@ fun env ->
+  Fs_compat.set_fs (Eio.Stdenv.fs env);
+  let scalars =
+    [
+      ("Bool", `Bool true);
+      ("Int", `Int 42);
+      ("Float", `Float 3.14);
+      ("Intlit", `Intlit "999999999999999999999999");
+    ]
+  in
+  List.iter
+    (fun (label, scalar_value) ->
+       cleanup ();
+       let ok, body =
+         dispatch "masc_board_post"
+           (make_args
+              [
+                ("content", `String ("scalar-judgment-" ^ label));
+                ("author", `String "tester");
+                ("judgment", scalar_value);
+              ])
+       in
+       Alcotest.(check bool) (label ^ ": create ok") true ok;
+       let json = parse_create_response_json body in
+       let judgment_json =
+         try Yojson.Safe.Util.(json |> member "meta" |> member "judgment")
+         with _ -> `Null
+       in
+       Alcotest.(check (option string))
+         (label ^ ": scalar judgment coerced to string")
+         (Some (Yojson.Safe.to_string scalar_value))
+         Yojson.Safe.Util.(to_string_option judgment_json))
+    scalars
+
 let test_post_create_sources_footer_and_meta () =
   Eio_main.run @@ fun env ->
   Fs_compat.set_fs (Eio.Stdenv.fs env);
@@ -625,7 +739,7 @@ let test_keeper_board_post_preserves_meta_reason () =
     "LLM judged this as automation because it broadcasts a keeper-owned status update."
   in
   let body =
-    Keeper_exec_board.handle_keeper_board_tool
+    Agent_tool_board_runtime.handle_keeper_board_tool
       ~meta:keeper_meta
       ~name:"keeper_board_post"
       ~args:
@@ -656,7 +770,7 @@ let test_keeper_board_post_rejects_quantitative_line_claim_without_evidence () =
   cleanup ();
   let keeper_meta = make_keeper_meta ~name:"audit-keeper" () in
   let body =
-    Keeper_exec_board.handle_keeper_board_tool
+    Agent_tool_board_runtime.handle_keeper_board_tool
       ~meta:keeper_meta
       ~name:"keeper_board_post"
       ~args:
@@ -686,7 +800,7 @@ let test_keeper_board_post_rejects_keyword_only_quantitative_evidence () =
   cleanup ();
   let keeper_meta = make_keeper_meta ~name:"audit-keeper" () in
   let body =
-    Keeper_exec_board.handle_keeper_board_tool
+    Agent_tool_board_runtime.handle_keeper_board_tool
       ~meta:keeper_meta
       ~name:"keeper_board_post"
       ~args:
@@ -712,7 +826,7 @@ let test_keeper_board_post_rejects_numeric_line_claim_without_keyword () =
   cleanup ();
   let keeper_meta = make_keeper_meta ~name:"audit-keeper" () in
   let body =
-    Keeper_exec_board.handle_keeper_board_tool
+    Agent_tool_board_runtime.handle_keeper_board_tool
       ~meta:keeper_meta
       ~name:"keeper_board_post"
       ~args:
@@ -738,7 +852,7 @@ let test_keeper_board_post_accepts_inline_quantitative_command_evidence () =
   cleanup ();
   let keeper_meta = make_keeper_meta ~name:"audit-keeper" () in
   let body =
-    Keeper_exec_board.handle_keeper_board_tool
+    Agent_tool_board_runtime.handle_keeper_board_tool
       ~meta:keeper_meta
       ~name:"keeper_board_post"
       ~args:
@@ -761,7 +875,7 @@ let test_keeper_board_post_accepts_quantitative_line_claim_with_evidence () =
   cleanup ();
   let keeper_meta = make_keeper_meta ~name:"audit-keeper" () in
   let body =
-    Keeper_exec_board.handle_keeper_board_tool
+    Agent_tool_board_runtime.handle_keeper_board_tool
       ~meta:keeper_meta
       ~name:"keeper_board_post"
       ~args:
@@ -798,7 +912,7 @@ let test_keeper_board_dispatch_uses_typed_tool_names () =
   cleanup ();
   let keeper_meta = make_keeper_meta ~name:"typed-keeper" () in
   let fake =
-    Keeper_exec_board.handle_keeper_board_tool
+    Agent_tool_board_runtime.handle_keeper_board_tool
       ~meta:keeper_meta
       ~name:"keeper_board_fake"
       ~args:(make_args [])
@@ -806,7 +920,7 @@ let test_keeper_board_dispatch_uses_typed_tool_names () =
   Alcotest.(check bool) "fake board name rejected" true
     (contains_substring fake "unknown_board_tool");
   let comment_vote =
-    Keeper_exec_board.handle_keeper_board_tool
+    Agent_tool_board_runtime.handle_keeper_board_tool
       ~meta:keeper_meta
       ~name:"keeper_board_comment_vote"
       ~args:(make_args [ ("comment_id", `String "") ])
@@ -816,7 +930,7 @@ let test_keeper_board_dispatch_uses_typed_tool_names () =
   Alcotest.(check bool) "typed comment vote is not unknown" false
     (contains_substring comment_vote "unknown_board_tool");
   let curation =
-    Keeper_exec_board.handle_keeper_board_tool
+    Agent_tool_board_runtime.handle_keeper_board_tool
       ~meta:keeper_meta
       ~name:"keeper_board_curation_read"
       ~args:(make_args [])
@@ -825,7 +939,7 @@ let test_keeper_board_dispatch_uses_typed_tool_names () =
   Alcotest.(check bool) "typed curation read is not unknown" false
     (contains_substring curation "unknown_board_tool");
   let curation_submit =
-    Keeper_exec_board.handle_keeper_board_tool
+    Agent_tool_board_runtime.handle_keeper_board_tool
       ~meta:keeper_meta
       ~name:"keeper_board_curation_submit"
       ~args:
@@ -1012,10 +1126,11 @@ let inline_board_dispatch ~sw ~clock name args =
   let state = Mcp_server.create_state ~base_path:_test_base_path in
   Tool_inline_dispatch_extra.dispatch ~config:state.Mcp_server.room_config
     ~agent_name:"inline-curator" ~arguments:args ~state ~sw ~clock ~name
+    ~start_time:(Unix.gettimeofday ())
 
 let require_inline_result ~sw ~clock name args =
   match inline_board_dispatch ~sw ~clock name args with
-  | Some result -> result
+  | Some result -> ((Tool_result.is_success result), (Tool_result.message result))
   | None -> Alcotest.failf "%s not routed by inline board dispatch" name
 
 let test_board_curation_inline_dispatch_routes_read_and_submit () =
@@ -1312,10 +1427,61 @@ let test_vote_not_found () =
   Eio_main.run @@ fun env ->
   Fs_compat.set_fs (Eio.Stdenv.fs env);
   cleanup ();
-  let ok, body = dispatch "masc_board_vote"
-    (make_args [("post_id", `String "missing"); ("voter", `String "v"); ("direction", `String "up")]) in
-  Alcotest.(check bool) "vote on missing fails" false ok;
+  let result =
+    dispatch_result "masc_board_vote"
+      (make_args
+         [
+           ("post_id", `String "missing");
+           ("voter", `String "v");
+           ("direction", `String "up");
+         ])
+  in
+  let body = (Tool_result.message result) in
+  Alcotest.(check bool) "vote on missing fails" false (Tool_result.is_success result);
+  check_failure_class
+    "missing post vote is workflow rejection"
+    (Some "workflow_rejection")
+    result;
   Alcotest.(check bool) "has error" true (String.length body > 0)
+
+let test_vote_rejects_legacy_direction_fallbacks () =
+  Eio_main.run @@ fun env ->
+  Fs_compat.set_fs (Eio.Stdenv.fs env);
+  cleanup ();
+  let empty_direction =
+    dispatch_result
+      "masc_board_vote"
+      (make_args
+         [
+           ("post_id", `String "missing");
+           ("voter", `String "v");
+           ("direction", `String "");
+         ])
+  in
+  Alcotest.(check bool) "empty direction rejected" false (Tool_result.is_success empty_direction);
+  Alcotest.(check bool)
+    "empty direction error"
+    true
+    (String_util.contains_substring
+       ((Tool_result.message empty_direction))
+       "invalid vote direction");
+  let legacy_vote_alias =
+    dispatch_result
+      "masc_board_vote"
+      (make_args
+         [
+           ("post_id", `String "missing");
+           ("voter", `String "v");
+           ("vote", `String "down");
+         ])
+  in
+  Alcotest.(check bool) "legacy vote alias rejected" false (Tool_result.is_success legacy_vote_alias);
+  Alcotest.(check bool)
+    "legacy vote alias error"
+    true
+    (String_util.contains_substring
+       ((Tool_result.message legacy_vote_alias))
+       "legacy vote parameter")
 
 (** {2 Group 5: Comment} *)
 
@@ -1323,9 +1489,21 @@ let test_comment_add_missing_post () =
   Eio_main.run @@ fun env ->
   Fs_compat.set_fs (Eio.Stdenv.fs env);
   cleanup ();
-  let ok, body = dispatch "masc_board_comment"
-    (make_args [("post_id", `String "missing"); ("content", `String "hi"); ("author", `String "a")]) in
-  Alcotest.(check bool) "comment on missing post fails" false ok;
+  let result =
+    dispatch_result "masc_board_comment"
+      (make_args
+         [
+           ("post_id", `String "missing");
+           ("content", `String "hi");
+           ("author", `String "a");
+         ])
+  in
+  let body = (Tool_result.message result) in
+  Alcotest.(check bool) "comment on missing post fails" false (Tool_result.is_success result);
+  check_failure_class
+    "missing post comment is workflow rejection"
+    (Some "workflow_rejection")
+    result;
   Alcotest.(check bool) "has error" true (String.length body > 0)
 
 let test_comment_add_missing_author_rejected () =
@@ -1356,6 +1534,27 @@ let test_comment_vote_missing () =
   let ok, body = dispatch "masc_board_comment_vote"
     (make_args [("comment_id", `String ""); ("voter", `String "v"); ("direction", `String "up")]) in
   Alcotest.(check bool) "empty comment_id fails" false ok;
+  Alcotest.(check bool) "error msg" true (String.length body > 0)
+
+let test_comment_vote_not_found () =
+  Eio_main.run @@ fun env ->
+  Fs_compat.set_fs (Eio.Stdenv.fs env);
+  cleanup ();
+  let result =
+    dispatch_result "masc_board_comment_vote"
+      (make_args
+         [
+           ("comment_id", `String "missing-comment");
+           ("voter", `String "v");
+           ("direction", `String "up");
+         ])
+  in
+  let body = (Tool_result.message result) in
+  Alcotest.(check bool) "vote on missing comment fails" false (Tool_result.is_success result);
+  check_failure_class
+    "missing comment vote is workflow rejection"
+    (Some "workflow_rejection")
+    result;
   Alcotest.(check bool) "error msg" true (String.length body > 0)
 
 (** {2 Group 6: Search / Stats / Profile / Hearths} *)
@@ -1434,7 +1633,7 @@ let test_tools_count () =
   Eio_main.run @@ fun env ->
   Fs_compat.set_fs (Eio.Stdenv.fs env);
   cleanup ();
-  Alcotest.(check int) "14 tool schemas" 14 (List.length Tool_board.tools)
+  Alcotest.(check int) "19 tool schemas" 19 (List.length Tool_board.tools)
 
 let test_tools_names_unique () =
   Eio_main.run @@ fun env ->
@@ -1482,6 +1681,153 @@ let test_curation_health_score_schema_bounds () =
   check_bounds "keeper curation submit"
     (find_tool "keeper_board_curation_submit" Tool_shard.shard_board.tools)
 
+(** {1 Comment Rate Limiting Tests} *)
+
+(** Helper: create a post and return its id. *)
+let rate_test_post_id store =
+  match Board.create_post store
+    ~author:"tester" ~content:"rate limit test post"
+    ~post_kind:Human_post () with
+  | Ok p -> Board.Post_id.to_string p.id
+  | Error e -> Alcotest.failf "post create failed: %s" (Board.show_board_error e)
+
+(** Helper: add a comment via the core API and return Ok/Error. *)
+let rate_add_comment store post_id idx =
+  Board.add_comment_with_status store
+    ~post_id ~author:"tester"
+    ~content:(Printf.sprintf "comment #%d" idx) ()
+
+let test_rate_under_limit_succeeds () =
+  Eio_main.run @@ fun env ->
+  Fs_compat.set_fs (Eio.Stdenv.fs env);
+  cleanup ();
+  let store = Board.create_store () in
+  let post_id = rate_test_post_id store in
+  for i = 1 to 28 do
+    match rate_add_comment store post_id i with
+    | Ok (_c, `Fresh) -> ()
+    | Ok (_c, `Dedup) -> Alcotest.failf "comment %d unexpectedly deduped" i
+    | Error e -> Alcotest.failf "comment %d rejected: %s" i (Board.show_board_error e)
+  done
+
+let test_rate_at_limit_rejects () =
+  Eio_main.run @@ fun env ->
+  Fs_compat.set_fs (Eio.Stdenv.fs env);
+  cleanup ();
+  let store = Board.create_store () in
+  let post_id = rate_test_post_id store in
+  for i = 1 to 30 do
+    ignore (rate_add_comment store post_id i : (_, _) result)
+  done;
+  (match rate_add_comment store post_id 31 with
+   | Error (Board.Rate_limited _) -> ()
+   | Ok _ -> Alcotest.fail "31st comment should have been rate-limited"
+   | Error e -> Alcotest.failf "unexpected error: %s" (Board.show_board_error e))
+
+let test_rate_different_authors_independent () =
+  Eio_main.run @@ fun env ->
+  Fs_compat.set_fs (Eio.Stdenv.fs env);
+  cleanup ();
+  let store = Board.create_store () in
+  let post_id = rate_test_post_id store in
+  for i = 1 to 30 do
+    ignore (Board.add_comment_with_status store
+      ~post_id ~author:"author-a" ~content:(Printf.sprintf "fill-%d" i) () : (_, _) result)
+  done;
+  (match Board.add_comment_with_status store
+    ~post_id ~author:"author-b" ~content:"b-comment" () with
+   | Ok _ -> ()
+   | Error e -> Alcotest.failf "author-b rejected: %s" (Board.show_board_error e))
+
+let test_rate_retry_after_positive () =
+  Eio_main.run @@ fun env ->
+  Fs_compat.set_fs (Eio.Stdenv.fs env);
+  cleanup ();
+  let store = Board.create_store () in
+  let post_id = rate_test_post_id store in
+  for i = 1 to 30 do
+    ignore (rate_add_comment store post_id i)
+  done;
+  (match rate_add_comment store post_id 31 with
+   | Error (Board.Rate_limited { retry_after }) ->
+     Alcotest.(check bool) "retry_after > 0" true (retry_after > 0.0)
+   | _ -> Alcotest.fail "expected Rate_limited error")
+
+let test_rate_dedup_does_not_consume_quota () =
+  Eio_main.run @@ fun env ->
+  Fs_compat.set_fs (Eio.Stdenv.fs env);
+  cleanup ();
+  let store = Board.create_store () in
+  let post_id = rate_test_post_id store in
+  for _i = 1 to 30 do
+    ignore (Board.add_comment_with_status store
+      ~post_id ~author:"tester" ~content:"identical" () : (_, _) result)
+  done;
+  (match Board.add_comment_with_status store
+    ~post_id ~author:"tester" ~content:"different" () with
+   | Ok _ -> ()
+   | Error e -> Alcotest.failf "dedup-consumed quota: %s" (Board.show_board_error e))
+
+let test_rate_window_expiry_allows_more () =
+  Eio_main.run @@ fun env ->
+  Fs_compat.set_fs (Eio.Stdenv.fs env);
+  cleanup ();
+  let store = Board.create_store () in
+  let post_id = rate_test_post_id store in
+  let old = Unix.gettimeofday () -. 600.0 in
+  for i = 1 to 30 do
+    Board_core.record_comment_timestamp ~author:"tester" ~now:(old +. float_of_int i)
+  done;
+  (match rate_add_comment store post_id 1 with
+   | Ok _ -> ()
+   | Error e -> Alcotest.failf "window expiry rejected: %s" (Board.show_board_error e))
+
+let test_rate_disabled_when_limit_zero () =
+  Eio_main.run @@ fun env ->
+  Fs_compat.set_fs (Eio.Stdenv.fs env);
+  cleanup ();
+  ignore (Board.create_store ());
+  (match Board_core.check_comment_rate_limit ~author:"unknown-agent" ~now:(Unix.gettimeofday ()) with
+   | None -> ()
+   | Some _ -> Alcotest.fail "unknown author should not be rate-limited")
+
+let test_rate_dispatch_error_message () =
+  Eio_main.run @@ fun env ->
+  Fs_compat.set_fs (Eio.Stdenv.fs env);
+  cleanup ();
+  (* Use dispatch (Board.global) for everything so post exists in the right store *)
+  let (_ok, create_msg) = dispatch "masc_board_post" (make_args [
+    ("title", `String "rate-test"); ("content", `String "hello");
+    ("author", `String "tester")
+  ]) in
+  let json = parse_create_response_json create_msg in
+  let post_id = Yojson.Safe.Util.(json |> member "id" |> to_string) in
+  for i = 1 to 30 do
+    ignore (dispatch "masc_board_comment" (make_args [
+      ("post_id", `String post_id);
+      ("content", `String (Printf.sprintf "comment-%d" i));
+      ("author", `String "tester")
+    ]) : bool * string)
+  done;
+  let (ok, msg) = dispatch "masc_board_comment" (make_args [
+    ("post_id", `String post_id);
+    ("content", `String "overflow");
+    ("author", `String "tester")
+  ]) in
+  Alcotest.(check bool) "rate limited via dispatch" false ok;
+  Alcotest.(check bool) "error mentions rate/limit/retry" true
+    (let lower = String.lowercase_ascii msg in
+     let contains sub =
+       let sub_len = String.length sub in
+       let msg_len = String.length lower in
+       let rec loop i =
+         i + sub_len <= msg_len &&
+         (String.sub lower i sub_len = sub || loop (i + 1))
+       in
+       loop 0
+     in
+     contains "rate" || contains "limit" || contains "retry")
+
 (** {1 Test Runner} *)
 
 let () =
@@ -1504,6 +1850,8 @@ let () =
             `Quick test_board_dashboard_json_embeds_moderation_projection;
           Alcotest.test_case "board dashboard json hides blind vote scores"
             `Quick test_board_dashboard_json_hides_unvoted_scores_when_blind;
+          Alcotest.test_case "board dashboard json embeds contributor quality"
+            `Quick test_board_dashboard_json_embeds_contributor_quality;
           Alcotest.test_case "inline board post author rewrites caller claim"
             `Quick test_inline_board_post_author_rewrites_caller_claim;
           Alcotest.test_case "inline board post author accepts matching alias"
@@ -1523,6 +1871,10 @@ let () =
             test_post_create_structured_payload;
           Alcotest.test_case "create judgment roundtrip" `Quick
             test_post_create_judgment_roundtrip;
+          Alcotest.test_case "create judgment list roundtrip (#16300)" `Quick
+            test_post_create_judgment_list_roundtrip;
+          Alcotest.test_case "create judgment scalar types ignored (#16300)" `Quick
+            test_post_create_judgment_scalar_types_ignored;
           Alcotest.test_case "create sources footer and meta" `Quick
             test_post_create_sources_footer_and_meta;
           Alcotest.test_case "keeper board post preserves meta reason" `Quick
@@ -1580,6 +1932,10 @@ let () =
       ( "voting",
         [
           Alcotest.test_case "vote not found" `Quick test_vote_not_found;
+          Alcotest.test_case
+            "legacy direction fallbacks rejected"
+            `Quick
+            test_vote_rejects_legacy_direction_fallbacks;
         ] );
       ( "comments",
         [
@@ -1589,6 +1945,8 @@ let () =
           Alcotest.test_case "comment anonymous author rejected" `Quick
             test_comment_add_anonymous_author_rejected;
           Alcotest.test_case "comment vote missing" `Quick test_comment_vote_missing;
+          Alcotest.test_case "comment vote not found" `Quick
+            test_comment_vote_not_found;
         ] );
       ( "search_stats",
         [
@@ -1623,7 +1981,7 @@ let () =
             Tool_board.set_agent_lookup_none ();
             let (ok, msg) = dispatch "masc_board_post" (make_args [
               ("title", `String "test"); ("content", `String "hello");
-              ("author", `String "claude-agent")
+              ("author", `String "agent_llm_a-agent")
             ]) in
             Alcotest.(check bool) "post created" true ok;
             Alcotest.(check string) "classified as direct" "direct"
@@ -1633,10 +1991,10 @@ let () =
             Eio_main.run @@ fun env ->
             Fs_compat.set_fs (Eio.Stdenv.fs env);
             cleanup ();
-            Tool_board.set_agent_lookup (fun name -> name = "claude-agent");
+            Tool_board.set_agent_lookup (fun name -> name = "agent_llm_a-agent");
             let (ok, msg) = dispatch "masc_board_post" (make_args [
               ("title", `String "test"); ("content", `String "hello");
-              ("author", `String "claude-agent")
+              ("author", `String "agent_llm_a-agent")
             ]) in
             Alcotest.(check bool) "post created" true ok;
             Alcotest.(check string) "classified as automation" "automation"
@@ -1655,20 +2013,19 @@ let () =
             Alcotest.(check string) "classified as direct" "direct"
               Yojson.Safe.Util.(
                 parse_create_response_json msg |> member "post_kind" |> to_string));
-          Alcotest.test_case "legacy human override normalizes to direct" `Quick (fun () ->
+          Alcotest.test_case "human post_kind alias is rejected" `Quick (fun () ->
             Eio_main.run @@ fun env ->
             Fs_compat.set_fs (Eio.Stdenv.fs env);
             cleanup ();
             Tool_board.set_agent_lookup (fun _name -> true);
             let (ok, msg) = dispatch "masc_board_post" (make_args [
               ("title", `String "test"); ("content", `String "hello");
-              ("author", `String "claude-agent");
+              ("author", `String "agent_llm_a-agent");
               ("post_kind", `String "human")
             ]) in
-            Alcotest.(check bool) "post created" true ok;
-            Alcotest.(check string) "legacy override normalized to direct" "direct"
-              Yojson.Safe.Util.(
-                parse_create_response_json msg |> member "post_kind" |> to_string));
+            Alcotest.(check bool) "post rejected" false ok;
+            Alcotest.(check bool) "unknown post_kind surfaced" true
+              (contains_substring msg "unknown post_kind: human"));
         ] );
       ( "board_list_cache",
         [
@@ -1810,5 +2167,19 @@ let () =
             let (_ok2, body2) = dispatch "masc_board_list" args in
             Alcotest.(check bool) "cache invalidated after vote" true
               (body1 <> body2));
+        ] );
+      ( "comment_rate_limit",
+        [
+          Alcotest.test_case "under limit succeeds" `Quick test_rate_under_limit_succeeds;
+          Alcotest.test_case "at limit rejects" `Quick test_rate_at_limit_rejects;
+          Alcotest.test_case "different authors independent" `Quick
+            test_rate_different_authors_independent;
+          Alcotest.test_case "retry_after positive" `Quick test_rate_retry_after_positive;
+          Alcotest.test_case "dedup does not consume quota" `Quick
+            test_rate_dedup_does_not_consume_quota;
+          Alcotest.test_case "window expiry allows more" `Quick
+            test_rate_window_expiry_allows_more;
+          Alcotest.test_case "disabled when limit zero" `Quick test_rate_disabled_when_limit_zero;
+          Alcotest.test_case "dispatch error message" `Quick test_rate_dispatch_error_message;
         ] );
     ]

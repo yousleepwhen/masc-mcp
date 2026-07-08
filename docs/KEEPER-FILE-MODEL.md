@@ -106,7 +106,6 @@ These may still be parsed today, but they are **not** the preferred place to enc
 | --- | --- | --- |
 | `allowed_paths` | Ignored by design | nowhere in persona |
 | `cascade_name` | Compatibility-only | `keeper.toml` |
-| `work_discovery_*` | Compatibility-only | `keeper.toml` or runtime policy |
 | `telemetry_feedback_*` | Compatibility-only | `keeper.toml` or runtime policy |
 | `max_turns_per_call*` | Compatibility-only | `keeper.toml` |
 
@@ -141,8 +140,8 @@ persona_name = "analyst"
 | `network_mode` | Optional | Sandbox network policy | `docker` defaults to `none` (basic-mode git/gh dispatcher can promote to `inherit`); `local` defaults to `inherit`. Hard mode requires `none`. |
 | `cascade_name` | Optional | Deployment-specific cascade override | Only when not using the default cascade. |
 | `tool_preset` | Optional | Deployment-specific policy override | Only when intentionally overriding persona default. |
-| `github_identity` | Optional | Bound GitHub CLI identity bundle | Resolves to `.masc/github-identities/<identity>/gh` for keeper-scoped `gh` auth. Required when `MASC_KEEPER_SANDBOX_HARD_MODE=true`. |
-| `git_identity_mode` | Optional | Commit identity policy | `keeper_alias` keeps git author separate from GitHub auth; `github_identity` is reserved for future explicit coupling. |
+| `repo_cli_identity` | Optional | Bound repo CLI identity bundle | Resolves to `.masc/repo-cli-identities/<identity>/gh` for keeper-scoped `gh` auth. Required when `MASC_KEEPER_SANDBOX_HARD_MODE=true`. |
+| `git_identity_mode` | Optional | Commit identity policy | `keeper_alias` keeps git author separate from GitHub auth; `repo_cli_identity` is reserved for future explicit coupling. |
 | `active_goal_ids` | Optional | Goal-scoped claim filter | When set, `keeper_task_claim` claims only tasks linked to these goals. If the scoped pool has no task claimable with the keeper's current capabilities, the claim stops; only auto-repaired keeper-purpose goals may fall back to all claimable tasks. |
 
 ### Additional supported overlay fields
@@ -162,10 +161,6 @@ These are still accepted by the loader, but for consistency they should be used 
 | `tool_also_allow` | string array | Extra tool names added to the preset surface |
 | `tool_denylist` | string array | Tool names blocked regardless of preset |
 | `active_goal_ids` | string array | Declarative goal scope for task claim eligibility |
-| `work_discovery_enabled` | bool | Enable work discovery loop |
-| `work_discovery_sources` | string array | e.g. `["github_issues", "stale_tasks"]` |
-| `work_discovery_interval_sec` | int | Scan interval |
-| `work_discovery_guidance` | string | Hint string fed into the work-discovery prompt |
 | `telemetry_feedback_enabled` | bool | Surface recent telemetry in the keeper prompt |
 | `telemetry_feedback_window_hours` | int | Window size for telemetry summarization |
 | `max_turns_per_call`, `max_turns_per_call_scheduled_autonomous` | int | Per-keeper turn budget override |
@@ -179,10 +174,10 @@ Enumerated fields only accept the values below. The loader rejects invalid input
 | --- | --- |
 | `sandbox_profile` | `local`, `docker` |
 | `network_mode` | `none`, `inherit` |
-| `git_identity_mode` | `keeper_alias`, `github_identity` |
-| `tool_preset` | `minimal`, `social`, `messaging`, `coding`, `research`, `delivery`, `full` |
+| `git_identity_mode` | `keeper_alias`, `repo_cli_identity` |
+| `tool_preset` | `minimal`, `social`, `messaging`, `research`, `delivery`, `full` |
 | `social_model` | `bdi_speech_v1`, `magentic_ledger_v1` (non-public: rejected when passed via tool args; TOML-only) |
-| `cascade_name` | any `<name>` such that `<name>_models` exists in `cascade.json` (e.g. `keeper_unified`, `nick0cave`) |
+| `cascade_name` | keeper-assignable declarative cascade profiles exposed by the active catalog: route targets, tier names, or tier-group names that are not marked `keeper-assignable = false` |
 
 ### Sandbox Example
 
@@ -198,9 +193,9 @@ Operational intent:
 - private writable lane: the keeper sandbox. The current local/docker storage path is `.masc/playground/<keeper>/...`, but keeper tools should use sandbox-relative paths such as `repos/<repo>` and `mind/<file>`.
 - no arbitrary shared writable shell directory
 - `sandbox_profile=docker`는 `allowed_paths=["*"]`를 거부하고, private sandbox root 밖 경로도 허용하지 않는다
-- `github_identity`가 설정된 keeper는 `.masc/github-identities/<identity>/gh`만 사용하고, bundle이 없으면 fail-closed 된다. operator 개인 `gh` config, ambient `GH_TOKEN`/`GITHUB_TOKEN`, SSH agent로는 fallback 하지 않는다.
-- `github_identity`가 없는 keeper는 `.masc/github-identities/root/gh` root bundle만 fallback으로 사용한다. root bundle도 없으면 fail-closed 된다.
-- `MASC_KEEPER_SANDBOX_HARD_MODE=true`에서는 Docker container의 git/gh network dispatch와 ambient operator credential 사용이 꺼지고, `keeper_shell op=gh` / `op=git_clone`만 host-side broker가 selected identity bundle의 `GH_CONFIG_DIR`로 실행한다.
+- `repo_cli_identity`가 설정된 keeper는 `.masc/repo-cli-identities/<identity>/gh`만 사용하고, bundle이 없으면 fail-closed 된다. operator 개인 `gh` config, ambient `GH_TOKEN`/`GITHUB_TOKEN`, SSH agent로는 fallback 하지 않는다.
+- `repo_cli_identity`가 없는 keeper는 `.masc/repo-cli-identities/root/gh` root bundle만 fallback으로 사용한다. root bundle도 없으면 fail-closed 된다.
+- `MASC_KEEPER_SANDBOX_HARD_MODE=true`에서는 Docker container의 ambient operator credential 사용이 꺼지고, GitHub access는 selected identity bundle의 `GH_CONFIG_DIR`로 검증된 `tool_execute` 경로만 사용한다.
 
 ### Removed / forbidden fields (hard-rejected)
 
@@ -209,7 +204,8 @@ These keys are **rejected at load time** with an `Error`. They are retained only
 | Field | Replacement / rationale |
 | --- | --- |
 | `also_allow` | Renamed to `tool_also_allow` in `keeper.toml`. Use `tool_access.also_allow` only inside the JSON `tool_access` object. |
-| `models`, `allowed_models`, `active_model` | Models are resolved at runtime from `cascade_name` → `cascade.json`. Do not pin per-keeper. |
+| `models`, `allowed_models`, `active_model` | Models are resolved at runtime from `cascade_name` → `cascade.toml`. Do not pin per-keeper. |
+| `allowed_providers` | Provider/model ownership lives in `cascade.toml` and OAS runtime receipts. Do not pin providers per keeper. |
 | `presence_keepalive`, `presence_keepalive_sec` | Use `paused` in runtime JSON; keepalive is managed by the keepalive fiber. |
 | `trigger_mode`, `policy_action_budget` | Removed with the legacy policy engine. |
 | `initiative_scope`, `initiative_enabled`, `initiative_idle_sec`, `initiative_cooldown_sec` | Renamed to `proactive_*` (see above). |
@@ -267,7 +263,6 @@ These are the fields that define the durable runtime snapshot itself.
 | `total_turns`, `total_tokens`, `total_cost_usd` | Optional | Accumulated runtime counters |
 | `compaction_count`, `last_compaction_ts` | Optional | Compaction runtime counters |
 | `proactive_count_total`, `last_proactive_ts` | Optional | Proactive runtime counters |
-| `work_discovery_*` runtime counters | Optional | Work-discovery runtime counters |
 | `telemetry_feedback_*` state | Optional | Runtime feedback state |
 
 ### Important compatibility note

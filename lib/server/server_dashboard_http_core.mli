@@ -33,17 +33,18 @@ val run_dashboard_compute :
 
 (** Internal cached surfaces for proactive refresh loops.
     Exposed for the facade module [Server_dashboard_http]. *)
-val _operator_snapshot_cache : cached_surface
-val _operator_digest_cache : cached_surface
-val _shell_warmed : bool Atomic.t
-val _shell_warming : bool Atomic.t
-val _last_good_shell : Yojson.Safe.t Atomic.t
+val operator_snapshot_cache : cached_surface
+val operator_digest_cache : cached_surface
+val shell_warmed : bool Atomic.t
+val shell_warming : bool Atomic.t
+val last_good_shell : Yojson.Safe.t Atomic.t
+val last_good_shell_light : Yojson.Safe.t Atomic.t
 
 (** Late-bound broadcast callbacks — set by [Server_dashboard_http]
     after [Sse] module is in scope. *)
-val _operator_snapshot_broadcast_ref : (Yojson.Safe.t -> unit) ref
-val _operator_digest_broadcast_ref : (Yojson.Safe.t -> unit) ref
-val _mission_cache : cached_surface
+val operator_snapshot_broadcast_ref : (Yojson.Safe.t -> unit) ref
+val operator_digest_broadcast_ref : (Yojson.Safe.t -> unit) ref
+val mission_cache : cached_surface
 
 (** {1 Dashboard Timeout} *)
 
@@ -68,6 +69,15 @@ val with_projection_diagnostics :
 (** {1 Sanitization and Request Helpers} *)
 
 val operator_actor_hint : Httpun.Request.t -> string option
+
+val dashboard_shell_with_request_auth_json :
+  request:Httpun.Request.t ->
+  Coord.config ->
+  Yojson.Safe.t ->
+  Yojson.Safe.t
+(** Inject the request-bound dashboard auth contract into a shell payload.
+    Snapshot shell payloads are process-wide and deliberately omit
+    per-request auth; HTTP handlers must add it back before responding. *)
 
 (** {1 Batch API} *)
 
@@ -146,6 +156,7 @@ val provider_capacity_json : unit -> Yojson.Safe.t
 val dashboard_shell_http_json :
   ?clock:float Eio.Time.clock_ty Eio.Resource.t ->
   ?request:Httpun.Request.t ->
+  ?timing:Server_timing.t ->
   ?light:bool ->
   Coord.config ->
   Yojson.Safe.t
@@ -156,6 +167,7 @@ val dashboard_shell_cache_key :
   string
 
 val dashboard_shell_payload_json :
+  ?timing:Server_timing.t ->
   ?light:bool ->
   Coord.config -> Yojson.Safe.t
 

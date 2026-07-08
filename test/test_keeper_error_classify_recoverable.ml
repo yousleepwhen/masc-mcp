@@ -17,22 +17,43 @@
 
 open Alcotest
 module KEC = Masc_mcp.Keeper_error_classify
-module Owne = Masc_mcp.Oas_worker_named
+module Owne = Masc_mcp.Keeper_turn_driver
 module KT = Masc_mcp.Keeper_types
 module Retry = Llm_provider.Retry
 
-let cascade_name raw = Owne.cascade_name_of_string raw
+let cascade_name raw =
+  let trimmed = String.trim raw in
+  let canonical =
+    if Cascade_name.is_canonical_prefix trimmed
+    then trimmed
+    else "tier-group." ^ trimmed
+  in
+  Cascade_name.of_string_exn canonical
+;;
+
+let test_cascade = cascade_name "tier.test_cascade"
 
 let make_cascade_exhausted reason =
   Owne.sdk_error_of_masc_internal_error
     (Owne.Cascade_exhausted
-       { cascade_name = cascade_name "test_cascade"; reason })
+       { cascade_name = test_cascade; reason })
+
+let make_capacity_backpressure ?(source = Owne.Client_capacity)
+    ?(detail = "client capacity key provider_k is full") () =
+  Owne.sdk_error_of_masc_internal_error
+    (Owne.Capacity_backpressure
+       {
+         cascade_name = test_cascade;
+         source;
+         detail;
+         retry_after_sec = None;
+       })
 
 let make_no_tool_capable () =
   Owne.sdk_error_of_masc_internal_error
     (Owne.No_tool_capable_provider
        {
-         cascade_name = cascade_name "test_cascade";
+         cascade_name = test_cascade;
          configured_labels = [];
          required_tool_names = [];
          provider_rejections = [];
@@ -48,16 +69,64 @@ let test_other_detail_generic_recoverable () =
   match KEC.recoverable_cascade_failure_reason err with
   | Some reason ->
     check string "Other_detail (non-quota) -> cascade_exhausted"
-      "cascade_exhausted" reason
+      "cascade_exhausted"
+      (KEC.degraded_retry_reason_to_string reason)
   | None ->
     fail "Generic Cascade_exhausted with Other_detail should be recoverable"
+
+let test_slot_full_other_detail_maps_to_capacity_backpressure () =
+  let err =
+    make_cascade_exhausted
+      (KT.Other_detail "slot full, cascading to next provider")
+  in
+  match KEC.recoverable_cascade_failure_reason err with
+  | Some reason ->
+    (* "slot full" matches capacity_backpressure via substring classification
+       in recoverable_cascade_failure_reason. *)
+    check string "slot full -> capacity_backpressure" "capacity_backpressure"
+      (KEC.degraded_retry_reason_to_string reason)
+  | None ->
+    fail "slot full should be capacity-backpressure recoverable"
+
+let test_typed_capacity_backpressure_is_not_cascade_exhausted () =
+  let err = make_capacity_backpressure () in
+  check bool "typed capacity is auto-recoverable" true
+    (KEC.is_auto_recoverable_turn_error err);
+  check bool "typed capacity is not cascade_exhausted" false
+    (KEC.is_cascade_exhausted_error err);
+  match KEC.recoverable_cascade_failure_reason err with
+  | Some reason ->
+    check string "typed capacity -> capacity_backpressure" "capacity_backpressure"
+      (KEC.degraded_retry_reason_to_string reason)
+  | None ->
+    fail "typed capacity backpressure should be recoverable as capacity"
+
+let test_provider_capacity_backpressure_is_capacity_backpressure () =
+  let err =
+    Agent_sdk.Error.Provider
+      (Llm_provider.Error.CapacityExhausted
+         {
+           scope = Llm_provider.Error.CapacityProvider;
+           affected = [ "runtime" ];
+           retry_after = None;
+           detail = "capacity exhausted";
+         })
+  in
+  match KEC.recoverable_cascade_failure_reason err with
+  | Some reason ->
+    check string "Provider CapacityExhausted -> capacity_backpressure"
+      "capacity_backpressure"
+      (KEC.degraded_retry_reason_to_string reason)
+  | None ->
+    fail "Provider CapacityExhausted should be recoverable as capacity"
 
 let test_all_providers_failed_recoverable () =
   let err = make_cascade_exhausted KT.All_providers_failed in
   match KEC.recoverable_cascade_failure_reason err with
   | Some reason ->
     check string "All_providers_failed -> cascade_exhausted"
-      "cascade_exhausted" reason
+      "cascade_exhausted"
+      (KEC.degraded_retry_reason_to_string reason)
   | None ->
     fail "Cascade_exhausted with All_providers_failed should be recoverable"
 
@@ -66,7 +135,8 @@ let test_no_providers_available_recoverable () =
   match KEC.recoverable_cascade_failure_reason err with
   | Some reason ->
     check string "No_providers_available -> cascade_exhausted"
-      "cascade_exhausted" reason
+      "cascade_exhausted"
+      (KEC.degraded_retry_reason_to_string reason)
   | None ->
     fail "Cascade_exhausted with No_providers_available should be recoverable"
 
@@ -76,7 +146,8 @@ let test_candidates_filtered_specific_reason () =
   match KEC.recoverable_cascade_failure_reason err with
   | Some reason ->
     check string "Candidates_filtered keeps specific label"
-      "cascade_candidates_filtered" reason
+      "cascade_candidates_filtered"
+      (KEC.degraded_retry_reason_to_string reason)
   | None ->
     fail "Candidates_filtered should be recoverable"
 
@@ -84,7 +155,7 @@ let test_max_turns_specific_reason () =
   let err = make_cascade_exhausted KT.Max_turns_exceeded in
   match KEC.recoverable_cascade_failure_reason err with
   | Some reason ->
-    check string "Max_turns keeps specific label" "max_turns" reason
+    check string "Max_turns keeps specific label" "max_turns" (KEC.degraded_retry_reason_to_string reason)
   | None ->
     fail "Max_turns should be recoverable"
 
@@ -95,7 +166,7 @@ let test_no_tool_capable_non_recoverable () =
   | Some reason ->
     fail
       (Printf.sprintf "No_tool_capable_provider should stay None, got %s"
-         reason)
+         (KEC.degraded_retry_reason_to_string reason))
   | None -> ()
 
 let test_accept_rejected_non_recoverable () =
@@ -103,7 +174,8 @@ let test_accept_rejected_non_recoverable () =
   match KEC.recoverable_cascade_failure_reason err with
   | Some reason ->
     fail
-      (Printf.sprintf "Accept_rejected should stay None, got %s" reason)
+      (Printf.sprintf "Accept_rejected should stay None, got %s"
+         (KEC.degraded_retry_reason_to_string reason))
   | None -> ()
 
 (* Regression: auto-recoverable cascade exhaustion must still be
@@ -140,8 +212,87 @@ let test_catalog_rotation_preserves_order_without_base_injection () =
   with
   | Some retry ->
     check string "catalog order wins" "catalog_first" retry.next_cascade;
-    check string "fallback reason" "cascade_exhausted" retry.fallback_reason
+    check string "fallback reason" "cascade_exhausted"
+      (KEC.degraded_retry_reason_to_string retry.fallback_reason)
   | None -> fail "Expected catalog-ordered degraded retry"
+
+let test_rotation_skips_direct_tier_after_attempted_tier_group () =
+  let err = make_cascade_exhausted KT.Candidates_filtered_after_cycles in
+  match
+    KEC.degraded_rotation_after_recoverable_error
+      ~rotation_cascades:
+        [ "tier.strict_tool_candidates"; "tier-group.provider_k-coding-with-spark" ]
+      ~base_cascade:"tier-group.strict_tool_candidates"
+      ~effective_cascade:"tier-group.strict_tool_candidates"
+      ~tool_requirement:Masc_mcp.Keeper_agent_tool_surface.Optional
+      ~attempted_cascades:[ "tier-group.strict_tool_candidates" ]
+      err
+  with
+  | Some retry ->
+    check
+      string
+      "skip direct tier duplicate"
+      "tier-group.provider_k-coding-with-spark"
+      retry.next_cascade
+  | None -> fail "Expected rotation to skip duplicate direct tier candidate"
+
+let test_required_tool_rotation_prioritizes_tool_route_before_fallback_hint () =
+  let err =
+    Owne.sdk_error_of_masc_internal_error
+      (Owne.Resumable_cli_session
+         {
+           cascade_name = cascade_name "tier.strict_tool_candidates";
+           detail =
+             "CLI JSON-stream transport reported a resumable session (exit 75). \
+              Resumable session available via -r.";
+           exit_code = Some 75;
+         })
+  in
+  match
+    KEC.degraded_rotation_after_recoverable_error
+      ~rotation_cascades:[ "provider_k-coding-with-spark"; "strict_tool_candidates" ]
+      ~fallback_hint:"ollama_cloud_stable"
+      ~base_cascade:"strict_tool_candidates"
+      ~effective_cascade:"strict_tool_candidates"
+      ~tool_requirement:Masc_mcp.Keeper_agent_tool_surface.Required
+      ~attempted_cascades:[ "strict_tool_candidates" ]
+      err
+  with
+  | Some retry ->
+    check string "tool-required route wins" "provider_k-coding-with-spark"
+      retry.next_cascade;
+    check string "reason is resumable_cli_session" "resumable_cli_session"
+      (KEC.degraded_retry_reason_to_string retry.fallback_reason)
+  | None -> fail "Required-tool resumable session should use tool route"
+
+let test_required_tool_rotation_uses_fallback_hint_after_tool_route_attempted () =
+  let err =
+    Owne.sdk_error_of_masc_internal_error
+      (Owne.Resumable_cli_session
+         {
+           cascade_name = cascade_name "tier.strict_tool_candidates";
+           detail =
+             "CLI JSON-stream transport reported a resumable session (exit 75). \
+              Resumable session available via -r.";
+           exit_code = Some 75;
+         })
+  in
+  match
+    KEC.degraded_rotation_after_recoverable_error
+      ~rotation_cascades:[ "provider_k-coding-with-spark"; "strict_tool_candidates" ]
+      ~fallback_hint:"ollama_cloud_stable"
+      ~base_cascade:"strict_tool_candidates"
+      ~effective_cascade:"strict_tool_candidates"
+      ~tool_requirement:Masc_mcp.Keeper_agent_tool_surface.Required
+      ~attempted_cascades:[ "strict_tool_candidates"; "provider_k-coding-with-spark" ]
+      err
+  with
+  | Some retry ->
+    check string "explicit fallback hint remains terminal fallback"
+      "ollama_cloud_stable" retry.next_cascade;
+    check string "reason is resumable_cli_session" "resumable_cli_session"
+      (KEC.degraded_retry_reason_to_string retry.fallback_reason)
+  | None -> fail "Required-tool resumable session should use terminal fallback"
 
 (* ---- Status-code-aware rotation tests ----------------------------------- *)
 
@@ -155,7 +306,7 @@ let test_soft_rate_limit_is_recoverable () =
   in
   match KEC.recoverable_cascade_failure_reason err with
   | Some reason ->
-    check string "soft 429 -> rate_limit" "rate_limit" reason
+    check string "soft 429 -> rate_limit" "rate_limit" (KEC.degraded_retry_reason_to_string reason)
   | None ->
     fail "Soft rate-limit should be recoverable (trigger cascade rotation)"
 
@@ -171,7 +322,7 @@ let test_soft_rate_limit_no_retry_after_is_recoverable () =
     (Owne.sdk_error_is_hard_quota err);
   (match KEC.recoverable_cascade_failure_reason err with
    | Some reason ->
-     check string "no-retry_after rate_limit -> rate_limit" "rate_limit" reason
+     check string "no-retry_after rate_limit -> rate_limit" "rate_limit" (KEC.degraded_retry_reason_to_string reason)
    | None ->
      fail "Non-hard-quota RateLimited without retry_after should be recoverable")
 
@@ -182,7 +333,7 @@ let test_server_error_500_is_recoverable () =
   in
   match KEC.recoverable_cascade_failure_reason err with
   | Some reason ->
-    check string "500 -> server_error" "server_error" reason
+    check string "500 -> server_error" "server_error" (KEC.degraded_retry_reason_to_string reason)
   | None ->
     fail "ServerError 500 should be recoverable (trigger cascade rotation)"
 
@@ -193,7 +344,7 @@ let test_server_error_503_is_recoverable () =
   in
   match KEC.recoverable_cascade_failure_reason err with
   | Some reason ->
-    check string "503 -> server_error" "server_error" reason
+    check string "503 -> server_error" "server_error" (KEC.degraded_retry_reason_to_string reason)
   | None ->
     fail "ServerError 503 should be recoverable (trigger cascade rotation)"
 
@@ -204,10 +355,36 @@ let test_server_error_502_is_recoverable () =
   in
   match KEC.recoverable_cascade_failure_reason err with
   | Some reason ->
-    check string "502 -> server_error" "server_error" reason
+    check string "502 -> server_error" "server_error" (KEC.degraded_retry_reason_to_string reason)
   | None ->
     fail "ServerError 502 should be recoverable (trigger cascade rotation)"
 
+let test_server_error_524_is_capacity_backpressure_rotation_not_transient_retry () =
+  let err =
+    Agent_sdk.Error.Api
+      (Retry.ServerError { status = 524; message = "a timeout occurred" })
+  in
+  check bool "524 not same-cascade transient" false (KEC.is_transient_network_error err);
+  match KEC.recoverable_cascade_failure_reason err with
+  | Some reason ->
+    check string "524 -> capacity_backpressure" "capacity_backpressure"
+      (KEC.degraded_retry_reason_to_string reason)
+  | None ->
+    fail "ServerError 524 should be recoverable as capacity backpressure"
+
+let test_wrapped_524_is_capacity_backpressure () =
+  let err =
+    make_cascade_exhausted
+      (KT.Other_detail
+         "all tiers failed (last runtime=runtime, error=Server error 524: error \
+          code: 524)")
+  in
+  match KEC.recoverable_cascade_failure_reason err with
+  | Some reason ->
+    check string "wrapped 524 -> capacity_backpressure" "capacity_backpressure"
+      (KEC.degraded_retry_reason_to_string reason)
+  | None ->
+    fail "Wrapped ServerError 524 should be recoverable as capacity backpressure"
 let test_auth_error_is_recoverable () =
   (* 401/403 auth errors: the current cascade's credentials are invalid.
      A different cascade with different credentials may succeed. *)
@@ -217,7 +394,7 @@ let test_auth_error_is_recoverable () =
   in
   match KEC.recoverable_cascade_failure_reason err with
   | Some reason ->
-    check string "auth error -> auth_error" "auth_error" reason
+    check string "auth error -> auth_error" "auth_error" (KEC.degraded_retry_reason_to_string reason)
   | None ->
     fail "AuthError should be recoverable (trigger cascade rotation)"
 
@@ -232,7 +409,7 @@ let test_hard_quota_not_reclassified_as_rate_limit () =
     (Owne.sdk_error_is_hard_quota err);
   (match KEC.recoverable_cascade_failure_reason err with
    | Some reason ->
-     check string "hard quota keeps hard_quota label" "hard_quota" reason
+     check string "hard quota keeps hard_quota label" "hard_quota" (KEC.degraded_retry_reason_to_string reason)
    | None ->
      fail "Hard quota should be recoverable with hard_quota label")
 
@@ -246,7 +423,7 @@ let test_server_error_400_not_recoverable_by_new_arm () =
   (* Should return None (not recoverable via server_error) unless some other
      arm catches it first — here it falls through to None. *)
   (match KEC.recoverable_cascade_failure_reason err with
-   | Some reason when reason = "server_error" ->
+   | Some KEC.Server_error ->
      fail "400 should NOT be classified as server_error by rotation arm"
    | _ -> ())
 
@@ -268,7 +445,7 @@ let test_rotation_finds_next_cascade_for_rate_limit () =
   with
   | Some retry ->
     check string "rotation goes to fallback" "fallback_cascade" retry.next_cascade;
-    check string "reason is rate_limit" "rate_limit" retry.fallback_reason
+    check string "reason is rate_limit" "rate_limit" (KEC.degraded_retry_reason_to_string retry.fallback_reason)
   | None ->
     fail "Soft rate-limit should trigger rotation to next cascade"
 
@@ -288,9 +465,45 @@ let test_rotation_finds_next_cascade_for_auth_error () =
   with
   | Some retry ->
     check string "auth rotation goes to fallback" "fallback_cascade" retry.next_cascade;
-    check string "reason is auth_error" "auth_error" retry.fallback_reason
+    check string "reason is auth_error" "auth_error" (KEC.degraded_retry_reason_to_string retry.fallback_reason)
   | None ->
     fail "AuthError should trigger rotation to next cascade"
+
+(* ---- Bare-name requalification tests (cascade-name-prefix-mismatch fix) ---- *)
+
+let test_normalized_cascade_name_requalifies_bare_tier_name () =
+  let catalog_names = [ "strict_tool_candidates"; "primary"; "coding_with_spark" ] in
+  let result =
+    KEC.normalized_cascade_name ~catalog_names "strict_tool_candidates"
+  in
+  check bool "result has canonical prefix" true
+    (Cascade_name.is_canonical_prefix result);
+  check string "result is tier-qualified"
+    "tier.strict_tool_candidates" result
+
+let test_normalized_cascade_name_passes_through_already_qualified () =
+  let catalog_names = [ "strict_tool_candidates"; "primary" ] in
+  let result =
+    KEC.normalized_cascade_name ~catalog_names "tier.strict_tool_candidates"
+  in
+  check string "already-qualified passes through"
+    "tier.strict_tool_candidates" result
+
+let test_normalized_cascade_name_preserves_config_special_names () =
+  let catalog_names = [] in
+  let result =
+    KEC.normalized_cascade_name ~catalog_names
+      Masc_mcp.Keeper_config.phase_buffer_cascade_name
+  in
+  check string "phase_buffer preserved as-is"
+    Masc_mcp.Keeper_config.phase_buffer_cascade_name result
+
+let test_normalized_cascade_name_falls_through_to_declared_name () =
+  let catalog_names = [ "primary" ] in
+  let result =
+    KEC.normalized_cascade_name ~catalog_names "nonexistent_cascade"
+  in
+  check string "unknown name falls through" "nonexistent_cascade" result
 
 let () =
   run "keeper_error_classify_recoverable"
@@ -301,6 +514,12 @@ let () =
             test_auto_recoverable_cascade_exhausted_is_still_cascade_exhausted;
           test_case "Other_detail (non-quota) is recoverable" `Quick
             test_other_detail_generic_recoverable;
+          test_case "slot full Other_detail maps to capacity backpressure" `Quick
+            test_slot_full_other_detail_maps_to_capacity_backpressure;
+          test_case "typed capacity backpressure is not cascade exhausted" `Quick
+            test_typed_capacity_backpressure_is_not_cascade_exhausted;
+          test_case "provider CapacityExhausted is capacity backpressure" `Quick
+            test_provider_capacity_backpressure_is_capacity_backpressure;
           test_case "All_providers_failed is recoverable" `Quick
             test_all_providers_failed_recoverable;
           test_case "No_providers_available is recoverable" `Quick
@@ -323,6 +542,12 @@ let () =
             test_server_error_503_is_recoverable;
           test_case "ServerError 502 is recoverable" `Quick
             test_server_error_502_is_recoverable;
+          test_case
+            "ServerError 524 is capacity backpressure but not transient retry"
+            `Quick
+            test_server_error_524_is_capacity_backpressure_rotation_not_transient_retry;
+          test_case "wrapped ServerError 524 is capacity backpressure" `Quick
+            test_wrapped_524_is_capacity_backpressure;
           test_case "AuthError is recoverable" `Quick
             test_auth_error_is_recoverable;
           test_case "hard quota keeps hard_quota label" `Quick
@@ -334,9 +559,26 @@ let () =
         [
           test_case "catalog order is not prefixed by base cascade" `Quick
             test_catalog_rotation_preserves_order_without_base_injection;
+          test_case "skips direct tier after attempted tier-group" `Quick
+            test_rotation_skips_direct_tier_after_attempted_tier_group;
+          test_case "required-tool rotation prefers tool route before fallback hint" `Quick
+            test_required_tool_rotation_prioritizes_tool_route_before_fallback_hint;
+          test_case "required-tool rotation keeps fallback hint after tool route" `Quick
+            test_required_tool_rotation_uses_fallback_hint_after_tool_route_attempted;
           test_case "soft rate-limit rotates to next cascade" `Quick
             test_rotation_finds_next_cascade_for_rate_limit;
           test_case "auth error rotates to next cascade" `Quick
             test_rotation_finds_next_cascade_for_auth_error;
+        ] );
+      ( "normalized_cascade_name_bare_requalify",
+        [
+          test_case "bare tier name requalified with prefix" `Quick
+            test_normalized_cascade_name_requalifies_bare_tier_name;
+          test_case "already-qualified name passes through" `Quick
+            test_normalized_cascade_name_passes_through_already_qualified;
+          test_case "config special names preserved" `Quick
+            test_normalized_cascade_name_preserves_config_special_names;
+          test_case "unknown name falls through to declared name" `Quick
+            test_normalized_cascade_name_falls_through_to_declared_name;
         ] );
     ]

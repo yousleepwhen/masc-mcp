@@ -1,12 +1,12 @@
-(* #10049: auto-construct Claude Code / Kimi CLI MCP config JSON for
-   keepers whose cascade includes those CLI providers but whose env
+(* #10049: auto-construct CLI MCP config JSON for keepers whose cascade
+   includes CLI providers but whose env
    (OAS_CLAUDE_MCP_CONFIG) is unset.
 
-   Without this fallback, Claude Code / Kimi CLI launches with no
-   [mcpServers] entry and the keeper cannot reach the masc-mcp HTTP
-   endpoint; tool calls surface as "keeper_shell not in session's tool
+   Without this fallback, affected CLI providers launch with no [mcpServers]
+   entry and the keeper cannot reach the masc-mcp HTTP
+   endpoint; tool calls surface as "tool not in session's tool
    registry". See #10049 for the full root-cause analysis and the
-   codex_cli sibling path in [server_runtime_bootstrap.sync_codex_mcp_config].
+   cli_tool_a sibling path in [server_runtime_bootstrap.sync_codex_mcp_config].
 
    Gated behind [MASC_AUTO_CONSTRUCT_CLAUDE_MCP] (default true since
    #10059 validation; the legacy explicit-env path still wins when
@@ -62,3 +62,14 @@ let try_construct_for_keeper ~base_path ~agent_name =
       with
       | Eio.Cancel.Cancelled _ as e -> raise e
       | _ -> None
+
+let effective_for_keeper ~base_path ~agent_name ~(configured : string option) =
+  match configured with
+  | Some _ as cfg -> cfg
+  | None -> try_construct_for_keeper ~base_path ~agent_name
+
+let missing_catalog_warning_required_for_effective
+      ~requires_runtime_mcp_header_sync
+      ~(effective_claude_mcp_config : string option)
+  =
+  requires_runtime_mcp_header_sync && Option.is_none effective_claude_mcp_config

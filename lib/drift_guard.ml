@@ -1,5 +1,5 @@
-module StringSet = Set.Make (String)
-module StringMap = Map.Make (String)
+module StringSet = Set_util.StringSet
+module StringMap = Set_util.StringMap
 
 (** Drift Guard - truthful handoff integrity verification.
 
@@ -250,9 +250,6 @@ let result_to_json = function
 let drift_log_file (config : Coord.config) =
   Filename.concat (Coord.masc_dir config) "drift_guard.jsonl"
 
-let ensure_dir path =
-  Fs_compat.mkdir_p path
-
 let append_json_line path json =
   Fs_compat.append_jsonl path json
 
@@ -260,7 +257,7 @@ let verify_and_log config ~from_agent ~to_agent ~task_id ~original ~received
     ?threshold () =
   let result = verify_handoff ~original ~received ?threshold () in
   let log_path = drift_log_file config in
-  ensure_dir (Coord.masc_dir config);
+  Fs_compat.mkdir_p (Coord.masc_dir config);
   let entry =
     `Assoc
       [
@@ -279,38 +276,43 @@ let get_drift_stats config ~days =
   if not (Sys.file_exists path) then (0, 0, 0.0)
   else
     let cutoff =
-      Time_compat.now () -. (float_of_int (max 0 days) *. 24.0 *. 3600.0)
+      Time_compat.now () -. (float_of_int (max 0 days) *. Masc_time_constants.day)
     in
-    let rows = Fs_compat.load_jsonl path in
+    (* Streaming aggregation — total / drift_count / similarity_sum
+       fold over the JSONL without materialising the row list. The
+       cutoff predicate also rejects most pre-window rows on long
+       histories. *)
     let total = ref 0 in
     let drift_count = ref 0 in
     let similarity_sum = ref 0.0 in
-    List.iter (fun row ->
-      match row with
-      | `Assoc fields -> (
-          let timestamp =
-            match List.assoc_opt "timestamp" fields with
-            | Some (`Float value) -> value
-            | Some (`Int value) -> float_of_int value
-            | _ -> 0.0
-          in
-          if timestamp >= cutoff then (
-            match List.assoc_opt "result" fields with
-            | Some (`Assoc result_fields) ->
-                let similarity =
-                  match List.assoc_opt "similarity" result_fields with
-                  | Some (`Float value) -> value
-                  | Some (`Int value) -> float_of_int value
-                  | _ -> 0.0
-                in
-                incr total;
-                similarity_sum := !similarity_sum +. similarity;
-                (match List.assoc_opt "passed" result_fields with
-                | Some (`Bool false) -> incr drift_count
-                | Some (`Bool true) | Some _ | None -> ())
-            | None | Some _ -> ()))
-      | `List _ | `String _ | `Int _ | `Intlit _ | `Float _ | `Bool _ | `Null -> ()
-    ) rows;
+    Fs_compat.fold_jsonl_lines
+      ~init:()
+      ~f:(fun () ~line_no:_ row ->
+        match row with
+        | `Assoc fields -> (
+            let timestamp =
+              match List.assoc_opt "timestamp" fields with
+              | Some (`Float value) -> value
+              | Some (`Int value) -> float_of_int value
+              | _ -> 0.0
+            in
+            if timestamp >= cutoff then (
+              match List.assoc_opt "result" fields with
+              | Some (`Assoc result_fields) ->
+                  let similarity =
+                    match List.assoc_opt "similarity" result_fields with
+                    | Some (`Float value) -> value
+                    | Some (`Int value) -> float_of_int value
+                    | _ -> 0.0
+                  in
+                  incr total;
+                  similarity_sum := !similarity_sum +. similarity;
+                  (match List.assoc_opt "passed" result_fields with
+                  | Some (`Bool false) -> incr drift_count
+                  | Some (`Bool true) | Some _ | None -> ())
+              | None | Some _ -> ()))
+        | `List _ | `String _ | `Int _ | `Intlit _ | `Float _ | `Bool _ | `Null -> ())
+      path;
     let avg_similarity =
       if !total = 0 then 0.0 else !similarity_sum /. float_of_int !total
     in

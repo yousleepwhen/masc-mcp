@@ -1,4 +1,9 @@
 import { pushTrace } from './keeper-trace-store'
+import { unixishToMs } from '../../lib/format-time'
+import {
+  normalizeTraceProducerContext,
+  type KeeperTraceProducerContextInput,
+} from './keeper-trace-context'
 
 /**
  * RFC-0028 PR-δ producer: decision-log → keeper-trace bridge.
@@ -35,7 +40,7 @@ import { pushTrace } from './keeper-trace-store'
  *                     verbatim, or null for in-flight)
  *
  * Why a pure function (not a stateful subscription):
- *   - The owning component (`IdeConversationRailMock`) already has the
+ *   - The owning component (`IdeConversationRail`) already has the
  *     fetched `decisions` array as a useState value. A pure mapper
  *     called from a `useEffect([decisions])` is sufficient and trivially
  *     testable.
@@ -57,11 +62,9 @@ export interface DecisionLogProducerInput {
   readonly keeper_name: string
   readonly event_type: string
   readonly outcome: string | null
-}
-
-function unixishToMs(ts: number | null): number {
-  if (ts === null || !Number.isFinite(ts)) return Number.NaN
-  return ts > 1_000_000_000_000 ? ts : ts * 1000
+  readonly choice?: string | null
+  readonly reason?: string | null
+  readonly context?: KeeperTraceProducerContextInput | null
 }
 
 function dedupKey(decision: DecisionLogProducerInput): string {
@@ -92,6 +95,9 @@ export function bridgeDecisionsToTrace(
       source: 'decision-log',
       decisionId: key,
       semanticOutcome: decision.outcome,
+      decisionChoice: decision.choice ?? null,
+      decisionReason: decision.reason ?? null,
+      ...normalizeTraceProducerContext(decision.context),
     })
     next.add(key)
   }

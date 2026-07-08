@@ -12,17 +12,17 @@ import type {
   ServerStatus,
   BoardSortMode,
   Goal,
-  DashboardExecutionSessionBrief,
-  DashboardExecutionQueueItem,
+  RefreshOptions,
   DashboardExecutionWorkerSupportBrief,
   DashboardExecutionContinuityBrief,
   DashboardExecutionResponse,
+  DashboardBootstrapResponse,
+  DashboardBootstrapSliceError,
   DashboardMemoryResponse,
   DashboardPlanningResponse,
   DashboardConfigResolution,
   DashboardRuntimeResolution,
   DashboardShellAuthSummary,
-  DashboardShellMetaCognitionSummary,
   DashboardShellResponse,
   DashboardCoordinationFsmEvidence,
   DashboardCoordinationFsmProduct,
@@ -30,9 +30,10 @@ import type {
   DashboardCoordinationFsmSnapshot,
   DashboardCoordinationFsmViolation,
 } from './types'
-import { fetchDashboardShell } from './api/dashboard-hot'
+import { fetchDashboardBootstrap, fetchDashboardShell } from './api/dashboard-hot'
 import { journal } from './sse'
 import { showToast } from './components/common/toast'
+import { errorMessageOr } from './lib/format-string'
 import {
   keeperFreshnessTs,
   normalizeKeepers,
@@ -46,19 +47,20 @@ import {
 import { groupByKey } from './components/common/collection'
 import { setArrayByKeyIfChanged } from './signal-utils'
 import { FetchScheduler } from './lib/fetch-scheduler'
-import { isRecord, asString, asNumber } from './components/common/normalize'
+import { isRecord, asString, asNumber, asStringArray } from './components/common/normalize'
 import { setCanonicalDashboardActor } from './lib/dashboard-session-actor'
 import { timeBoardRequest } from './board-metrics'
+import { namespaceTruth, namespaceTruthError, namespaceTruthInitializing } from './namespace-truth-signals'
+import { normalizeNamespaceTruth } from './namespace-truth-normalizers'
+import { hydrateGoalTreeSnapshot } from './goal-tree-state'
 import {
   normalizeAgent, normalizeTask, normalizeMessage,
-  normalizeExecutionQueueItem,
   normalizeExecutionWorkerSupportBrief,
   normalizeExecutionContinuityBrief,
   mergeMessages,
   normalizeServerStatus, mergeServerStatus,
   normalizeDashboardConfigResolution,
   normalizeDashboardRuntimeResolution,
-  normalizeShellMetaCognitionSummary,
 } from './store-normalizers'
 
 // --- Shell counts (lightweight fallback from /dashboard/shell) ---
@@ -72,7 +74,6 @@ interface ShellCounts {
 }
 
 export const shellCounts = signal<ShellCounts | null>(null)
-export const shellMetaCognition = signal<DashboardShellMetaCognitionSummary | null>(null)
 export const shellAuthSummary = signal<DashboardShellAuthSummary | null>(null)
 export const shellConfigResolution = signal<DashboardConfigResolution | null>(null)
 export const shellRuntimeResolution = signal<DashboardRuntimeResolution | null>(null)
@@ -87,8 +88,6 @@ export const serverStatus = signal<ServerStatus | null>(null)
 export const executionLoaded = signal(false)
 export const executionLoading = signal(false)
 export const executionError = signal<string | null>(null)
-export const executionSessionBriefs = signal<DashboardExecutionSessionBrief[]>([])
-export const executionQueue = signal<DashboardExecutionQueueItem[]>([])
 export const executionWorkerSupportBriefs = signal<DashboardExecutionWorkerSupportBrief[]>([])
 export const executionContinuityBriefs = signal<DashboardExecutionContinuityBrief[]>([])
 
@@ -107,6 +106,72 @@ export function toggleKeeperInFilter(name: string): void {
   if (next.has(name)) next.delete(name)
   else next.add(name)
   selectedKeeperFilter.value = next
+}
+
+// --- Optimistic keeper directive patching ---
+//
+// Server's `refresh_keeper_execution_surfaces` invalidates the
+// projection cache prefix, so the next dashboard fetch recomputes
+// from scratch (hundreds of ms+). The operator perceives this as
+// "재개하기 누르면 느림" even though the directive POST itself
+// returns in <50ms — the row keeps showing the old state until the
+// projection refetch completes.
+//
+// To close the gap we mutate the local `keepers` signal immediately
+// on click. The action button's `keeperActionVisibility` predicate
+// flips, the phase badge updates, and the next reconciling snapshot
+// from WS/SSE or `refreshDashboard` confirms (or corrects) the
+// optimistic state. Restricted to pause/resume/wakeup — boot and
+// shutdown have non-trivial lifecycle transitions that should wait
+// on the authoritative server response.
+
+export type OptimisticKeeperDirective = 'pause' | 'resume' | 'wakeup'
+
+function patchForDirective(action: OptimisticKeeperDirective): Partial<Keeper> {
+  switch (action) {
+    case 'pause':
+      return { paused: true, phase: 'Paused', pipeline_stage: 'paused', status: 'paused' }
+    case 'resume':
+    case 'wakeup':
+      return { paused: false, phase: 'Running', pipeline_stage: 'idle', status: 'idle' }
+  }
+}
+
+/** Optimistically apply a directive's expected state to the local
+ *  `keepers` signal. Returns a `revert` thunk the caller must invoke
+ *  on failure. If the keeper isn't in the local list the call is a
+ *  no-op and `revert` is a no-op too. */
+export function applyOptimisticKeeperDirective(
+  name: string,
+  action: OptimisticKeeperDirective,
+): () => void {
+  const before = keepers.value
+  const idx = before.findIndex(k => k.name === name)
+  if (idx === -1) return () => {}
+  const original = before[idx]!
+  const patch = patchForDirective(action)
+  const updated: Keeper = { ...original, ...patch }
+  keepers.value = [...before.slice(0, idx), updated, ...before.slice(idx + 1)]
+  return () => {
+    const current = keepers.value
+    const cIdx = current.findIndex(k => k.name === name)
+    if (cIdx === -1) return
+    keepers.value = [...current.slice(0, cIdx), original, ...current.slice(cIdx + 1)]
+  }
+}
+
+/** Bulk variant: apply the patch to each name, returning a per-name
+ *  revert map so a caller seeing partial-failure can revert only the
+ *  keepers the server reported failed. */
+export function applyOptimisticKeeperDirectives(
+  names: readonly string[],
+  action: OptimisticKeeperDirective,
+): Map<string, () => void> {
+  const reverts = new Map<string, () => void>()
+  for (const name of names) {
+    reverts.set(name, applyOptimisticKeeperDirective(name, action))
+  }
+  return reverts
 }
 
 export function clearKeeperFilter(): void {
@@ -175,6 +240,14 @@ export const oasTotalLlmCalls = signal(0)
 export const oasTotalErrors = signal(0)
 export const oasLastLlmCallTs = signal<number | null>(null)
 export const oasLastErrorTs = signal<number | null>(null)
+export const oasEvidenceRefsCount = signal(0)
+export const oasArtifactRefsCount = signal(0)
+export const oasRawTraceRefsCount = signal(0)
+export const oasReportRefsCount = signal(0)
+export const oasProofRefsCount = signal(0)
+export const oasTelemetryRefsCount = signal(0)
+export const oasRuntimeEvidenceRefsCount = signal(0)
+export const oasLastEvidenceTs = signal<number | null>(null)
 
 export function resetOasRuntimeSignals(): void {
   oasAgentEventsRing.clear()
@@ -189,6 +262,14 @@ export function resetOasRuntimeSignals(): void {
   oasTotalErrors.value = 0
   oasLastLlmCallTs.value = null
   oasLastErrorTs.value = null
+  oasEvidenceRefsCount.value = 0
+  oasArtifactRefsCount.value = 0
+  oasRawTraceRefsCount.value = 0
+  oasReportRefsCount.value = 0
+  oasProofRefsCount.value = 0
+  oasTelemetryRefsCount.value = 0
+  oasRuntimeEvidenceRefsCount.value = 0
+  oasLastEvidenceTs.value = null
 }
 
 export function noteOasReplayWindow(input: {
@@ -283,6 +364,46 @@ export function recordOasError(tsMs: number): void {
   oasLastErrorTs.value = Math.max(oasLastErrorTs.value ?? 0, tsMs)
 }
 
+export function recordOasEvidenceRefs(input: {
+  evidenceRefsCount?: number
+  artifactRefsCount?: number
+  rawTraceRefsCount?: number
+  reportRefsCount?: number
+  proofRefsCount?: number
+  telemetryRefsCount?: number
+  runtimeEvidenceRefsCount?: number
+  tsMs?: number | null
+}): void {
+  const evidenceRefsCount = Math.max(0, Math.floor(input.evidenceRefsCount ?? 0))
+  const artifactRefsCount = Math.max(0, Math.floor(input.artifactRefsCount ?? 0))
+  const rawTraceRefsCount = Math.max(0, Math.floor(input.rawTraceRefsCount ?? 0))
+  const reportRefsCount = Math.max(0, Math.floor(input.reportRefsCount ?? 0))
+  const proofRefsCount = Math.max(0, Math.floor(input.proofRefsCount ?? 0))
+  const telemetryRefsCount = Math.max(0, Math.floor(input.telemetryRefsCount ?? 0))
+  const runtimeEvidenceRefsCount = Math.max(0, Math.floor(input.runtimeEvidenceRefsCount ?? 0))
+  if (
+    evidenceRefsCount
+    + artifactRefsCount
+    + rawTraceRefsCount
+    + reportRefsCount
+    + proofRefsCount
+    + telemetryRefsCount
+    + runtimeEvidenceRefsCount === 0
+  ) {
+    return
+  }
+  oasEvidenceRefsCount.value += evidenceRefsCount
+  oasArtifactRefsCount.value += artifactRefsCount
+  oasRawTraceRefsCount.value += rawTraceRefsCount
+  oasReportRefsCount.value += reportRefsCount
+  oasProofRefsCount.value += proofRefsCount
+  oasTelemetryRefsCount.value += telemetryRefsCount
+  oasRuntimeEvidenceRefsCount.value += runtimeEvidenceRefsCount
+  if (typeof input.tsMs === 'number' && Number.isFinite(input.tsMs)) {
+    oasLastEvidenceTs.value = Math.max(oasLastEvidenceTs.value ?? 0, input.tsMs)
+  }
+}
+
 export function updateOasKeeperSnapshot(snapshot: OasKeeperSnapshot): void {
   const next = new Map<string, OasKeeperSnapshot>(oasKeeperSnapshots.value)
   next.set(snapshot.keeper_name, snapshot)
@@ -317,6 +438,14 @@ export const oasHealthSummary: ReadonlySignal<OasHealthSummary> = computed(() =>
   totalErrors: oasTotalErrors.value,
   lastLlmCallTs: oasLastLlmCallTs.value,
   lastErrorTs: oasLastErrorTs.value,
+  evidenceRefsCount: oasEvidenceRefsCount.value,
+  artifactRefsCount: oasArtifactRefsCount.value,
+  rawTraceRefsCount: oasRawTraceRefsCount.value,
+  reportRefsCount: oasReportRefsCount.value,
+  proofRefsCount: oasProofRefsCount.value,
+  telemetryRefsCount: oasTelemetryRefsCount.value,
+  runtimeEvidenceRefsCount: oasRuntimeEvidenceRefsCount.value,
+  lastEvidenceTs: oasLastEvidenceTs.value,
 }))
 
 // --- Loading flags ---
@@ -440,10 +569,7 @@ export const staleKeepers: ReadonlySignal<Set<string>> = computed(() => {
 
 // --- Refresh orchestration ---
 
-interface RefreshOptions {
-  force?: boolean
-  light?: boolean
-}
+// RefreshOptions imported from types/core.ts (SSOT)
 
 // TTL values from config/constants.ts
 
@@ -456,12 +582,58 @@ export function invalidateDashboardCache(): void {
   // Projection endpoints are intentionally fresh-first after the operator-console rewrite.
 }
 
+function bootstrapSliceError(slice: unknown): slice is DashboardBootstrapSliceError {
+  return isRecord(slice) && typeof slice.error === 'string'
+}
+
+async function refreshDashboardFallback(opts?: RefreshOptions): Promise<void> {
+  await Promise.all([refreshShell(opts), refreshExecution(opts)])
+}
+
+function hydrateDashboardBootstrap(data: DashboardBootstrapResponse): void {
+  if (!data.shell || bootstrapSliceError(data.shell)) {
+    throw new Error('dashboard bootstrap shell slice unavailable')
+  }
+  if (!data.execution || bootstrapSliceError(data.execution)) {
+    throw new Error('dashboard bootstrap execution slice unavailable')
+  }
+
+  hydrateShellSnapshot(data.shell, { light: true })
+  hydrateExecutionSnapshot(data.execution)
+
+  if (data.planning && !bootstrapSliceError(data.planning)) {
+    hydratePlanningSnapshot(data.planning)
+  }
+  if (data.namespace_truth && !bootstrapSliceError(data.namespace_truth)) {
+    const normalized = normalizeNamespaceTruth(data.namespace_truth)
+    namespaceTruth.value = normalized
+    namespaceTruthError.value = null
+    namespaceTruthInitializing.value = false
+    serverStatus.value = mergeServerStatus(
+      serverStatus.value,
+      normalized.root.status ?? null,
+    )
+  }
+  if (data.goals && !bootstrapSliceError(data.goals)) {
+    hydrateGoalTreeSnapshot(data.goals)
+  }
+}
+
 export async function refreshDashboard(opts?: RefreshOptions): Promise<void> {
   if (inflightDashboardRefresh) return inflightDashboardRefresh
   dashboardLoading.value = true
   inflightDashboardRefresh = (async () => {
     try {
-      await Promise.all([refreshShell(opts), refreshExecution(opts)])
+      executionLoading.value = true
+      executionError.value = null
+      try {
+        hydrateDashboardBootstrap(await fetchDashboardBootstrap())
+      } catch (bootstrapErr) {
+        console.warn('[Dashboard] bootstrap refresh failed, falling back:', bootstrapErr)
+        await refreshDashboardFallback(opts)
+      } finally {
+        executionLoading.value = false
+      }
     } catch (err) {
       console.warn('[Dashboard] refresh error:', err)
     } finally {
@@ -472,22 +644,12 @@ export async function refreshDashboard(opts?: RefreshOptions): Promise<void> {
   return inflightDashboardRefresh
 }
 
-function normalizeStringList(raw: unknown): string[] {
-  if (Array.isArray(raw)) {
-    return raw.filter((value): value is string =>
-      typeof value === 'string' && value.trim() !== '',
-    )
-  }
-  if (typeof raw === 'string' && raw.trim() !== '') return [raw]
-  return []
-}
-
 function normalizeCoordinationFsmRefs(raw: unknown): DashboardCoordinationFsmRefs {
   const refsRecord = isRecord(raw) ? raw : {}
   return {
     goal_id: asString(refsRecord.goal_id) ?? null,
-    task_ids: normalizeStringList(refsRecord.task_ids),
-    post_ids: normalizeStringList(refsRecord.post_ids),
+    task_ids: asStringArray(refsRecord.task_ids),
+    post_ids: asStringArray(refsRecord.post_ids),
     agent_name: asString(refsRecord.agent_name) ?? null,
   }
 }
@@ -683,7 +845,6 @@ export function hydrateShellSnapshot(data: DashboardShellResponse, opts?: { ligh
       configured_keepers: data.configured_keepers ?? 0,
     }
   }
-  shellMetaCognition.value = normalizeShellMetaCognitionSummary(data.meta_cognition)
   shellAuthSummary.value = normalizedAuth
   const normalizedConfigResolution = normalizeDashboardConfigResolution(data.config_resolution)
   const normalizedRuntimeResolution = normalizeDashboardRuntimeResolution(data.runtime_resolution)
@@ -746,10 +907,6 @@ export function hydrateExecutionSnapshot(data: DashboardExecutionResponse): void
     .filter((row): row is Message => row !== null)
   messages.value = roomChanged ? executionMessages : mergeMessages(messages.value, executionMessages)
   keepers.value = normalizeKeepers(data.keepers)
-  const normalizedQueue = (Array.isArray(data.execution_queue) ? data.execution_queue : Array.isArray(data.priority_queue) ? data.priority_queue : [])
-    .map(normalizeExecutionQueueItem)
-    .filter((row): row is DashboardExecutionQueueItem => row !== null)
-  setArrayByKeyIfChanged(executionQueue, normalizedQueue, row => row.id)
   const normalizedWorkerBriefs = (Array.isArray(data.worker_support_briefs) ? data.worker_support_briefs : Array.isArray(data.worker_briefs) ? data.worker_briefs : [])
     .map(normalizeExecutionWorkerSupportBrief)
     .filter((row): row is DashboardExecutionWorkerSupportBrief => row !== null)
@@ -770,7 +927,7 @@ async function doFetchExecution(): Promise<void> {
     hydrateExecutionSnapshot(data)
   } catch (err) {
     console.warn('[Dashboard] execution fetch error:', err)
-    executionError.value = err instanceof Error ? err.message : 'Execution projection load failed'
+    executionError.value = errorMessageOr(err, 'Execution projection load failed')
     showToast('실행 데이터 로드 실패', 'error', 5000)
   } finally {
     executionLoading.value = false

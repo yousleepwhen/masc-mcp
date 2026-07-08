@@ -1,5 +1,6 @@
 import { isRecord, asString, asNumber, asBoolean, asStringArray, toIsoTimestamp } from './components/common/normalize'
 import { normalizeKeeperTrust } from './keeper-store-normalize'
+import { normalizeStopCause } from './lib/stop-cause'
 import type {
   Agent, Task, Message, ServerStatus,
   DashboardExecutionSummary, DashboardExecutionHandoff,
@@ -8,6 +9,19 @@ import type {
   DashboardExecutionContinuityBrief,
   DashboardConfigResolution,
   DashboardConfigResolutionItem,
+  DashboardCdalHealth,
+  DashboardCdalProofCompleteness,
+  DashboardCdalProofStoreHealth,
+  DashboardCdalTaskScopeHealth,
+  DashboardFleetPressureHealth,
+  DashboardFleetSafetyHealth,
+  DashboardBlockerClassObject,
+  DashboardBlockerInfo,
+  DashboardKeeperReactionLedgerHealth,
+  DashboardKeeperReactionLedgerPendingKeeper,
+  DashboardPausedKeeperDetail,
+  DashboardPausedKeeperReadError,
+  DashboardPausedKeepersHealth,
   DashboardRuntimeDiagnostic,
   DashboardRuntimeResolution,
   KeeperRuntimeResolved,
@@ -103,7 +117,6 @@ export function normalizeTask(raw: unknown): Task | null {
           ? {
               operation_id: asString(raw.contract.links.operation_id) ?? null,
               session_id: asString(raw.contract.links.session_id) ?? null,
-              autoresearch_loop_id: asString(raw.contract.links.autoresearch_loop_id) ?? null,
             }
           : null,
       }
@@ -123,7 +136,6 @@ export function normalizeTask(raw: unknown): Task | null {
     ? {
         operation_id: asString(raw.execution_links.operation_id) ?? null,
         session_id: asString(raw.execution_links.session_id) ?? null,
-        autoresearch_loop_id: asString(raw.execution_links.autoresearch_loop_id) ?? null,
       }
     : null
   return {
@@ -217,6 +229,10 @@ export function normalizeExecutionQueueItem(raw: unknown): DashboardExecutionQue
   if (!id || !summary || !targetType || !targetId || (kind !== 'session' && kind !== 'operation' && kind !== 'keeper')) {
     return null
   }
+  const runtimeTrust = normalizeKeeperTrust(raw.runtime_trust ?? raw.trust)
+  const terminalReason = runtimeTrust?.latest_terminal_reason ?? null
+  const terminalReasonCode =
+    asString(raw.terminal_reason_code) ?? terminalReason?.code ?? null
   return {
     id,
     kind,
@@ -230,8 +246,19 @@ export function normalizeExecutionQueueItem(raw: unknown): DashboardExecutionQue
     last_seen_at: asString(raw.last_seen_at) ?? null,
     attention_reason: asString(raw.attention_reason) ?? null,
     next_human_action: asString(raw.next_human_action) ?? null,
-    terminal_reason_code: asString(raw.terminal_reason_code) ?? null,
-    runtime_trust: normalizeKeeperTrust(raw.runtime_trust ?? raw.trust),
+    terminal_reason_code: terminalReasonCode,
+    stop_cause: normalizeStopCause({
+      stop_cause: raw.stop_cause,
+      runtime_blocker_class: asString(raw.runtime_blocker_class) ?? asString(raw.runtime_blocker) ?? null,
+      runtime_blocker_summary: asString(raw.runtime_blocker_summary) ?? null,
+      terminal_reason_code: terminalReasonCode,
+      terminal_reason_summary: terminalReason?.summary ?? null,
+      terminal_reason_severity: terminalReason?.severity ?? null,
+      terminal_reason_next_action: terminalReason?.next_action ?? null,
+      attention_reason: asString(raw.attention_reason) ?? null,
+      next_action: asString(raw.next_human_action) ?? runtimeTrust?.latest_next_action ?? null,
+    }),
+    runtime_trust: runtimeTrust,
     top_handoff: normalizeExecutionHandoff(raw.top_handoff),
     intervene_handoff: normalizeExecutionHandoff(raw.intervene_handoff),
     command_handoff: normalizeExecutionHandoff(raw.command_handoff),
@@ -243,13 +270,11 @@ export function normalizeExecutionSessionBrief(raw: unknown): DashboardExecution
   const sessionId = asString(raw.session_id)
   const goal = asString(raw.goal)
   if (!sessionId || !goal) return null
-  const namespace = asString(raw.namespace) ?? asString(raw.room) ?? null
+  const namespace = asString(raw.namespace) ?? null
   return {
     session_id: sessionId,
     goal,
     namespace,
-    // Keep `room` as a pure compatibility alias during namespace flattening.
-    room: namespace,
     status: asString(raw.status),
     health: asString(raw.health),
     member_names: asStringArray(raw.member_names),
@@ -571,11 +596,421 @@ export function normalizeDashboardRuntimeResolution(
     workspace_git_commit: asString(raw.workspace_git_commit) ?? null,
     resolved_base_git_commit: asString(raw.resolved_base_git_commit) ?? null,
     source_mismatch: asBoolean(raw.source_mismatch) ?? false,
+    server_workspace_mismatch: asBoolean(raw.server_workspace_mismatch) ?? false,
     diagnostics: (Array.isArray(raw.diagnostics) ? raw.diagnostics : [])
       .map(normalizeDashboardRuntimeDiagnostic)
       .filter((item): item is DashboardRuntimeDiagnostic => item !== null),
     build,
     keeper_runtime: normalizeKeeperRuntimeResolved(raw.keeper_runtime),
+    fleet_safety: normalizeDashboardFleetSafetyHealth(raw),
+    fd_accountant: normalizeDashboardFdAccountant(raw.fd_accountant),
+    cdal: normalizeDashboardCdalHealth(raw.cdal),
+  }
+}
+
+function normalizeDashboardFdAccountant(raw: unknown): DashboardRuntimeResolution['fd_accountant'] {
+  if (!isRecord(raw)) return null
+  const fdOpen = asNumber(raw.fd_open)
+  const fdLimit = asNumber(raw.fd_limit)
+  const pressureActive = asBoolean(raw.pressure_active)
+  if (fdOpen == null && fdLimit == null && pressureActive == null) return null
+  return {
+    fd_open: fdOpen ?? null,
+    fd_limit: fdLimit ?? null,
+    pressure_active: pressureActive ?? null,
+  }
+}
+
+function normalizeDashboardBlockerClass(raw: unknown): DashboardBlockerInfo['klass'] {
+  const name = asString(raw)
+  if (name) return name
+  if (!isRecord(raw)) return null
+  const objectName = asString(raw.name)
+  if (!objectName) return null
+  const result: DashboardBlockerClassObject = { name: objectName }
+  if ('reason' in raw) result.reason = raw.reason
+  return result
+}
+
+function normalizeDashboardBlockerInfo(raw: unknown): DashboardBlockerInfo | null {
+  if (!isRecord(raw)) return null
+  const klass = normalizeDashboardBlockerClass(raw.klass)
+  const detail = asString(raw.detail) ?? null
+  if (klass == null && detail == null) return null
+  return { klass, detail }
+}
+
+function normalizeDashboardPausedKeeperDetail(raw: unknown): DashboardPausedKeeperDetail | null {
+  if (!isRecord(raw)) return null
+  const name = asString(raw.name)
+  if (!name) return null
+  return {
+    name,
+    autoboot_enabled: asBoolean(raw.autoboot_enabled) ?? null,
+    pause_kind: asString(raw.pause_kind) ?? null,
+    auto_resume_after_sec: asNumber(raw.auto_resume_after_sec) ?? null,
+    persisted_auto_resume_after_sec: asNumber(raw.persisted_auto_resume_after_sec) ?? null,
+    auto_resume_source: asString(raw.auto_resume_source) ?? null,
+    paused_elapsed_sec: asNumber(raw.paused_elapsed_sec) ?? null,
+    auto_resume_remaining_sec: asNumber(raw.auto_resume_remaining_sec) ?? null,
+    last_blocker: normalizeDashboardBlockerInfo(raw.last_blocker),
+    missing_pause_root_cause: asBoolean(raw.missing_pause_root_cause) ?? null,
+  }
+}
+
+function normalizeDashboardPausedKeeperReadError(raw: unknown): DashboardPausedKeeperReadError | null {
+  if (!isRecord(raw)) return null
+  const keeper = asString(raw.keeper)
+  const error = asString(raw.error)
+  if (!keeper || !error) return null
+  return { keeper, error }
+}
+
+function normalizeDashboardPausedKeepersHealth(raw: unknown): DashboardPausedKeepersHealth | null {
+  if (!isRecord(raw)) return null
+  const details = (Array.isArray(raw.details) ? raw.details : [])
+    .map(normalizeDashboardPausedKeeperDetail)
+    .filter((item): item is DashboardPausedKeeperDetail => item !== null)
+  const readErrors = (Array.isArray(raw.read_errors) ? raw.read_errors : [])
+    .map(normalizeDashboardPausedKeeperReadError)
+    .filter((item): item is DashboardPausedKeeperReadError => item !== null)
+  const names = asStringArray(raw.names)
+  const runningNames = asStringArray(raw.running_names)
+  const durableNames = asStringArray(raw.durable_names)
+  const autobootEnabledNames = asStringArray(raw.autoboot_enabled_names)
+  const count = asNumber(raw.count)
+  const runningCount = asNumber(raw.running_count)
+  const durableCount = asNumber(raw.durable_count)
+  const autobootEnabledCount = asNumber(raw.autoboot_enabled_count)
+  const readErrorCount = asNumber(raw.read_error_count)
+  if (
+    count == null
+    && runningCount == null
+    && durableCount == null
+    && autobootEnabledCount == null
+    && readErrorCount == null
+    && names.length === 0
+    && runningNames.length === 0
+    && durableNames.length === 0
+    && autobootEnabledNames.length === 0
+    && details.length === 0
+    && readErrors.length === 0
+  ) {
+    return null
+  }
+  return {
+    count: count ?? null,
+    names,
+    running_count: runningCount ?? null,
+    running_names: runningNames,
+    durable_count: durableCount ?? null,
+    durable_names: durableNames,
+    autoboot_enabled_count: autobootEnabledCount ?? null,
+    autoboot_enabled_names: autobootEnabledNames,
+    details,
+    read_error_count: readErrorCount ?? null,
+    read_errors: readErrors,
+  }
+}
+
+function normalizeDashboardFleetPressureHealth(raw: unknown): DashboardFleetPressureHealth | null {
+  if (!isRecord(raw)) return null
+  const status = asString(raw.status) ?? asString(raw.state) ?? null
+  const reason = asString(raw.reason) ?? asString(raw.message) ?? null
+  const blocker = asString(raw.blocker) ?? null
+  const admissionBlocked = asBoolean(raw.admission_blocked)
+    ?? asBoolean(raw.admission_blocks)
+    ?? null
+  const admissionBlockedKeepers = asNumber(raw.admission_blocked_keepers)
+    ?? asNumber(raw.admission_blocked_count)
+    ?? null
+  const blockedKeepers = asNumber(raw.blocked_keepers)
+    ?? asNumber(raw.keepers_blocked)
+    ?? null
+  const blockedCount = asNumber(raw.blocked_count)
+    ?? asNumber(raw.blocked)
+    ?? null
+  const bootableKeeperCount = asNumber(raw.bootable_keeper_count)
+  const runningKeeperFiberCount = asNumber(raw.running_keeper_fiber_count)
+  const healthyRunningKeeperFiberCount = asNumber(raw.healthy_running_keeper_fiber_count)
+  const failingKeeperFiberCount = asNumber(raw.failing_keeper_fiber_count)
+  const executableKeeperFiberCount = asNumber(raw.executable_keeper_fiber_count)
+  const minimumRunningFibers = asNumber(raw.minimum_running_fibers)
+  const noRunningFibers = asBoolean(raw.no_running_fibers)
+  const noExecutableKeeperFibers = asBoolean(raw.no_executable_keeper_fibers)
+  const lowRunningFiberMargin = asBoolean(raw.low_running_fiber_margin)
+  const reactionCapacityBelowTarget = asBoolean(raw.reaction_capacity_below_target)
+  const reactionCapacityShortfallCount = asNumber(raw.reaction_capacity_shortfall_count)
+  const executableReactionCapacityBelowTarget = asBoolean(raw.executable_reaction_capacity_below_target)
+  const executableReactionCapacityShortfallCount = asNumber(raw.executable_reaction_capacity_shortfall_count)
+  const pausedKeeperCount = asNumber(raw.paused_keeper_count)
+  const autobootEnabledKeeperCount = asNumber(raw.autoboot_enabled_keeper_count)
+  const pausedAutobootEnabledKeeperCount = asNumber(raw.paused_autoboot_enabled_keeper_count)
+  const effectiveReactionCapacityCount = asNumber(raw.effective_reaction_capacity_count)
+  const executableReactionCapacityCount = asNumber(raw.executable_reaction_capacity_count)
+  const targetReactionCapacityCount = asNumber(raw.target_reaction_capacity_count)
+  const operatorActionRequired = asBoolean(raw.operator_action_required)
+  if (
+    status == null
+    && reason == null
+    && blocker == null
+    && admissionBlocked == null
+    && admissionBlockedKeepers == null
+    && blockedKeepers == null
+    && blockedCount == null
+    && bootableKeeperCount == null
+    && runningKeeperFiberCount == null
+    && healthyRunningKeeperFiberCount == null
+    && failingKeeperFiberCount == null
+    && executableKeeperFiberCount == null
+    && minimumRunningFibers == null
+    && noRunningFibers == null
+    && noExecutableKeeperFibers == null
+    && lowRunningFiberMargin == null
+    && reactionCapacityBelowTarget == null
+    && reactionCapacityShortfallCount == null
+    && executableReactionCapacityBelowTarget == null
+    && executableReactionCapacityShortfallCount == null
+    && pausedKeeperCount == null
+    && autobootEnabledKeeperCount == null
+    && pausedAutobootEnabledKeeperCount == null
+    && effectiveReactionCapacityCount == null
+    && executableReactionCapacityCount == null
+    && targetReactionCapacityCount == null
+    && operatorActionRequired == null
+  ) {
+    return null
+  }
+  return {
+    status,
+    reason,
+    blocker,
+    admission_blocked: admissionBlocked,
+    admission_blocked_keepers: admissionBlockedKeepers,
+    blocked_keepers: blockedKeepers,
+    blocked_count: blockedCount,
+    bootable_keeper_count: bootableKeeperCount ?? null,
+    running_keeper_fiber_count: runningKeeperFiberCount ?? null,
+    healthy_running_keeper_fiber_count: healthyRunningKeeperFiberCount ?? null,
+    failing_keeper_fiber_count: failingKeeperFiberCount ?? null,
+    executable_keeper_fiber_count: executableKeeperFiberCount ?? null,
+    minimum_running_fibers: minimumRunningFibers ?? null,
+    no_running_fibers: noRunningFibers ?? null,
+    no_executable_keeper_fibers: noExecutableKeeperFibers ?? null,
+    low_running_fiber_margin: lowRunningFiberMargin ?? null,
+    reaction_capacity_below_target: reactionCapacityBelowTarget ?? null,
+    reaction_capacity_shortfall_count: reactionCapacityShortfallCount ?? null,
+    executable_reaction_capacity_below_target: executableReactionCapacityBelowTarget ?? null,
+    executable_reaction_capacity_shortfall_count: executableReactionCapacityShortfallCount ?? null,
+    paused_keeper_count: pausedKeeperCount ?? null,
+    autoboot_enabled_keeper_count: autobootEnabledKeeperCount ?? null,
+    paused_autoboot_enabled_keeper_count: pausedAutobootEnabledKeeperCount ?? null,
+    effective_reaction_capacity_count: effectiveReactionCapacityCount ?? null,
+    executable_reaction_capacity_count: executableReactionCapacityCount ?? null,
+    target_reaction_capacity_count: targetReactionCapacityCount ?? null,
+    operator_action_required: operatorActionRequired ?? null,
+  }
+}
+
+function normalizeDashboardKeeperReactionLedgerPendingKeeper(
+  raw: unknown,
+): DashboardKeeperReactionLedgerPendingKeeper | null {
+  if (!isRecord(raw)) return null
+  const keeperName = asString(raw.keeper_name)
+  const pendingStimulusCount = asNumber(raw.pending_stimulus_count)
+  if (!keeperName || pendingStimulusCount == null) return null
+  return {
+    keeper_name: keeperName,
+    pending_stimulus_count: pendingStimulusCount,
+    pending_stimulus_ids: asStringArray(raw.pending_stimulus_ids),
+  }
+}
+
+function normalizeDashboardKeeperReactionLedgerHealth(
+  raw: unknown,
+): DashboardKeeperReactionLedgerHealth | null {
+  if (!isRecord(raw)) return null
+  const status = asString(raw.status) ?? null
+  const operatorActionRequired = asBoolean(raw.operator_action_required) ?? null
+  const keeperCount = asNumber(raw.keeper_count)
+  const rowCount = asNumber(raw.row_count)
+  const stimulusCount = asNumber(raw.stimulus_count)
+  const reactionCount = asNumber(raw.reaction_count)
+  const turnStartedCount = asNumber(raw.turn_started_count)
+  const cursorAckCount = asNumber(raw.cursor_ack_count)
+  const executionReceiptCount = asNumber(raw.execution_receipt_count)
+  const terminalReasonCount = asNumber(raw.terminal_reason_count)
+  const operatorEscalationCount = asNumber(raw.operator_escalation_count)
+  const unknownReactionCount = asNumber(raw.unknown_reaction_count)
+  const cursorSweptStimulusCount = asNumber(raw.cursor_swept_stimulus_count)
+  const legacyCursorSweptStimulusCount = asNumber(raw.legacy_cursor_swept_stimulus_count)
+  const pendingStimulusCount = asNumber(raw.pending_stimulus_count)
+  const readErrorCount = asNumber(raw.read_error_count)
+  const pendingByKeeper = (Array.isArray(raw.pending_by_keeper) ? raw.pending_by_keeper : [])
+    .map(normalizeDashboardKeeperReactionLedgerPendingKeeper)
+    .filter((item): item is DashboardKeeperReactionLedgerPendingKeeper => item !== null)
+  if (
+    status == null
+    && operatorActionRequired == null
+    && keeperCount == null
+    && rowCount == null
+    && stimulusCount == null
+    && reactionCount == null
+    && turnStartedCount == null
+    && cursorAckCount == null
+    && executionReceiptCount == null
+    && terminalReasonCount == null
+    && operatorEscalationCount == null
+    && unknownReactionCount == null
+    && cursorSweptStimulusCount == null
+    && legacyCursorSweptStimulusCount == null
+    && pendingStimulusCount == null
+    && readErrorCount == null
+    && pendingByKeeper.length === 0
+  ) {
+    return null
+  }
+  return {
+    status,
+    operator_action_required: operatorActionRequired,
+    keeper_count: keeperCount ?? null,
+    row_count: rowCount ?? null,
+    stimulus_count: stimulusCount ?? null,
+    reaction_count: reactionCount ?? null,
+    turn_started_count: turnStartedCount ?? null,
+    cursor_ack_count: cursorAckCount ?? null,
+    execution_receipt_count: executionReceiptCount ?? null,
+    terminal_reason_count: terminalReasonCount ?? null,
+    operator_escalation_count: operatorEscalationCount ?? null,
+    unknown_reaction_count: unknownReactionCount ?? null,
+    cursor_swept_stimulus_count: cursorSweptStimulusCount ?? null,
+    legacy_cursor_swept_stimulus_count: legacyCursorSweptStimulusCount ?? null,
+    pending_stimulus_count: pendingStimulusCount ?? null,
+    read_error_count: readErrorCount ?? null,
+    pending_by_keeper: pendingByKeeper,
+  }
+}
+
+function normalizeDashboardFleetSafetyHealth(raw: Record<string, unknown>): DashboardFleetSafetyHealth | null {
+  const keeperFibers = asNumber(raw.keeper_fibers)
+  const pausedKeepers = asNumber(raw.paused_keepers)
+  const pausedKeepersHealth = normalizeDashboardPausedKeepersHealth(raw.paused_keepers_health)
+  const noFibers = asBoolean(raw.keeper_fleet_no_fibers)
+  const fdPressure = normalizeDashboardFleetPressureHealth(raw.keeper_fd_pressure)
+  const fleetSafety = normalizeDashboardFleetPressureHealth(raw.keeper_fleet_safety)
+  const reactionLedger = normalizeDashboardKeeperReactionLedgerHealth(raw.keeper_reaction_ledger)
+  if (
+    keeperFibers == null
+    && pausedKeepers == null
+    && pausedKeepersHealth == null
+    && noFibers == null
+    && fdPressure == null
+    && fleetSafety == null
+    && reactionLedger == null
+  ) {
+    return null
+  }
+  return {
+    keeper_fibers: keeperFibers ?? null,
+    paused_keepers: pausedKeepers ?? null,
+    paused_keepers_health: pausedKeepersHealth,
+    keeper_fleet_no_fibers: noFibers ?? null,
+    keeper_fd_pressure: fdPressure,
+    keeper_fleet_safety: fleetSafety,
+    keeper_reaction_ledger: reactionLedger,
+  }
+}
+
+function normalizeDashboardCdalProofCompleteness(raw: unknown): DashboardCdalProofCompleteness | null {
+  if (!isRecord(raw)) return null
+  const incomplete = asNumber(raw.incomplete_run_dirs)
+  const stale = asNumber(raw.stale_incomplete_run_dirs)
+  const terminal = asNumber(raw.terminal_incomplete_run_dirs)
+  const samples = asStringArray(raw.sample_stale_incomplete_run_ids)
+  const terminalSamples = asStringArray(raw.sample_terminal_incomplete_run_ids)
+  if (incomplete == null && stale == null && terminal == null && samples.length === 0 && terminalSamples.length === 0) {
+    return null
+  }
+  return {
+    scan_limit: asNumber(raw.scan_limit) ?? null,
+    run_dir_entries_seen: asNumber(raw.run_dir_entries_seen) ?? null,
+    scan_truncated: asBoolean(raw.scan_truncated) ?? null,
+    run_dirs_scanned: asNumber(raw.run_dirs_scanned) ?? null,
+    completed_run_dirs: asNumber(raw.completed_run_dirs) ?? null,
+    incomplete_run_dirs: incomplete ?? null,
+    stale_incomplete_run_dirs: stale ?? null,
+    terminal_incomplete_run_dirs: terminal ?? null,
+    missing_manifest_run_dirs: asNumber(raw.missing_manifest_run_dirs) ?? null,
+    missing_contract_run_dirs: asNumber(raw.missing_contract_run_dirs) ?? null,
+    stale_incomplete_grace_seconds: asNumber(raw.stale_incomplete_grace_seconds) ?? null,
+    sample_stale_incomplete_run_ids: samples,
+    sample_terminal_incomplete_run_ids: terminalSamples,
+  }
+}
+
+function normalizeDashboardCdalProofStoreHealth(raw: unknown): DashboardCdalProofStoreHealth | null {
+  if (!isRecord(raw)) return null
+  const status = asString(raw.status) ?? null
+  const completeness = normalizeDashboardCdalProofCompleteness(raw.completeness)
+  if (status == null && completeness == null) return null
+  return {
+    root: asString(raw.root) ?? null,
+    proofs_dir: asString(raw.proofs_dir) ?? null,
+    exists: asBoolean(raw.exists) ?? null,
+    latest_activity_at: asString(raw.latest_activity_at) ?? null,
+    latest_activity_unix: asNumber(raw.latest_activity_unix) ?? null,
+    age_seconds: asNumber(raw.age_seconds) ?? null,
+    status,
+    completeness,
+  }
+}
+
+function normalizeDashboardCdalTaskScopeHealth(raw: unknown): DashboardCdalTaskScopeHealth | null {
+  if (!isRecord(raw)) return null
+  const status = asString(raw.status) ?? null
+  const recentRows = asNumber(raw.recent_rows)
+  const missingRows = asNumber(raw.missing_task_scope_rows)
+  const legacyRows = asNumber(raw.legacy_unscoped_rows)
+  const currentMissingRows = asNumber(raw.current_writer_missing_task_scope_rows)
+  if (status == null && recentRows == null && missingRows == null && legacyRows == null && currentMissingRows == null) {
+    return null
+  }
+  return {
+    status,
+    recent_limit: asNumber(raw.recent_limit) ?? null,
+    recent_rows: recentRows ?? null,
+    task_id_rows: asNumber(raw.task_id_rows) ?? null,
+    missing_task_scope_rows: missingRows ?? null,
+    legacy_unscoped_rows: legacyRows ?? null,
+    current_writer_missing_task_scope_rows: currentMissingRows ?? null,
+    missing_task_scope: asBoolean(raw.missing_task_scope) ?? null,
+    partial_task_scope: asBoolean(raw.partial_task_scope) ?? null,
+    current_writer_missing_task_scope: asBoolean(raw.current_writer_missing_task_scope) ?? null,
+  }
+}
+
+function normalizeDashboardCdalHealth(raw: unknown): DashboardCdalHealth | null {
+  if (!isRecord(raw)) return null
+  const writerStatus = asString(raw.writer_status) ?? null
+  const operatorActionRequired = asBoolean(raw.operator_action_required) ?? null
+  const proofStore = normalizeDashboardCdalProofStoreHealth(raw.proof_store)
+  const taskScope = normalizeDashboardCdalTaskScopeHealth(raw.task_scope)
+  const proofStorePathDrift = asBoolean(raw.proof_store_path_drift) ?? null
+  if (
+    writerStatus == null
+    && operatorActionRequired == null
+    && proofStorePathDrift == null
+    && proofStore == null
+    && taskScope == null
+  ) {
+    return null
+  }
+  return {
+    writer_status: writerStatus,
+    operator_action_required: operatorActionRequired,
+    proof_store_path_drift: proofStorePathDrift,
+    proof_store: proofStore,
+    task_scope: taskScope,
   }
 }
 

@@ -1,21 +1,21 @@
-# Command Plane (CPv2)
+# Command Plane Historical Reference (Retired)
 
 | 항목 | 값 |
 |------|-----|
-| Status | Historical Reference |
+| Status | Retired Historical Reference |
 | Team | Foundation |
-| Maps to | `lib/command_plane_v2.ml`, `lib/command_plane/*.ml`, `lib/command_plane_orchestra.ml` |
+| Maps to | Retired subsystem; former `lib/command_plane_v2.ml`, `lib/command_plane/*.ml`, and `lib/command_plane_orchestra.ml` files are removed |
 | Dependencies | 02-types-and-invariants, 03-room-coordination |
-| LOC | ~10.3K (core ~8.2K + tool surface ~2.1K) |
-| MCP Tools | 40 (unit 4, intent 4, operation 7, dispatch 6, detachment 2, policy 5, observe 6, chain 2, extra 4) |
+| LOC | N/A for current codebase |
+| MCP Tools | 0 active Command Plane tools |
 
 ---
 
 ## 1. Purpose
 
-Command Plane V2(CPv2)는 MASC의 현재 supported front door가 아닌 internal/historical reference subsystem이다. 남아 있는 code path, migration context, retained read-model vocabulary를 설명하기 위해 보존하며, 새 caller onboarding은 repo coordination, keeper runtime, dashboard/operator read visibility를 기준으로 한다.
+Command Plane V2(CPv2)는 삭제된 subsystem의 historical reference다. 이 문서는 migration context와 retired read-model vocabulary만 설명하며, 새 caller onboarding은 repo coordination, keeper runtime, dashboard/operator read visibility를 기준으로 한다.
 
-핵심 역할:
+삭제된 설계가 맡았던 역할:
 
 - **조직 위계 관리**: Company > Platoon > Squad > Agent_unit 4단계 트리 구조
 - **작전 생명주기**: Planned -> Active -> Paused -> Completed/Failed/Cancelled 상태 전이
@@ -25,7 +25,7 @@ Command Plane V2(CPv2)는 MASC의 현재 supported front door가 아닌 internal
 
 ---
 
-## 2. Module Dependency Chain
+## 2. Removed Module Dependency Chain
 
 ```
 Cp_types -> Cp_paths -> Cp_serde -> Cp_io
@@ -36,9 +36,9 @@ Cp_types -> Cp_paths -> Cp_serde -> Cp_io
   -> Cp_lifecycle -> Cp_lifecycle_policy
 ```
 
-`Command_plane_v2`는 `Cp_lifecycle_policy`를 `include`하는 backward-compatible facade이다. 외부 모듈(`tool_command_plane`, `operator_control`, `swarm_status`)은 이 facade를 통해 접근한다.
+위 graph는 삭제된 구현의 마지막 형태를 설명하는 역사적 기록이다. 현재 코드에는 `Command_plane_v2` facade, `tool_command_plane` entrypoint, `swarm_status` bridge, 또는 `Cp_*` implementation chain이 없다.
 
-`Command_plane_orchestra`는 별도 모듈로, CPv2 snapshot + Swarm status + Operator state를 node-edge-signal 그래프로 합성한다.
+`Command_plane_orchestra` 역시 삭제됐다. 현재 read visibility는 dashboard/operator projection과 keeper/runtime state를 통해 제공한다.
 
 ---
 
@@ -330,7 +330,14 @@ Alert, pending confirm, runtime blocker, hot proof 등 비정상 상태를 signa
 
 ## 9. MCP Tool Surface
 
-### 9.1. Unit Management (4)
+> **Note**: Unit, Operation, Dispatch, Policy, and Observe command-plane tools
+> listed below were not retained as active MCP tools. The Tool_name.t variants
+> were removed in PR #18310, and the remaining SDK/transport compatibility names
+> were removed in the legacy purge train. Use the active operator surfaces:
+> `masc_operator_snapshot`, `masc_operator_digest`, `masc_operator_action`,
+> `masc_operator_confirm`, and `masc_surface_audit`.
+
+### 9.1. Unit Management (4) — not implemented
 
 | Tool | 동작 |
 |------|------|
@@ -339,7 +346,7 @@ Alert, pending confirm, runtime blocker, hot proof 등 비정상 상태를 signa
 | `masc_unit_reparent` | Unit parent 변경 |
 | `masc_unit_reassign` | Unit leader/roster 변경 |
 
-### 9.2. Intent Management (4)
+### 9.2. Intent Management (4) — not implemented
 
 | Tool | 동작 |
 |------|------|
@@ -348,7 +355,7 @@ Alert, pending confirm, runtime blocker, hot proof 등 비정상 상태를 signa
 | `masc_intent_update` | Intent 상태/focus 갱신 |
 | `masc_intent_forecast` | Intent 예측 |
 
-### 9.3. Operation Management (7)
+### 9.3. Operation Management (7) — not implemented
 
 | Tool | 동작 |
 |------|------|
@@ -360,7 +367,7 @@ Alert, pending confirm, runtime blocker, hot proof 등 비정상 상태를 signa
 | `masc_operation_stop` | -> Cancelled |
 | `masc_operation_finalize` | -> Completed + search stats 갱신 |
 
-### 9.4. Dispatch (6)
+### 9.4. Dispatch (6) — not implemented
 
 | Tool | 동작 |
 |------|------|
@@ -371,25 +378,25 @@ Alert, pending confirm, runtime blocker, hot proof 등 비정상 상태를 signa
 | `masc_dispatch_recall` | Detachment 회수 |
 | `masc_dispatch_tick` | 주기적 상태 갱신 |
 
-### 9.5. Policy (5)
+### 9.5. Policy (5) — retired
 
 | Tool | 동작 |
 |------|------|
-| `masc_policy_status` | 보류 중인 decision 조회 |
-| `masc_policy_approve` | Decision 승인 |
-| `masc_policy_deny` | Decision 거절 |
-| `masc_policy_update` | Unit policy 직접 변경 |
-| `masc_policy_freeze_unit` / `masc_policy_kill_switch` | Unit 동결/비상 정지 |
+| `masc_policy_status` | 보류 중인 decision 조회 — not implemented |
+| policy approval | Retired; use `masc_operator_action` preview and `masc_operator_confirm` |
+| `masc_policy_deny` | Decision 거절 — not implemented |
+| `masc_policy_update` | Unit policy 직접 변경 — not implemented |
+| policy freeze / kill switch | Retired; use operator action/confirm flows |
 
-### 9.6. Observe (6)
+### 9.6. Observe (5) — retired
 
 | Tool | 동작 |
 |------|------|
-| `masc_observe_topology` | Unit 트리 + health + operation count |
-| `masc_observe_alerts` | Alert 목록 (severity 정렬) |
-| `masc_observe_operations` | Operation 요약 + microarch |
-| `masc_observe_capacity` | Unit별 utilization |
-| `masc_observe_traces` | Event log + team session + operator traces |
+| `masc_observe_topology` | Unit 트리 + health + operation count — not implemented |
+| `masc_observe_alerts` | Alert 목록 (severity 정렬) — not implemented |
+| observe operations | Retired; use `masc_operator_snapshot` / dashboard execution surfaces |
+| observe capacity | Retired; use `masc_agent_timeline` / dashboard status surfaces |
+| observe traces | Retired; use `masc_operator_digest` / `masc_surface_audit` |
 
 ---
 

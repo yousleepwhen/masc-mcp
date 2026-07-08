@@ -13,7 +13,7 @@
     @since 0.92.0 extracted from Cascade_config
     @since 0.93.2 lock-free reads (Eio.Mutex → Atomic+immutable Map) *)
 
-module String_map = Map.Make (String)
+module String_map = Set_util.StringMap
 
 let throttle_table :
   Llm_provider.Provider_throttle.t String_map.t Atomic.t =
@@ -43,7 +43,7 @@ let prepare_op (s : Llm_provider.Discovery.endpoint_status) : populate_op =
       | Some t -> t
       | None ->
         Llm_provider.Provider_throttle.default_for_kind
-          Llm_provider.Provider_config.OpenAI_compat
+          Llm_provider.Provider_config.Provider_d_compat
     in
     Maybe_install
       { url = s.url; candidate; new_has_slot_data = has_slot_data s }
@@ -64,12 +64,7 @@ let apply_op
 
 let populate (statuses : Llm_provider.Discovery.endpoint_status list) =
   let ops = List.map prepare_op statuses in
-  let rec loop () =
-    let cur = Atomic.get throttle_table in
-    let next = List.fold_left apply_op cur ops in
-    if not (Atomic.compare_and_set throttle_table cur next) then loop ()
-  in
-  loop ()
+  Lockfree_atomic.update throttle_table (fun cur -> List.fold_left apply_op cur ops)
 
 let lookup url = String_map.find_opt url (Atomic.get throttle_table)
 

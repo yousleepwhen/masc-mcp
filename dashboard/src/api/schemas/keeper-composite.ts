@@ -75,6 +75,7 @@ const KeeperCompositeInvariantsSchema = object({
   no_cascade_before_measurement: boolean(),
   compaction_atomicity: boolean(),
   event_priority_monotone: boolean(),
+  phase_derivation_agreement: boolean(),
 })
 
 const KeeperPhaseDiagnosisRowSchema = object({
@@ -121,6 +122,13 @@ const KeeperLastOutcomeSchema = object({
   selected_model: nullable(string()),
 })
 
+const KeeperLiveTurnSchema = object({
+  turn_id: number(),
+  started_at: number(),
+  last_progress_at: number(),
+  last_progress_kind: nullable(string()),
+})
+
 const KeeperCompositeExecutionSchema = object({
   latest_receipt_present: boolean(),
   recorded_at: nullable(string()),
@@ -131,6 +139,8 @@ const KeeperCompositeExecutionSchema = object({
   model_used: nullable(string()),
   stop_reason: nullable(string()),
   tool_contract_result: nullable(string()),
+  unexpected_tools: optional(array(string())),
+  unexpected_tool_count: optional(number()),
   duration_ms: nullable(number()),
   error: nullable(
     object({
@@ -154,11 +164,19 @@ const KeeperCompositeExecutionSchema = object({
   tool_surface: nullable(
     object({
       tool_requirement: nullable(string()),
+      turn_lane: optional(nullable(string())),
+      tool_surface_class: optional(nullable(string())),
+      visible_tool_count: optional(nullable(number())),
       tool_gate_enabled: nullable(boolean()),
+      tool_surface_fallback_used: optional(nullable(boolean())),
       missing_required_tools: array(string()),
       required_tools: array(string()),
+      unexpected_tools: optional(array(string())),
+      unexpected_tool_count: optional(number()),
     }),
   ),
+  claim_scope: optional(unknown()),
+  config_drift: optional(unknown()),
 })
 
 const KeeperRuntimeAttentionSchema = object({
@@ -170,6 +188,10 @@ const KeeperRuntimeAttentionSchema = object({
   raw_phase: nullable(string()),
   is_live: boolean(),
   source: string(),
+  execution_current: optional(boolean()),
+  stale_execution_receipt: optional(boolean()),
+  live_turn_started_at: optional(nullable(number())),
+  live_turn_last_progress_at: optional(nullable(number())),
 })
 
 const OperatorRecommendedActionSchema = object({
@@ -183,6 +205,12 @@ const OperatorRecommendedActionSchema = object({
   preview: optional(unknown()),
 })
 
+const FsmGuardViolationBucketSchema = object({
+  action: string(),
+  stage: string(),
+  count: number(),
+})
+
 export const KeeperCompositeSnapshotSchema = object({
   // Explicit registry identity from new backends. Optional so pinned older
   // backends keep rendering; UI falls back to canonical correlation_id parsing.
@@ -191,6 +219,11 @@ export const KeeperCompositeSnapshotSchema = object({
   run_id: string(),
   ts: number(),
   phase: KeeperCompositePhaseSchema,
+  // When `phase` is `Stable`, the backend may carry the underlying raw
+  // keeper phase (e.g. `paused`) so the dashboard can tell a true idle
+  // Stable from a Stable that masks a non-idle source. Absent on older
+  // backends and on non-Stable phases — `optional` + `nullable` matches
+  // both the missing-key and explicit-null shapes the backend emits.
   collapsed_from: optional(nullable(string())),
   turn_phase: KeeperCompositeTurnPhaseSchema,
   decision: object({ stage: KeeperCompositeDecisionStageSchema }),
@@ -208,9 +241,14 @@ export const KeeperCompositeSnapshotSchema = object({
   ),
   measurement: KeeperCompositeMeasurementSchema,
   invariants: KeeperCompositeInvariantsSchema,
+  fsm_guard_violations: number(),
+  fsm_guard_violation_breakdown: fallback(array(FsmGuardViolationBucketSchema), []),
   phase_diagnosis: optional(KeeperPhaseDiagnosisSchema),
   is_live: boolean(),
+  live_turn: optional(nullable(KeeperLiveTurnSchema)),
   last_outcome: nullable(KeeperLastOutcomeSchema),
+  idle_seconds: optional(number()),
+  last_turn_ts: optional(number()),
   execution: optional(KeeperCompositeExecutionSchema),
   runtime_attention: optional(KeeperRuntimeAttentionSchema),
   recommended_actions: fallback(array(OperatorRecommendedActionSchema), []),

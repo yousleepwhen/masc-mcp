@@ -1,4 +1,3 @@
-
 (** Compile-time verified tool name identifiers.
 
     Use [of_string] at MCP/JSON parse boundaries only.
@@ -6,39 +5,33 @@
 
 module Keeper : sig
   type t =
-    | Bash
-    | Bash_kill
-    | Bash_output
-    | Board_cleanup
+    | Execute
     | Board_comment
     | Board_comment_vote
     | Board_curation_read
     | Board_curation_submit
-    | Board_delete
     | Board_get
     | Board_list
     | Board_post
     | Board_search
     | Board_stats
+    | Board_sub_board_create
+    | Board_sub_board_delete
+    | Board_sub_board_get
+    | Board_sub_board_list
+    | Board_sub_board_update
     | Board_vote
     | Broadcast
-    | Code_read
     | Context_status
-    | Discovery
     | Fs_edit
     | Fs_read
+    | Ide_annotate
     | Handoff
     | Library_read
     | Library_search
     | Memory_search
-    | Pr_create
-    | Pr_list
-    | Pr_review_comment
-    | Pr_review_read
-    | Pr_review_reply
-    | Pr_status
-    | Preflight_check
-    | Shell
+    | Memory_write
+    | Search_files
     | Stay_silent
     | Task_claim
     | Task_create
@@ -57,7 +50,6 @@ module Keeper : sig
     | Voice_session_start
     | Voice_sessions
     | Voice_speak
-    | Write
 
   val to_string : t -> string
   val of_string : string -> t option
@@ -76,13 +68,6 @@ module Masc : sig
     | Agent_update
     | Agent_card
     | Agents
-    | Autoresearch_cycle
-    | Autoresearch_inject
-    | Autoresearch_record_finding
-    | Autoresearch_search_findings
-    | Autoresearch_start
-    | Autoresearch_status
-    | Autoresearch_stop
     | Batch_add_tasks
     | Board_cleanup
     | Board_comment
@@ -98,41 +83,27 @@ module Masc : sig
     | Board_reaction
     | Board_search
     | Board_stats
+    | Board_sub_board_create
+    | Board_sub_board_delete
+    | Board_sub_board_get
+    | Board_sub_board_list
+    | Board_sub_board_update
     | Board_vote
     | Broadcast
-    | Cancel_task
     | Check
     | Claim_next
-    | Claim_task
     | Cleanup_zombies
-    | Coordination_fsm_snapshot
-    | Code_delete
-    | Code_edit
-    | Code_git
-    | Code_read
-    | Code_search
-    | Code_shell
-    | Code_symbols
-    | Code_write
-    | Complete_task
     | Dashboard
     | Deliver
-    | Dispatch_plan
     | Goal_list
-    | Goal_review
     | Goal_transition
     | Goal_upsert
     | Goal_verify
     | Heartbeat
     | Join
     | Leave
-    | List_tasks
     | Messages
     | Note_add
-    | Operation_pause
-    | Operation_start
-    | Operation_status
-    | Operation_stop
     | Operator_action
     | Operator_confirm
     | Operator_digest
@@ -143,11 +114,7 @@ module Masc : sig
     | Plan_init
     | Plan_set_task
     | Plan_update
-    | Register_capabilities
-    | Release_task
     | Reset
-    | Coord_status
-    | Set_current_task
     | Status
     | Task_history
     | Tasks
@@ -157,12 +124,9 @@ module Masc : sig
     | Tool_revoke
     | Transition
     | Update_priority
+    | Web_fetch
     | Web_search
     | Who
-    | Workflow_guide
-    | Worktree_create
-    | Worktree_list
-    | Worktree_remove
     | Approval_pending
     | Approval_get
     | Config
@@ -171,13 +135,10 @@ module Masc : sig
     | Mcp_session
     | Pause
     | Resume
-    | Spawn
     | Start
     | Tool_admin_snapshot
     | Tool_admin_update
     | Tool_stats
-    | Webrtc_answer
-    | Webrtc_offer
 
   val to_string : t -> string
   val of_string : string -> t option
@@ -193,9 +154,13 @@ module Masc_keeper : sig
     | Down
     | List
     | Msg
+    | Msg_result
     | Persona_audit
     | Repair
     | Reset
+    | Sandbox_start
+    | Sandbox_status
+    | Sandbox_stop
     | Status
     | Up
 
@@ -212,7 +177,6 @@ type t =
 val to_string : t -> string
 val of_string : string -> t option
 val pp : Stdlib.Format.formatter -> t -> unit
-
 val is_keeper : t -> bool
 val is_masc : t -> bool
 val is_masc_keeper : t -> bool

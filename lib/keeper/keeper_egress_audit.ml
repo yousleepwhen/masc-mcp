@@ -55,7 +55,7 @@ let host_direct_egress_path ~(config : Coord.config)
     "egress.json"
 
 let audit_one ~(config : Coord.config) ~(meta : Keeper_types.keeper_meta) =
-  let expected = Keeper_shell_docker.egress_policy_path ~config ~meta in
+  let expected = Keeper_sandbox_runner.egress_policy_path ~config ~meta in
   let status =
     match meta.sandbox_profile with
     | Keeper_types.Local ->
@@ -98,6 +98,35 @@ let format_log_line (r : result) =
         "[egress_audit:stale_orphan] keeper=%s profile=%s expected=%s \
          orphan_at=%s"
         r.keeper_name profile expected_path orphan_path
+
+let format_missing_summary_line results =
+  let missing_entries =
+    results
+    |> List.filter_map (fun r ->
+      match r.status with
+      | Missing_at_expected { expected_path } ->
+          Some (r.keeper_name, expected_path)
+      | Ok_present | Stale_orphan _ -> None)
+    |> List.sort (fun (left, _) (right, _) -> String.compare left right)
+  in
+  match missing_entries with
+  | [] -> None
+  | entries ->
+      let keepers = entries |> List.map fst |> String.concat "," in
+      let expected =
+        entries
+        |> List.map (fun (keeper, path) -> Printf.sprintf "%s:%s" keeper path)
+        |> String.concat ","
+      in
+      Some
+        (Printf.sprintf
+           "[egress_audit:missing_summary] count=%d keepers=%s expected=%s"
+           (List.length entries) keepers expected)
+
+let inactive_missing_reason (meta : Keeper_types.keeper_meta) =
+  if meta.paused then Some "paused"
+  else if not meta.autoboot_enabled then Some "autoboot_disabled"
+  else None
 
 (** Partition results by severity.  The boot hook can then route
     [Ok] at debug level and [missing]/[stale] at warn. *)

@@ -21,6 +21,7 @@ import { AgentAvatar } from './agent-avatar'
 import { missionSnapshot } from '../../mission-store'
 import { agents, tasks, keepers, messages, boardPosts } from '../../store'
 import type { Agent, Task, Keeper, Message, BoardPost } from '../../types/core'
+import { SYSTEM_ACTOR_NAME } from '../../types/core'
 import type {
   DashboardMissionResponse,
   DashboardMissionSessionCard,
@@ -28,6 +29,8 @@ import type {
 import { openAgentDetail } from '../agent-detail-state'
 import { openTaskDetail } from '../goals/task-detail-state'
 import { nowSecondsSignal, useNowSecondsTicker } from '../../lib/now-signal'
+import { keeperDisplayStatus } from '../../lib/keeper-runtime-display'
+import { isKeeperPaused } from '../../lib/keeper-predicates'
 
 // ─── Alert Panel ─────────────────────────────────────────────────────────────
 
@@ -148,6 +151,8 @@ function keeperTickerTone(status?: string | null): FleetTickerEvent['tone'] {
       return 'info'
     case 'offline':
     case 'dead':
+    case 'stopped':
+    case 'unbooted':
       return 'err'
     case 'paused':
     case 'inactive':
@@ -186,7 +191,7 @@ export function deriveFleetTickerEvents({
       id: `task:${task.id}`,
       timestamp,
       actor: task.assignee ?? 'unassigned',
-      label: task.status ?? 'task',
+      label: task.status ?? '(unknown status)',
       text: task.title,
       kind: 'task',
       tone: taskTickerTone(task.status),
@@ -197,8 +202,8 @@ export function deriveFleetTickerEvents({
     pushTickerEvent(events, {
       id: `message:${message.id ?? message.seq ?? message.timestamp}`,
       timestamp: message.timestamp,
-      actor: message.from ?? 'system',
-      label: message.type ?? 'message',
+      actor: message.from ?? SYSTEM_ACTOR_NAME,
+      label: message.type ?? '(unknown type)',
       text: message.content,
       kind: 'message',
       tone: 'info',
@@ -209,7 +214,7 @@ export function deriveFleetTickerEvents({
       id: `board:${post.id}`,
       timestamp: post.updated_at || post.created_at,
       actor: firstNonEmptyTrimmed(post.author) ?? 'board',
-      label: post.post_kind ?? 'board',
+      label: post.post_kind ?? '(unknown post_kind)',
       text: firstNonEmptyTrimmed(post.title, post.content, post.body) ?? '',
       kind: 'board',
       tone: post.post_kind === 'system' ? 'warn' : 'info',
@@ -217,14 +222,15 @@ export function deriveFleetTickerEvents({
   }
   for (const keeper of keeperList) {
     if (!keeper.last_heartbeat) continue
+    const displayStatus = keeperDisplayStatus(keeper)
     pushTickerEvent(events, {
       id: `keeper:${keeper.name}`,
       timestamp: keeper.last_heartbeat,
       actor: keeper.koreanName && keeper.koreanName !== '' ? keeper.koreanName : keeper.name,
       label: 'heartbeat',
-      text: keeperStatusLabel(keeper.status),
+      text: keeperStatusLabel(displayStatus),
       kind: 'keeper',
-      tone: keeperTickerTone(keeper.status),
+      tone: keeperTickerTone(displayStatus),
     })
   }
   return events
@@ -396,7 +402,7 @@ function FunnelCard({ counts }: { counts: FunnelCounts }) {
   const total = counts.created + counts.inProgress + counts.awaiting + counts.completed
   const segPct = (n: number) => total > 0 ? (n / total) * 100 : 0
   return html`
-    <${SectionCard} title="Today" right=${html`<span class="text-2xs text-[var(--color-fg-muted)]">task basis</span>`} data-testid="overview-funnel">
+    <${SectionCard} label="Today" right=${html`<span class="text-2xs text-[var(--color-fg-muted)]">task basis</span>`} data-testid="overview-funnel">
       <${KpiStripIsland}
         ariaLabel="Today funnel"
         cols=${5}
@@ -433,7 +439,7 @@ export function progressPct(session: DashboardMissionSessionCard | null): number
 function MissionPartyCard({ active }: { active: DashboardMissionSessionCard | null }) {
   if (!active) {
     return html`
-      <${SectionCard} title="Active mission" data-testid="overview-party-empty">
+      <${SectionCard} label="Active mission" data-testid="overview-party-empty">
         <p class="text-2xs text-[var(--color-fg-muted)] italic">No active mission</p>
       <//>
     `
@@ -444,7 +450,7 @@ function MissionPartyCard({ active }: { active: DashboardMissionSessionCard | nu
   const members = active.member_names
 
   return html`
-    <${SectionCard} title="Active Mission" data-testid="overview-party">
+    <${SectionCard} label="Active Mission" data-testid="overview-party">
       <div class="space-y-4">
         <div class="flex items-center justify-between">
            <p class="text-xs font-semibold text-[var(--color-fg-default)] truncate flex-1 mr-4">
@@ -490,6 +496,8 @@ function keeperPillClass(status?: string | null): string {
       return 'pill is-running'
     case 'offline':
     case 'dead':
+    case 'stopped':
+    case 'unbooted':
       return 'pill is-err'
     default:
       return 'pill is-paused'
@@ -500,8 +508,11 @@ function keeperStatusLabel(status?: string | null): string {
   switch ((status ?? '').toLowerCase()) {
     case 'active': case 'live': return 'Active'
     case 'busy': case 'executing': return 'Busy'
+    case 'paused': return 'Paused'
     case 'offline': return 'Offline'
     case 'dead': return 'Dead'
+    case 'stopped': return 'Stopped'
+    case 'unbooted': return 'Unbooted'
     default: return status ?? 'Unknown'
   }
 }
@@ -511,8 +522,8 @@ export function pickActiveKeepers(keeperList: readonly Keeper[], max = 3): Keepe
     .sort((a, b) => {
       const tsA = parseIsoMs(a.last_heartbeat) ?? 0
       const tsB = parseIsoMs(b.last_heartbeat) ?? 0
-      const pausedA = a.paused === true ? -1e15 : 0
-      const pausedB = b.paused === true ? -1e15 : 0
+      const pausedA = isKeeperPaused(a) ? -1e15 : 0
+      const pausedB = isKeeperPaused(b) ? -1e15 : 0
       return tsB + pausedB - (tsA + pausedA)
     })
     .slice(0, max)
@@ -523,14 +534,14 @@ function KeeperStrip({ keeperList }: { keeperList: readonly Keeper[] }) {
 
   if (activeKeepers.length === 0) {
     return html`
-      <${SectionCard} title="Active Keepers" data-testid="overview-keepers-empty">
+      <${SectionCard} label="Active Keepers" data-testid="overview-keepers-empty">
         <p class="text-2xs text-[var(--color-fg-muted)] italic">No active keepers</p>
       <//>
     `
   }
 
   return html`
-    <${SectionCard} title="Fleet Lifeline" data-testid="overview-keepers">
+    <${SectionCard} label="Fleet Lifeline" data-testid="overview-keepers">
       <div class="space-y-4">
         ${activeKeepers.slice(0, 1).map(
           k => html`
@@ -541,7 +552,9 @@ function KeeperStrip({ keeperList }: { keeperList: readonly Keeper[] }) {
         )}
         <ul class="flex flex-wrap gap-x-6 gap-y-2 border-t border-[var(--color-border-default)] pt-4">
           ${activeKeepers.slice(1).map(
-            k => html`
+            k => {
+              const displayStatus = keeperDisplayStatus(k)
+              return html`
               <li key=${k.name} class="flex items-center gap-2">
                 <div class="min-w-0">
                   <p class="text-xs font-medium truncate">${k.koreanName && k.koreanName !== '' ? k.koreanName : k.name}</p>
@@ -549,9 +562,10 @@ function KeeperStrip({ keeperList }: { keeperList: readonly Keeper[] }) {
                     ? html`<${TimeAgo} timestamp=${k.last_heartbeat} class="text-3xs text-[var(--color-fg-muted)]" />`
                     : null}
                 </div>
-                <span class="${keeperPillClass(k.status)} text-3xs shrink-0">${keeperStatusLabel(k.status)}</span>
+                <span class="${keeperPillClass(displayStatus)} text-3xs shrink-0">${keeperStatusLabel(displayStatus)}</span>
               </li>
-            `,
+              `
+            },
           )}
         </ul>
       </div>

@@ -3,7 +3,7 @@
 (using menhir 3.0)
 
 (name masc_mcp)
-(version 0.19.13)
+(version 0.19.35)
 
 (generate_opam_files true)
 (implicit_transitive_deps false)
@@ -26,7 +26,9 @@
  (description "MASC Protocol: File-based coordination for Claude, Gemini, and Codex agents")
  (depends
   (ocaml (>= 5.4))
-  (dune (>= 3.22))
+  ; [dune] dependency is implicit from [(lang dune 3.22)] above —
+  ; declaring it again here makes the generated .opam emit
+  ; [{>= "3.22" & >= "3.22"}] (audited continuous-loop iter #10).
   ; External dependencies (opam pin)
   (mcp_protocol (>= 1.3.0))
   (ocaml-webrtc (>= 0.2.3))
@@ -41,7 +43,16 @@
   (cmdliner (>= 1.1))
   (cohttp (>= 5.0))
   (cohttp-eio (>= 6.0))
-  (agent_sdk (>= 0.190.26))
+  ; RFC-0107 Phase D — pooled keep-alive HTTP transport. piaf provides
+  ; per-endpoint persistent client (Client.t) + h1/h2 + Eio integration;
+  ; multi-host pool layer (Host_key map, idle eviction, TLS cache) is
+  ; built on top in lib/masc_http_client/pool.ml.  macOS install needs
+  ; brew openssl@3 + CPATH=/opt/homebrew/opt/openssl@3/include
+  ; LIBRARY_PATH=/opt/homebrew/opt/openssl@3/lib environment overrides
+  ; (upstream piaf 0.2.0 missing conf-libssl dependency on macOS arm64).
+  (piaf (>= 0.2.0))
+  (eio-ssl (>= 0.3.0))
+  (agent_sdk (>= 0.200.6))
   (uri (>= 4.4))
   (tls (>= 2.0))
   (tls-eio (>= 2.0))
@@ -54,8 +65,6 @@
   (sqlite3 (>= 5.1))
   (mirage-crypto (>= 1.0))
   (mirage-crypto-rng (>= 1.0))
-  (ctypes (>= 0.20))
-  (ctypes-foreign (>= 0.20))
   (integers (>= 0.7))
   (zstd (>= 0.4))
   (httpun (>= 0.2))
@@ -70,7 +79,14 @@
   (digestif (>= 1.1))
   (ocaml-protoc-plugin (>= 4.0))
   (pbrt (and (>= 3.0) (< 4.0)))
-  (pbrt_services (and (>= 3.0) (< 4.0)))
+  ; [ctypes] + [ctypes-foreign] removed: zero callers in lib/ bin/ test/
+  ; since webrtc_bindings.ml was removed (per lib/dune:252 comment).
+  ; Confirmed by `rg '\bctypes\b' lib/ bin/ test/` = empty.  Audited
+  ; continuous-loop iter #17 (2026-05-15).  Re-add if native FFI work
+  ; resumes.
+  ; [pbrt_services] removed: no caller in lib/ bin/ test/ since
+  ; continuous-loop iter #11 audit (2026-05-15).  Re-add if gRPC
+  ; service support resumes.
   (h2 (>= 0.13))
   (h2-eio (>= 0.13))
   (alcotest (and :with-test (>= 1.6)))
@@ -79,8 +95,22 @@
   (bisect_ppx (and :with-test (>= 2.8)))
   (mtime (>= 2.0))
   (uuidm (>= 0.9))
-  ; Neo4j Bolt native driver
-  (neo4j_bolt_eio (>= 0.4))
+  ; RFC-0004 Phase A0.1 typed SSE event library (lib/sse_event/).
+  ; atdgen runs at build-time (codegen for sse_event.atd →
+  ; sse_event_{t,j}.{ml,mli}); atdgen-runtime is linked into the
+  ; generated _j module.  Promoted from sse_event_poc :with-test
+  ; gating once the typed lib became production-required (PR-1).
+  (atdgen (and :build (>= 4.2.0)))
+  (atdgen-runtime (>= 4.2.0))
+  ; RFC-0004 Phase A0.2 PR-2: atdts generates TypeScript decoders
+  ; from sse_event.atd for the dashboard (committed at
+  ; dashboard/src/schemas/sse_event_generated.ts).  Build-time only;
+  ; no runtime linkage.  CI invokes it via dashboard/scripts/gen-sse-types.sh.
+  (atdts (and :build (>= 4.2.0)))
+  ; [neo4j_bolt_eio] removed: no caller in lib/ bin/ test/ since
+  ; continuous-loop iter #12 audit (2026-05-15).  Same shape as
+  ; pbrt_services (iter #11): declared but never imported.  Re-add
+  ; when Neo4j Bolt support resumes.
   ; OpenTelemetry observability + OTLP exporter
   (opentelemetry (>= 0.13))
   (ambient-context-eio (>= 0.2))

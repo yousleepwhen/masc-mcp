@@ -20,16 +20,6 @@ let keeper_chat_stream_error_json message =
         `Assoc [ ("message", `String message) ] );
     ]
 
-(* Empty needle preserves the legacy "matches all" semantic; non-empty
-   matching delegates to the SSOT helper, which scans byte-wise with
-   inline [Char.lowercase_ascii] and avoids the two
-   [String.lowercase_ascii] allocations plus the per-position
-   [String.sub] of the old form. *)
-let contains_casefold haystack needle =
-  String.length needle = 0
-  || String_util.contains_substring_ci haystack needle
-
-
 (* No external timeout for keeper_msg. Keeper has its own internal limits
    (max_turns, max_cost_usd, max_tokens) that control call duration.
    A fixed external timeout conflicts with multi-turn tool-use loops and
@@ -50,17 +40,16 @@ let execute_keeper_stream_tool ~sw ~clock ?auth_token:_ state ~agent_name ~argum
         }
       in
       match Tool_keeper.dispatch keeper_ctx ~name:"masc_keeper_msg" ~args:arguments with
-      | Some result -> result
+      | Some result -> Tool_result.is_success result, Tool_result.message result
       | None -> (false, "masc_keeper_msg dispatch unavailable")
     with
     | Eio.Cancel.Cancelled _ as exn -> raise exn
+    | Coord.Not_initialized ->
+        (false, Masc_domain.masc_error_to_string (Masc_domain.System Masc_domain.System_error.NotInitialized))
     | exn ->
         let err = Printexc.to_string exn in
-        if contains_casefold err "Invalid_argument(\"MASC not initialized" then
-          (false, Masc_domain.masc_error_to_string (Masc_domain.System Masc_domain.System_error.NotInitialized))
-        else (
-          Log.Mcp.error "tools/call crashed: %s" err;
-          (false, Printf.sprintf "Internal error: %s" err))
+        Log.Mcp.error "tools/call crashed: %s" err;
+        (false, Printf.sprintf "Internal error: %s" err)
   in
   let end_time = Eio.Time.now clock in
   let duration_ms = Keeper_timing.elapsed_duration_ms ~start_time ~end_time in
@@ -141,11 +130,6 @@ let parse_keeper_chat_stream_request body_str =
         channel <> "" || channel_user_id <> ""
         || channel_user_name <> "" || channel_room_id <> ""
       in
-      let legacy_models_present =
-        match json |> member "models" with
-        | `Null -> false
-        | _ -> true
-      in
       let timeout_sec =
         match json |> member "timeout_sec" with
         | `Null -> Ok None
@@ -164,23 +148,25 @@ let parse_keeper_chat_stream_request body_str =
       then
         Error
           "channel, channel_user_id, and channel_room_id are required when connector context is supplied"
-      else if legacy_models_present then
-        Error
-          "legacy keeper model args removed for masc_keeper_msg: models. Keepers now use cascade_name and last_model_used only."
       else
-        match timeout_sec with
-        | Ok timeout_sec ->
-            Ok
-              {
-                name;
-                message;
-                timeout_sec;
-                channel;
-                channel_user_id;
-                channel_user_name;
-                channel_room_id;
-              }
+        match
+          Keeper_meta_contract.reject_legacy_model_args ~tool_name:"masc_keeper_msg" json
+        with
         | Error err -> Error err
+        | Ok () -> (
+          match timeout_sec with
+          | Ok timeout_sec ->
+              Ok
+                {
+                  name;
+                  message;
+                  timeout_sec;
+                  channel;
+                  channel_user_id;
+                  channel_user_name;
+                  channel_room_id;
+                }
+          | Error err -> Error err )
   with Yojson.Json_error e ->
     Error ("invalid json: " ^ e)
 
@@ -259,7 +245,7 @@ let keeper_stream_send_event writer mutex closed event =
 
 (** Execute keeper dispatch with real-time streaming.
     Calls [dispatch_stream] which forwards MODEL text deltas to [on_text_delta].
-    Returns the same [(bool, string)] result as the batch path.
+    Projects the typed keeper result into the local HTTP stream response pair.
     No external timeout — keeper internal limits control duration
     (aligned with MCP path, see mcp_server_eio_call_tool.ml:139-143). *)
 let execute_keeper_stream_tool_streaming ~sw ~clock ?auth_token:_ state
@@ -281,17 +267,16 @@ let execute_keeper_stream_tool_streaming ~sw ~clock ?auth_token:_ state
         Tool_keeper.dispatch_stream ~on_text_delta keeper_ctx
           ~name:"masc_keeper_msg" ~args:arguments
       with
-      | Some result -> result
+      | Some result -> Tool_result.is_success result, Tool_result.message result
       | None -> (false, "masc_keeper_msg stream dispatch unavailable")
     with
     | Eio.Cancel.Cancelled _ as exn -> raise exn
+    | Coord.Not_initialized ->
+        (false, Masc_domain.masc_error_to_string (Masc_domain.System Masc_domain.System_error.NotInitialized))
     | exn ->
         let err = Printexc.to_string exn in
-        if contains_casefold err "Invalid_argument(\"MASC not initialized" then
-          (false, Masc_domain.masc_error_to_string (Masc_domain.System Masc_domain.System_error.NotInitialized))
-        else (
-          Log.Mcp.error "tools/call crashed (stream): %s" err;
-          (false, Printf.sprintf "Internal error: %s" err))
+        Log.Mcp.error "tools/call crashed (stream): %s" err;
+        (false, Printf.sprintf "Internal error: %s" err)
   in
   let end_time = Eio.Time.now clock in
   let duration_ms = Keeper_timing.elapsed_duration_ms ~start_time ~end_time in

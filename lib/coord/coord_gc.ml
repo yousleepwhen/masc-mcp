@@ -6,6 +6,15 @@
 open Masc_domain
 open Coord_utils
 open Coord_state
+open Coord_identity
+open Coord_backlog
+open Coord_task_id
+
+(** Structured result of zombie cleanup to eliminate string-based parsing at call sites. *)
+type cleanup_zombie_result =
+  | No_agents_dir
+  | No_zombies
+  | Cleaned of { count : int; names : string list; released_tasks : int; skipped : int }
 
 (* Callback refs and types are now in Coord_hooks. *)
 
@@ -45,19 +54,38 @@ let cleanup_zombies
   (* agents_dir under .masc/ *)
   let agents_path = agents_dir config in
   let scan_paths =
-    if Sys.file_exists agents_path then [ agents_path ] else []
+    try if Sys.file_exists agents_path then [ agents_path ] else [] with
+    | Eio.Cancel.Cancelled _ as e -> raise e
+    | exn when is_fd_pressure_exn exn ->
+      Log.Gc.warn
+        "cleanup_zombies: skipping scan while agent directory is unreadable due to FD pressure: %s"
+        (Printexc.to_string exn);
+      []
   in
   if scan_paths = [] then
-    "No agents directory"
+    No_agents_dir
   else begin
     (* Phase 1: Detect zombie agents (no side effects) *)
     let zombie_entries = ref [] in (* (name, path) list *)
     List.iter (fun agents_path ->
-      Sys.readdir agents_path |> Array.iter (fun name ->
+      let names =
+        try Some (Sys.readdir agents_path) with
+        | Eio.Cancel.Cancelled _ as e -> raise e
+        | exn when is_fd_pressure_exn exn ->
+          Log.Gc.warn
+            "cleanup_zombies: skipping directory %s while FD pressure is active: %s"
+            agents_path
+            (Printexc.to_string exn);
+          None
+      in
+      match names with
+      | None -> ()
+      | Some names ->
+      names |> Array.iter (fun name ->
         Coord_query.safe_yield ();
         if Filename.check_suffix name ".json" then begin
           let path = Filename.concat agents_path name in
-          match read_agent_with_repair config path with
+          match read_agent_with_repair_result config path with
           | Ok agent
             when (not (List.exists (fun (n, _) -> n = agent.name) !zombie_entries)) &&
                  Coord_resilience.Zombie.is_zombie_for_agent
@@ -68,7 +96,12 @@ let cleanup_zombies
                    agent.last_seen ->
               zombie_entries := (agent.name, path) :: !zombie_entries
           | Ok _ -> () (* not a zombie, skip *)
-          | Error err ->
+          | Error (Agent_fd_pressure exn) ->
+              Log.Gc.warn
+                "cleanup_zombies: skipping quarantine for %s because read failed under FD pressure: %s"
+                name
+                (Printexc.to_string exn)
+          | Error (Agent_read_error err) ->
               (* #7947: previously deleted the file outright, losing
                  current_task/meta with no postmortem trail.  Quarantine
                  to path.broken-<unix_ms> so operators can inspect the
@@ -99,7 +132,7 @@ let cleanup_zombies
     ) scan_paths;
 
     if !zombie_entries = [] then
-      "No zombie agents found"
+      No_zombies
     else begin
       (* Phase 2: Transition status to Inactive + stop heartbeats + stop keeper fibers.
          Note: If later phases fail (task release or file deletion), the agent
@@ -181,15 +214,12 @@ let cleanup_zombies
       let total = List.length !zombie_entries in
       let cleaned = List.length !successfully_cleaned in
       let skipped = total - cleaned in
-      let task_note = if !released_tasks = [] then ""
-        else Printf.sprintf ", released %d orphan task(s)" (List.length !released_tasks)
-      in
-      if skipped > 0 then
-        Printf.sprintf "Cleaned %d/%d zombie(s): %s%s (%d skipped due to errors)"
-          cleaned total (String.concat ", " !successfully_cleaned) task_note skipped
-      else
-        Printf.sprintf "Cleaned up %d zombie agent(s): %s%s"
-          cleaned (String.concat ", " !successfully_cleaned) task_note
+      Cleaned
+        { count = cleaned
+        ; names = !successfully_cleaned
+        ; released_tasks = List.length !released_tasks
+        ; skipped
+        }
     end
   end
 
@@ -202,7 +232,27 @@ let gc config ?(days=7) () =
 
   (* 1. Cleanup zombies *)
   let zombie_result = cleanup_zombies config in
-  results := zombie_result :: !results;
+  let zombie_str =
+    match zombie_result with
+    | No_agents_dir -> "No agents directory"
+    | No_zombies -> "No zombie agents found"
+    | Cleaned { count; names; released_tasks; skipped } ->
+      let task_note =
+        if released_tasks = 0 then ""
+        else Printf.sprintf ", released %d orphan task(s)" released_tasks
+      in
+      if skipped > 0 then
+        Printf.sprintf
+          "Cleaned %d/%d zombie(s): %s%s (%d skipped due to errors)"
+          count
+          (count + skipped)
+          (String.concat ", " names)
+          task_note
+          skipped
+      else
+        Printf.sprintf "Cleaned up %d zombie agent(s): %s%s" count (String.concat ", " names) task_note
+  in
+  results := zombie_str :: !results;
 
   (* 2. Archive stale tasks (older than N days, not completed) *)
   let cutoff_time =

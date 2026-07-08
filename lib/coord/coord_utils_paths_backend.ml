@@ -47,17 +47,9 @@ let state_path config = Filename.concat (masc_dir config) "state.json"
 let backlog_path config = Filename.concat (tasks_dir config) "backlog.json"
 let archive_path config = Filename.concat (masc_dir config) "tasks-archive.json"
 
-(* ============================================ *)
-(* Backend dispatch functions                   *)
-(* ============================================ *)
-
-let is_pg_backend config =
-  let _ = config in
-  false
-
 (** Shared in-memory pubsub for FileSystem and Memory backends.
     All supported backends now share the same in-memory pubsub. *)
-let _shared_pubsub = Backend_types.Pubsub_mem.create ()
+let shared_pubsub = Backend_types.Pubsub_mem.create ()
 
 (** Adapt Backend get (returns Ok string | Error NotFound) to
     the (string option, error) result shape used by all callers. *)
@@ -69,7 +61,9 @@ let backend_get config ~key =
   (match result with
    | Ok v -> Ok (Some v)
    | Error (Backend_types.NotFound _) -> Ok None
-   | Error e -> Error e)
+   | Error (Backend_types.AlreadyExists _ | Backend_types.IOError _
+           | Backend_types.InvalidKey _ | Backend_types.ConnectionFailed _
+           | Backend_types.BackendNotSupported _) as err -> err)
 
 let backend_set config ~key ~value =
   match config.backend with
@@ -86,7 +80,9 @@ let backend_delete config ~key =
   (match result with
    | Ok () -> Ok true
    | Error (Backend_types.NotFound _) -> Ok false
-   | Error e -> Error e)
+   | Error (Backend_types.AlreadyExists _ | Backend_types.IOError _
+           | Backend_types.InvalidKey _ | Backend_types.ConnectionFailed _
+           | Backend_types.BackendNotSupported _) as err -> err)
 
 let backend_exists config ~key =
   match config.backend with
@@ -109,7 +105,7 @@ let backend_get_all config ~prefix =
            let pairs = List.filter_map (fun k ->
              match backend_get config ~key:k with
              | Ok (Some v) -> Some (k, v)
-             | _ -> None
+             | Ok None | Error _ -> None
            ) keys in
            Ok pairs)
 
@@ -141,12 +137,12 @@ let backend_health_check config =
 let backend_publish config ~channel ~message =
   match config.backend with
   | Memory _ | FileSystem _ ->
-      Backend_types.Pubsub_mem.publish (_shared_pubsub) ~channel ~message
+      Backend_types.Pubsub_mem.publish (shared_pubsub) ~channel ~message
 
 let backend_subscribe config ~channel ~callback =
   match config.backend with
   | Memory _ | FileSystem _ ->
-      Backend_types.Pubsub_mem.subscribe (_shared_pubsub) ~channel ~callback
+      Backend_types.Pubsub_mem.subscribe (shared_pubsub) ~channel ~callback
 
 let backend_name config =
   match config.backend with

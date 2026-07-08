@@ -27,11 +27,13 @@ import {
 import type { GateKeepersData } from '../api/gate'
 import { normalizeKeepers } from '../keeper-store-normalize'
 import {
-  deriveStateEntries,
-  deriveSwimlaneSegments,
   isCompositeFetchNotFound,
   shouldUseGateKeeperFallback,
 } from './fsm-hub'
+import {
+  deriveStateEntries,
+  deriveSwimlaneSegments,
+} from './fsm-hub-derivations'
 import type { CompositeObservation } from './fsm-hub-types'
 
 /** Server-shaped keeper composite snapshot matching the projected
@@ -42,7 +44,7 @@ const REAL_COMPOSITE_SHAPE: KeeperCompositeSnapshot = {
   correlation_id: '10510-64f79d602ce6c-60c',
   run_id: 'r-1776233076-0',
   ts: 1776235685.221697,
-  phase: 'Running',
+  phase: 'running',
   turn_phase: 'idle',
   decision: { stage: 'undecided' },
   cascade: { state: 'idle' },
@@ -53,25 +55,33 @@ const REAL_COMPOSITE_SHAPE: KeeperCompositeSnapshot = {
     no_cascade_before_measurement: true,
     compaction_atomicity: true,
     event_priority_monotone: true,
+    phase_derivation_agreement: true,
   },
+  fsm_guard_violations: 0,
+  fsm_guard_violation_breakdown: [],
   is_live: false,
   last_outcome: {
     turn_id: 353,
     ended_at: 1776234638.709722,
     decision_stage: 'tool_policy_selected',
     cascade_state: 'done',
-    selected_model: 'glm-4.5',
+    selected_model: 'provider-k-4.5',
   },
   recommended_actions: [],
 }
 
 /** Real-world payload observed from `keeper_composite_observer.ml`
-    snapshot_to_json — the schema MUST accept this without transformation. */
+    snapshot_to_json — the schema MUST accept this without transformation.
+    FSM strings are lowercase snake_case because the observer serializes
+    via `Keeper_state_machine.phase_to_string` (and the parallel
+    *_to_string for turn_phase / decision / cascade / compaction).  The
+    capitalized `Stable` form lives in the TLA+ composite projection,
+    not in the runtime JSON. */
 const REAL_COMPOSITE_PAYLOAD = {
   correlation_id: '10510-64f79d602ce6c-60c',
   run_id: 'r-1776233076-0',
   ts: 1776235685.221697,
-  phase: 'Running',
+  phase: 'running',
   turn_phase: 'idle',
   decision: { stage: 'undecided' },
   cascade: { state: 'idle' },
@@ -82,7 +92,10 @@ const REAL_COMPOSITE_PAYLOAD = {
     no_cascade_before_measurement: true,
     compaction_atomicity: true,
     event_priority_monotone: true,
+    phase_derivation_agreement: true,
   },
+  fsm_guard_violations: 0,
+  fsm_guard_violation_breakdown: [],
   is_live: false,
   last_outcome: null,
 }
@@ -118,7 +131,7 @@ describe('FSM Hub integration — API response shape', () => {
   describe('composite snapshot schema (valibot pilot)', () => {
     it('accepts the current backend payload shape end-to-end', () => {
       const parsed = parseKeeperCompositeSnapshot(REAL_COMPOSITE_PAYLOAD)
-      expect(parsed.phase).toBe('Running')
+      expect(parsed.phase).toBe('running')
       expect(parsed.collapsed_from).toBeUndefined()
       expect(parsed.invariants.phase_turn_alignment).toBe(true)
       expect(parsed.last_outcome).toBeNull()

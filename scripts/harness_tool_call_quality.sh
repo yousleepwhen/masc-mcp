@@ -344,7 +344,7 @@ write_benchmark_persona_profile() {
         desires: $desires,
         instructions: $instructions,
         mention_targets: [$mention],
-        tool_preset: "coding",
+        tool_preset: "delivery",
         tool_also_allow: ["masc_board_post"],
         proactive_enabled: false,
         telemetry_feedback_enabled: false,
@@ -386,7 +386,6 @@ start_live_server() {
     export MASC_AUTONOMY_ENABLED="0"
     export MASC_ORCHESTRATOR_ENABLED="0"
     export MASC_KEEPER_BOOTSTRAP_ENABLED="0"
-    export MASC_ALLOW_LEGACY_ACCEPT="1"
     export GRAPHQL_API_KEY=""
     export GRAPHQL_URL="http://127.0.0.1:9/graphql"
     export OAS_CLAUDE_STRICT_MCP="1"
@@ -406,7 +405,6 @@ start_live_server() {
     export MASC_AUTONOMY_ENABLED="0"
     export MASC_ORCHESTRATOR_ENABLED="0"
     export MASC_KEEPER_BOOTSTRAP_ENABLED="0"
-    export MASC_ALLOW_LEGACY_ACCEPT="1"
     export GRAPHQL_API_KEY=""
     export GRAPHQL_URL="http://127.0.0.1:9/graphql"
     export OAS_CLAUDE_STRICT_MCP="1"
@@ -521,7 +519,7 @@ derive_final_result() {
           any(.[]; .tool_name == "keeper_tool_search"
                     and ((.input.query // "") | tostring | contains("prompt_fingerprint")));
         def read_hit:
-          any(.[]; .tool_name == "keeper_fs_read"
+          any(.[]; .tool_name == "tool_read_file"
                     and ((.input.path // "") | tostring | contains("keeper_tool_call_log")));
         {
           status: (if search_hit and read_hit then "completed" else "incomplete" end),
@@ -542,14 +540,14 @@ derive_final_result() {
         def failure_index:
           first(
             to_entries[]
-            | select(.value.tool_name == "keeper_fs_read" and (.value.success | not))
+            | select(.value.tool_name == "tool_read_file" and (.value.success | not))
             | .key
           );
         def recovered_after_failure($idx):
           any(
             to_entries[];
             .key > $idx
-            and .value.tool_name == "keeper_fs_read"
+            and .value.tool_name == "tool_read_file"
             and .value.success
             and ((.value.input.path // "") | tostring | contains("keeper_agent_run.ml"))
           );
@@ -569,7 +567,7 @@ derive_final_result() {
         def search_hit:
           any(.[]; .tool_name == "keeper_tool_search");
         def bash_hit:
-          any(.[]; .tool_name == "keeper_bash" and .success);
+          any(.[]; .tool_name == "tool_execute" and .success);
         def board_hit:
           any(
             .[];

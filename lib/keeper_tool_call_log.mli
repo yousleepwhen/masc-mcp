@@ -49,6 +49,7 @@ val set_turn_context :
   ?tool_surface_class:string ->
   ?visible_tool_count:int ->
   ?required_tools:string list ->
+  ?required_tool_candidates:string list ->
   ?missing_required_tools:string list ->
   ?cascade_profile:string ->
   unit ->
@@ -67,10 +68,9 @@ val get_turn_context :
 
 val runtime_contract_json_for_call :
   keeper_name:string ->
-  ?model:string ->
   unit ->
   Yojson.Safe.t
-(** [runtime_contract_json_for_call ~keeper_name ?model ()] returns the
+(** [runtime_contract_json_for_call ~keeper_name ()] returns the
     canonical keeper runtime contract from the current turn context. *)
 
 val action_radius_json_for_call :
@@ -90,17 +90,35 @@ val route_evidence_json_of_tool_io :
   input:Yojson.Safe.t ->
   output_text:string ->
   Yojson.Safe.t option
-(** [route_evidence_json_of_tool_io] extracts first-class route proof from
-    keeper git/gh tool I/O. The evidence includes redacted command/cwd/path
-    from the input plus route/status fields such as [via], [sandbox_profile],
-    [git_creds_enabled], [network_mode], [status], and PR URL when present. *)
+(** [route_evidence_json_of_tool_io] extracts first-class route proof from a
+    keeper tool call. Descriptor-backed calls always include descriptor route
+    fields such as [descriptor_id], [public_name], [canonical_name], [executor],
+    [backend], [sandbox], and policy labels. Runtime route/status fields such
+    as [via], [sandbox_profile], [git_creds_enabled], [network_mode], [status],
+    and redacted command/cwd/path are added when present. *)
 
 val init : ?cluster_name:string -> base_path:string -> unit -> unit
 (** [init ?cluster_name ~base_path ()] creates the cluster-aware Dated_jsonl
-    store. Call once at startup. *)
+    store. Call once at startup. [MASC_TOOL_CALL_LOG_RETENTION_DAYS] controls
+    opportunistic retention; default is 30 days, and values <= 0 disable
+    pruning. *)
+
+val start_flush_fiber : sw:Eio.Switch.t -> clock:_ Eio.Time.clock -> unit
+(** [start_flush_fiber ~sw ~clock] enables bounded asynchronous appends and
+    starts a background drain fiber. Callers that only invoke [init] keep the
+    legacy synchronous append behavior, which is useful for CLI and tests. *)
+
+val flush_now : unit -> unit
+(** Drain queued asynchronous appends immediately. Intended for shutdown and
+    focused tests. *)
 
 val store_dir : unit -> string option
 (** [store_dir ()] returns the initialized durable store directory, if any. *)
+
+val current_log_path : unit -> string option
+(** [current_log_path ()] returns today's JSONL file path for the initialized
+    durable store, if any. The file may not exist yet when no tool call has
+    been appended today. *)
 
 val configured_masc_root : unit -> string option
 (** [configured_masc_root ()] returns the cluster-aware MASC root passed to
@@ -136,6 +154,7 @@ val log_call :
   ?tool_surface_class:string ->
   ?visible_tool_count:int ->
   ?required_tools:string list ->
+  ?required_tool_candidates:string list ->
   ?missing_required_tools:string list ->
   ?cascade_profile:string ->
   ?result_bytes:int ->
@@ -143,8 +162,9 @@ val log_call :
   unit ->
   unit
 (** [log_call ...] persists a single tool call record with full I/O.
-    Output is truncated to 4000 bytes. [model] records which LLM generated
-    the tool call. Turn-policy fields ([lane], [tool_choice],
+    Output is truncated to 4000 bytes. [model] is a compatibility input only;
+    non-empty values are redacted to the neutral runtime lane. [cascade_profile]
+    is persisted separately as the operator-facing runtime selector. Turn-policy fields ([lane], [tool_choice],
     [thinking_enabled], [thinking_budget]) capture the effective tool
     selection context. [result_bytes] is the original output size before
     any truncation. [truncated_to] is present when Tool_output_validation
@@ -176,3 +196,10 @@ val read_latest :
 
 val reset_for_testing : unit -> unit
 (** Resets the in-memory store reference. For unit tests only. *)
+
+val queued_count_for_testing : unit -> int
+(** Number of queued asynchronous append records. For unit tests only. *)
+
+val dropped_count_for_testing : unit -> int
+(** Number of records dropped because the asynchronous append queue was full.
+    For unit tests only. *)

@@ -23,8 +23,6 @@ let clamp_limit limit =
   else if l > max_limit then max_limit
   else l
 
-let iso_of_unix = Dashboard_utils.iso_of_unix
-
 (** Criteria carry the "completion_contract" in their Custom text.
     Non-Custom criteria (Contains, Schema_match, ...) are automated checks,
     not contract text, so we skip them here. *)
@@ -146,7 +144,7 @@ let request_to_json (req : V.verification_request) : Yojson.Safe.t =
      | Some v -> `String v
      | None -> `Null);
     ("status", `String status);
-    ("created_at", `String (iso_of_unix req.created_at));
+    ("created_at", `String (Dashboard_utils.iso_of_unix req.created_at));
     ("submitted_by", `String req.worker);
     ("approved_by",
      match approved_by with
@@ -170,8 +168,12 @@ let request_to_json (req : V.verification_request) : Yojson.Safe.t =
     Protected against missing base_path or filesystem errors — failures
     surface as an empty list plus a log line, matching the tolerance
     [Verification.list_requests] already offers on a missing dir. *)
-let load_requests () : V.verification_request list =
-  let base_path = Env_config_core.base_path () in
+let load_requests ?base_path () : V.verification_request list =
+  let base_path =
+    match base_path with
+    | Some value -> value
+    | None -> Env_config_core.base_path ()
+  in
   try V.list_requests base_path
   with
   | Eio.Cancel.Cancelled _ as e -> raise e
@@ -205,18 +207,26 @@ let take n lst =
   aux [] n lst
 
 let now_iso () = Masc_domain.now_iso ()
+let fd_pressure_fields () = Keeper_fd_pressure.projection_fields ()
 
-let requests_json ?task_id ?limit () : Yojson.Safe.t =
-  let limit = clamp_limit limit in
-  let all = load_requests () in
+(* Compute the request-listing projection from an already-loaded list.
+   Factored out so [proof_compose] can share the disk scan between
+   summary and request listing. *)
+let requests_json_of_requests ?task_id ~limit all : Yojson.Safe.t =
   let filtered = filter_by_task_id all task_id in
   let sorted = sort_desc filtered in
   let trimmed = take limit sorted in
-  `Assoc [
-    ("updated_at", `String (now_iso ()));
-    ("total", `Int (List.length filtered));
-    ("requests", `List (List.map request_to_json trimmed));
-  ]
+  `Assoc
+    ([ ("updated_at", `String (now_iso ()))
+     ; ("total", `Int (List.length filtered))
+     ; ("requests", `List (List.map request_to_json trimmed))
+     ]
+     @ fd_pressure_fields ())
+
+let requests_json ?base_path ?task_id ?limit () : Yojson.Safe.t =
+  let limit = clamp_limit limit in
+  let all = load_requests ?base_path () in
+  requests_json_of_requests ?task_id ~limit all
 
 (* ── Summary projection ─────────────────────────────── *)
 
@@ -245,20 +255,23 @@ let rejection_row_json (req : V.verification_request) : Yojson.Safe.t =
      | Some v -> `String v
      | None -> `Null);
     ("verdict_reason", `String verdict_reason);
-    ("created_at", `String (iso_of_unix req.created_at));
+    ("created_at", `String (Dashboard_utils.iso_of_unix req.created_at));
   ]
 
 let is_rejected (req : V.verification_request) : bool =
   match req.status with
   | V.Completed (V.Fail _) | V.Completed (V.Partial _) -> true
-  | _ -> false
+  | V.Completed V.Pass -> false
+  | V.Pending | V.Assigned _ -> false
 
 let bucket_of_status (req : V.verification_request) : string =
   req |> status_bucket_of_request |> status_bucket_to_string
 
-let summary_json ?recent () : Yojson.Safe.t =
-  let recent = clamp_recent recent in
-  let all = load_requests () in
+(* Compute the summary projection from an already-loaded request list.
+   Factored out so [proof_compose] can share the disk scan between
+   summary and request listing. *)
+let summary_json_of_requests ~recent all : Yojson.Safe.t =
+  let recent = clamp_recent (Some recent) in
   let total = List.length all in
   let pending = ref 0 in
   let approved = ref 0 in
@@ -276,15 +289,37 @@ let summary_json ?recent () : Yojson.Safe.t =
     |> take recent
     |> List.map rejection_row_json
   in
-  `Assoc [
-    ("updated_at", `String (now_iso ()));
-    ("total", `Int total);
-    ("by_status", `Assoc [
-      ("pending", `Int !pending);
-      ("approved", `Int !approved);
-      ("rejected", `Int !rejected);
-      (* timed_out reserved for future state-machine variant; always 0 today *)
-      ("timed_out", `Int 0);
-    ]);
-    ("recent_rejections", `List recent_rejections);
-  ]
+  `Assoc
+    ([ ("updated_at", `String (now_iso ()))
+     ; ("total", `Int total)
+     ; ( "by_status"
+       , `Assoc
+           [ ("pending", `Int !pending)
+           ; ("approved", `Int !approved)
+           ; ("rejected", `Int !rejected)
+           ; (* timed_out reserved for future state-machine variant; always 0 today *)
+             ("timed_out", `Int 0)
+           ] )
+     ; ("recent_rejections", `List recent_rejections)
+     ]
+     @ fd_pressure_fields ())
+
+let summary_json ?base_path ?recent () : Yojson.Safe.t =
+  let recent = Option.value recent ~default:default_recent in
+  let all = load_requests ?base_path () in
+  summary_json_of_requests ~recent all
+
+(* Single-load companion for handlers that emit both projections
+   side-by-side ([/api/v1/dashboard/proof] is the live caller).
+
+   [summary_json] and [requests_json] each call [load_requests], so
+   the historic proof handler scanned the verification store twice
+   per refresh.  This helper performs one scan and folds the two
+   projections from the shared list. *)
+let proof_compose ?base_path ?recent ?limit () : Yojson.Safe.t * Yojson.Safe.t =
+  let recent = Option.value recent ~default:default_recent in
+  let limit = clamp_limit limit in
+  let all = load_requests ?base_path () in
+  let summary = summary_json_of_requests ~recent all in
+  let requests = requests_json_of_requests ~limit all in
+  summary, requests

@@ -17,7 +17,7 @@
 open Masc_mcp
 
 let counter_total () =
-  Prometheus.metric_total Prometheus.metric_keeper_meta_json_failures
+  Prometheus.metric_total Masc_mcp.Keeper_metrics.(to_string MetaJsonFailures)
 
 let canonical_only_meta_json () =
   (* Build an `Assoc whose every key is in [canonical_keeper_meta_key_names].
@@ -60,27 +60,29 @@ let test_counter_ticks_on_genuine_unknown_key () =
 let fresh_tmpdir () =
   let path = Filename.temp_file "masc-progress-refresh-" ".tmp" in
   Sys.remove path;
-  Keeper_types.mkdir_p path;
+  let (_ : string) = Keeper_fs.ensure_dir path in
   path
 
 let cleanup_tmpdir path =
-  ignore (Sys.command (Printf.sprintf "rm -rf %s" (Filename.quote path)))
+  Fs_compat.remove_tree path
 
 let test_progress_updated_line_failure_is_observable () =
   let dir = fresh_tmpdir () in
   Fun.protect ~finally:(fun () -> cleanup_tmpdir dir) (fun () ->
     let config = Coord.default_config dir in
     let keeper_name = "progress-refresh-failure" in
-    let progress_path = Keeper_types.keeper_progress_path config keeper_name in
-    Keeper_types.mkdir_p progress_path;
+    let progress_path =
+      Keeper_types_support.keeper_progress_path config keeper_name
+    in
+    let (_ : string) = Keeper_fs.ensure_dir progress_path in
     let before =
       Prometheus.metric_total
-        Prometheus.metric_keeper_progress_updated_line_failures
+        Masc_mcp.Keeper_metrics.(to_string ProgressUpdatedLineFailures)
     in
     Keeper_meta_store.refresh_progress_updated_line config keeper_name;
     let after =
       Prometheus.metric_total
-        Prometheus.metric_keeper_progress_updated_line_failures
+        Masc_mcp.Keeper_metrics.(to_string ProgressUpdatedLineFailures)
     in
     Alcotest.(check bool)
       "progress Updated-line refresh failure increments counter"

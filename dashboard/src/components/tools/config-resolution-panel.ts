@@ -11,8 +11,9 @@ import type {
   KeeperRuntimeField,
 } from '../../api/dashboard'
 import { fetchDashboardRuntimeProbe } from '../../api/dashboard'
+import { MISSING_DATA_DASH, errorToString } from '../../lib/format-string'
 import { Btn } from '../btn'
-import { Card } from '../common/card'
+import { SectionCard } from '../common/card'
 import { StatusChip } from '../common/status-chip'
 import { CopyIdButton } from '../common/copy-id-button'
 import { TextInput } from '../common/input'
@@ -89,8 +90,6 @@ function sourceLabel(source: string): string {
   switch (source) {
     case 'env':
       return 'env override'
-    case 'home_masc':
-      return 'home config'
     case 'local_masc':
       return 'local .masc'
     case 'invalid_env':
@@ -206,6 +205,38 @@ function ConfigRow({
   `
 }
 
+function isRepoFallbackSource(source: string): boolean {
+  return source === 'cwd' || source === 'exe_relative'
+}
+
+function sameResolvedPath(left: DashboardConfigResolutionItem, right: DashboardConfigResolutionItem): boolean {
+  return normalizePath(left.path) === normalizePath(right.path)
+}
+
+function ConfigTopologySummary({
+  resolution,
+}: {
+  resolution: DashboardConfigResolution
+}) {
+  const authoringMatchesRuntime = sameResolvedPath(resolution.cascade_authoring, resolution.cascade)
+  const repoFallbackActive = isRepoFallbackSource(resolution.config_root.source)
+
+  return html`
+    <div class="mb-4 rounded-[var(--r-1)] border border-[var(--color-border-default)] bg-[var(--color-bg-hover)] px-3 py-2">
+      <div class="flex flex-wrap items-center gap-2">
+        <${StatusChip} tone="neutral" uppercase=${false}>TOML-only<//>
+        <${StatusChip} tone=${authoringMatchesRuntime ? 'ok' : 'warn'} uppercase=${false}>
+          ${authoringMatchesRuntime ? 'authoring=runtime' : 'authoring/runtime split'}
+        <//>
+        <${StatusChip} tone=${repoFallbackActive ? 'warn' : 'neutral'} uppercase=${false}>
+          ${repoFallbackActive ? 'repo config active' : 'repo seed not active'}
+        <//>
+        <span class="text-xs text-[var(--color-fg-muted)]">cascade.toml source follows the resolved config root</span>
+      </div>
+    </div>
+  `
+}
+
 function WarningBlock({
   title,
   warnings,
@@ -263,7 +294,7 @@ function DiagnosticRow({ item }: { item: DashboardRuntimeDiagnostic }) {
 function fmtBoolean(value: boolean | null | undefined): string {
   if (value === true) return 'yes'
   if (value === false) return 'no'
-  return '--'
+  return MISSING_DATA_DASH
 }
 
 function probeTone(signal: string | null | undefined, probeOk: boolean | null | undefined): string {
@@ -322,7 +353,7 @@ function sourceTone(source: string): string {
 }
 
 function fmtKeeperValue(value: number | null, fmt: 'int' | 'float' | 'duration'): string {
-  if (value === null || value === undefined) return '--'
+  if (value === null || value === undefined) return MISSING_DATA_DASH
   switch (fmt) {
     case 'int': return String(Math.round(value))
     case 'float': return value.toFixed(1)
@@ -368,6 +399,33 @@ function KeeperRuntimePanel({ runtime }: { runtime: KeeperRuntimeResolved | null
   `
 }
 
+function RuntimeTruthPanel({ runtimeResolution }: { runtimeResolution: DashboardRuntimeResolution }) {
+  const fd = runtimeResolution.fd_accountant
+  const fleet = runtimeResolution.fleet_safety
+  const fdValue = fd
+    ? `${fd.fd_open ?? MISSING_DATA_DASH} / ${fd.fd_limit ?? MISSING_DATA_DASH}`
+    : MISSING_DATA_DASH
+  const fdTone = fd?.pressure_active ? 'bad' : 'neutral'
+
+  return html`
+    <${ConfigCard} class="mb-4 px-4 py-4">
+      <div class="mb-3 flex flex-wrap items-center gap-2">
+        <div class="text-2xs uppercase tracking-[var(--track-caps)] text-[var(--color-fg-muted)]">live runtime truth</div>
+        <${StatusChip} tone=${toneClass(runtimeResolution.status)}>${runtimeResolution.status}<//>
+        <${StatusChip} tone=${fdTone} uppercase=${false}>fd ${fdValue}<//>
+      </div>
+      <div class="grid gap-3 md:grid-cols-2">
+        <${RuntimeMetaRow} label="effective base" value=${runtimeResolution.resolved_base_path.path ?? MISSING_DATA_DASH} />
+        <${RuntimeMetaRow} label="effective .masc" value=${runtimeResolution.data_root.path ?? MISSING_DATA_DASH} />
+        <${RuntimeMetaRow} label="server repo" value=${runtimeResolution.server_repo_path?.path ?? MISSING_DATA_DASH} />
+        <${RuntimeMetaRow} label="executable commit" value=${runtimeResolution.build.commit ?? MISSING_DATA_DASH} />
+        <${RuntimeMetaRow} label="keeper fibers" value=${String(fleet?.keeper_fibers ?? MISSING_DATA_DASH)} />
+        <${RuntimeMetaRow} label="fd pressure" value=${fd?.pressure_active == null ? MISSING_DATA_DASH : fd.pressure_active ? 'active' : 'clear'} />
+      </div>
+    <//>
+  `
+}
+
 function RuntimeProbePanel() {
   const state = useSignal<{
     data: DashboardRuntimeProbeResponse | null
@@ -388,7 +446,7 @@ function RuntimeProbePanel() {
       state.value = {
         ...state.value,
         loading: false,
-        error: error instanceof Error ? error.message : String(error),
+        error: errorToString(error),
       }
     }
   }
@@ -440,8 +498,8 @@ function RuntimeProbePanel() {
       ${probe
         ? html`
             <div class="grid gap-3 md:grid-cols-2">
-              <${RuntimeMetaRow} label="effective model" value=${probe.effective_model ?? '--'} />
-              <${RuntimeMetaRow} label="server" value=${probe.server_url ?? '--'} />
+              <${RuntimeMetaRow} label="effective model" value=${probe.effective_model ?? MISSING_DATA_DASH} />
+              <${RuntimeMetaRow} label="server" value=${probe.server_url ?? MISSING_DATA_DASH} />
               <${RuntimeMetaRow} label="loaded before/after" value=${`${fmtBoolean(probe.model_loaded_before_probe)} / ${fmtBoolean(probe.model_loaded_after_probe)}`} />
               <${RuntimeMetaRow}
                 label="first run load"
@@ -459,7 +517,7 @@ function RuntimeProbePanel() {
                 label="prompt eval delta"
                 value=${assessment?.prompt_eval_duration_reduction_ratio != null
                   ? `${formatNumber(assessment.prompt_eval_duration_reduction_ratio * 100, 1)}%`
-                  : '--'}
+                  : MISSING_DATA_DASH}
               />
               <${RuntimeMetaRow}
                 label="loaded models"
@@ -525,11 +583,7 @@ export function ConfigResolutionPanel({
   const rootSource = resolution?.config_root.source ?? ''
 
   return html`
-    <${Card} title="설정 경로" class="section mb-4">
-      <div class="mb-4 text-xs leading-relaxed text-[var(--color-fg-muted)]">
-        서버가 실제로 해석한 config root와 runtime/data root를 함께 보여줍니다. cascade는 human-authored cascade.toml과 runtime cascade.json을 분리해 보여주며, 현재 실행이 바라보는 경로와 체크인된 seed config는 다를 수 있습니다.
-      </div>
-
+    <${SectionCard} label="설정 경로" class="section mb-4">
       ${resolution
         ? html`
             <div class="mb-6">
@@ -538,6 +592,8 @@ export function ConfigResolutionPanel({
                 <${StatusChip} tone="neutral" uppercase=${false}>${sourceLabel(resolution.config_root.source)}<//>
                 <span class="text-xs text-[var(--color-fg-muted)]">resolved config root</span>
               </div>
+
+              <${ConfigTopologySummary} resolution=${resolution} />
 
               <div class="mb-4">
                 <${WarningBlock} title="config warnings" warnings=${resolution.warnings} />
@@ -558,7 +614,7 @@ export function ConfigResolutionPanel({
                   rootSource=${rootSource}
                 />
                 <${ConfigRow}
-                  label="cascade runtime"
+                  label="cascade source"
                   item=${resolution.cascade}
                   rootPath=${rootPath}
                   rootSource=${rootSource}
@@ -597,11 +653,18 @@ export function ConfigResolutionPanel({
                       <${StatusChip} tone="bad">source mismatch<//>
                     `
                   : null}
+                ${runtimeResolution.server_workspace_mismatch
+                  ? html`
+                      <${StatusChip} tone="warn">server/workspace mismatch<//>
+                    `
+                  : null}
               </div>
 
               <div class="mb-4">
                 <${WarningBlock} title="runtime warnings" warnings=${runtimeResolution.warnings} />
               </div>
+
+              <${RuntimeTruthPanel} runtimeResolution=${runtimeResolution} />
 
               <div class="grid gap-3 md:grid-cols-2">
                 <${ConfigRow} label="base path" item=${runtimeResolution.base_path} />
@@ -615,9 +678,9 @@ export function ConfigResolutionPanel({
               </div>
 
               <div class="mt-4 grid gap-3 md:grid-cols-2">
-                <${RuntimeMetaRow} label="server repo head" value=${runtimeResolution.server_repo_git_commit ?? '--'} />
-                <${RuntimeMetaRow} label="workspace head" value=${runtimeResolution.workspace_git_commit ?? '--'} />
-                <${RuntimeMetaRow} label="resolved base head" value=${runtimeResolution.resolved_base_git_commit ?? '--'} />
+                <${RuntimeMetaRow} label="server repo head" value=${runtimeResolution.server_repo_git_commit ?? MISSING_DATA_DASH} />
+                <${RuntimeMetaRow} label="workspace head" value=${runtimeResolution.workspace_git_commit ?? MISSING_DATA_DASH} />
+                <${RuntimeMetaRow} label="resolved base head" value=${runtimeResolution.resolved_base_git_commit ?? MISSING_DATA_DASH} />
                 <${RuntimeMetaRow} label="runtime build" value=${runtimeResolution.build.commit ?? runtimeResolution.build.release_version} />
                 <${RuntimeMetaRow} label="started at" value=${runtimeResolution.build.started_at} />
               </div>

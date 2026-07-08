@@ -5,9 +5,9 @@
     - Sequence counter (next_seq)
     - Pause state (is_paused, pause_info)
     - State recovery (recover_room_state)
-    - Shared string utilities (non_empty_string_opt, normalized_string_list)
+    - Shared string utilities (String_util.option_trim, normalized_string_list)
 
-    Extracted to separate modules:
+    Extracted owner modules:
     - Coord_bootstrap: default_room_state, ensure_room_bootstrap
     - Coord_identity: generate_session_id, get_hostname, get_tty, resolve_agent_name
     - Coord_task_id: task_id_to_int, archive management, next_task_number
@@ -18,37 +18,13 @@ open Masc_domain
 open Coord_utils
 
 (* ============================================ *)
-(* Re-exports (backward compat)                 *)
-(* ============================================ *)
-
-let default_room_state = Coord_bootstrap.default_room_state
-let ensure_room_bootstrap = Coord_bootstrap.ensure_room_bootstrap
-let generate_session_id = Coord_identity.generate_session_id
-let get_hostname = Coord_identity.get_hostname
-let get_tty = Coord_identity.get_tty
-let resolve_agent_name = Coord_identity.resolve_agent_name
-let task_id_to_int = Coord_task_id.task_id_to_int
-let read_archive_task_ids = Coord_task_id.read_archive_task_ids
-let append_archive_tasks = Coord_task_id.append_archive_tasks
-let next_task_number = Coord_task_id.next_task_number
-let read_backlog_r = Coord_backlog.read_backlog_r
-let read_backlog = Coord_backlog.read_backlog
-let write_backlog = Coord_backlog.write_backlog
-
-(* ============================================ *)
 (* Shared String Utilities                      *)
 (* ============================================ *)
-
-let non_empty_string_opt = function
-  | Some value ->
-      let value = String.trim value in
-      if value = "" then None else Some value
-  | None -> None
 
 let normalized_string_list values =
   let seen = Hashtbl.create (List.length values) in
   values
-  |> List.filter_map (fun value -> non_empty_string_opt (Some value))
+  |> List.filter_map (fun value -> String_util.option_trim (Some value))
   |> List.filter (fun value ->
          if Hashtbl.mem seen value then
            false
@@ -61,16 +37,11 @@ let normalized_string_list values =
 (* ============================================ *)
 
 let recover_active_agent_name = function
-  | `String name -> non_empty_string_opt (Some name)
-  | `Assoc _ as json ->
-      (match non_empty_string_opt (Safe_ops.json_string_opt "name" json) with
-       | Some name -> Some name
-       | None ->
-           non_empty_string_opt (Safe_ops.json_string_opt "agent_name" json))
+  | `String name -> String_util.option_trim (Some name)
   | _ -> None
 
 let recover_room_state config json =
-  let defaults = default_room_state config in
+  let defaults = Coord_bootstrap.default_room_state config in
   let active_agents =
     match Safe_ops.json_list_opt "active_agents" json with
     | Some agents -> List.filter_map recover_active_agent_name agents
@@ -78,26 +49,26 @@ let recover_room_state config json =
   in
   {
     protocol_version =
-      non_empty_string_opt (Safe_ops.json_string_opt "protocol_version" json)
+      String_util.option_trim (Safe_ops.json_string_opt "protocol_version" json)
       |> Option.value ~default:defaults.protocol_version;
     project =
-      non_empty_string_opt (Safe_ops.json_string_opt "project" json)
+      String_util.option_trim (Safe_ops.json_string_opt "project" json)
       |> Option.value ~default:defaults.project;
     started_at =
-      non_empty_string_opt (Safe_ops.json_string_opt "started_at" json)
+      String_util.option_trim (Safe_ops.json_string_opt "started_at" json)
       |> Option.value ~default:defaults.started_at;
     message_seq = Safe_ops.json_int ~default:defaults.message_seq "message_seq" json;
     active_agents;
     paused = Safe_ops.json_bool ~default:defaults.paused "paused" json;
     pause_reason =
-      non_empty_string_opt (Safe_ops.json_string_opt "pause_reason" json);
+      String_util.option_trim (Safe_ops.json_string_opt "pause_reason" json);
     paused_by =
-      non_empty_string_opt (Safe_ops.json_string_opt "paused_by" json);
+      String_util.option_trim (Safe_ops.json_string_opt "paused_by" json);
     paused_at =
-      non_empty_string_opt (Safe_ops.json_string_opt "paused_at" json);
+      String_util.option_trim (Safe_ops.json_string_opt "paused_at" json);
     search_strategy_default =
       (match
-         non_empty_string_opt
+         String_util.option_trim
            (Safe_ops.json_string_opt "search_strategy_default" json)
        with
        | Some value -> Some value

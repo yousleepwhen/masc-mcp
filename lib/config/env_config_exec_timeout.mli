@@ -11,17 +11,10 @@ type caller =
   | Preflight
   | Repo_readiness
   | Sandbox
-  | Pr_review
-  | Pr_review_post
-      (** [gh pr review --body --event] mutation (post a review with
-          body).  Default 30.0s — server-side processing of the
-          review state machine + notification fanout is materially
-          slower than read ops; the [Pr_review] 15s read budget is
-          too tight here. *)
   | Dispatch
   | Memory_audit
   | Alerting
-  | Gh_shared
+  | Gh_quick_query
   | Status_detail
   | Turn_sandbox
   | Turn_up
@@ -31,14 +24,6 @@ type caller =
           that should complete in <1s; however, some sites invoke
           [git remote] over network-origin remotes where DNS and TLS
           add latency, so 10s provides a reasonable ceiling. *)
-  | Autoresearch_git_meta
-      (** Autoresearch local git metadata commands. Default 10.0s,
-          preserving the previous inline budget for rev-parse/tag
-          metadata reads inside the experiment loop. *)
-  | Autoresearch_git_mutation
-      (** Autoresearch local git mutation commands. Default 30.0s,
-          preserving the previous inline budget for add/commit/reset/
-          worktree cleanup inside managed experiment loops. *)
   | Shell_probe
       (** PATH availability probes (e.g. [command -v <name>]).
           Default 2.0s — pure OS lookup; longer timeouts mask
@@ -47,7 +32,7 @@ type caller =
       (** [Graphql_client.{request,query,mutate}] HTTP calls.
           Default 10.0s — preserves the 8-10s literals previously
           held by relation_materializer, dashboard_agent_relations,
-          dashboard_execution_helpers, and autoresearch_knowledge. *)
+          and dashboard_execution_helpers. *)
   | Http
       (** Outbound JSON POST probes via [http_post_json_text_with_status]
           (e.g. tool_local_runtime_verify).  Default 15.0s, matching
@@ -70,9 +55,6 @@ type caller =
           preserves the previous inline budget. *)
   | Coord_identity
       (** Coord tty identity probe.  Default 5.0s. *)
-  | Dashboard
-      (** Dashboard safe_autonomy short heartbeat probe.
-          Default 3.0s — matches the previous inline budget. *)
   | Http_routes
       (** Workspace API git command invoked via the HTTP routes layer.
           Default 15.0s. *)
@@ -81,10 +63,6 @@ type caller =
           Default 300.0s — these operations run against remote origins
           over the network; the previous inline budget was 300s to
           tolerate slow connections and large repos. *)
-  | Task_sandbox_git
-      (** Task-sandbox worktree git operations (create, diff, cleanup).
-          Default 30.0s — these are local operations (no network) but
-          can be slow on large repos; the previous inline budget was 30s. *)
   | Test
       (** Test fixtures driving the exec runtime.
           Default 30.0s — matches the [test_slow_command_promotes]

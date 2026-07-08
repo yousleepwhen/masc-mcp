@@ -3,11 +3,12 @@ import { signal } from '@preact/signals'
 /**
  * RFC-0028 PR-α: keeper-trace store.
  *
- * Stitched read-side projection over 4 existing layer surfaces:
+ * Stitched read-side projection over existing IDE/runtime surfaces:
  *  - anchored-thread (RFC-0021)
  *  - cascade-hop     (RFC-0023)
  *  - bdi-snapshot    (RFC-0024)
  *  - decision-log    (RFC-0026)
+ *  - activity-event  (/api/v1/activity/events normalized context)
  *
  * The store is *append-only* from the producer's perspective. It enforces
  * three invariants on every `pushTrace` call:
@@ -36,6 +37,7 @@ export type KeeperTraceSource =
   | 'cascade-hop'
   | 'bdi-snapshot'
   | 'decision-log'
+  | 'activity-event'
 
 interface KeeperTraceBase {
   readonly id: string
@@ -45,25 +47,60 @@ interface KeeperTraceBase {
   readonly source: KeeperTraceSource
 }
 
+export interface KeeperTraceContextFields {
+  readonly filePath?: string
+  readonly line?: number
+  readonly goalId?: string
+  readonly taskId?: string
+  readonly boardPostId?: string
+  readonly commentId?: string
+  readonly prId?: string
+  readonly gitRef?: string
+  readonly logId?: string
+  readonly sessionId?: string
+  readonly operationId?: string
+  readonly workerRunId?: string
+}
+
 export type KeeperTraceEvent =
   | (KeeperTraceBase & {
       readonly source: 'anchored-thread'
       readonly threadId: string
+      readonly filePath?: string | null
       readonly line: number | null
     })
-  | (KeeperTraceBase & {
+  | (KeeperTraceBase & KeeperTraceContextFields & {
       readonly source: 'cascade-hop'
       readonly hopId: string
       readonly provider: string
     })
-  | (KeeperTraceBase & {
+  | (KeeperTraceBase & KeeperTraceContextFields & {
       readonly source: 'bdi-snapshot'
       readonly intention: string | null
     })
-  | (KeeperTraceBase & {
+  | (KeeperTraceBase & KeeperTraceContextFields & {
       readonly source: 'decision-log'
       readonly decisionId: string
       readonly semanticOutcome: string | null
+      readonly decisionChoice?: string | null
+      readonly decisionReason?: string | null
+    })
+  | (KeeperTraceBase & {
+      readonly source: 'activity-event'
+      readonly eventId: string
+      readonly filePath: string
+      readonly line: number
+      readonly surface: string
+      readonly goalId?: string
+      readonly taskId?: string
+      readonly boardPostId?: string
+      readonly commentId?: string
+      readonly prId?: string
+      readonly gitRef?: string
+      readonly logId?: string
+      readonly sessionId?: string
+      readonly operationId?: string
+      readonly workerRunId?: string
     })
 
 export type KeeperTraceEventInput =
@@ -71,6 +108,7 @@ export type KeeperTraceEventInput =
   | Omit<Extract<KeeperTraceEvent, { source: 'cascade-hop' }>, 'count'>
   | Omit<Extract<KeeperTraceEvent, { source: 'bdi-snapshot' }>, 'count'>
   | Omit<Extract<KeeperTraceEvent, { source: 'decision-log' }>, 'count'>
+  | Omit<Extract<KeeperTraceEvent, { source: 'activity-event' }>, 'count'>
 
 export interface KeeperTraceState {
   readonly events: ReadonlyArray<KeeperTraceEvent>
@@ -86,25 +124,26 @@ export const keeperTraceState = signal<KeeperTraceState>(INITIAL_STATE)
  * a fresh entry with `count: 1`.
  *
  * Coalescing rule (RFC-0028 §4):
- *   if the existing entry with the largest tsMs has the same `source` AND the
- *   same `keeperName` AND `(input.tsMs - existing.tsMs) <= COALESCE_WINDOW_MS`,
+ *   if the existing entry with the largest tsMs has the same trace bucket
+ *   (source + keeperName, and for line-anchored sources also filePath + line)
+ *   AND `(input.tsMs - existing.tsMs) <= COALESCE_WINDOW_MS`,
  *   then replace it in-array with `{ ...existing, count: existing.count + 1, tsMs: input.tsMs }`.
  *   Otherwise insert at the binary-search position and prune retention.
  *
  * Out-of-order tsMs (a producer with stale clock) is supported — the entry
  * is inserted at the correct ascending position. Coalescing only matches the
- * latest entry by tsMs of the same (source, keeperName) tuple.
+ * latest entry by tsMs of the same trace bucket.
  */
 export function pushTrace(input: KeeperTraceEventInput): void {
   const prev = keeperTraceState.value.events
   const incoming: KeeperTraceEvent = { ...input, count: 1 } as KeeperTraceEvent
 
-  // Find latest entry of same (source, keeperName) — needed for coalescing.
+  // Find latest entry of the same trace bucket — needed for coalescing.
   // Walk backwards because retention prune keeps the array bounded.
   let coalesceIdx = -1
   for (let i = prev.length - 1; i >= 0; i -= 1) {
     const candidate = prev[i]!
-    if (candidate.source === incoming.source && candidate.keeperName === incoming.keeperName) {
+    if (sameTraceBucket(candidate, incoming)) {
       coalesceIdx = i
       break
     }
@@ -149,6 +188,14 @@ export function tracesBySource(source: KeeperTraceSource): ReadonlyArray<KeeperT
   return keeperTraceState.value.events.filter(e => e.source === source)
 }
 
+export function filterTraceEventsByReplay<T extends { readonly tsMs: number }>(
+  events: ReadonlyArray<T>,
+  untilMs: number | null,
+): ReadonlyArray<T> {
+  if (untilMs === null || !Number.isFinite(untilMs)) return events
+  return events.filter(event => Number.isFinite(event.tsMs) && event.tsMs <= untilMs)
+}
+
 function replaceAt(
   arr: ReadonlyArray<KeeperTraceEvent>,
   idx: number,
@@ -188,4 +235,50 @@ function insertSorted(
   const next = arr.slice()
   next.splice(lo, 0, incoming)
   return next
+}
+
+function sameTraceBucket(left: KeeperTraceEvent, right: KeeperTraceEvent): boolean {
+  if (left.source !== right.source || left.keeperName !== right.keeperName) return false
+  if (left.source === 'anchored-thread' && right.source === 'anchored-thread') {
+    return (left.filePath ?? null) === (right.filePath ?? null)
+      && left.line === right.line
+  }
+  if (left.source === 'activity-event' && right.source === 'activity-event') {
+    return left.filePath === right.filePath && left.line === right.line
+  }
+  if (hasTraceContext(left) || hasTraceContext(right)) {
+    return traceContextKey(left) === traceContextKey(right)
+  }
+  return true
+}
+
+function hasTraceContext(event: KeeperTraceEvent): boolean {
+  return event.source === 'cascade-hop'
+    || event.source === 'bdi-snapshot'
+    || event.source === 'decision-log'
+    ? traceContextKey(event) !== ''
+    : false
+}
+
+function traceContextKey(event: KeeperTraceEvent): string {
+  if (
+    event.source !== 'cascade-hop'
+    && event.source !== 'bdi-snapshot'
+    && event.source !== 'decision-log'
+  ) return ''
+
+  return [
+    event.filePath ?? '',
+    event.line ?? '',
+    event.goalId ?? '',
+    event.taskId ?? '',
+    event.boardPostId ?? '',
+    event.commentId ?? '',
+    event.prId ?? '',
+    event.gitRef ?? '',
+    event.logId ?? '',
+    event.sessionId ?? '',
+    event.operationId ?? '',
+    event.workerRunId ?? '',
+  ].join('\u001f')
 }

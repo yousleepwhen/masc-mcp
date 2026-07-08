@@ -4,7 +4,8 @@ open Keeper_types
 
 (** Resolved inference and session context needed before prompt construction. *)
 type run_context =
-  { temperature : float
+  { meta : keeper_meta
+  ; temperature : float
   ; max_tokens : int
   ; context_injector : Agent_sdk.Hooks.context_injector
   ; shared_context : Agent_sdk.Context.t
@@ -15,6 +16,9 @@ type run_context =
   ; ctx_work : working_context
   ; resume_oas_checkpoint : Agent_sdk.Checkpoint.t option
   ; pre_dispatch_compacted : bool
+  ; pre_dispatch_compaction_trigger : string option
+  ; pre_dispatch_compaction_before_tokens : int option
+  ; pre_dispatch_compaction_after_tokens : int option
   ; pre_dispatch_checkpoint_error : Agent_sdk.Error.sdk_error option
   ; start_turn_count : int
   ; receipt_started_at : string
@@ -31,7 +35,7 @@ val prepare_run_context :
   -> meta:keeper_meta
   -> base_dir:string
   -> max_context:int
-  -> cascade_name:Keeper_cascade_profile.runtime_name
+  -> cascade_name:Cascade_name.t
   -> ?temperature:float
   -> ?max_tokens:int
   -> ?shared_context:Agent_sdk.Context.t

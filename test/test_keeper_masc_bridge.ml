@@ -3,7 +3,7 @@ module Types = Masc_domain
 (** Test keeper masc_* tool bridge under preset/custom tool policy. *)
 
 module Coord = Masc_mcp.Coord
-module KET = Masc_mcp.Keeper_exec_tools
+module KET = Masc_mcp.Agent_tool_dispatch_runtime
 
 let init_keeper_tool_registry () =
   Masc_test_deps.init_keeper_tool_registry ()
@@ -18,6 +18,10 @@ let temp_dir () =
   Sys.remove path;
   Unix.mkdir path 0o755;
   path
+
+let realpath_or_self path =
+  try Unix.realpath path with
+  | Unix.Unix_error _ -> path
 
 let cleanup_dir dir =
   let rec rm path =
@@ -45,10 +49,36 @@ let write_text_file path content =
     ~finally:(fun () -> close_out_noerr oc)
     (fun () -> output_string oc content)
 
-let run_shell_ok ~cwd cmd =
-  let quoted_cwd = Filename.quote cwd in
-  let rc = Sys.command (Printf.sprintf "cd %s && %s" quoted_cwd cmd) in
-  Alcotest.(check int) ("shell command: " ^ cmd) 0 rc
+let read_text_file path =
+  let ic = open_in path in
+  Fun.protect
+    ~finally:(fun () -> close_in_noerr ic)
+    (fun () -> Stdlib.really_input_string ic (in_channel_length ic))
+
+let process_exit_code = function
+  | Unix.WEXITED code -> code
+  | Unix.WSIGNALED _ | Unix.WSTOPPED _ -> 255
+
+let run_process_ok ~cwd prog argv =
+  let original_cwd = Sys.getcwd () in
+  let dev_null = Unix.openfile Filename.null [ Unix.O_WRONLY ] 0o600 in
+  Fun.protect
+    ~finally:(fun () ->
+      Unix.close dev_null;
+      Sys.chdir original_cwd)
+    (fun () ->
+      Sys.chdir cwd;
+      let pid =
+        Unix.create_process_env prog argv (Unix.environment ()) Unix.stdin
+          dev_null dev_null
+      in
+      let _, status = Unix.waitpid [] pid in
+      Alcotest.(check int)
+        ("process command: " ^ String.concat " " (Array.to_list argv))
+        0 (process_exit_code status))
+
+let git_ok ~cwd args =
+  run_process_ok ~cwd "git" (Array.of_list ("git" :: args))
 
 let run_with_fs f =
   Eio_main.run @@ fun env ->
@@ -89,6 +119,14 @@ let make_meta ?(name = "keeper-bridge-test") ?tool_access ?(tool_denylist = [])
   with
   | Ok meta -> meta
   | Error e -> failwith e
+
+let with_registered_keeper ~config (meta : Masc_mcp.Keeper_types.keeper_meta) f =
+  let base_path = config.Coord.base_path in
+  Masc_mcp.Keeper_registry.unregister ~base_path meta.name;
+  ignore (Masc_mcp.Keeper_registry.register ~base_path meta.name meta);
+  Fun.protect
+    ~finally:(fun () -> Masc_mcp.Keeper_registry.unregister ~base_path meta.name)
+    f
 
 let allowed_names_of_json json =
   prime_keeper_bridge ();
@@ -135,8 +173,6 @@ let test_full_preset_exposes_masc () =
   (* Governance tools are no longer in raw_all_tool_schemas *)
   Alcotest.(check bool) "no masc_governance_status" false
     (List.mem "masc_governance_status" names);
-  Alcotest.(check bool) "has masc_autoresearch_cycle" true
-    (List.mem "masc_autoresearch_cycle" names);
   Alcotest.(check bool) "filters unsupported inline tool" false
     (List.mem "masc_who" names)
 
@@ -155,13 +191,10 @@ let test_messaging_preset_exposes_board () =
   (* Governance tools are no longer available *)
   Alcotest.(check bool) "no masc_governance_status" false
     (List.mem "masc_governance_status" names);
-  Alcotest.(check bool) "has keeper_shell" true
-    (List.mem "keeper_shell" names);
-  (* keeper_github tool was removed in #7306 (use keeper_shell op=gh). *)
-  Alcotest.(check bool) "no keeper_github (removed)" false
-    (List.mem "keeper_github" names);
-  Alcotest.(check bool) "has keeper_fs_read" true
-    (List.mem "keeper_fs_read" names)
+  Alcotest.(check bool) "has tool_search_files" true
+    (List.mem "tool_search_files" names);
+  Alcotest.(check bool) "has tool_read_file" true
+    (List.mem "tool_read_file" names)
 
 let test_custom_opens_specific_tools_only () =
   prime_keeper_bridge ();
@@ -245,12 +278,7 @@ let test_custom_keeps_registered_inline_board_tool () =
     (List.mem "masc_who" names)
 
 let with_masc_schema_ref schemas f =
-  let previous = !(KET.masc_schemas_ref) in
-  Fun.protect
-    ~finally:(fun () -> KET.masc_schemas_ref := previous)
-    (fun () ->
-      KET.masc_schemas_ref := schemas;
-      f ())
+  KET.with_masc_schemas_for_test schemas f
 
 let test_dashboard_tool_count_uses_schema_ssot () =
   let bridge_name = "mcp__masc__masc_status" in
@@ -308,7 +336,7 @@ let test_tool_access_missing_defaults_standard_policy () =
   Alcotest.(check (list string)) "default keeps expected masc set"
     expected_legacy_masc_names legacy_masc_names;
   Alcotest.(check bool) "does not silently expand to full" false
-    (List.mem "masc_autoresearch_cycle" names)
+    (List.mem "tool_read_file" names)
 
 let test_read_meta_file_rejects_legacy_tool_keys () =
   let dir = temp_dir () in
@@ -322,19 +350,19 @@ let test_read_meta_file_rejects_legacy_tool_keys () =
             ("name", `String "compat-preset");
             ("agent_name", `String "compat-preset");
             ("trace_id", `String "compat-preset-trace");
-            ("tool_preset", `String "coding");
+            ("tool_preset", `String "delivery");
             ("tool_also_allow", `List [ `String "masc_governance_status" ]);
-            ("allowed_providers", `List [ `String "glm" ]);
+            ("allowed_providers", `List [ `String "provider_k" ]);
           ]);
       match Masc_mcp.Keeper_types.read_meta_file_path path with
       | Ok _ -> Alcotest.fail "expected legacy tool policy rejection"
       | Error e ->
           Alcotest.(check string)
             "legacy top-level keys rejected"
-            "removed keeper meta fields: tool_preset, tool_also_allow"
+            "removed keeper meta fields: allowed_providers, tool_preset, tool_also_allow"
             e;
           let persisted = read_json_file path in
-          Alcotest.(check string) "legacy tool_preset left untouched" "coding"
+          Alcotest.(check string) "legacy tool_preset left untouched" "delivery"
             (Yojson.Safe.Util.member "tool_preset" persisted
              |> Yojson.Safe.Util.to_string))
 
@@ -393,7 +421,7 @@ let test_meta_of_json_rejects_legacy_tool_policy_keys () =
         ("name", `String "compat-preset");
         ("agent_name", `String "compat-preset");
         ("trace_id", `String "compat-preset-trace");
-        ("tool_preset", `String "coding");
+        ("tool_preset", `String "delivery");
       ])
   with
   | Ok _ -> Alcotest.fail "expected legacy tool policy key rejection"
@@ -415,7 +443,7 @@ let test_tool_access_preset_empty_json_preserved () =
             `Assoc
               [
                 ("kind", `String "preset");
-                ("preset", `String "coding");
+                ("preset", `String "delivery");
                 ("also_allow", `List []);
               ] );
         ])
@@ -425,9 +453,9 @@ let test_tool_access_preset_empty_json_preserved () =
   in
   match meta.Masc_mcp.Keeper_types.tool_access with
   | Masc_mcp.Keeper_types.Preset
-      { preset = Masc_mcp.Keeper_types.Coding; also_allow } ->
+      { preset = Masc_mcp.Keeper_types.Delivery; also_allow } ->
       Alcotest.(check int) "preset empty preserved" 0 (List.length also_allow)
-  | _ -> Alcotest.fail "expected coding preset with empty also_allow"
+  | _ -> Alcotest.fail "expected delivery preset with empty also_allow"
 
 let test_tool_access_custom_empty_json_preserved () =
   let meta =
@@ -578,8 +606,8 @@ let test_allowlist_gates_shard_tools () =
   Alcotest.(check bool) "has masc_status" true (List.mem "masc_status" names);
   Alcotest.(check bool) "has masc_tasks" true
     (List.mem "masc_tasks" names);
-  Alcotest.(check bool) "masc_autoresearch_cycle blocked by custom policy" false
-    (List.mem "masc_autoresearch_cycle" names)
+  Alcotest.(check bool) "tool_read_file blocked by custom policy" false
+    (List.mem "tool_read_file" names)
 
 let test_dispatch_unregistered () =
   let result =
@@ -599,26 +627,27 @@ let test_approval_pending_bridge_uses_keeper_safe_inline_dispatch () =
           ~tool_access:(Masc_mcp.Keeper_types.Custom [ "masc_approval_pending" ])
           ()
       in
-      let raw =
-        Masc_mcp.Keeper_exec_masc.handle_keeper_masc_tool
-          ~config
-          ~meta
-          ~name:"masc_approval_pending"
-          ~args:(`Assoc [])
-      in
-      match Yojson.Safe.from_string raw with
-      | `List _ -> ()
-      | _ ->
-        Alcotest.failf
-          "masc_approval_pending should return pending approval list, got: %s"
-          raw)
+      with_registered_keeper ~config meta (fun () ->
+          let raw =
+            Masc_mcp.Agent_tool_remote_mcp_runtime.handle_masc_tool
+              ~config
+              ~keeper_name:meta.name
+              ~name:"masc_approval_pending"
+              ~args:(`Assoc [])
+          in
+          match Yojson.Safe.from_string raw with
+          | `List _ -> ()
+          | _ ->
+            Alcotest.failf
+              "masc_approval_pending should return pending approval list, got: %s"
+              raw))
 
 let test_read_only_preflight_accepts_sandbox_relative_repo_path () =
   let dir = temp_dir () in
   Fun.protect
     ~finally:(fun () -> cleanup_dir dir)
     (fun () ->
-      run_shell_ok ~cwd:dir "git init --quiet";
+      git_ok ~cwd:dir [ "init"; "--quiet" ];
       let file_path =
         Filename.concat dir
           ".masc/playground/docker/masc-improver/repos/masc-mcp/lib/thompson_sampling.ml"
@@ -632,37 +661,162 @@ let test_read_only_preflight_accepts_sandbox_relative_repo_path () =
           make_meta
             ~name:"masc-improver"
             ~sandbox_profile:Masc_mcp.Keeper_types.Docker
-            ~tool_access:(Masc_mcp.Keeper_types.Custom [ "masc_code_read" ])
+            ~tool_access:(Masc_mcp.Keeper_types.Custom [ "tool_read_file" ])
             ()
         in
+        with_registered_keeper ~config meta (fun () ->
+            let raw =
+              Masc_mcp.Agent_tool_remote_mcp_runtime.handle_masc_tool
+                ~config
+                ~keeper_name:meta.name
+                ~name:"tool_read_file"
+                ~args:
+                  (`Assoc
+                    [
+                      ( "path",
+                        `String "repos/masc-mcp/lib/thompson_sampling.ml" );
+                      ("offset", `Int 0);
+                      ("limit", `Int 2);
+                    ])
+            in
+            let json = Yojson.Safe.from_string raw in
+            let path =
+              Yojson.Safe.Util.member "path" json |> Yojson.Safe.Util.to_string
+            in
+            let lines =
+              Yojson.Safe.Util.member "lines" json
+              |> Yojson.Safe.Util.to_list
+              |> List.map Yojson.Safe.Util.to_string
+            in
+            Alcotest.(check string) "path preserved"
+              "repos/masc-mcp/lib/thompson_sampling.ml"
+              path;
+            Alcotest.(check (list string)) "reads expected lines"
+              [ "let alpha = 0.1"; "let beta = 0.2" ]
+              lines)))
+
+let test_write_preflight_accepts_docker_container_repo_path () =
+  let dir = temp_dir () in
+  Fun.protect
+    ~finally:(fun () -> cleanup_dir dir)
+    (fun () ->
+      git_ok ~cwd:dir [ "init"; "--quiet" ];
+      let keeper_toml =
+        Filename.concat dir ".masc/config/keepers/sangsu.toml"
+      in
+      ensure_dir (Filename.dirname keeper_toml);
+      write_text_file keeper_toml "[keeper]\nsandbox_profile = \"docker\"\n";
+      let file_path =
+        Filename.concat dir
+          ".masc/playground/docker/sangsu/repos/masc-mcp/.worktrees/keeper-sangsu-agent-task-210/lib/coord/coord_orphan_daemon.ml"
+      in
+      ensure_dir (Filename.dirname file_path);
+      write_text_file file_path "let before = 1\n";
+      run_with_fs (fun () ->
+        prime_keeper_bridge ();
+        let config = Coord.default_config dir in
+        ignore (Coord.init config ~agent_name:(Some "sangsu"));
+        let meta =
+          make_meta
+            ~name:"sangsu"
+            ~sandbox_profile:Masc_mcp.Keeper_types.Docker
+            ~tool_access:(Masc_mcp.Keeper_types.Custom [ "tool_edit_file" ])
+            ()
+        in
+        with_registered_keeper ~config meta (fun () ->
+          let raw =
+            Masc_mcp.Agent_tool_remote_mcp_runtime.handle_masc_tool
+              ~config
+              ~keeper_name:meta.name
+              ~name:"tool_edit_file"
+              ~args:
+                (`Assoc
+                  [
+                    ( "path",
+                      `String
+                        "/home/keeper/playground/sangsu/repos/masc-mcp/.worktrees/keeper-sangsu-agent-task-210/lib/coord/coord_orphan_daemon.ml"
+                    );
+                    ("old_string", `String "let before = 1");
+                    ("new_string", `String "let before = 2");
+                    ("replace_all", `Bool false);
+                  ])
+          in
+          let json = Yojson.Safe.from_string raw in
+          let status =
+            Yojson.Safe.Util.member "status" json |> Yojson.Safe.Util.to_string
+          in
+          let replacements =
+            Yojson.Safe.Util.member "replacements" json
+            |> Yojson.Safe.Util.to_int
+          in
+          Alcotest.(check string) "edit status" "ok" status;
+          Alcotest.(check int) "single replacement" 1 replacements;
+          Alcotest.(check string)
+            "file edited through host playground"
+            "let before = 2\n"
+            (Masc_test_deps.read_file file_path))))
+
+let test_write_preflight_accepts_sandbox_relative_repo_path () =
+  prime_keeper_bridge ();
+  let dir = temp_dir () |> realpath_or_self in
+  let keeper_name = "nick0cave" in
+  Fun.protect
+    ~finally:(fun () ->
+      Masc_mcp.Keeper_registry.unregister ~base_path:dir keeper_name;
+      cleanup_dir dir)
+    (fun () ->
+      git_ok ~cwd:dir [ "init"; "--quiet" ];
+      let rel_path =
+        "repos/masc-mcp/.worktrees/keeper-nick0cave-agent-task-240/lib/foo.ml"
+      in
+      let file_path =
+        Filename.concat
+          dir
+          (Filename.concat ".masc/playground/docker/nick0cave" rel_path)
+      in
+      let keeper_config =
+        Filename.concat dir ".masc/config/keepers/nick0cave.toml"
+      in
+      ensure_dir (Filename.dirname keeper_config);
+      write_text_file keeper_config "[keeper]\nsandbox_profile = \"docker\"\n";
+      ensure_dir (Filename.dirname file_path);
+      write_text_file file_path "let x = 1\n";
+      run_with_fs (fun () ->
+        let config = Coord.default_config dir in
+        let meta =
+          make_meta
+            ~name:keeper_name
+            ~sandbox_profile:Masc_mcp.Keeper_types.Docker
+            ~tool_access:(Masc_mcp.Keeper_types.Custom [ "tool_edit_file" ])
+            ()
+        in
+        ignore (Masc_mcp.Keeper_registry.register ~base_path:dir keeper_name meta);
         let raw =
-          Masc_mcp.Keeper_exec_masc.handle_keeper_masc_tool
+          Masc_mcp.Agent_tool_remote_mcp_runtime.handle_masc_tool
             ~config
-            ~meta
-            ~name:"masc_code_read"
+            ~keeper_name
+            ~name:"tool_edit_file"
             ~args:
               (`Assoc
-                [
-                  ("path", `String "repos/masc-mcp/lib/thompson_sampling.ml");
-                  ("offset", `Int 0);
-                  ("limit", `Int 2);
+                [ "path", `String rel_path
+                ; "old_string", `String "let x = 1"
+                ; "new_string", `String "let x = 2"
+                ; "replace_all", `Bool false
                 ])
         in
         let json = Yojson.Safe.from_string raw in
-        let path =
-          Yojson.Safe.Util.member "path" json |> Yojson.Safe.Util.to_string
-        in
-        let lines =
-          Yojson.Safe.Util.member "lines" json
-          |> Yojson.Safe.Util.to_list
-          |> List.map Yojson.Safe.Util.to_string
-        in
-        Alcotest.(check string) "path preserved"
-          "repos/masc-mcp/lib/thompson_sampling.ml"
-          path;
-        Alcotest.(check (list string)) "reads expected lines"
-          [ "let alpha = 0.1"; "let beta = 0.2" ]
-          lines))
+        (match Yojson.Safe.Util.member "error" json with
+         | `Null -> ()
+         | `String err ->
+           Alcotest.failf "tool_edit_file should pass write preflight, got: %s" err
+         | other ->
+           Alcotest.failf
+             "unexpected error shape: %s"
+             (Yojson.Safe.to_string other));
+        Alcotest.(check string)
+          "file edited"
+          "let x = 2\n"
+          (read_text_file file_path)))
 
 let test_schemas_match_names () =
   prime_keeper_bridge ();
@@ -698,11 +852,9 @@ let test_denied_tools_excluded_from_injection () =
     denied
 
 let test_is_keeper_denied () =
-  (* Post-pruning: keeper_denied surface is [masc_reset; masc_spawn]. *)
+  (* RFC-0182: keeper_denied surface is [masc_reset] after masc_spawn removal. *)
   Alcotest.(check bool) "masc_reset is denied" true
     (KET.is_keeper_denied "masc_reset");
-  Alcotest.(check bool) "masc_spawn is denied" true
-    (KET.is_keeper_denied "masc_spawn");
   Alcotest.(check bool) "masc_status is not denied" false
     (KET.is_keeper_denied "masc_status");
   Alcotest.(check bool) "keeper_time_now is not denied" false
@@ -799,6 +951,15 @@ let () =
           Alcotest.test_case
             "read preflight accepts sandbox-relative repo path" `Quick
             test_read_only_preflight_accepts_sandbox_relative_repo_path;
+          Alcotest.test_case
+            "write preflight accepts sandbox-relative repo path" `Quick
+            test_write_preflight_accepts_sandbox_relative_repo_path;
+          Alcotest.test_case
+            "write preflight accepts Docker container repo path" `Quick
+            test_write_preflight_accepts_docker_container_repo_path;
+          Alcotest.test_case
+            "write preflight accepts sandbox-relative repo path" `Quick
+            test_write_preflight_accepts_sandbox_relative_repo_path;
         ] );
       ( "consistency",
         [

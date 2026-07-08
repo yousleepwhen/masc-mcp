@@ -12,11 +12,20 @@ type config = {
   on_error : (exn -> unit) option;  (** Called on timeout or exception. *)
   health_check : (unit -> bool) option;  (** Pre-compute gate. If [Some f] and [f ()] returns [false], the cycle is skipped and backoff applied. *)
   warm_delay_s : float;    (** Delay before cold-start warm-cache compute (0.0 = immediate). *)
+  warn_first_failure : bool;  (** Log a warning on the very first refresh failure. *)
 }
 
 val default_config : label:string -> interval_s:float -> config
 (** [default_config ~label ~interval_s] returns a config with
     [max_backoff_s = 120.0], [failure_threshold = 5], [timeout_s = 10.0]. *)
+
+module For_testing : sig
+  val timeout_failure_message :
+    label:string -> phase:string -> timeout_s:float -> elapsed_s:float -> string
+
+  val should_warn_refresh_failure :
+    ?warn_first_failure:bool -> failure_threshold:int -> int -> bool
+end
 
 val start :
   sw:Eio.Switch.t ->

@@ -6,6 +6,19 @@ val exact_direct_mention_present : targets:string list -> string -> bool
 
 val keeper_constitution : unit -> string
 
+val substitute_state_block_instruction_fallback : string -> string
+(** Replace every [{{state_block_instruction}}] placeholder in [raw] with
+    [Keeper_state_block_prompt.instruction_text].  Exposed so the constitution
+    Error-fallback in {!keeper_constitution} can substitute the variable even
+    when the registry's [render_prompt_template] returns [Error] (e.g. a
+    newly-introduced unresolved variable, or a malformed template).  Without
+    this substitution the raw template surfaces the literal placeholder, the
+    "State block template" anchor goes missing, and
+    [missing_critical_prompt_anchors] reports [state_block_template] missing —
+    the regression observed as ~51 emissions per restart with
+    [keeper_name=null] (the constitution path runs before per-keeper context
+    binding).  Pure: no I/O, no logging. *)
+
 val ensure_critical_prompt_anchors : string -> string
 (** Append a minimal technical recovery block when the keeper system prompt
     lost critical continuity/world/policy anchors. Normal prompts are returned
@@ -27,30 +40,9 @@ val build_keeper_system_prompt :
   instructions:string ->
   ?persona_extended:string ->
   ?keeper_name:string ->
-  ?allowed_orgs:string list ->
-  ?denied_repos:string list ->
-  ?git_clone_policy_loaded:bool ->
   ?active_goals:(string * string * string) list ->
   unit ->
   string
-(** [allowed_orgs] / [denied_repos] are surfaced in the <world> block so
-    the keeper sees the live git_clone allow/deny lists without having
-    to query [tool_policy.toml].  Callers should pass the values from
-    [Keeper_tool_policy.git_clone_allowed_orgs] /
-    [Keeper_tool_policy.git_clone_denied_repos].
-
-    [git_clone_policy_loaded=false] means the caller could not read
-    [tool_policy.toml] yet; the prompt should say git/gh operations fail
-    closed instead of treating an unavailable allowlist as an explicitly empty
-    one.
-
-    Empty-list semantics differ between the two once policy is loaded:
-    - Empty [allowed_orgs] = "gate OFF, any account-accessible repo is
-      permitted" (matches [validate_gh_command]'s skip-check behaviour).
-    - Empty [denied_repos] = "no repos blocked" (renders as "(none)").
-
-    Earlier revisions collapsed both to "(none)", which led the LLM to
-    read an empty allowlist as "no orgs allowed" — the inverse of intent. *)
 
 val append_direct_reply_mode_prompt :
   base_prompt:string ->

@@ -14,23 +14,19 @@
     > [MASC_EXEC_TIMEOUT_DEFAULT_SEC] > [global_default_sec]. *)
 
 type caller =
-  | Shell                     (** keeper_exec_shell hot-path subprocess (60s) *)
-  | Fs                        (** keeper_exec_fs file ops (30s) *)
-  | Preflight                 (** keeper_exec_preflight checks (10s) *)
+  | Shell                     (** agent_tool_command_runtime hot-path subprocess (60s) *)
+  | Fs                        (** agent_tool_filesystem_runtime file ops (30s) *)
+  | Preflight                 (** keeper_cascade_resilience checks (10s) *)
   | Repo_readiness            (** keeper_repo_readiness git status (10s) *)
-  | Sandbox                   (** keeper_sandbox_control / keeper_shell_docker probes (2s) *)
-  | Pr_review                 (** keeper_tool_pr_review gh CLI reads (15s) *)
-  | Pr_review_post            (** keeper_tool_pr_review gh pr review write (30s) *)
+  | Sandbox                   (** keeper_sandbox_control / keeper_sandbox_docker probes (2s) *)
   | Dispatch                  (** exec_dispatch routine execution (120s) *)
-  | Memory_audit              (** keeper_exec_memory short audits (3s) *)
+  | Memory_audit              (** agent_tool_memory_runtime short audits (3s) *)
   | Alerting                  (** keeper_alerting fanout (Slack/webhook POST + gh issue create) (20s) *)
-  | Gh_shared                 (** keeper_gh_shared gh CLI quick query (5s) *)
+  | Gh_quick_query             (** short gh CLI query (10s) *)
   | Status_detail             (** keeper_status_detail health probes (5/10s) *)
   | Turn_sandbox              (** keeper_turn_sandbox_runtime (2/5s) *)
   | Turn_up                   (** keeper_turn_up_create / _update sandbox (15s) *)
   | Git_meta                  (** local git metadata (rev-parse, remote get-url) (10s) *)
-  | Autoresearch_git_meta     (** autoresearch local git metadata reads (10s) *)
-  | Autoresearch_git_mutation (** autoresearch local git mutations (30s) *)
   | Shell_probe               (** PATH probes via [command -v <name>] (2s) *)
   | Graphql                   (** Graphql_client.{request,query,mutate} HTTP calls (10s) *)
   | Http                      (** http_post_json_text_with_status probes (15s) *)
@@ -39,10 +35,8 @@ type caller =
   | Build_identity            (** build identity git probe (5s) *)
   | Voice                     (** voice bridge local playback subprocess (60s) *)
   | Coord_identity            (** coord tty identity probe (5s) *)
-  | Dashboard                 (** dashboard safe_autonomy short heartbeat (3s) *)
   | Http_routes               (** workspace api git command via http (15s) *)
   | Repo_manager_git          (** repo_manager clone/fetch/push git operations (300s) *)
-  | Task_sandbox_git          (** task_sandbox worktree create/diff/cleanup git operations (30s) *)
   | Test                      (** test fixtures driving exec runtime (30s) *)
   | Unknown of string
 
@@ -56,18 +50,14 @@ let caller_key = function
   | Preflight -> "preflight"
   | Repo_readiness -> "repo_readiness"
   | Sandbox -> "sandbox"
-  | Pr_review -> "pr_review"
-  | Pr_review_post -> "pr_review_post"
   | Dispatch -> "dispatch"
   | Memory_audit -> "memory_audit"
   | Alerting -> "alerting"
-  | Gh_shared -> "gh_shared"
+  | Gh_quick_query -> "gh_quick_query"
   | Status_detail -> "status_detail"
   | Turn_sandbox -> "turn_sandbox"
   | Turn_up -> "turn_up"
   | Git_meta -> "git_meta"
-  | Autoresearch_git_meta -> "autoresearch_git_meta"
-  | Autoresearch_git_mutation -> "autoresearch_git_mutation"
   | Shell_probe -> "shell_probe"
   | Graphql -> "graphql"
   | Http -> "http"
@@ -76,10 +66,8 @@ let caller_key = function
   | Build_identity -> "build_identity"
   | Voice -> "voice"
   | Coord_identity -> "coord_identity"
-  | Dashboard -> "dashboard"
   | Http_routes -> "http_routes"
   | Repo_manager_git -> "repo_manager_git"
-  | Task_sandbox_git -> "task_sandbox_git"
   | Test -> "test"
   | Unknown caller -> caller
 
@@ -91,18 +79,14 @@ let known_callers () =
     Preflight;
     Repo_readiness;
     Sandbox;
-    Pr_review;
-    Pr_review_post;
     Dispatch;
     Memory_audit;
     Alerting;
-    Gh_shared;
+    Gh_quick_query;
     Status_detail;
     Turn_sandbox;
     Turn_up;
     Git_meta;
-    Autoresearch_git_meta;
-    Autoresearch_git_mutation;
     Shell_probe;
     Graphql;
     Http;
@@ -111,32 +95,28 @@ let known_callers () =
     Build_identity;
     Voice;
     Coord_identity;
-    Dashboard;
     Http_routes;
     Repo_manager_git;
-    Task_sandbox_git;
     Test;
   ]
 
 let known_default_sec = function
   | Shell -> Some 60.0
   | Fs -> Some 30.0
-  | Preflight | Repo_readiness | Gh_shared -> Some 10.0
+  | Preflight | Repo_readiness | Gh_quick_query -> Some 10.0
   | Status_detail -> Some 5.0
   | Sandbox -> Some 10.0
   | Turn_sandbox | Shell_probe -> Some 2.0
-  | Pr_review | Turn_up -> Some 15.0
+  | Turn_up -> Some 15.0
   (* #10594 site 1: bumped 15.0 → 20.0 because gh issue create + Slack
      POST + webhook fanout share this caller and the gh path can hit
      ~18s under GitHub API load.  Operators can env-override down via
      MASC_EXEC_TIMEOUT_ALERTING_SEC if the wider budget masks a real
      stuck call. *)
   | Alerting -> Some 20.0
-  | Pr_review_post -> Some 30.0
   | Dispatch -> Some 120.0
   | Memory_audit -> Some 3.0
-  | Git_meta | Autoresearch_git_meta -> Some 10.0
-  | Autoresearch_git_mutation -> Some 30.0
+  | Git_meta -> Some 10.0
   (* Defaults for the new variants below preserve the literals each
      site previously held — see #10426 review (#13081) for the
      site-by-site mapping.  Operators can override via
@@ -148,10 +128,8 @@ let known_default_sec = function
   | Build_identity -> Some 5.0    (* git probe was 5s *)
   | Voice -> Some 60.0            (* local playback was 60s — under-budget regression risk *)
   | Coord_identity -> Some 5.0    (* tty probe was 5s *)
-  | Dashboard -> Some 3.0         (* short heartbeat was 3s *)
   | Http_routes -> Some 15.0      (* workspace git command via http was 15s *)
   | Repo_manager_git -> Some 300.0 (* repo_manager git was 300s — clone/fetch on slow networks *)
-  | Task_sandbox_git -> Some 30.0  (* task_sandbox worktree git ops were 30s *)
   | Test -> Some 30.0             (* test fixtures, slow_command path keeps 30s ceiling *)
   | Unknown _ -> None
 

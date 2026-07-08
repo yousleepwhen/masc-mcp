@@ -11,6 +11,7 @@
 import { html } from 'htm/preact'
 import { signal } from '@preact/signals'
 import { useEffect } from 'preact/hooks'
+import { TLA_POLL_INTERVAL_MS } from '../config/constants'
 import {
   fetchTlaSpecs,
   type TlaSpecCategory,
@@ -18,8 +19,8 @@ import {
   type TlaSpecsResponse,
 } from '../api/dashboard'
 import { Btn } from './btn'
-import { Card } from './common/card'
-import { EmptyState } from './common/empty-state'
+import { SectionCard } from './common/card'
+import { EmptyState } from './common/feedback-state'
 import { ErrorState, LoadingState } from './common/feedback-state'
 import { StatusChip } from './common/status-chip'
 import { FilterChips } from './common/filter-chips'
@@ -95,10 +96,10 @@ function SpecsTable({ entries }: { entries: TlaSpecEntry[] }) {
               <tr class="border-t border-[var(--color-border-default)]">
                 <td class="py-1 pr-4 font-medium text-[var(--color-fg-primary)]">${entry.name}</td>
                 <td class="py-1 pr-4">
-                  <${StatusChip} tone=${categoryTone(entry.category)} label=${categoryLabel(entry.category)} />
+                  <${StatusChip} tone=${categoryTone(entry.category)}>${categoryLabel(entry.category)}<//>
                 </td>
                 <td class="py-1 pr-4">
-                  <${StatusChip} tone=${cov.tone} label=${cov.label} />
+                  <${StatusChip} tone=${cov.tone}>${cov.label}<//>
                 </td>
                 <td class="py-1 pr-4 font-mono text-[var(--color-fg-muted)]">${entry.path}</td>
                 <td class="py-1 text-[var(--color-fg-muted)]">${shortMtime(entry.mtime_iso)}</td>
@@ -116,7 +117,7 @@ export function VerificationSpecsPanel() {
 
   useEffect(() => {
     void loadSpecs(resource)
-    const id = setInterval(() => void loadSpecs(resource), 60_000)
+    const id = setInterval(() => void loadSpecs(resource), TLA_POLL_INTERVAL_MS)
     return () => { clearInterval(id); resource.cancel() }
   }, [resource])
 
@@ -186,7 +187,7 @@ export function VerificationSpecsPanel() {
         ? html`<${LoadingState}>TLA+ 스펙 목록 불러오는 중...<//>`
         : null}
 
-      <${Card} title="형식 명세">
+      <${SectionCard} label="형식 명세">
         <div class="mb-2 text-xs text-[var(--color-fg-muted)]">
           <span class="font-mono">${dirLabel}</span>
         </div>

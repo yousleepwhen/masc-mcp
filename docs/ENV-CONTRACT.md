@@ -31,7 +31,7 @@ Use this document together with
 | --- | --- | --- |
 | `boot_static` | Requires process restart | socket bind, config root resolution, startup seeding |
 | `sweep_dynamic` | Applied on next supervisor sweep or periodic reconcile | running keeper declarative profile sync |
-| `request_dynamic` | Applied on next request/turn/lookup | `cascade.json` resolve path, some runtime getters |
+| `request_dynamic` | Applied on next request/turn/lookup | `cascade.toml` resolve path, some runtime getters |
 | `immediate_dynamic` | Applied immediately inside the running process | `Runtime_params.set`, in-process override mutation |
 
 ## Default Policy
@@ -61,7 +61,7 @@ should be treated as restart-required.
 | --- | --- | --- |
 | Runtime root and config roots | `MASC_BASE_PATH`, `MASC_CONFIG_DIR`, `MASC_PERSONAS_DIR`, `HOME` | `Config_dir_resolver` caches the resolved root for the life of the process |
 | Server bind and socket topology | `MASC_HOST`, `MASC_HTTP_PORT`, `MASC_GRPC_PORT`, `MASC_WS_PORT`, `MASC_GRPC_ENABLED`, `MASC_WS_ENABLED`, `MASC_WEBRTC_ENABLED` | listeners and advertised base URLs are fixed during server startup |
-| Backend/bootstrap wiring | `MASC_STORAGE_TYPE`, `MASC_STARTUP_WATCHDOG_SEC`; retired/ignored: `MASC_POSTGRES_URL`, `MASC_PG_POOL_SIZE` | boot-time filesystem storage enforcement and watchdog setup |
+| Backend/bootstrap wiring | `MASC_STORAGE_TYPE`, `MASC_STARTUP_WATCHDOG_SEC` | boot-time filesystem storage enforcement and watchdog setup |
 | Startup-only TOML seeding | every `MASC_KEEPER_*` value sourced from `keeper_runtime.toml` | TOML is loaded once and injected into the process env during boot |
 | Startup-loaded policy | tool policy related env plus `tool_policy.toml`-driven behavior | presets are loaded once at startup |
 
@@ -111,40 +111,33 @@ Examples:
   [`resolve()`](/Users/dancer/me/workspace/yousleepwhen/masc-mcp/lib/config_dir_resolver.ml#L321)
   caches the result, so root changes are boot-static.
 
-### 4. Legendary Bash exec gates (`request_dynamic`, additive-only)
+### 4. Execute exec gates (`request_dynamic`, additive-only)
 
 Flags introduced by the P1–P6 exec rework. Each is opt-in: the
-default keeps the pre-Legendary JSON shape and execution path, and
+default keeps the pre-Execute JSON shape and execution path, and
 turning a flag on only adds new fields or new code branches. No
 field is ever removed by these flags, so downstream consumers
 never break by enabling them.
 
-Operator rollout procedure and dark-launch observer log
-interpretation: see
-[`LEGENDARY-BASH-RUNBOOK.md`](./LEGENDARY-BASH-RUNBOOK.md).
+Operator rollout procedure and observer log interpretation: see
+[`EXECUTE-RUNBOOK.md`](./EXECUTE-RUNBOOK.md).
 
 | Variable | Default | Effect |
 | --- | --- | --- |
 | `MASC_BASH_SEMANTIC_EXIT` | **on** (post flip PR) | Emits a `return_code_interpretation` object (typed `semantic_exit`) alongside the raw `status`. Set to `0` / `false` / `no` / `off` to opt out and restore the pre-P1 byte-identical shape. See `lib/exec/exec_semantic.mli`. |
 | `MASC_BASH_OUTPUT_CAP` | on (500 KB head + 500 KB tail each) | Head+tail truncation via `Exec_buffer`. `MASC_BASH_CAP_HEAD` / `MASC_BASH_CAP_TAIL` override the per-stream caps. See `lib/exec/exec_buffer.mli`. |
-| `MASC_BASH_AUTO_BG` | off | Foreground commands that outrun `MASC_BLOCKING_BUDGET_MS` (default 15 000 ms) auto-promote to a `Bg_task`. Response gains `{promoted, background_task_id, partial_output, …}`. See `lib/exec/exec_run.mli`. |
-| `MASC_BLOCKING_BUDGET_MS` | 15 000 | Foreground race budget. Consumed by `MASC_BASH_AUTO_BG` (promotion threshold) and by `MASC_BASH_AUTO_BG_OBSERVE` (would-have-promoted threshold). |
-| `MASC_BASH_AUTO_BG_OBSERVE` | off | Dark-launch observer: times every **foreground-only** `keeper_bash` run and emits an `auto_bg_would_have_promoted` log line when the elapsed duration would have tripped `MASC_BLOCKING_BUDGET_MS` had `AUTO_BG` been on. Inert when `AUTO_BG` itself is enabled. Use this to accumulate prod evidence before the `AUTO_BG` default flip. No behavior change. |
-| `MASC_BASH_AST_ONLY` | off | Single-gate AST shadow (dual-gate is the default). Flip requires a prod N=1000 zero-diff window per the flip covenant test (`test_gate_diff.ml`). |
-| `MASC_BASH_AST_SHADOW_LOG` | off | Dark-launch observer: runs `Worker_dev_tools.diff_command` alongside the live gate on every `keeper_bash` call and emits a `gate_diff_shadow` log line for every non-`Agree` outcome (hashed `cmd_hash`, never the raw command). Use this to accumulate prod evidence before the `AST_ONLY` flip. No behavior change. |
 | `MASC_BASH_VERIFIABLE_MARKERS` | **on** (post flip PR) | Emits `verifiable_markers` from `Cdal_judge.of_exec_outcome` so the verifier cascade can consume typed `Test_pass {count}`, `Build_ok`, etc. without regex scraping. Set to `0` / `false` / `no` / `off` to opt out. See `lib/cdal_judge.mli`. |
 
 Representative code paths:
 
 - [`exec_semantic.ml`](/Users/dancer/me/workspace/yousleepwhen/masc-mcp/lib/exec/exec_semantic.ml)
 - [`exec_buffer.ml`](/Users/dancer/me/workspace/yousleepwhen/masc-mcp/lib/exec/exec_buffer.ml)
-- [`exec_run.ml`](/Users/dancer/me/workspace/yousleepwhen/masc-mcp/lib/exec/exec_run.ml)
 - [`cdal_judge.ml`](/Users/dancer/me/workspace/yousleepwhen/masc-mcp/lib/cdal_judge.ml)
-- [`worker_dev_tools.ml`](/Users/dancer/me/workspace/yousleepwhen/masc-mcp/lib/worker_dev_tools.ml) — legacy↔shadow diff harness
+- [`worker_dev_tools.ml`](/Users/dancer/me/workspace/yousleepwhen/masc-mcp/lib/worker_dev_tools.ml) — Shell_command_gate caller integration
 
-Because every flag here is `request_dynamic` on the keeper-bash path
+Because every flag here is `request_dynamic` on the Execute path
 (read at tool-invocation time), operators can flip a flag without a
-restart and the next `keeper_bash` call picks it up.
+restart and the next `Execute` call picks it up.
 
 ### 5. Test-only boot overrides
 

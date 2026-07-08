@@ -1,39 +1,5 @@
-(** Keeper checkpoint store — legacy + OAS checkpoint persistence,
-    OAS history archive, and SDK error classification. *)
-
-(** [ckpt-] prefix on legacy checkpoint files. *)
-val checkpoint_prefix : string
-
-(** [.json] suffix on legacy checkpoint files. *)
-val checkpoint_suffix : string
-
-(** [true] iff [filename] is a legacy keeper checkpoint file. *)
-val is_checkpoint_file : string -> bool
-
-(** Sorted-descending list of legacy checkpoint filenames in
-    [session_dir] (latest first). *)
-val list_checkpoints : session_dir:string -> string list
-
-(** Number of legacy checkpoints retained after [save] auto-prune. *)
-val max_checkpoints_retained : int
-
-(** Remove all legacy checkpoints beyond the [keep] most recent.
-    Returns the number deleted. *)
-val prune : session_dir:string -> keep:int -> int
-
-(** Atomically write [ckpt] to [session_dir/<id>.json]; auto-prunes
-    older entries to [max_checkpoints_retained]. Logs and swallows
-    write failures. *)
-val save :
-  session_dir:string -> Keeper_types.checkpoint -> unit
-
-(** Parse a legacy checkpoint JSON file. Raises on malformed JSON. *)
-val parse_checkpoint_file : string -> Keeper_types.checkpoint
-
-(** Load the newest legacy checkpoint in [session_dir]; logs and
-    returns [None] on parse failure. *)
-val load_latest :
-  session_dir:string -> Keeper_types.checkpoint option
+(** Keeper checkpoint store — OAS checkpoint persistence, OAS
+    history archive, and SDK error classification. *)
 
 (** Path of the canonical OAS checkpoint file
     [session_dir/<session_id>.json]. *)
@@ -96,48 +62,15 @@ type checkpoint_load_error =
   | Io_error of string
   | Sdk_other_error of string
 
-(** [true] iff [detail] matches a known "file not found" rendering
-    across Eio.Io, Unix_error, Sys_error, and the legacy masc-mcp
-    [no_such_file] short-form. *)
-val is_not_found_detail : string -> bool
+(** Project an [Agent_sdk.Error.sdk_error] to [checkpoint_load_error].
 
-(** Project an [Agent_sdk.Error.sdk_error] to [checkpoint_load_error]. *)
+    RFC-0089 G4: this no longer classifies [Not_found] from string-matched
+    [FileOpFailed.detail]. Cold-start "checkpoint absent" is detected at
+    the OS boundary via [Agent_sdk.Checkpoint_store.exists] *before* the
+    SDK [load] call, so any [sdk_error] reaching this function is a real
+    I/O / parse / SDK fault and routes accordingly. *)
 val classify_sdk_error :
   Agent_sdk.Error.sdk_error -> checkpoint_load_error
-
-(** Sequence a [('a, 'e) result] list into [('a list, 'e) result],
-    short-circuiting on the first [Error]. *)
-val result_all : ('a, 'e) result list -> ('a list, 'e) result
-
-(** Strict content-block parser used for compat OAS checkpoint
-    decode. Errors carry an [Agent_sdk.Error.sdk_error]. *)
-val content_block_of_json_strict :
-  Yojson.Safe.t -> (Agent_sdk.Types.content_block, Agent_sdk.Error.sdk_error) result
-
-(** Compat role parser — accepts trim/case variations and rejects
-    unknown roles via [Agent_sdk.Error.UnknownVariant]. *)
-val role_of_string_compat :
-  string -> (Agent_sdk.Types.role, Agent_sdk.Error.sdk_error) result
-
-(** Compat message-of-json parser. Errors carry an
-    [Agent_sdk.Error.sdk_error]. *)
-val message_of_json_compat :
-  Yojson.Safe.t -> (Agent_sdk.Types.message, Agent_sdk.Error.sdk_error) result
-
-(** Re-shape legacy checkpoint JSON so unknown roles default to
-    [assistant] before handing it to the OAS deserializer. *)
-val normalize_checkpoint_json_for_sdk : Yojson.Safe.t -> Yojson.Safe.t
-
-(** Compat [Agent_sdk.Checkpoint.of_json] that re-parses messages with
-    [message_of_json_compat] when the SDK rejects the raw shape. *)
-val checkpoint_of_json_compat :
-  Yojson.Safe.t -> (Agent_sdk.Checkpoint.t, Agent_sdk.Error.sdk_error) result
-
-(** Compat [Agent_sdk.Checkpoint.of_string]: tries the SDK parser first,
-    then falls back to [checkpoint_of_json_compat] on the
-    UTF-8-sanitized raw JSON. *)
-val checkpoint_of_string_compat :
-  string -> (Agent_sdk.Checkpoint.t, Agent_sdk.Error.sdk_error) result
 
 (** Load a single OAS history archive entry. Returns [Not_found]
     when the file does not exist; classifies SDK errors via

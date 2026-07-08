@@ -97,7 +97,7 @@ val create_state_eio :
 
     @param clock Eio time clock for Session_eio timeout operations
     @param sw Eio.Switch for structured concurrency
-    @param mcp_session_id Optional HTTP MCP session ID for agent_name persistence
+    @param mcp_session_id Optional HTTP MCP session ID for identity continuity
     @param state Server state
     @param request_str Raw JSON-RPC request string
     @return JSON response *)
@@ -112,8 +112,9 @@ val handle_request :
   string ->
   Yojson.Safe.t
 
-(** Execute a single tool by name (for REST API)
-    @return (success, result_json_string) *)
+(** Execute a single tool by name (for REST API).
+    Returns a structured {!Tool_result.result} carrying success flag,
+    typed payload, tool name, timing, and failure classification. *)
 val execute_tool_eio :
   sw:Eio.Switch.t ->
   clock:float Eio.Time.clock_ty Eio.Resource.t ->
@@ -124,7 +125,7 @@ val execute_tool_eio :
   server_state ->
   name:string ->
   arguments:Yojson.Safe.t ->
-  bool * string
+  Tool_result.result
 
 (** Clear MCP resource subscriptions associated with a session.
     Called by streamable HTTP transport when a session is deleted. *)
@@ -141,10 +142,6 @@ val clear_resource_subscriptions_for_session : string -> unit
     @param env Eio environment (for stdin/stdout)
     @param state Server state *)
 val run_stdio : sw:Eio.Switch.t -> env:Eio_unix.Stdenv.base -> server_state -> unit
-
-(** {1 Protocol Detection} *)
-type transport_mode = Framed | LineDelimited
-val detect_mode : string -> transport_mode
 
 (** {1 Governance} *)
 

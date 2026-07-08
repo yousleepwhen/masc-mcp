@@ -21,10 +21,12 @@ import { KeeperPhaseTimeline, refreshKeeperPhaseTimeline } from './keeper-phase-
 import { KeeperLifecycleTimeline, refreshKeeperLifecycleTimeline } from './keeper-lifecycle-timeline'
 import { TurnBudgetGaugePanel } from './turn-budget-gauge'
 import { parsePrometheusText, type ParsedMetric } from './prometheus-metrics'
+import { isKeeperCrashed, isKeeperPaused } from '../lib/keeper-predicates'
 import { fetchWithTimeout, authHeaders } from '../api/core'
+import { PROMETHEUS_FETCH_TIMEOUT_MS } from '../config/constants'
 import { TimeAgo } from './common/time-ago'
 import { LoadingState, ErrorRecoverable } from './common/feedback-state'
-import { EmptyState } from './common/empty-state'
+import { EmptyState } from './common/feedback-state'
 import { FilterChips } from './common/filter-chips'
 import type { Keeper } from '../types'
 
@@ -36,9 +38,9 @@ export interface KeeperStopSummary {
   idle_turn: number
   in_turn_hung: number
   noop_failure_loop: number
-  budget_strikes: number
+  provider_timeout_strikes: number
   storm_pauses: number
-  budget_loop_pauses: number
+  provider_timeout_loop_pauses: number
 }
 
 export interface ProactiveSkipRow {
@@ -69,9 +71,9 @@ export function extractKeeperStopSummaries(
       idle_turn: 0,
       in_turn_hung: 0,
       noop_failure_loop: 0,
-      budget_strikes: 0,
+      provider_timeout_strikes: 0,
       storm_pauses: 0,
-      budget_loop_pauses: 0,
+      provider_timeout_loop_pauses: 0,
     }
     map.set(keeper, fresh)
     return fresh
@@ -94,20 +96,17 @@ export function extractKeeperStopSummaries(
         else if (cls === 'in_turn_hung') e.in_turn_hung += s.value
         else if (cls === 'noop_failure_loop') e.noop_failure_loop += s.value
       }
-    } else if (
-      m.name === 'masc_keeper_oas_timeout_budget_strike' ||
-      m.name === 'masc_keeper_oas_timeout_budget_strike_total'
-    ) {
+    } else if (m.name === 'masc_keeper_provider_timeout_strike_total') {
       for (const s of m.samples) {
-        if (s.labels.keeper) entry(s.labels.keeper).budget_strikes += s.value
+        if (s.labels.keeper) entry(s.labels.keeper).provider_timeout_strikes += s.value
       }
     } else if (m.name === 'masc_keeper_stale_storm_paused_total') {
       for (const s of m.samples) {
         if (s.labels.keeper) entry(s.labels.keeper).storm_pauses += s.value
       }
-    } else if (m.name === 'masc_keeper_oas_timeout_budget_loop_paused_total') {
+    } else if (m.name === 'masc_keeper_provider_timeout_loop_paused_total') {
       for (const s of m.samples) {
-        if (s.labels.keeper) entry(s.labels.keeper).budget_loop_pauses += s.value
+        if (s.labels.keeper) entry(s.labels.keeper).provider_timeout_loop_pauses += s.value
       }
     }
   }
@@ -171,7 +170,7 @@ export function extractBatchTerminations(
 // ── Prometheus fetch ───────────────────────────────────────────────────────
 
 async function fetchMetricsText(): Promise<string> {
-  const res = await fetchWithTimeout('/metrics', { headers: authHeaders() }, 10_000)
+  const res = await fetchWithTimeout('/metrics', { headers: authHeaders() }, PROMETHEUS_FETCH_TIMEOUT_MS)
   if (!res.ok) throw new Error(`/metrics returned ${res.status}`)
   return res.text()
 }
@@ -188,9 +187,10 @@ async function fetchMetricsText(): Promise<string> {
  * resume heartbeat arrives) they can briefly disagree.  The OR ensures that any
  * signal of pause is reflected in the UI immediately, matching operator intent.
  */
-export function isKeeperPaused(k: Keeper): boolean {
-  return k.paused === true || k.phase === 'Paused' || k.pipeline_stage === 'paused'
-}
+// RFC-0135 PR-3: `isKeeperPaused` lives in the canonical SSOT
+// `../lib/keeper-predicates.ts`. The old definition here checked only
+// three axes (paused, phase, pipeline_stage); the SSOT folds in the
+// `status` axis too and is reused by all four pre-RFC sites.
 
 // ── Sub-components ─────────────────────────────────────────────────────────
 
@@ -222,7 +222,7 @@ function HealthGrid({ allKeepers }: { allKeepers: Keeper[] }) {
               ? Date.now() - k.last_activity_ago_s * 1000
               : null
             const isPaused = isKeeperPaused(k)
-            const isCrashed = k.phase === 'Crashed' || k.phase === 'Dead' || k.phase === 'Zombie'
+            const isCrashed = isKeeperCrashed(k)
 
             return html`
               <tr
@@ -278,7 +278,7 @@ function AutoPausePanel({
 
   const summaryMap = new Map(summaries.map(s => [s.keeper, s]))
 
-  if (pausedKeepers.length === 0 && summaries.every(s => s.storm_pauses === 0 && s.budget_loop_pauses === 0)) {
+  if (pausedKeepers.length === 0 && summaries.every(s => s.storm_pauses === 0 && s.provider_timeout_loop_pauses === 0)) {
     return html`
       <div class="rounded border border-[var(--ok-20)] bg-[var(--ok-10)] px-4 py-3 text-xs text-[var(--color-status-ok)]">
         ✓ 일시정지된 키퍼 없음 — 모든 키퍼가 정상 운영 중입니다
@@ -312,9 +312,9 @@ function AutoPausePanel({
                           storm pause ${s.storm_pauses}
                         </span>
                       ` : null}
-                      ${s.budget_loop_pauses > 0 ? html`
+                      ${s.provider_timeout_loop_pauses > 0 ? html`
                         <span class="rounded bg-[var(--bad-10)] px-1.5 py-0.5 text-[var(--bad-light)]">
-                          budget loop pause ${s.budget_loop_pauses}
+                          provider timeout loop pause ${s.provider_timeout_loop_pauses}
                         </span>
                       ` : null}
                       ${s.stale_total > 0 ? html`
@@ -338,7 +338,7 @@ function AutoPausePanel({
         </div>
       ` : null}
 
-      ${summaries.some(s => s.storm_pauses > 0 || s.budget_loop_pauses > 0) ? html`
+      ${summaries.some(s => s.storm_pauses > 0 || s.provider_timeout_loop_pauses > 0) ? html`
         <div>
           <div class="mb-2 text-2xs font-semibold uppercase tracking-wider text-[var(--color-fg-muted)]">
             자동 일시정지 이력 (Prometheus)
@@ -349,14 +349,14 @@ function AutoPausePanel({
                 <tr class="border-b border-[var(--color-border-default)] text-left text-[var(--color-fg-muted)]">
                   <th scope="col" class="pb-2 pr-3 font-normal">키퍼</th>
                   <th scope="col" class="pb-2 pr-3 font-normal text-right">storm pause</th>
-                  <th scope="col" class="pb-2 pr-3 font-normal text-right">budget loop pause</th>
-                  <th scope="col" class="pb-2 pr-3 font-normal text-right">budget strike</th>
+                  <th scope="col" class="pb-2 pr-3 font-normal text-right">provider timeout loop pause</th>
+                  <th scope="col" class="pb-2 pr-3 font-normal text-right">provider timeout strike</th>
                   <th scope="col" class="pb-2 font-normal text-right">stale 종료</th>
                 </tr>
               </thead>
               <tbody>
                 ${summaries
-                  .filter(s => s.storm_pauses > 0 || s.budget_loop_pauses > 0 || s.budget_strikes > 0)
+                  .filter(s => s.storm_pauses > 0 || s.provider_timeout_loop_pauses > 0 || s.provider_timeout_strikes > 0)
                   .map(s => html`
                     <tr key=${s.keeper} class="border-b border-[var(--color-border-default)]/40 hover:bg-[var(--color-bg-surface)]">
                       <td class="py-1.5 pr-3">
@@ -368,11 +368,11 @@ function AutoPausePanel({
                       <td class="py-1.5 pr-3 text-right tabular-nums ${s.storm_pauses > 0 ? 'text-[var(--bad-light)]' : 'text-[var(--color-fg-muted)]'}">
                         ${s.storm_pauses}
                       </td>
-                      <td class="py-1.5 pr-3 text-right tabular-nums ${s.budget_loop_pauses > 0 ? 'text-[var(--bad-light)]' : 'text-[var(--color-fg-muted)]'}">
-                        ${s.budget_loop_pauses}
+                      <td class="py-1.5 pr-3 text-right tabular-nums ${s.provider_timeout_loop_pauses > 0 ? 'text-[var(--bad-light)]' : 'text-[var(--color-fg-muted)]'}">
+                        ${s.provider_timeout_loop_pauses}
                       </td>
-                      <td class="py-1.5 pr-3 text-right tabular-nums ${s.budget_strikes > 0 ? 'text-[var(--color-status-warn)]' : 'text-[var(--color-fg-muted)]'}">
-                        ${s.budget_strikes}
+                      <td class="py-1.5 pr-3 text-right tabular-nums ${s.provider_timeout_strikes > 0 ? 'text-[var(--color-status-warn)]' : 'text-[var(--color-fg-muted)]'}">
+                        ${s.provider_timeout_strikes}
                       </td>
                       <td class="py-1.5 text-right tabular-nums ${s.stale_total > 0 ? 'text-[var(--color-status-warn)]' : 'text-[var(--color-fg-muted)]'}">
                         ${s.stale_total}
@@ -560,8 +560,10 @@ function StaleTerminationPanel({
 
 type ReactivityView = 'health' | 'lifecycle' | 'events' | 'pause' | 'proactive' | 'stale'
 
+const DEFAULT_REACTIVITY_VIEW: ReactivityView = 'health'
+
 const VIEW_CHIPS: Array<{ key: ReactivityView; label: string; title?: string }> = [
-  { key: 'health',           label: '상태 그리드',     title: '전체 키퍼 phase/활동 빠른 뷰' },
+  { key: DEFAULT_REACTIVITY_VIEW, label: '상태 그리드',     title: '전체 키퍼 phase/활동 빠른 뷰' },
   { key: 'lifecycle',        label: '상태 전환',       title: '키퍼 FSM 전환 타임라인' },
   { key: 'events', label: '생명주기 이벤트', title: '수퍼바이저 생명주기 이벤트 (Started, Restarted, Dead_cleaned 등)' },
   { key: 'pause',            label: '자동 일시정지',   title: '스톰/버짓 자동 일시정지 이벤트' },
@@ -573,7 +575,7 @@ const VIEW_CHIPS: Array<{ key: ReactivityView; label: string; title?: string }> 
 
 /** Keeper Reactivity Monitor — real-time keeper lifecycle observability. */
 export function KeeperReactivityMonitor({ defaultView }: { defaultView?: ReactivityView }) {
-  const activeView = useSignal<ReactivityView>(defaultView ?? 'health')
+  const activeView = useSignal<ReactivityView>(defaultView ?? DEFAULT_REACTIVITY_VIEW)
   const metricsLoading = useSignal(false)
   const metricsError = useSignal<string | null>(null)
   const parsedMetrics = useSignal<ParsedMetric[]>([])
@@ -621,9 +623,6 @@ export function KeeperReactivityMonitor({ defaultView }: { defaultView?: Reactiv
       <div class="flex items-center justify-between">
         <div class="flex flex-col gap-0.5">
           <h3 class="text-sm font-semibold text-[var(--color-fg-secondary)]">키퍼 반응성 모니터</h3>
-          <p class="text-2xs text-[var(--color-fg-muted)]">
-            phase 전환, 자동 일시정지, 프로액티브 스킵 이유, stale 종료 패턴을 한 곳에서 봅니다
-          </p>
         </div>
         ${isNonLifecycle ? html`
           <div class="flex items-center gap-2">

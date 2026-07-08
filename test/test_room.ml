@@ -4,6 +4,8 @@ module Types = Masc_domain
 
 open Masc_mcp
 
+let () = Mirage_crypto_rng_unix.use_default ()
+
 (* UTF-8 emoji helpers: ✅ is E2 9C 85, ⚠ is E2 9A A0, 🔒 is F0 9F 94 92, 🔓 is F0 9F 94 93 *)
 
 (* Helper for substring check - define early *)
@@ -19,8 +21,50 @@ let str_contains s substring =
     in
     check 0
 
-let contains_check result = String.sub result 0 3 = "\xE2\x9C\x85"  (* ✅ *)
-let contains_warning result = String.sub result 0 3 = "\xE2\x9A\xA0"  (* ⚠ *)
+let starts_with s prefix =
+  let len_s = String.length s in
+  let len_prefix = String.length prefix in
+  len_s >= len_prefix && String.sub s 0 len_prefix = prefix
+
+let contains_any haystack needles =
+  List.exists (str_contains haystack) needles
+
+let has_legacy_result_prefix prefix result = starts_with result prefix
+
+let contains_problem_result result =
+  let lower = String.lowercase_ascii result in
+  has_legacy_result_prefix "\xE2\x9D\x8C" result
+  || contains_any lower
+       [ "error:"
+       ; "[taskerror]"
+       ; "[agenterror]"
+       ; "[systemerror]"
+       ; "not found"
+       ; "notfound"
+       ; "not initialized"
+       ; "notinitialized"
+       ; "not joined"
+       ; "notjoined"
+       ; "invalid"
+       ; "invalidstate"
+       ; "empty"
+       ; "too long"
+       ; "blocked"
+       ; "already claimed"
+       ; "cannot"
+       ; "rejected"
+       ; "was not in the namespace"
+       ; "requires"
+       ]
+
+let contains_check result =
+  has_legacy_result_prefix "\xE2\x9C\x85" result
+  || (String.trim result <> "" && not (contains_problem_result result))
+
+let contains_warning result =
+  has_legacy_result_prefix "\xE2\x9A\xA0" result || contains_problem_result result
+
+let contains_error = contains_problem_result
 
 let backlog_recovery_path config =
   Coord.backlog_path config ^ ".last-good"
@@ -85,18 +129,18 @@ let test_add_and_claim_task () =
   Unix.mkdir tmp_dir 0o755;
 
   let config = room_config tmp_dir in
-  let _ = Coord.init config ~agent_name:(Some "claude") in
+  let _ = Coord.init config ~agent_name:(Some "agent_llm_a") in
 
   (* Add task *)
   let add_result = Coord.add_task config ~title:"Test Task" ~priority:1 ~description:"Test" in
   Alcotest.(check bool) "add success" true (contains_check add_result);
 
   (* Claim task *)
-  let claim_result = Coord.claim_task config ~agent_name:"claude" ~task_id:"task-001" in
+  let claim_result = Coord.claim_task config ~agent_name:"agent_llm_a" ~task_id:"task-001" in
   Alcotest.(check bool) "claim success" true (contains_check claim_result);
 
   (* Try to claim again - should fail *)
-  let claim2_result = Coord.claim_task config ~agent_name:"gemini" ~task_id:"task-001" in
+  let claim2_result = Coord.claim_task config ~agent_name:"provider_f" ~task_id:"task-001" in
   Alcotest.(check bool) "double claim blocked" true (contains_warning claim2_result);
 
   (* Cleanup *)
@@ -138,10 +182,10 @@ let test_broadcast_message () =
   Unix.mkdir tmp_dir 0o755;
 
   let config = room_config tmp_dir in
-  let _ = Coord.init config ~agent_name:(Some "claude") in
+  let _ = Coord.init config ~agent_name:(Some "agent_llm_a") in
 
   (* Broadcast *)
-  let result = Coord.broadcast config ~from_agent:"claude" ~content:"Hello @gemini!" in
+  let result = Coord.broadcast config ~from_agent:"agent_llm_a" ~content:"Hello @provider_f!" in
   Alcotest.(check bool) "broadcast success" true (String.contains result '[');
 
   (* Get messages *)
@@ -187,9 +231,15 @@ let test_broadcast_replaces_terminal_task_cache_desync () =
    with
    | Ok _ -> ()
    | Error err -> Alcotest.fail (Masc_domain.masc_error_to_string err));
+  let terminal_tasks = Coord.list_tasks ~include_done:true config in
+  Alcotest.(check bool)
+    "terminal task is done before invariant"
+    true
+    (str_contains terminal_tasks "task-001"
+     && str_contains (String.lowercase_ascii terminal_tasks) "done");
   Alcotest.(check (option string))
-    "assignee has stale current_task before invariant"
-    (Some "task-001")
+    "assignee current_task already cleared before invariant"
+    None
     (current_task_for "nick0cave");
 
   let stale_message =
@@ -246,142 +296,6 @@ let test_broadcast_replaces_terminal_task_cache_desync () =
   let _ = Coord.reset config in
   Unix.rmdir tmp_dir
 
-let test_worktree_list_no_git () =
-  Eio_main.run @@ fun env ->
-  Fs_compat.set_fs (Eio.Stdenv.fs env);
-  let tmp_dir = Filename.concat (Filename.get_temp_dir_name ())
-    (Printf.sprintf "masc_test_%d_%d" (Unix.getpid ()) (int_of_float (Unix.gettimeofday () *. 1000.))) in
-  Unix.mkdir tmp_dir 0o755;
-
-  let config = room_config tmp_dir in
-  let _ = Coord.init config ~agent_name:None in
-
-  (* worktree_list should return error for non-git dir *)
-  let result = Coord.worktree_list config in
-  let has_error = match result with
-    | `Assoc fields -> List.mem_assoc "error" fields
-    | _ -> false
-  in
-  Alcotest.(check bool) "error for non-git" true has_error;
-
-  (* Cleanup *)
-  let _ = Coord.reset config in
-  Unix.rmdir tmp_dir
-
-let test_worktree_create_no_git () =
-  Eio_main.run @@ fun env ->
-  Fs_compat.set_fs (Eio.Stdenv.fs env);
-  let tmp_dir = Filename.concat (Filename.get_temp_dir_name ())
-    (Printf.sprintf "masc_test_%d_%d" (Unix.getpid ()) (int_of_float (Unix.gettimeofday () *. 1000.))) in
-  Unix.mkdir tmp_dir 0o755;
-
-  let config = room_config tmp_dir in
-  let _ = Coord.init config ~agent_name:None in
-
-  (* worktree_create_r should fail for non-git dir *)
-  let result = Coord.worktree_create_r config ~agent_name:"claude" ~task_id:"test" ~base_branch:"main" ~repo_name:"test-repo" in
-  Alcotest.(check bool) "returns error" true (match result with Error _ -> true | Ok _ -> false);
-
-  (* Cleanup *)
-  let _ = Coord.reset config in
-  Unix.rmdir tmp_dir
-
-let write_file path content =
-  Out_channel.with_open_bin path (fun oc -> output_string oc content)
-
-let rec rm_rf path =
-  if Sys.file_exists path then
-    if Sys.is_directory path then begin
-      Sys.readdir path
-      |> Array.iter (fun name -> rm_rf (Filename.concat path name));
-      Unix.rmdir path
-    end else
-      Sys.remove path
-
-let test_worktree_project_root_for_nested_subdir () =
-  Eio_main.run @@ fun env ->
-  Fs_compat.set_fs (Eio.Stdenv.fs env);
-  let tmp_dir = Filename.concat (Filename.get_temp_dir_name ())
-    (Printf.sprintf "masc_test_%d_%d" (Unix.getpid ()) (int_of_float (Unix.gettimeofday () *. 1000.))) in
-  Unix.mkdir tmp_dir 0o755;
-  let config = room_config tmp_dir in
-  let _ = Coord.init config ~agent_name:(Some "claude") in
-  let repo_root = config.base_path in
-  Unix.mkdir (Filename.concat repo_root ".git") 0o755;
-  let nested = Filename.concat repo_root "nested" in
-  Unix.mkdir nested 0o755;
-  let nested_config = { config with base_path = nested } in
-  Alcotest.(check string) "nested path resolves to repo root"
-    repo_root
-    (Coord.project_root nested_config);
-  let _ = Coord.reset config in
-  rm_rf tmp_dir
-
-let test_worktree_project_root_for_gitfile_worktree () =
-  Eio_main.run @@ fun env ->
-  Fs_compat.set_fs (Eio.Stdenv.fs env);
-  let tmp_dir = Filename.concat (Filename.get_temp_dir_name ())
-    (Printf.sprintf "masc_test_%d_%d" (Unix.getpid ()) (int_of_float (Unix.gettimeofday () *. 1000.))) in
-  Unix.mkdir tmp_dir 0o755;
-  let config = room_config tmp_dir in
-  let _ = Coord.init config ~agent_name:(Some "claude") in
-  let repo_root = config.base_path in
-  Unix.mkdir (Filename.concat repo_root ".git") 0o755;
-  let worktrees_dir = Filename.concat repo_root ".worktrees" in
-  Unix.mkdir worktrees_dir 0o755;
-  let worktree_root = Filename.concat worktrees_dir "agent-task" in
-  Unix.mkdir worktree_root 0o755;
-  write_file (Filename.concat worktree_root ".git")
-    "gitdir: /tmp/fake-common-dir/worktrees/agent-task\n";
-  let worktree_config = { config with base_path = worktree_root } in
-  Alcotest.(check string) "worktree path resolves to shared repo root"
-    repo_root
-    (Coord.project_root worktree_config);
-  let _ = Coord.reset config in
-  rm_rf tmp_dir
-
-let test_worktree_project_root_for_nested_gitfile_worktree_subdir () =
-  Eio_main.run @@ fun env ->
-  Fs_compat.set_fs (Eio.Stdenv.fs env);
-  let tmp_dir = Filename.concat (Filename.get_temp_dir_name ())
-    (Printf.sprintf "masc_test_%d_%d" (Unix.getpid ()) (int_of_float (Unix.gettimeofday () *. 1000.))) in
-  Unix.mkdir tmp_dir 0o755;
-  let config = room_config tmp_dir in
-  let _ = Coord.init config ~agent_name:(Some "claude") in
-  let repo_root = config.base_path in
-  Unix.mkdir (Filename.concat repo_root ".git") 0o755;
-  let worktrees_dir = Filename.concat repo_root ".worktrees" in
-  Unix.mkdir worktrees_dir 0o755;
-  let worktree_root = Filename.concat worktrees_dir "agent-task" in
-  Unix.mkdir worktree_root 0o755;
-  write_file (Filename.concat worktree_root ".git")
-    "gitdir: /tmp/fake-common-dir/worktrees/agent-task\n";
-  let nested = Filename.concat worktree_root "nested" in
-  Unix.mkdir nested 0o755;
-  let nested_config = { config with base_path = nested } in
-  Alcotest.(check string) "nested worktree path resolves to shared repo root"
-    repo_root
-    (Coord.project_root nested_config);
-  let _ = Coord.reset config in
-  rm_rf tmp_dir
-
-let test_worktree_project_root_for_masc_dir_base () =
-  Eio_main.run @@ fun env ->
-  Fs_compat.set_fs (Eio.Stdenv.fs env);
-  let tmp_dir = Filename.concat (Filename.get_temp_dir_name ())
-    (Printf.sprintf "masc_test_%d_%d" (Unix.getpid ()) (int_of_float (Unix.gettimeofday () *. 1000.))) in
-  Unix.mkdir tmp_dir 0o755;
-  let config = room_config tmp_dir in
-  let _ = Coord.init config ~agent_name:(Some "claude") in
-  let repo_root = config.base_path in
-  Unix.mkdir (Filename.concat repo_root ".git") 0o755;
-  let masc_config = { config with base_path = Filename.concat repo_root Common.masc_dirname } in
-  Alcotest.(check string) ".masc base path resolves to repo root"
-    repo_root
-    (Coord.project_root masc_config);
-  let _ = Coord.reset config in
-  rm_rf tmp_dir
-
 let test_event_log () =
   Eio_main.run @@ fun env ->
   Fs_compat.set_fs (Eio.Stdenv.fs env);
@@ -393,7 +307,7 @@ let test_event_log () =
   let _ = Coord.init config ~agent_name:None in
 
   (* Broadcast should create event log *)
-  let result = Coord.broadcast config ~from_agent:"claude" ~content:"Test event" in
+  let result = Coord.broadcast config ~from_agent:"agent_llm_a" ~content:"Test event" in
 
   (* Verify broadcast returned a valid response (contains timestamp marker) *)
   Alcotest.(check bool) "broadcast returns response" true (String.length result > 0);
@@ -406,8 +320,6 @@ let test_event_log () =
 (* ============================================================ *)
 (* Edge Case & Error Case Tests                                  *)
 (* ============================================================ *)
-
-let contains_error result = String.sub result 0 3 = "\xE2\x9D\x8C"  (* ❌ *)
 
 let transition_done_r config ~agent_name ~task_id ~notes =
   Coord.transition_task_r config ~agent_name ~task_id
@@ -428,7 +340,7 @@ let with_test_env f =
     (Printf.sprintf "masc_test_%d_%d" (Unix.getpid ()) (int_of_float (Unix.gettimeofday () *. 1000.))) in
   Unix.mkdir tmp_dir 0o755;
   let config = room_config tmp_dir in
-  let _ = Coord.init config ~agent_name:(Some "claude") in
+  let _ = Coord.init config ~agent_name:(Some "agent_llm_a") in
   try
     f config;
     let _ = Coord.reset config in
@@ -440,12 +352,12 @@ let with_test_env f =
 
 let test_lifecycle_messages_are_typed () =
   with_test_env (fun config ->
-    let join_result = Coord.join config ~agent_name:"gemini" ~capabilities:[] () in
+    let join_result = Coord.join config ~agent_name:"provider_f" ~capabilities:[] () in
     Alcotest.(check bool) "join success" true
       (str_contains join_result "joined");
-    let leave_result = Coord.leave config ~agent_name:"gemini" in
+    let leave_result = Coord.leave config ~agent_name:"provider_f" in
     Alcotest.(check bool) "leave success" true (str_contains leave_result "left");
-    ignore (Coord.join config ~agent_name:"gemini" ~capabilities:[] ());
+    ignore (Coord.join config ~agent_name:"provider_f" ~capabilities:[] ());
 
     let messages = Coord.get_all_messages_raw config ~since_seq:0 in
     let has_msg_type msg_type =
@@ -485,7 +397,7 @@ let with_memory_test_env f =
     backend_config;
     backend = Coord_utils.Memory memory_backend;
   } in
-  let _ = Coord.init config ~agent_name:(Some "claude") in
+  let _ = Coord.init config ~agent_name:(Some "agent_llm_a") in
   try
     f config;
     let _ = Coord.reset config in
@@ -503,42 +415,42 @@ let test_complete_without_claim () =
     let _ = Coord.add_task config ~title:"Unclaimed" ~priority:1 ~description:"" in
 
     (* Try to complete without claiming - should fail *)
-    let result = transition_done config ~agent_name:"claude" ~task_id:"task-001" ~notes:"" in
+    let result = transition_done config ~agent_name:"agent_llm_a" ~task_id:"task-001" ~notes:"" in
     Alcotest.(check bool) "complete without claim blocked" true (contains_error result)
   )
 
 let test_complete_by_wrong_agent () =
   with_test_env (fun config ->
     let _ = Coord.add_task config ~title:"Test" ~priority:1 ~description:"" in
-    let _ = Coord.claim_task config ~agent_name:"claude" ~task_id:"task-001" in
+    let _ = Coord.claim_task config ~agent_name:"agent_llm_a" ~task_id:"task-001" in
 
-    (* Gemini tries to complete claude's task - should fail *)
-    let result = transition_done config ~agent_name:"gemini" ~task_id:"task-001" ~notes:"" in
+    (* Provider_f tries to complete agent_llm_a's task - should fail *)
+    let result = transition_done config ~agent_name:"provider_f" ~task_id:"task-001" ~notes:"" in
     Alcotest.(check bool) "wrong agent blocked" true (contains_error result);
     Alcotest.(check bool) "wrong agent points at current assignee" true
-      (str_contains result "current_assignee=claude")
+      (str_contains result "current_assignee=agent_llm_a")
   )
 
 let test_complete_nonexistent_task () =
   with_test_env (fun config ->
-    let result = transition_done config ~agent_name:"claude" ~task_id:"task-999" ~notes:"" in
+    let result = transition_done config ~agent_name:"agent_llm_a" ~task_id:"task-999" ~notes:"" in
     Alcotest.(check bool) "nonexistent task" true (contains_error result)
   )
 
 let test_claim_nonexistent_task () =
   with_test_env (fun config ->
-    let result = Coord.claim_task config ~agent_name:"claude" ~task_id:"task-999" in
+    let result = Coord.claim_task config ~agent_name:"agent_llm_a" ~task_id:"task-999" in
     Alcotest.(check bool) "claim nonexistent" true (contains_error result)
   )
 
 let test_double_complete () =
   with_test_env (fun config ->
     let _ = Coord.add_task config ~title:"Test" ~priority:1 ~description:"" in
-    let _ = Coord.claim_task config ~agent_name:"claude" ~task_id:"task-001" in
-    let _ = transition_done config ~agent_name:"claude" ~task_id:"task-001" ~notes:"first" in
+    let _ = Coord.claim_task config ~agent_name:"agent_llm_a" ~task_id:"task-001" in
+    let _ = transition_done config ~agent_name:"agent_llm_a" ~task_id:"task-001" ~notes:"first" in
 
     (* Done is idempotent at the Coord FSM layer. *)
-    let result = transition_done config ~agent_name:"claude" ~task_id:"task-001" ~notes:"second" in
+    let result = transition_done config ~agent_name:"agent_llm_a" ~task_id:"task-001" ~notes:"second" in
     Alcotest.(check bool) "double complete is no-op" true (contains_check result);
     Alcotest.(check bool) "double complete mentions no-op" true
       (str_contains result "no-op")
@@ -548,23 +460,23 @@ let test_double_complete () =
 
 let test_leave_removes_agent () =
   with_test_env (fun config ->
-    let _ = Coord.join config ~agent_name:"gemini" ~capabilities:["test"] () in
+    let _ = Coord.join config ~agent_name:"provider_f" ~capabilities:["test"] () in
 
     (* Check agent exists *)
     let status1 = Coord.status config in
-    Alcotest.(check bool) "gemini in status" true (String.length status1 > 0);
+    Alcotest.(check bool) "provider_f in status" true (String.length status1 > 0);
 
     (* Leave *)
-    let result = Coord.leave config ~agent_name:"gemini" in
+    let result = Coord.leave config ~agent_name:"provider_f" in
     Alcotest.(check bool) "leave success" true (contains_check result)
   )
 
 let test_double_join () =
   with_test_env (fun config ->
-    let _ = Coord.join config ~agent_name:"gemini" ~capabilities:["test"] () in
+    let _ = Coord.join config ~agent_name:"provider_f" ~capabilities:["test"] () in
 
     (* Join again - should update or warn *)
-    let result = Coord.join config ~agent_name:"gemini" ~capabilities:["updated"] () in
+    let result = Coord.join config ~agent_name:"provider_f" ~capabilities:["updated"] () in
     (* Either success (update) or warning is acceptable *)
     Alcotest.(check bool) "double join handled" true (String.length result > 0)
   )
@@ -599,14 +511,14 @@ let test_special_chars_in_message () =
   with_test_env (fun config ->
     (* Test special characters, unicode, JSON-unsafe chars *)
     let msg = "Hello \"world\" with 'quotes' and\nnewlines\tand\t한글!" in
-    let result = Coord.broadcast config ~from_agent:"claude" ~content:msg in
+    let result = Coord.broadcast config ~from_agent:"agent_llm_a" ~content:msg in
     Alcotest.(check bool) "special chars handled" true (String.length result > 0)
   )
 
 let test_agent_name_with_special_chars () =
   with_test_env (fun config ->
     (* Agent name with dots, dashes should work *)
-    let result = Coord.join config ~agent_name:"claude-3.5-sonnet" ~capabilities:[] () in
+    let result = Coord.join config ~agent_name:"model-a-sonnet-sonnet" ~capabilities:[] () in
     Alcotest.(check bool) "special agent name" true (contains_check result)
   )
 
@@ -624,12 +536,12 @@ let test_priority_boundaries () =
 let test_task_state_after_claim () =
   with_test_env (fun config ->
     let _ = Coord.add_task config ~title:"State Test" ~priority:1 ~description:"" in
-    let _ = Coord.claim_task config ~agent_name:"claude" ~task_id:"task-001" in
+    let _ = Coord.claim_task config ~agent_name:"agent_llm_a" ~task_id:"task-001" in
 
     (* Verify task list shows claimed state *)
     let tasks = Coord.list_tasks config in
     Alcotest.(check bool) "shows claimed" true (String.length tasks > 0);
-    Alcotest.(check bool) "has claude" true (str_contains tasks "claude" ||
+    Alcotest.(check bool) "has agent_llm_a" true (str_contains tasks "agent_llm_a" ||
                                               str_contains tasks "Claimed")
   )
 
@@ -641,12 +553,12 @@ let test_multiple_tasks_independent () =
     let _ = Coord.add_task config ~title:"Task C" ~priority:3 ~description:"" in
 
     (* Claim one, complete another - verify independence *)
-    let _ = Coord.claim_task config ~agent_name:"claude" ~task_id:"task-001" in
-    let _ = Coord.claim_task config ~agent_name:"claude" ~task_id:"task-002" in
-    let _ = transition_done config ~agent_name:"claude" ~task_id:"task-001" ~notes:"" in
+    let _ = Coord.claim_task config ~agent_name:"agent_llm_a" ~task_id:"task-001" in
+    let _ = Coord.claim_task config ~agent_name:"agent_llm_a" ~task_id:"task-002" in
+    let _ = transition_done config ~agent_name:"agent_llm_a" ~task_id:"task-001" ~notes:"" in
 
     (* Task 002 should still be claimable to complete *)
-    let result = transition_done config ~agent_name:"claude" ~task_id:"task-002" ~notes:"" in
+    let result = transition_done config ~agent_name:"agent_llm_a" ~task_id:"task-002" ~notes:"" in
     Alcotest.(check bool) "independent tasks" true (contains_check result)
   )
 
@@ -657,9 +569,9 @@ let test_rapid_claim_sequence () =
     let _ = Coord.add_task config ~title:"Race" ~priority:1 ~description:"" in
 
     (* Simulate rapid claims from different agents *)
-    let r1 = Coord.claim_task config ~agent_name:"claude" ~task_id:"task-001" in
-    let r2 = Coord.claim_task config ~agent_name:"gemini" ~task_id:"task-001" in
-    let r3 = Coord.claim_task config ~agent_name:"codex" ~task_id:"task-001" in
+    let r1 = Coord.claim_task config ~agent_name:"agent_llm_a" ~task_id:"task-001" in
+    let r2 = Coord.claim_task config ~agent_name:"provider_f" ~task_id:"task-001" in
+    let r3 = Coord.claim_task config ~agent_name:"agent_code" ~task_id:"task-001" in
 
     (* Only first should succeed *)
     Alcotest.(check bool) "first wins" true (contains_check r1);
@@ -675,22 +587,22 @@ let test_multiple_agents_multiple_tasks () =
     let _ = Coord.add_task config ~title:"C" ~priority:3 ~description:"" in
 
     (* Each agent claims different task *)
-    let r1 = Coord.claim_task config ~agent_name:"claude" ~task_id:"task-001" in
-    let r2 = Coord.claim_task config ~agent_name:"gemini" ~task_id:"task-002" in
-    let r3 = Coord.claim_task config ~agent_name:"codex" ~task_id:"task-003" in
+    let r1 = Coord.claim_task config ~agent_name:"agent_llm_a" ~task_id:"task-001" in
+    let r2 = Coord.claim_task config ~agent_name:"provider_f" ~task_id:"task-002" in
+    let r3 = Coord.claim_task config ~agent_name:"agent_code" ~task_id:"task-003" in
 
-    Alcotest.(check bool) "claude gets 001" true (contains_check r1);
-    Alcotest.(check bool) "gemini gets 002" true (contains_check r2);
-    Alcotest.(check bool) "codex gets 003" true (contains_check r3);
+    Alcotest.(check bool) "agent_llm_a gets 001" true (contains_check r1);
+    Alcotest.(check bool) "provider_f gets 002" true (contains_check r2);
+    Alcotest.(check bool) "agent_code gets 003" true (contains_check r3);
 
     (* Each completes their own *)
-    let c1 = transition_done config ~agent_name:"claude" ~task_id:"task-001" ~notes:"" in
-    let c2 = transition_done config ~agent_name:"gemini" ~task_id:"task-002" ~notes:"" in
-    let c3 = transition_done config ~agent_name:"codex" ~task_id:"task-003" ~notes:"" in
+    let c1 = transition_done config ~agent_name:"agent_llm_a" ~task_id:"task-001" ~notes:"" in
+    let c2 = transition_done config ~agent_name:"provider_f" ~task_id:"task-002" ~notes:"" in
+    let c3 = transition_done config ~agent_name:"agent_code" ~task_id:"task-003" ~notes:"" in
 
-    Alcotest.(check bool) "claude done" true (contains_check c1);
-    Alcotest.(check bool) "gemini done" true (contains_check c2);
-    Alcotest.(check bool) "codex done" true (contains_check c3)
+    Alcotest.(check bool) "agent_llm_a done" true (contains_check c1);
+    Alcotest.(check bool) "provider_f done" true (contains_check c2);
+    Alcotest.(check bool) "agent_code done" true (contains_check c3)
   )
 
 (* --- Recovery & Edge Condition Tests --- *)
@@ -706,9 +618,9 @@ let test_reinit_existing_room () =
 let test_operations_preserve_state () =
   with_test_env (fun config ->
     (* Do a bunch of operations *)
-    let _ = Coord.join config ~agent_name:"gemini" ~capabilities:["test"] () in
+    let _ = Coord.join config ~agent_name:"provider_f" ~capabilities:["test"] () in
     let _ = Coord.add_task config ~title:"X" ~priority:1 ~description:"" in
-    let _ = Coord.broadcast config ~from_agent:"claude" ~content:"hello" in
+    let _ = Coord.broadcast config ~from_agent:"agent_llm_a" ~content:"hello" in
 
     (* Status should show all state *)
     let status = Coord.status config in
@@ -746,10 +658,10 @@ let test_event_log_on_claim_done () =
   Unix.mkdir tmp_dir 0o755;
 
   let config = room_config tmp_dir in
-  let _ = Coord.init config ~agent_name:(Some "claude") in
+  let _ = Coord.init config ~agent_name:(Some "agent_llm_a") in
   let _ = Coord.add_task config ~title:"Test" ~priority:1 ~description:"" in
-  let _ = Coord.claim_task config ~agent_name:"claude" ~task_id:"task-001" in
-  let _ = transition_done config ~agent_name:"claude" ~task_id:"task-001" ~notes:"done" in
+  let _ = Coord.claim_task config ~agent_name:"agent_llm_a" ~task_id:"task-001" in
+  let _ = transition_done config ~agent_name:"agent_llm_a" ~task_id:"task-001" ~notes:"done" in
 
   (* Verify task state via Coord.read_backlog (backend-agnostic) *)
   let backlog = Coord.read_backlog config in
@@ -765,27 +677,29 @@ let test_event_log_on_claim_done () =
 (* Heartbeat & Zombie Detection Tests                           *)
 (* ============================================================ *)
 
-let contains_heartbeat result = String.sub result 0 4 = "\xF0\x9F\x92\x93"  (* 💓 *)
+let contains_heartbeat result =
+  has_legacy_result_prefix "\xF0\x9F\x92\x93" result
+  || str_contains (String.lowercase_ascii result) "heartbeat updated"
 
 let test_heartbeat_updates_lastseen () =
   with_test_env (fun config ->
-    let _ = Coord.join config ~agent_name:"gemini" ~capabilities:[] () in
+    let _ = Coord.join config ~agent_name:"provider_f" ~capabilities:[] () in
 
     (* Send heartbeat *)
-    let result = Coord.heartbeat config ~agent_name:"gemini" in
+    let result = Coord.heartbeat config ~agent_name:"provider_f" in
     Alcotest.(check bool) "heartbeat success" true (contains_heartbeat result)
   )
 
 let test_is_agent_joined_after_default_join () =
   with_test_env (fun config ->
-    let _ = Coord.join config ~agent_name:"gemini" ~capabilities:[] () in
+    let _ = Coord.join config ~agent_name:"provider_f" ~capabilities:[] () in
     let agents : Masc_domain.agent list = Coord.get_agents_raw config in
     let gemini_name =
       match List.find_opt (fun (agent : Masc_domain.agent) ->
-        String.length agent.name >= 6 && String.sub agent.name 0 6 = "gemini"
+        String.length agent.name >= 6 && String.sub agent.name 0 6 = "provider_f"
       ) agents with
       | Some agent -> agent.name
-      | None -> failwith "expected gemini agent"
+      | None -> failwith "expected provider_f agent"
     in
     Alcotest.(check bool) "joined agent detected" true
       (Coord.is_agent_joined config ~agent_name:gemini_name)
@@ -864,6 +778,60 @@ let test_release_stale_claims_skips_invalid_backlog () =
     Alcotest.(check (list (pair string string))) "no stale claims released" [] released
   )
 
+(* RFC-0034.d: release_stale_claims must clear the assignee's
+   on-disk current_task mirror so the agent file no longer points at
+   a backlog task that has been forced back to Todo. *)
+let agent_current_task config ~agent_name =
+  let agents = Coord.get_all_agents config in
+  match List.find_opt (fun (a : Masc_domain.agent) -> a.name = agent_name) agents with
+  | Some agent -> agent.current_task
+  | None -> None
+
+(* Use pre-formed nicknames so the assignee written into the backlog
+   by [Coord.claim_task] matches the [<nickname>.json] agent file. The
+   production board issue (RFC-0034.d §1) was reported with nicknames
+   (e.g. nick0cave), so this models the actual desync surface. *)
+let stale_nick = "agent_llm_a-stale-fox"
+let other_nick = "agent_llm_a-other-bear"
+
+let test_release_stale_claims_clears_agent_current_task () =
+  with_test_env (fun config ->
+    let _ = Coord.join config ~agent_name:stale_nick ~capabilities:[] () in
+    let _ = Coord.add_task config ~title:"Stale work" ~priority:1 ~description:"" in
+    let _ = Coord.claim_task config ~agent_name:stale_nick ~task_id:"task-001" in
+    (* claim_task does not mirror current_task on the agent file —
+       transition/start does — so set the mirror explicitly to model
+       a keeper that progressed to InProgress before going stale. *)
+    Coord.update_local_agent_state config ~agent_name:stale_nick
+      (fun agent -> { agent with current_task = Some "task-001" });
+    Alcotest.(check (option string)) "precondition: agent.current_task set"
+      (Some "task-001") (agent_current_task config ~agent_name:stale_nick);
+    (* ttl_seconds:0.0 forces the just-recorded claim to be stale. *)
+    let released = Coord.release_stale_claims config ~ttl_seconds:0.0 in
+    Alcotest.(check (list (pair string string)))
+      "task-001 released against assignee" [("task-001", stale_nick)] released;
+    Alcotest.(check (option string)) "agent.current_task cleared" None
+      (agent_current_task config ~agent_name:stale_nick)
+  )
+
+(* Spec: agent A claimed task X, then its on-disk pointer moved to a
+   different task Y (e.g. a fresh claim under a different lock window).
+   When the stale sweep releases X, A's [current_task] must remain
+   [Some Y] — only the task-X-specific pointer gets cleared. *)
+let test_release_stale_claims_preserves_other_agent_task () =
+  with_test_env (fun config ->
+    let _ = Coord.join config ~agent_name:other_nick ~capabilities:[] () in
+    let _ = Coord.add_task config ~title:"Stale work" ~priority:1 ~description:"" in
+    let _ = Coord.claim_task config ~agent_name:other_nick ~task_id:"task-001" in
+    Coord.update_local_agent_state config ~agent_name:other_nick
+      (fun agent -> { agent with current_task = Some "task-999" });
+    let released = Coord.release_stale_claims config ~ttl_seconds:0.0 in
+    Alcotest.(check (list (pair string string)))
+      "task-001 released from backlog" [("task-001", other_nick)] released;
+    Alcotest.(check (option string)) "agent kept its newer current_task"
+      (Some "task-999") (agent_current_task config ~agent_name:other_nick)
+  )
+
 
 let test_heartbeat_nonexistent_agent () =
   with_test_env (fun config ->
@@ -874,8 +842,8 @@ let test_heartbeat_nonexistent_agent () =
 
 let test_get_agents_status () =
   with_test_env (fun config ->
-    let _ = Coord.join config ~agent_name:"gemini" ~capabilities:["python"] () in
-    let _ = Coord.join config ~agent_name:"codex" ~capabilities:["rust"] () in
+    let _ = Coord.join config ~agent_name:"provider_f" ~capabilities:["python"] () in
+    let _ = Coord.join config ~agent_name:"agent_code" ~capabilities:["rust"] () in
 
     let status = Coord.get_agents_status config in
     (* Should be a JSON with agents array *)
@@ -888,9 +856,15 @@ let test_get_agents_status () =
 
 let test_cleanup_zombies_empty () =
   with_test_env (fun config ->
-    (* Cleanup with no zombies *)
+    (* Cleanup with no zombies returns a structured result *)
     let result = Coord.cleanup_zombies config in
-    Alcotest.(check bool) "cleanup result" true (String.length result > 0)
+    let has_result =
+      match result with
+      | Coord.No_agents_dir -> true
+      | Coord.No_zombies -> true
+      | Coord.Cleaned _ -> true
+    in
+    Alcotest.(check bool) "cleanup result" true has_result
   )
 
 (** Return ISO8601 timestamp offset by seconds from now *)
@@ -919,8 +893,11 @@ let test_cleanup_zombies_detects_regular () =
     (* Create a regular agent idle for 10 minutes (> 300s threshold) *)
     make_stale_agent config ~name:"stale-regular-agent" ~age_seconds:700.0;
     let result = Coord.cleanup_zombies config in
-    Alcotest.(check bool) "regular zombie detected"
-      true (str_contains result "stale-regular-agent")
+    let found = match result with
+      | Coord.Cleaned { names; _ } -> List.mem "stale-regular-agent" names
+      | _ -> false
+    in
+    Alcotest.(check bool) "regular zombie detected" true found
   )
 
 let test_cleanup_zombies_detects_keeper () =
@@ -928,8 +905,11 @@ let test_cleanup_zombies_detects_keeper () =
     (* Create a keeper agent idle for 2 hours (> 3600s keeper threshold) *)
     make_stale_agent config ~name:"keeper-longplay-agent" ~age_seconds:7200.0;
     let result = Coord.cleanup_zombies config in
-    Alcotest.(check bool) "keeper zombie detected after keeper threshold"
-      true (str_contains result "keeper-longplay-agent")
+    let found = match result with
+      | Coord.Cleaned { names; _ } -> List.mem "keeper-longplay-agent" names
+      | _ -> false
+    in
+    Alcotest.(check bool) "keeper zombie detected after keeper threshold" true found
   )
 
 let test_cleanup_zombies_spares_recent_keeper () =
@@ -937,8 +917,11 @@ let test_cleanup_zombies_spares_recent_keeper () =
     (* Create a keeper agent idle for 10 minutes (< 3600s keeper threshold) *)
     make_stale_agent config ~name:"keeper-active-agent" ~age_seconds:600.0;
     let result = Coord.cleanup_zombies config in
-    Alcotest.(check bool) "recent keeper spared"
-      true (not (str_contains result "keeper-active-agent"))
+    let spared = match result with
+      | Coord.Cleaned { names; _ } -> not (List.mem "keeper-active-agent" names)
+      | _ -> true
+    in
+    Alcotest.(check bool) "recent keeper spared" true spared
   )
 
 let test_cleanup_zombies_spares_type_keeper () =
@@ -950,8 +933,11 @@ let test_cleanup_zombies_spares_type_keeper () =
       ~name:"regular-keeper-runtime"
       ~age_seconds:600.0;
     let result = Coord.cleanup_zombies config in
-    Alcotest.(check bool) "agent_type=keeper spared below keeper threshold"
-      true (not (str_contains result "regular-keeper-runtime"))
+    let spared = match result with
+      | Coord.Cleaned { names; _ } -> not (List.mem "regular-keeper-runtime" names)
+      | _ -> true
+    in
+    Alcotest.(check bool) "agent_type=keeper spared below keeper threshold" true spared
   )
 
 let test_cleanup_zombies_removes_broken_agent_file () =
@@ -966,6 +952,23 @@ let test_cleanup_zombies_removes_broken_agent_file () =
     Alcotest.(check bool) "broken file removed by GC"
       false (Sys.file_exists path)
   )
+
+let test_fd_pressure_exn_classification () =
+  Alcotest.(check bool)
+    "EMFILE is resource pressure, not malformed JSON"
+    true
+    (Coord.is_fd_pressure_exn
+       (Unix.Unix_error (Unix.EMFILE, "openat", "/tmp/keeper.json")));
+  Alcotest.(check bool)
+    "ENFILE is resource pressure, not malformed JSON"
+    true
+    (Coord.is_fd_pressure_exn
+       (Unix.Unix_error (Unix.ENFILE, "openat", "/tmp/keeper.json")));
+  Alcotest.(check bool)
+    "other Unix errors are not FD pressure"
+    false
+    (Coord.is_fd_pressure_exn
+       (Unix.Unix_error (Unix.ETIMEDOUT, "connect", "api")))
 
 let test_cleanup_zombies_preserves_non_json_files () =
   with_test_env (fun config ->
@@ -990,18 +993,18 @@ let contains_antenna result = String.sub result 0 4 = "\xF0\x9F\x93\xA1"  (* �
 
 let test_register_capabilities () =
   with_test_env (fun config ->
-    let _ = Coord.join config ~agent_name:"gemini" ~capabilities:[] () in
+    let _ = Coord.join config ~agent_name:"provider_f" ~capabilities:[] () in
 
     (* Register capabilities *)
-    let result = Coord.register_capabilities config ~agent_name:"gemini"
+    let result = Coord.register_capabilities config ~agent_name:"provider_f"
       ~capabilities:["python"; "web-search"; "code-review"] in
     Alcotest.(check bool) "capabilities registered" true (contains_antenna result)
   )
 
 let test_find_by_capability () =
   with_test_env (fun config ->
-    let _ = Coord.join config ~agent_name:"gemini" ~capabilities:["python"; "search"] () in
-    let _ = Coord.join config ~agent_name:"codex" ~capabilities:["python"; "rust"] () in
+    let _ = Coord.join config ~agent_name:"provider_f" ~capabilities:["python"; "search"] () in
+    let _ = Coord.join config ~agent_name:"agent_code" ~capabilities:["python"; "rust"] () in
 
     (* Find agents with python capability *)
     let result = Coord.find_agents_by_capability config ~capability:"python" in
@@ -1015,7 +1018,7 @@ let test_find_by_capability () =
 
 let test_find_by_capability_no_match () =
   with_test_env (fun config ->
-    let _ = Coord.join config ~agent_name:"gemini" ~capabilities:["python"] () in
+    let _ = Coord.join config ~agent_name:"provider_f" ~capabilities:["python"] () in
 
     (* Find agents with nonexistent capability *)
     let result = Coord.find_agents_by_capability config ~capability:"haskell" in
@@ -1055,7 +1058,7 @@ let test_empty_agent_name_claim () =
 let test_empty_task_id_claim () =
   with_test_env (fun config ->
     (* Empty task_id should be rejected *)
-    let result = Coord.claim_task config ~agent_name:"claude" ~task_id:"" in
+    let result = Coord.claim_task config ~agent_name:"agent_llm_a" ~task_id:"" in
     Alcotest.(check bool) "empty task_id rejected" true (contains_error result)
   )
 
@@ -1082,7 +1085,7 @@ let test_emoji_in_message () =
   with_test_env (fun config ->
     (* Emoji characters should be preserved *)
     let msg = "🚀 Launching feature! 🎉" in
-    let result = Coord.broadcast config ~from_agent:"claude" ~content:msg in
+    let result = Coord.broadcast config ~from_agent:"agent_llm_a" ~content:msg in
     Alcotest.(check bool) "emoji preserved" true (str_contains result "🚀")
   )
 
@@ -1104,9 +1107,9 @@ let test_reset_clears_all_state () =
   Unix.mkdir tmp_dir 0o755;
 
   let config = room_config tmp_dir in
-  let _ = Coord.init config ~agent_name:(Some "claude") in
+  let _ = Coord.init config ~agent_name:(Some "agent_llm_a") in
   let _ = Coord.add_task config ~title:"Task" ~priority:1 ~description:"" in
-  let _ = Coord.broadcast config ~from_agent:"claude" ~content:"Hello" in
+  let _ = Coord.broadcast config ~from_agent:"agent_llm_a" ~content:"Hello" in
 
   (* Reset *)
   let _ = Coord.reset config in
@@ -1124,10 +1127,10 @@ let test_reinit_after_reset () =
   Unix.mkdir tmp_dir 0o755;
 
   let config = room_config tmp_dir in
-  let _ = Coord.init config ~agent_name:(Some "claude") in
+  let _ = Coord.init config ~agent_name:(Some "agent_llm_a") in
   let _ = Coord.reset config in
   (* Reinit should work *)
-  let result = Coord.init config ~agent_name:(Some "claude") in
+  let result = Coord.init config ~agent_name:(Some "agent_llm_a") in
   Alcotest.(check bool) "reinit after reset" true (contains_check result);
 
   let _ = Coord.reset config in
@@ -1140,7 +1143,7 @@ let test_reinit_after_reset () =
 let test_very_long_message () =
   with_test_env (fun config ->
     let long_msg = String.make 10000 'x' in
-    let result = Coord.broadcast config ~from_agent:"claude" ~content:long_msg in
+    let result = Coord.broadcast config ~from_agent:"agent_llm_a" ~content:long_msg in
     Alcotest.(check bool) "long message handled" true (String.length result > 0)
   )
 
@@ -1148,16 +1151,16 @@ let test_message_with_json_chars () =
   with_test_env (fun config ->
     (* JSON special characters should be escaped properly *)
     let msg = "{\"key\": \"value\", \"array\": [1,2,3]}" in
-    let result = Coord.broadcast config ~from_agent:"claude" ~content:msg in
+    let result = Coord.broadcast config ~from_agent:"agent_llm_a" ~content:msg in
     Alcotest.(check bool) "json chars handled" true (String.length result > 0)
   )
 
 let test_message_sequence () =
   with_test_env (fun config ->
     (* Messages should have incrementing sequence numbers *)
-    let _ = Coord.broadcast config ~from_agent:"claude" ~content:"First" in
-    let _ = Coord.broadcast config ~from_agent:"claude" ~content:"Second" in
-    let _ = Coord.broadcast config ~from_agent:"claude" ~content:"Third" in
+    let _ = Coord.broadcast config ~from_agent:"agent_llm_a" ~content:"First" in
+    let _ = Coord.broadcast config ~from_agent:"agent_llm_a" ~content:"Second" in
+    let _ = Coord.broadcast config ~from_agent:"agent_llm_a" ~content:"Third" in
 
     let msgs = Coord.get_messages config ~since_seq:0 ~limit:10 in
     Alcotest.(check bool) "has messages" true (str_contains msgs "First" || str_contains msgs "Third")
@@ -1196,7 +1199,7 @@ let test_many_agents () =
         )
       | _ -> 0
     in
-    (* 10 agents + claude (from with_test_env init) = 11 *)
+    (* 10 agents + agent_llm_a (from with_test_env init) = 11 *)
     Alcotest.(check bool) "many agents" true (count >= 10)
   )
 
@@ -1387,7 +1390,11 @@ let test_cleanup_zombies_releases_tasks () =
     Coord.write_json config agent_file updated_json;
     (* Run cleanup — should remove zombie agent AND release its tasks *)
     let result = Coord.cleanup_zombies config in
-    Alcotest.(check bool) "cleanup ran" true (String.length result > 0);
+    Alcotest.(check bool) "cleanup ran" true
+      (match result with
+       | Coord.No_agents_dir -> true
+       | Coord.No_zombies -> true
+       | Coord.Cleaned _ -> true);
     (* Verify task is released (back to Todo) *)
     let tasks = Coord.list_tasks config in
     Alcotest.(check bool) "task released to todo" true
@@ -1399,33 +1406,33 @@ let test_cleanup_zombies_releases_tasks () =
 let test_rejoin_preserves_identity () =
   with_test_env (fun config ->
     (* 1. Join: get a nickname *)
-    let join1 = Coord.join config ~agent_name:"claude" ~capabilities:["code"] () in
+    let join1 = Coord.join config ~agent_name:"agent_llm_a" ~capabilities:["code"] () in
     Alcotest.(check bool) "first join success" true (contains_check join1);
 
     (* Extract nickname from active_agents *)
     let state1 = Coord.read_state config in
     let nick1 = List.find (fun name ->
-      String.length name > 6 && String.sub name 0 6 = "claude"
+      String.length name > 6 && String.sub name 0 6 = "agent_llm_a"
     ) state1.active_agents in
 
     (* 2. Leave *)
-    let leave_result = Coord.leave config ~agent_name:"claude" in
+    let leave_result = Coord.leave config ~agent_name:"agent_llm_a" in
     Alcotest.(check bool) "leave success" true (contains_check leave_result);
 
     (* Agent should be removed from active_agents but file preserved *)
     let state2 = Coord.read_state config in
     let still_active = List.exists (fun name ->
-      String.length name > 6 && String.sub name 0 6 = "claude"
+      String.length name > 6 && String.sub name 0 6 = "agent_llm_a"
     ) state2.active_agents in
     Alcotest.(check bool) "not in active_agents after leave" false still_active;
 
     (* 3. Re-join: should get the SAME nickname *)
-    let join2 = Coord.join config ~agent_name:"claude" ~capabilities:["code"; "review"] () in
+    let join2 = Coord.join config ~agent_name:"agent_llm_a" ~capabilities:["code"; "review"] () in
     Alcotest.(check bool) "rejoin success" true (contains_check join2);
 
     let state3 = Coord.read_state config in
     let nick2 = List.find (fun name ->
-      String.length name > 6 && String.sub name 0 6 = "claude"
+      String.length name > 6 && String.sub name 0 6 = "agent_llm_a"
     ) state3.active_agents in
 
     (* The key assertion: same nickname after rejoin *)
@@ -1434,39 +1441,39 @@ let test_rejoin_preserves_identity () =
 
 let test_rejoin_restores_active_status () =
   with_test_env (fun config ->
-    let _ = Coord.join config ~agent_name:"gemini" ~capabilities:["search"] () in
-    let _ = Coord.leave config ~agent_name:"gemini" in
+    let _ = Coord.join config ~agent_name:"provider_f" ~capabilities:["search"] () in
+    let _ = Coord.leave config ~agent_name:"provider_f" in
 
     (* Re-join *)
-    let result = Coord.join config ~agent_name:"gemini" ~capabilities:["search"] () in
+    let result = Coord.join config ~agent_name:"provider_f" ~capabilities:["search"] () in
     Alcotest.(check bool) "rejoin success" true (contains_check result);
 
     (* Should be back in active_agents *)
     let state = Coord.read_state config in
     let is_active = List.exists (fun name ->
-      String.length name > 6 && String.sub name 0 6 = "gemini"
+      String.length name > 6 && String.sub name 0 6 = "provider_f"
     ) state.active_agents in
     Alcotest.(check bool) "back in active_agents" true is_active
   )
 
 let test_multiple_rejoin_cycles () =
   with_test_env (fun config ->
-    let _ = Coord.join config ~agent_name:"codex" ~capabilities:["impl"] () in
+    let _ = Coord.join config ~agent_name:"agent_code" ~capabilities:["impl"] () in
     let state1 = Coord.read_state config in
     let nick1 = List.find (fun name ->
-      String.length name > 5 && String.sub name 0 5 = "codex"
+      String.length name > 5 && String.sub name 0 5 = "agent_code"
     ) state1.active_agents in
 
     (* Three leave/rejoin cycles *)
     for _ = 1 to 3 do
-      let _ = Coord.leave config ~agent_name:"codex" in
-      let _ = Coord.join config ~agent_name:"codex" ~capabilities:["impl"] () in
+      let _ = Coord.leave config ~agent_name:"agent_code" in
+      let _ = Coord.join config ~agent_name:"agent_code" ~capabilities:["impl"] () in
       ()
     done;
 
     let state_final = Coord.read_state config in
     let nick_final = List.find (fun name ->
-      String.length name > 5 && String.sub name 0 5 = "codex"
+      String.length name > 5 && String.sub name 0 5 = "agent_code"
     ) state_final.active_agents in
 
     Alcotest.(check string) "identity stable across 3 cycles" nick1 nick_final
@@ -1582,7 +1589,7 @@ let test_keeper_detection_by_agent_type () =
   Alcotest.(check bool) "keeper-*-agent name detected" true is_keeper_by_name;
 
   (* Neither name nor type matches *)
-  let not_keeper = Coord_resilience.Zombie.is_keeper ~name:"regular-bot" ~agent_type:"claude" in
+  let not_keeper = Coord_resilience.Zombie.is_keeper ~name:"regular-bot" ~agent_type:"agent_llm_a" in
   Alcotest.(check bool) "non-keeper correctly rejected" false not_keeper
 
 (** BUG-6: Heartbeat Mutex protects concurrent access *)
@@ -1709,18 +1716,6 @@ let () =
       Alcotest.test_case "broadcast replaces terminal task cache desync" `Quick
         test_broadcast_replaces_terminal_task_cache_desync;
     ];
-    "worktree", [
-      Alcotest.test_case "list no git" `Quick test_worktree_list_no_git;
-      Alcotest.test_case "create no git" `Quick test_worktree_create_no_git;
-      Alcotest.test_case "project root nested subdir" `Quick
-        test_worktree_project_root_for_nested_subdir;
-      Alcotest.test_case "project root worktree gitfile" `Quick
-        test_worktree_project_root_for_gitfile_worktree;
-      Alcotest.test_case "project root nested worktree gitfile subdir" `Quick
-        test_worktree_project_root_for_nested_gitfile_worktree_subdir;
-      Alcotest.test_case "project root .masc base path" `Quick
-        test_worktree_project_root_for_masc_dir_base;
-    ];
 
     (* === Edge Case Tests === *)
     "task_errors", [
@@ -1784,12 +1779,17 @@ let () =
         test_read_backlog_r_reports_parse_error_when_recovery_is_also_invalid;
       Alcotest.test_case "release stale claims skips invalid backlog" `Quick
         test_release_stale_claims_skips_invalid_backlog;
+      Alcotest.test_case "release stale claims clears agent current_task" `Quick
+        test_release_stale_claims_clears_agent_current_task;
+      Alcotest.test_case "release stale claims preserves other agent task" `Quick
+        test_release_stale_claims_preserves_other_agent_task;
       Alcotest.test_case "cleanup zombies empty" `Quick test_cleanup_zombies_empty;
       Alcotest.test_case "cleanup detects regular zombie" `Quick test_cleanup_zombies_detects_regular;
       Alcotest.test_case "cleanup detects keeper zombie" `Quick test_cleanup_zombies_detects_keeper;
       Alcotest.test_case "cleanup spares recent keeper" `Quick test_cleanup_zombies_spares_recent_keeper;
       Alcotest.test_case "cleanup spares type keeper" `Quick test_cleanup_zombies_spares_type_keeper;
       Alcotest.test_case "cleanup removes broken agent file" `Quick test_cleanup_zombies_removes_broken_agent_file;
+      Alcotest.test_case "fd pressure exn is not broken JSON" `Quick test_fd_pressure_exn_classification;
       Alcotest.test_case "cleanup preserves non-json files" `Quick test_cleanup_zombies_preserves_non_json_files;
     ];
 

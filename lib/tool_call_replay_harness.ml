@@ -117,27 +117,9 @@ let load_snapshots_from_jsonl path =
       parse 0 [] rows
 
 let response_format_of_provider provider =
-  let canonical =
-    match Provider_adapter.resolve_direct_canonical_name provider with
-    | Some name -> name
-    | None -> String.lowercase_ascii (String.trim provider)
-  in
-  (* The seed harness only knows the OpenAI-compatible chat-completions
-     tool-call envelope; unsupported providers must add an explicit extractor
-     instead of silently reusing this parser. *)
-  match canonical with
-  | "codex-api"
-  | "glm-api"
-  | "glm-coding-plan"
-  | "kimi-api"
-  | "openrouter"
-  | "ollama"
-  | "llama" ->
-      Ok Openai_chat_completions
-  | _ ->
-      errorf
-        "snapshot provider '%s' (canonical '%s') is not supported by replay harness yet"
-        provider canonical
+  if String.trim provider = ""
+  then errorf "snapshot provider must be non-empty"
+  else Ok Openai_chat_completions
 
 let extract_openai_tool_calls response =
   let* fields = assoc "response" response in

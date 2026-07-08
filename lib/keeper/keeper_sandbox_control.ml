@@ -58,11 +58,7 @@ let managed_container_name ~(meta : keeper_meta) ~(network_label : string) =
     (Unix.getpid ())
     (now_ms ())
 
-let configured_effective_network network_mode =
-  if Env_config_keeper.KeeperSandbox.hard_mode () then
-    Network_none
-  else
-    network_mode
+let configured_effective_network network_mode = network_mode
 
 let live_containers ~config ~meta ~timeout_sec =
   Keeper_sandbox_runtime.list_containers
@@ -71,6 +67,15 @@ let live_containers ~config ~meta ~timeout_sec =
     ~timeout_sec
     ()
 
+let live_containers_for_keeper ~(meta : keeper_meta) containers =
+  let keeper_label = Keeper_sandbox_runtime.sanitize_label_value meta.name in
+  List.filter
+    (fun (c : Keeper_sandbox_runtime.live_container) ->
+      match c.keeper_name with
+      | Some name -> String.equal name meta.name || String.equal name keeper_label
+      | None -> false)
+    containers
+
 let running_managed_container ~network_label containers =
   List.find_opt
     (fun (c : Keeper_sandbox_runtime.live_container) ->
@@ -78,6 +83,12 @@ let running_managed_container ~network_label containers =
       && c.running = Some true
       && c.network_label = Some network_label)
     containers
+
+let image_preflight_start_error (failure : Keeper_sandbox_runtime.classified_error) =
+  Keeper_sandbox_runtime.docker_image_preflight_failure_message
+    ~prefix:"docker_container_start_failed"
+    failure
+;;
 
 let start_managed_container
     ~(config : Coord.config)
@@ -112,11 +123,18 @@ let start_managed_container
             let image =
               match meta.sandbox_image with
               | Some img when String.trim img <> "" -> img
-              | _ -> Env_config_keeper.KeeperSandbox.docker_image ()
+              | _ -> Env_config_sandbox.Runtime.docker_image ()
             in
             if String.trim image = "" then
               Error "keeper sandbox docker image is not configured"
             else
+              match
+                Keeper_sandbox_runtime.ensure_keeper_sandbox_image_present_with_class
+                  ~image
+                  ~timeout_sec
+              with
+              | Error failure -> Error (image_preflight_start_error failure)
+              | Ok () ->
               let _cleanup =
                 Keeper_sandbox_runtime.maybe_cleanup_stale_containers
                   ~base_path:config.base_path
@@ -152,6 +170,7 @@ let start_managed_container
                         "--name";
                         container_name;
                       ]
+                    @ Keeper_sandbox_runtime.docker_run_pull_never_args ()
                     @ Keeper_sandbox_runtime.docker_label_args
                         ~ttl_sec
                         ~base_path:config.base_path
@@ -164,10 +183,10 @@ let start_managed_container
                       "--env";
                       "HOME=/tmp";
                     ]
-                    @ Env_config_keeper.KeeperSandbox.read_only_rootfs_args ()
+                    @ Env_config_sandbox.Hardening.read_only_rootfs_args ()
                     @ [
                       "--tmpfs";
-                      Env_config_keeper.KeeperSandbox.tmpfs_mount ();
+                      Env_config_sandbox.Hardening.tmpfs_mount ();
                       "--cap-drop=ALL";
                       "--security-opt";
                       "no-new-privileges";
@@ -176,30 +195,33 @@ let start_managed_container
                     @ [
                       "--pids-limit";
                       string_of_int
-                        (Env_config_keeper.KeeperSandbox.pids_limit ());
+                        (Env_config_sandbox.Hardening.pids_limit ());
                       "--memory";
-                      Env_config_keeper.KeeperSandbox.memory ();
+                      Env_config_sandbox.Hardening.memory ();
                       "-v";
                       host_root ^ ":" ^ container_root ^ ":rw";
                       "--workdir";
                       container_root;
                     ]
                     @ network_args
-                    @ [
-                      image;
-                      "sh";
-                      "-lc";
-                      Printf.sprintf
-                        "trap : TERM INT; while :; do sleep %d; done"
-                        (Env_config_sandbox.Cleanup.managed_sleep_sec ());
-                    ]
+                    @ [ image; "tail"; "-f"; "/dev/null" ]
                   in
+                  (* Throttle the managed-container [docker run -d] just like
+                     the per-call sandbox spawns (PR #15727). RFC-0097 calls
+                     out the "24+ keepers starting simultaneously after a
+                     server restart" scenario explicitly — without this wrap
+                     it was the only first-class start path bypassing the
+                     fleet-wide spawn semaphore. *)
                   let st, out =
-                    Process_eio.run_argv_with_status
-                      ~env:(Unix.environment ())
-                      ~cwd:(Sys.getcwd ())
-                      ~timeout_sec
-                      argv
+                    Docker_spawn_throttle.with_slot (fun () ->
+                      Masc_exec.Exec_gate.run_argv_with_status
+                        ~actor:`System_sandbox
+                        ~raw_source:(String.concat " " argv)
+                        ~summary:"keeper sandbox control exec"
+                        ~env:(Unix.environment ())
+                        ~cwd:(Sys.getcwd ())
+                        ~timeout_sec
+                        argv)
                   in
                   if st = Unix.WEXITED 0 then (
                     Keeper_registry.clear_error
@@ -219,9 +241,9 @@ let start_managed_container
                   else (
                     let message =
                       Printf.sprintf "docker_managed_container_start_failed: %s"
-                        (Worker_dev_tools.truncate_for_log out)
+                        (Exec_policy.truncate_for_log out)
                     in
-                    Keeper_registry.record_error
+                    Keeper_registry_error_recording.record
                       ~base_path:config.base_path meta.name message;
                     Error message))
     | Error err -> Error err
@@ -250,9 +272,6 @@ let cleanup_stale ~(config : Coord.config) ~(timeout_sec : float) () =
     ~base_path:config.base_path
     ~timeout_sec
     ()
-
-let json_string_list values =
-  `List (List.map (fun value -> `String value) values)
 
 let safe_file_exists path =
   try Fs_compat.file_exists path with
@@ -286,19 +305,27 @@ let git_metadata_timeout_sec = 2.0
 let max_live_git_enrichment_repos = 20
 
 let git_string_opt repo_path args =
-  try
-    let status, out =
-      Process_eio.run_argv_with_status ~timeout_sec:git_metadata_timeout_sec
-        ("git" :: "-C" :: repo_path :: args)
-    in
-    match status with
-    | Unix.WEXITED 0 ->
-        let trimmed = String.trim out in
-        if String.equal trimmed "" then None else Some trimmed
-    | _ -> None
-  with
-  | Eio.Cancel.Cancelled _ as e -> raise e
-  | _ -> None
+  (* RFC-0106 P1: Cancelled re-raise centralised via Cancel_safe.protect.
+     The [_ -> None] silent default is pre-existing behaviour (git
+     metadata is treated as optional by callers) and is preserved
+     verbatim. Promoting it to a logged/counted failure is a separate
+     visibility concern outside this PR's migration scope. *)
+  Cancel_safe.protect
+    ~on_exn:(fun _ -> None)
+    (fun () ->
+      let argv = "git" :: "-C" :: repo_path :: args in
+      let status, out =
+        Masc_exec.Exec_gate.run_argv_with_status ~actor:`Coord_git
+          ~raw_source:(String.concat " " argv)
+          ~summary:"keeper sandbox git metadata"
+          ~timeout_sec:git_metadata_timeout_sec
+          argv
+      in
+      match status with
+      | Unix.WEXITED 0 ->
+          let trimmed = String.trim out in
+          if String.equal trimmed "" then None else Some trimmed
+      | _ -> None)
 
 let enrich_playground_repo_from_git
       ~(source : string) ~(repo_name : string) ~(repo_path : string)
@@ -475,7 +502,7 @@ let recommendation (meta : keeper_meta) ~preflight containers =
              meta.name)
 
 let identity_json (meta : keeper_meta) =
-  let expected_agent_name = Keeper_types.keeper_agent_name meta.name in
+  let expected_agent_name = Keeper_identity.keeper_agent_name meta.name in
   let agent_name_matches = String.equal expected_agent_name meta.agent_name in
   `Assoc
     [
@@ -496,6 +523,8 @@ let identity_json (meta : keeper_meta) =
 
 let live_status_json ?(include_preflight = true)
     ?preflight_override
+    ?containers_override
+    ?(include_playground_repos = true)
     ~(config : Coord.config)
     ~(meta : keeper_meta)
     ~(timeout_sec : float)
@@ -512,9 +541,14 @@ let live_status_json ?(include_preflight = true)
   in
   let containers, container_error =
     if meta.sandbox_profile = Docker then
-      match live_containers ~config ~meta ~timeout_sec with
-      | Ok containers -> (containers, None)
-      | Error err -> ([], Some err)
+      match containers_override with
+      | Some (Ok containers) ->
+          (live_containers_for_keeper ~meta containers, None)
+      | Some (Error err) -> ([], Some err)
+      | None -> (
+        match live_containers ~config ~meta ~timeout_sec with
+        | Ok containers -> (containers, None)
+        | Error err -> ([], Some err))
     else
       ([], None)
   in
@@ -544,6 +578,14 @@ let live_status_json ?(include_preflight = true)
       ("container_error", Json_util.string_opt_to_json container_error);
       ("why_no_container", Json_util.string_opt_to_json why_no_container);
       ("recommendation", Json_util.string_opt_to_json recommendation);
-      ("playground_repos", playground_repos_json ~config ~meta);
+      ( "playground_repos",
+        if include_playground_repos then
+          playground_repos_json ~config ~meta
+        else
+          `List [] );
+      ( "playground_repos_source",
+        `String
+          (if include_playground_repos then "live"
+           else "skipped_dashboard_hot_path") );
       ("identity", identity_json meta);
     ]

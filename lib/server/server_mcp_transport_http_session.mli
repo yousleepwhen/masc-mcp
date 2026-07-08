@@ -33,6 +33,14 @@ val remember_protocol_version : string -> string -> unit
     silently no-ops on unknown versions (the upstream caller is
     expected to have validated first). *)
 
+val is_known_session : string -> bool
+(** RFC-0100 PR-3 — Q3 default. [true] iff the server has previously
+    recorded a protocol version for [session_id] (i.e., an
+    [initialize] request has succeeded). The complementary
+    {!mcp_profile_by_session} registry is not consulted because it
+    is populated on every POST regardless of [initialize]
+    completion. *)
+
 val remember_mcp_profile :
   string -> Server_mcp_transport_http_types.tool_profile -> unit
 
@@ -122,24 +130,6 @@ val get_session_id_any : Httpun.Request.t -> string option
     fallback order is the operator contract — clients that
     drop one channel still authenticate via the next. *)
 
-val legacy_messages_endpoint_url :
-  Httpun.Request.t -> string -> string
-(** [legacy_messages_endpoint_url request session_id] returns
-    the absolute URL for the legacy [/messages?session_id=...]
-    endpoint.
-
-    Protocol resolution:
-    - [X-Forwarded-Proto] header value when present.
-    - Otherwise [https] when [Host:] starts with the literal
-      prefix [["masc.crying.pict"]] (the Cloudflare tunnel
-      hostname); else [http].
-
-    The 16-char tunnel-host prefix is pinned at the contract
-    seam: an earlier version used a length-mismatched
-    [String.sub] (17-char substring vs 16-char literal) which
-    was always false, so tunnel hosts silently advertised
-    [http://].  Pinning prevents drift. *)
-
 (** {1 Protocol version resolution} *)
 
 val get_protocol_version : Httpun.Request.t -> string
@@ -176,16 +166,14 @@ val get_protocol_version_for_session :
 
 val default_base_path : unit -> string
 (** Resolves the launcher-guard-aware default base path.
-    When the [MASC_BASE_PATH] env var is set, returns
-    [Sys.getcwd ()] (operator opted into project-local
-    artifacts).  Otherwise prefers [HOME] (then [Sys.getcwd ()]
-    fallback) and routes through
+    The server default starts from the deleted-cwd-safe current working
+    directory and routes through
     {!Coord_utils_backend_setup.resolve_server_default_base_path}.
 
-    The HOME-preference is intentional: a direct binary launch
-    from a checkout with its own [.masc] must NOT silently
-    inherit a stale parent [MASC_BASE_PATH].  Pinning at the
-    contract seam. *)
+    This intentionally avoids deriving the base path from [HOME]: a direct
+    binary launch from a checkout should keep artifacts under the visible
+    launch root unless the operator passes [--base-path] or [MASC_BASE_PATH].
+*)
 
 val query_param :
   Httpun.Request.t -> string -> string option

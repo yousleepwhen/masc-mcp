@@ -24,6 +24,14 @@ let ollama_default_port = 11434
     if the provider ever versions the API (e.g. [/v2/...]). *)
 let openai_chat_completions_path = "/v1/chat/completions"
 
+(** Version-free chat completions path for [Provider_config.t] construction.
+
+    When [base_url] already carries a version segment (e.g. [/v1], [/v4]),
+    the request path should not repeat it — the concatenation [base_url ^
+    request_path] must produce exactly one version prefix.  This constant
+    matches what the OAS SDK's own [api_provider_d.ml] uses internally. *)
+let chat_completions_path = "/chat/completions"
+
 (** OpenAI-compatible model listing path.  See
     {!openai_chat_completions_path}. *)
 let openai_models_path = "/v1/models"
@@ -39,7 +47,7 @@ let ollama_port_needle =
   Printf.sprintf ":%d" ollama_default_port
 
 (** Ollama native API path for the running-models ("process status")
-    endpoint.  Used by both {!Cascade_ollama_probe} (cascade-level
+    endpoint.  Used by both {!Cascade_http_probe} (cascade-level
     capacity probe) and {!Tool_local_runtime_probe} (tool-level KV
     assessment); anchoring the suffix in one place prevents the two
     call sites from drifting if Ollama ever renames the route. *)
@@ -65,7 +73,7 @@ let is_ollama_url url =
     in
     loop 0
 
-(** Sentinel prefix marking a CLI-backed transport (e.g. [cli:codex]).
+(** Sentinel prefix marking a CLI-backed transport (e.g. [cli:agent_code]).
     Used by capacity classifiers to distinguish CLI endpoints from HTTP
     ones. *)
 let cli_sentinel_prefix = "cli:"
@@ -119,6 +127,42 @@ let is_loopback_host host =
 let is_loopback_host_opt = function
   | Some host -> is_loopback_host host
   | None -> false
+
+let trim_trailing_slashes value =
+  let len = String.length value in
+  let rec last_non_slash i =
+    if i < 0 || value.[i] <> '/' then i else last_non_slash (i - 1)
+  in
+  let last = last_non_slash (len - 1) in
+  if last = len - 1 then value else String.sub value 0 (last + 1)
+
+let normalize_loopback_host host =
+  let trimmed = String.trim host in
+  let normalized = String.lowercase_ascii trimmed in
+  match normalized with
+  | "localhost" -> masc_http_default_host
+  | _ -> (
+      match Ipaddr.of_string normalized with
+      | Ok ip -> (
+          match ip with
+          | Ipaddr.V6 addr ->
+              if Ipaddr.V6.compare addr Ipaddr.V6.localhost = 0 then
+                masc_http_default_host
+              else trimmed
+          | Ipaddr.V4 _ -> trimmed)
+      | Error _ -> trimmed)
+
+let normalize_loopback_base_url base_url =
+  let trimmed = String.trim base_url |> trim_trailing_slashes in
+  let uri = Uri.of_string trimmed in
+  match Uri.host uri with
+  | Some host ->
+      let normalized_host = normalize_loopback_host host in
+      if String.equal normalized_host host then trimmed
+      else
+        Uri.with_host uri (Some normalized_host)
+        |> Uri.to_string |> trim_trailing_slashes
+  | None -> trimmed
 
 (** Default port for the dashboard's Vite dev server.  Used by
     [Server_auth.default_loopback_dev_mutation_origins] to whitelist

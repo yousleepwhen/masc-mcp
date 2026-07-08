@@ -48,6 +48,25 @@ let test_find_missing_path_is_runtime_error () =
   check string "semantic_status" "runtime_error"
     (get_string_field json "semantic_status")
 
+let test_missing_task_state_path_points_to_task_tools () =
+  let json =
+    Masc_mcp.Exec_core.process_result_json
+      ~base_path:"/tmp"
+      ~keeper_name:"exec-core"
+      ~cmd:"cat .masc/backlog.json"
+      ~status:(Unix.WEXITED 1)
+      ~output:"cat: .masc/backlog.json: No such file or directory"
+      ()
+  in
+  check bool "ok" false (json |> member "ok" |> to_bool);
+  check string "semantic_status" "runtime_error"
+    (get_string_field json "semantic_status");
+  check string "task tool hint"
+    "This is not a keeper-visible task-state path. Do not read .masc/backlog.json \
+     or repo-local backlog files from shell. Use keeper_tasks_list for task/backlog \
+     state and keeper_context_status for current_task_id/sandbox paths."
+    (get_string_field json "recovery_hint")
+
 let test_blocked_json_adds_classification () =
   let json =
     Masc_mcp.Exec_core.blocked_result_json
@@ -88,14 +107,34 @@ let test_regex_pipe_inside_quotes_keeps_no_match_semantics () =
   check string "semantic_status" "no_match"
     (get_string_field json "semantic_status")
 
+let test_pipeline_last_command_uses_shared_words () =
+  let json =
+    Masc_mcp.Exec_core.process_result_json
+      ~base_path:"/tmp"
+      ~keeper_name:"exec-core"
+      ~cmd:"printf foo | rg 'a|b'"
+      ~status:(Unix.WEXITED 1)
+      ~output:""
+      ()
+  in
+  check bool "ok" true (json |> member "ok" |> to_bool);
+  check string "semantic_status" "no_match"
+    (get_string_field json "semantic_status")
+
 let test_unknown_write_is_not_git_write () =
+  let ir =
+    match Masc_exec_bash_parser.Bash.parse_string "mkdir tmp/generated" with
+    | Masc_exec.Parsed.Parsed ir -> ir
+    | _ -> Alcotest.fail "failed to parse mkdir command"
+  in
   let classification =
-    Masc_mcp.Exec_core.classify_command ~cmd:"mkdir tmp/generated"
+    Masc_mcp.Exec_core.classify_command_of_ir ir
   in
   check string "family" "unknown"
     (Masc_mcp.Exec_core.classification_to_json classification
      |> member "family" |> to_string);
-  check bool "write_intent" true classification.write_intent
+  check bool "risk_class is write" true
+    (classification.risk_class <> Masc_exec.Shell_ir_risk.R0_Read)
 
 let temp_dir () =
   let path = Filename.temp_file "exec_core_" "" in
@@ -404,7 +443,7 @@ let test_blocked_with_tool_suggestion () =
     { Masc_mcp.Exec_core.rule_id = "redirect_blocked"
     ; explanation = "redirects are forbidden"
     ; rewrite = None
-    ; tool_suggestion = Some "keeper_fs_edit"
+    ; tool_suggestion = Some "tool_edit_file"
     }
   in
   let json =
@@ -416,7 +455,7 @@ let test_blocked_with_tool_suggestion () =
       ()
   in
   let d = json |> member "diagnosis" in
-  check string "tool_suggestion" "keeper_fs_edit"
+  check string "tool_suggestion" "tool_edit_file"
     (d |> member "tool_suggestion" |> to_string);
   check bool "rewrite absent" true
     (match d |> member "rewrite" with
@@ -427,7 +466,7 @@ let test_blocked_diagnosis_both_rewrite_and_tool () =
     { Masc_mcp.Exec_core.rule_id = "chaining_blocked"
     ; explanation = "chaining not allowed"
     ; rewrite = Some "split into two calls"
-    ; tool_suggestion = Some "keeper_shell"
+    ; tool_suggestion = Some "tool_search_files"
     }
   in
   let json =
@@ -441,7 +480,7 @@ let test_blocked_diagnosis_both_rewrite_and_tool () =
   let d = json |> member "diagnosis" in
   check string "rewrite" "split into two calls"
     (d |> member "rewrite" |> to_string);
-  check string "tool_suggestion" "keeper_shell"
+  check string "tool_suggestion" "tool_search_files"
     (d |> member "tool_suggestion" |> to_string)
 
 (* --- P10: structured output tests --- *)
@@ -518,6 +557,21 @@ let test_failed_git_log_has_no_structured_output () =
       ()
   in
   check bool "no structured_output on failed git log" true
+    (match json |> member "structured_output" with
+     | `Null -> true
+     | _ -> false)
+
+let test_pipeline_git_status_has_no_structured_output () =
+  let json =
+    Masc_mcp.Exec_core.process_result_json
+      ~base_path:"/tmp"
+      ~keeper_name:"p10-test"
+      ~cmd:"git status --porcelain | cat"
+      ~status:(Unix.WEXITED 0)
+      ~output:" M lib/foo.ml\n"
+      ()
+  in
+  check bool "no structured_output for git status pipeline" true
     (match json |> member "structured_output" with
      | `Null -> true
      | _ -> false)
@@ -610,12 +664,14 @@ let with_p11_base_path f =
 let test_history_append_and_read () =
   with_p11_base_path @@ fun base_path ->
   let module H = Masc_exec.Bash_history in
-  H.append ~base_path ~keeper_name:"test-keeper"
-    { ts = 1000.0; cmd_hash = "abc123"; cmd_prefix = "git status";
-      semantic_kind = "Read"; duration_ms = 50; success = true };
-  H.append ~base_path ~keeper_name:"test-keeper"
-    { ts = 2000.0; cmd_hash = "def456"; cmd_prefix = "dune build";
-      semantic_kind = "Build"; duration_ms = 5000; success = false };
+  Result.get_ok
+    (H.append ~base_path ~keeper_name:"test-keeper"
+       { ts = 1000.0; cmd_hash = "abc123"; cmd_prefix = "git status";
+         semantic_kind = "Read"; duration_ms = 50; success = true });
+  Result.get_ok
+    (H.append ~base_path ~keeper_name:"test-keeper"
+       { ts = 2000.0; cmd_hash = "def456"; cmd_prefix = "dune build";
+         semantic_kind = "Build"; duration_ms = 5000; success = false });
   let results =
     H.suggest ~base_path ~keeper_name:"test-keeper" ~pattern:"git" ~limit:10
   in
@@ -641,10 +697,11 @@ let test_history_compaction () =
   with_p11_base_path @@ fun base_path ->
   let module H = Masc_exec.Bash_history in
   for i = 1 to 15 do
-    H.append ~base_path ~keeper_name:"compact-test"
-      { ts = float_of_int i; cmd_hash = string_of_int i;
-        cmd_prefix = "cmd" ^ string_of_int i;
-        semantic_kind = "Unknown"; duration_ms = 10; success = true }
+    Result.get_ok
+      (H.append ~base_path ~keeper_name:"compact-test"
+         { ts = float_of_int i; cmd_hash = string_of_int i;
+           cmd_prefix = "cmd" ^ string_of_int i;
+           semantic_kind = "Unknown"; duration_ms = 10; success = true })
   done;
   (* 15 entries is below max_entries (10000), so compact is a no-op *)
   H.compact ~base_path ~keeper_name:"compact-test";
@@ -665,8 +722,12 @@ let () =
             test_find_partial_is_semantic_success;
           test_case "find missing path is runtime error" `Quick
             test_find_missing_path_is_runtime_error;
+          test_case "missing task-state path points to task tools" `Quick
+            test_missing_task_state_path_points_to_task_tools;
           test_case "quoted regex pipe keeps no-match semantics" `Quick
             test_regex_pipe_inside_quotes_keeps_no_match_semantics;
+          test_case "pipeline last command uses shared words" `Quick
+            test_pipeline_last_command_uses_shared_words;
           test_case "blocked json adds classification" `Quick
             test_blocked_json_adds_classification;
           test_case "unknown write is not git_write" `Quick
@@ -733,6 +794,8 @@ let () =
             test_failed_git_status_has_no_structured_output;
           test_case "failed git log has no structured_output" `Quick
             test_failed_git_log_has_no_structured_output;
+          test_case "git status pipeline has no structured_output" `Quick
+            test_pipeline_git_status_has_no_structured_output;
           test_case "wc -l produces lines count" `Quick
             test_wc_structured;
           test_case "git diff --stat produces summary counts" `Quick

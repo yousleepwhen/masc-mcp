@@ -39,9 +39,6 @@ let belief_summary_of_snapshot ~(snapshot : Fsm.snapshot)
       "tools=" ^ string_of_int tool_count;
       "idle=" ^ string_of_int observation.idle_seconds ^ "s";
     ]
-    @
-    if Option.is_some observation.worktree_change_summary then [ "worktree_delta" ]
-    else []
   in
   "ledger:" ^ String.concat "; " parts
 
@@ -53,7 +50,7 @@ let active_desire_of_phase = function
 
 let current_intention_of_phase ~(phase : Fsm.phase) ~(tools_used : string list)
     ~(has_text_reply : bool) =
-  if List.exists Keeper_tool_disclosure.is_claim_tool_name tools_used
+  if List.exists Keeper_tool_progress.is_claim_tool_name tools_used
   then Some "capture_next_task"
   else if tools_used <> [] then Some "record_progress_evidence"
   else if has_text_reply then Some "publish_progress_update"
@@ -120,8 +117,7 @@ let overlay_ledger_state ~(observation : Keeper_world_observation.world_observat
     Fsm.classify_event ~previous:previous_snapshot
       {
         Fsm.has_progress_evidence =
-          result.tools_used <> [] || has_text_reply
-          || Option.is_some observation.worktree_change_summary;
+          result.tools_used <> [] || has_text_reply;
         has_reactive_signal =
           reactive_signal_count observation > 0 || backlog_count observation > 0;
         has_active_goals = observation.active_goals <> [];

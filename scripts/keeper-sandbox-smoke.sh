@@ -6,7 +6,12 @@ image_tag="${MASC_KEEPER_SANDBOX_DOCKER_IMAGE:-masc-keeper-sandbox:local}"
 
 "$repo_root/scripts/build-keeper-sandbox-image.sh" "$image_tag"
 
-tmpdir="$(mktemp -d)"
+# Keep the bind-mounted smoke workspace under the repo by default. On macOS,
+# plain `mktemp -d` can land under /var/folders, which Colima does not expose
+# to Docker bind mounts even when /Users is mounted.
+tmp_parent="${MASC_KEEPER_SANDBOX_SMOKE_TMPDIR:-$repo_root/.tmp}"
+mkdir -p "$tmp_parent"
+tmpdir="$(mktemp -d "$tmp_parent/keeper-sandbox-smoke.XXXXXX")"
 trap 'rm -rf "$tmpdir"' EXIT
 
 playground="$tmpdir/playground"
@@ -17,7 +22,7 @@ printf 'alpha\nbeta\ngamma\n' > "$playground/demo.txt"
 req_dune_ver="$(grep -E '^\(lang dune\b' "$repo_root/dune-project" \
                 | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1)"
 
-docker run --rm \
+docker run --rm -i \
   --read-only \
   --tmpfs /tmp:rw,nosuid,nodev,noexec,size=64m \
   --cap-drop=ALL \
@@ -27,7 +32,7 @@ docker run --rm \
   -v "$playground:/workspace:rw" \
   --workdir /workspace \
   "$image_tag" \
-  bash -lc '
+  bash -l -s <<'BASH'
     set -euo pipefail
     for cmd in sh bash git gh rg tree jq python3 node npm make opam dune; do
       command -v "$cmd" >/dev/null
@@ -43,7 +48,7 @@ docker run --rm \
     rg beta demo.txt >/dev/null
     printf "delta\n" >> append.txt
     test "$(cat append.txt)" = "delta"
-  '
+BASH
 
 container_name="keeper-sandbox-smoke-$$"
 docker run -d --rm \
@@ -56,13 +61,16 @@ docker run -d --rm \
   -v "$playground:/workspace:rw" \
   --workdir /workspace \
   "$image_tag" \
-  sh -lc 'trap : TERM INT; while :; do sleep 3600; done' >/dev/null
+  tail -f /dev/null >/dev/null
 
 trap 'docker rm -f "$container_name" >/dev/null 2>&1 || true; rm -rf "$tmpdir"' EXIT
 
-docker exec "$container_name" bash -lc 'cat demo.txt >/tmp/readback && test -s /tmp/readback'
-docker exec "$container_name" bash -lc 'printf "zeta\n" > exec-write.txt'
-docker exec "$container_name" bash -lc 'rg gamma demo.txt >/dev/null'
+printf '%s\n' 'cat demo.txt >/tmp/readback && test -s /tmp/readback' |
+  docker exec -i "$container_name" bash -l -s
+printf '%s\n' 'printf "zeta\n" > exec-write.txt' |
+  docker exec -i "$container_name" bash -l -s
+printf '%s\n' 'rg gamma demo.txt >/dev/null' |
+  docker exec -i "$container_name" bash -l -s
 docker rm -f "$container_name" >/dev/null
 
 test "$(cat "$playground/exec-write.txt")" = "zeta"

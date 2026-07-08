@@ -19,6 +19,8 @@ import {
 } from '../api/dashboard-cascade'
 import { LoadingState, ErrorState } from './common/feedback-state'
 import { TimeAgo } from './common/time-ago'
+import { formatMsCompact } from '../lib/format-number'
+import { errorToString } from '../lib/format-string'
 
 // ── Module-level signals ──────────────────────────────────────────────────
 
@@ -86,8 +88,7 @@ export function cascadeKindTone(kind: string): {
 /** Normalise backoff_ms into a human-readable string. */
 export function formatBackoff(ms: number): string {
   if (ms <= 0) return '-'
-  if (ms < 1000) return `${ms}ms`
-  return `${(ms / 1000).toFixed(1)}s`
+  return formatMsCompact(ms)
 }
 
 /** Cap bar width at 100% based on the max candidates_in across visible events. */
@@ -106,7 +107,7 @@ async function refreshWaterfall() {
     waterfallEvents.value = res.events
     waterfallUpdatedAt.value = res.updated_at
   } catch (err) {
-    waterfallError.value = err instanceof Error ? err.message : String(err)
+    waterfallError.value = errorToString(err)
   } finally {
     waterfallLoading.value = false
   }

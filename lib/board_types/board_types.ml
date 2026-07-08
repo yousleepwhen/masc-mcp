@@ -90,7 +90,7 @@ end = struct
 
      Issue #8625: length cap was 32 — also raised to 64 to match
      [Validation.Agent_id.validate]. Generated worker IDs like
-     [codex-task-claimer-20260419t102609z] (36 chars) joined fine but
+     [agent_code-task-claimer-20260419t102609z] (36 chars) joined fine but
      were rejected by board posts. (Supersedes PR #8631.) *)
   let max_agent_id_len = 64
   let valid_pattern =
@@ -240,6 +240,8 @@ module Limits = struct
   let sweeper_batch_size = env_int "MASC_BOARD_SWEEPER_BATCH_SIZE" 100
   let author_post_cap = env_int "MASC_BOARD_AUTHOR_POST_CAP" 100
   let max_sub_boards = env_int "MASC_BOARD_MAX_SUB_BOARDS" 256
+  let comment_rate_limit = env_int "MASC_BOARD_COMMENT_RATE_LIMIT" 30
+  let comment_rate_window_sec = env_int "MASC_BOARD_COMMENT_RATE_WINDOW_SEC" 300
 end
 
 (** {1 Vote Direction} *)

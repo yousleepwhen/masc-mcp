@@ -2,19 +2,22 @@ import { html } from 'htm/preact'
 import { useEffect, useRef, useCallback, useMemo, useState } from 'preact/hooks'
 import { RefreshCw, Sparkles, Trophy } from 'lucide-preact'
 import { ActionButton } from '../common/button'
-import { Card } from '../common/card'
+import { SectionCard } from '../common/card'
 import { TimeAgo } from '../common/time-ago'
 import { showToast } from '../common/toast'
 import { requestConfirm } from '../common/confirm-dialog'
-import { EmptyState } from '../common/empty-state'
+import { EmptyState } from '../common/feedback-state'
 import { LoadingState } from '../common/feedback-state'
 import { TextInput } from '../common/input'
+import { Select } from '../common/select'
 import { Checkbox } from '../common/checkbox'
 import { RichComposer } from '../common/rich-composer'
 import { RichContent } from '../common/rich-content'
 import { CursorPagination } from '../common/pagination'
 import { stripStateBlocks } from '../../keeper-message'
 import { navigate, navigateToPost, route } from '../../router'
+import { votePost } from '../../api/board'
+import { deleteBoardPost } from '../../api/actions'
 import { registerBoardHearthsRefresh } from '../../sse-store'
 import { boardLatencyMetrics, type BoardLatencyMetric } from '../../board-metrics'
 import { MessageRoomTimeline } from './message-room-timeline'
@@ -29,6 +32,9 @@ import {
   boardActorAvatarKey,
   boardActorDisplayName,
   boardActorTitle,
+  contributorQualityBadgeClass,
+  contributorQualityBandLabel,
+  contributorQualityPercent,
   navigateToAuthor,
   stripInlineMarkdown,
 } from '../../lib/board-utils'
@@ -43,6 +49,12 @@ import {
   boardHearths,
   boardHearthsLoading,
   boardHearthsError,
+  boardFlairs,
+  boardFlairsLoading,
+  boardFlairsError,
+  subBoardOptions,
+  subBoardOptionsLoading,
+  subBoardOptionsError,
   boardExcludeAutomation,
   boardLoading,
   boardLoadingMore,
@@ -59,6 +71,7 @@ import {
   newPostTitle,
   newPostContent,
   newPostHearth,
+  newPostFlair,
   newPostSubmitting,
   PAGE_SIZE,
   categoryVisibleLimits,
@@ -81,9 +94,11 @@ import {
   authorAvatar,
   visibilityLabel,
   visibilityBadgeColor,
-  votePost,
-  deleteBoardPost,
+  postVisibilityAuditLabel,
+  postVisibilityAuditDetails,
   refreshBoardHearths,
+  refreshBoardFlairs,
+  loadSubBoardOptionsForPost,
 } from './board-state'
 import type { BoardPost, ContentCategory } from './board-state'
 
@@ -195,7 +210,7 @@ function renderCategorySection(
   }
 
   return html`
-    <${Card} title=${`${label} (${total})`} class="mb-4">
+    <${SectionCard} label=${`${label} (${total})`} class="mb-4">
       <div class="flex flex-col gap-2">
         ${posts.slice(0, limit).map(post => html`<${PostCard} key=${post.id} post=${post} />`)}
       </div>
@@ -234,6 +249,15 @@ function CategorySection({ group }: { group: { category: ContentCategory; posts:
 
 // ── New post form ──────────────────────────────────────────────────
 function NewPostForm() {
+  useEffect(() => {
+    if (showNewPostForm.value && boardFlairs.value.length === 0 && !boardFlairsLoading.value) {
+      void refreshBoardFlairs()
+    }
+    if (showNewPostForm.value && subBoardOptions.value.length === 0 && !subBoardOptionsLoading.value) {
+      void loadSubBoardOptionsForPost()
+    }
+  }, [showNewPostForm.value])
+
   if (!showNewPostForm.value) {
     return html`
       <button type="button"
@@ -245,6 +269,29 @@ function NewPostForm() {
       >+ 새 글 작성</button>
     `
   }
+
+  const subBoardSelectOptions = subBoardOptions.value.map(sb => ({ value: sb.slug, label: sb.name }))
+  const activeHearth = newPostHearth.value.trim()
+  const selectedSubBoardOptions = activeHearth
+    && !subBoardSelectOptions.some(option => option.value === activeHearth)
+    ? [{ value: activeHearth, label: activeHearth }, ...subBoardSelectOptions]
+    : subBoardSelectOptions
+  const categorySelectOptions = [
+    { value: '', label: 'No category' },
+    ...selectedSubBoardOptions,
+  ]
+  const activeFlair = newPostFlair.value.trim()
+  const flairSelectOptions = [
+    { value: '', label: 'No flair' },
+    ...boardFlairs.value.map(flair => ({
+      value: flair.name,
+      label: `${flair.emoji ? `${flair.emoji} ` : ''}${flair.label}`,
+    })),
+  ]
+  const selectedFlairOptions = activeFlair
+    && !flairSelectOptions.some(option => option.value === activeFlair)
+    ? [{ value: activeFlair, label: activeFlair }, ...flairSelectOptions]
+    : flairSelectOptions
 
   return html`
     <div class="p-4 rounded-[var(--r-1)] border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] grid gap-3">
@@ -264,14 +311,34 @@ function NewPostForm() {
         helpText="예: ts 코드펜스, 일반 URL 링크 카드, 단독 이미지 URL 자동 인라인"
         previewLimit=${2}
       />
-      <${TextInput}
-        name="board_post_hearth"
-        ariaLabel="새 글 hearth"
-        autoComplete="off"
-        placeholder="hearth (예: ops, research)"
-        value=${newPostHearth.value}
-        onInput=${(e: Event) => { newPostHearth.value = (e.target as HTMLInputElement).value }}
-      />
+      <div class="grid gap-3 md:grid-cols-2">
+        <label class="grid gap-1 text-2xs font-medium uppercase text-[var(--color-fg-muted)]">
+          Category
+          <${Select}
+            value=${newPostHearth.value}
+            options=${categorySelectOptions}
+            disabled=${newPostSubmitting.value || subBoardOptionsLoading.value}
+            ariaLabel="새 글 category"
+            onInput=${(value: string) => { newPostHearth.value = value }}
+          />
+        </label>
+        <label class="grid gap-1 text-2xs font-medium uppercase text-[var(--color-fg-muted)]">
+          Flair
+          <${Select}
+            value=${newPostFlair.value}
+            options=${selectedFlairOptions}
+            disabled=${newPostSubmitting.value || boardFlairsLoading.value}
+            ariaLabel="새 글 flair"
+            onInput=${(value: string) => { newPostFlair.value = value }}
+          />
+        </label>
+      </div>
+      ${boardFlairsError.value ? html`
+        <div class="text-2xs text-[var(--color-status-warn)]">Flair 목록을 불러오지 못했습니다. 직접 [flair:name] prefix를 사용할 수 있습니다.</div>
+      ` : null}
+      ${subBoardOptionsError.value ? html`
+        <div class="text-2xs text-[var(--color-status-warn)]">Sub-board 목록을 불러오지 못했습니다. Category 값을 직접 입력하려면 현재 Board 필터를 먼저 선택하세요.</div>
+      ` : null}
       <div class="flex gap-2 justify-end">
         <button type="button"
           class="px-3 py-1.5 rounded-[var(--r-1)] text-sm border border-[var(--color-border-default)] bg-transparent text-[var(--color-fg-muted)] cursor-pointer hover:bg-[var(--color-bg-hover)] disabled:opacity-50 disabled:cursor-not-allowed"
@@ -281,6 +348,7 @@ function NewPostForm() {
             newPostTitle.value = ''
             newPostContent.value = ''
             newPostHearth.value = ''
+            newPostFlair.value = ''
           }}
         >취소</button>
         <button type="button"
@@ -580,10 +648,18 @@ function PostCard({ post }: { post: BoardPost }) {
   const authorLabel = boardActorDisplayName(post.author, post.author_identity)
   const authorAvatarKey = boardActorAvatarKey(post.author, post.author_identity)
   const authorTitle = boardActorTitle(post.author, post.author_identity)
+  const qualityPercent = contributorQualityPercent(post.contributor_quality)
+  const qualityBand = contributorQualityBandLabel(post.contributor_quality)
+  const qualityTitle = qualityPercent === null
+    ? undefined
+    : `기여자 품질 ${qualityPercent}점 · ${qualityBand}`
   const upvoteActive = post.current_vote === 'up'
   const downvoteActive = post.current_vote === 'down'
   const voteScoreLabel = post.vote_blind ? '투표 후 공개' : String(post.votes ?? 0)
   const voteScoreAria = post.vote_blind ? '점수 투표 후 공개' : `점수 ${post.votes ?? 0}`
+  const auditLabel = postVisibilityAuditLabel(post)
+  const auditDetails = postVisibilityAuditDetails(post)
+  const sortLabel = SORT_MODES.find(mode => mode.id === boardSortMode.value)?.label ?? boardSortMode.value
   const reactionPreview = post.reactions?.some(summary => summary.count > 0 || summary.reacted || summary.has_reacted)
 
   const handleVote = async (dir: 'up' | 'down', event: Event) => {
@@ -704,6 +780,14 @@ function PostCard({ post }: { post: BoardPost }) {
 
           <!-- Category badges -->
           <span class="inline-flex items-center px-1.5 py-0.5 rounded-[var(--r-1)] text-3xs font-medium border ${categoryBadgeColor(cat)}">${categoryLabel(cat)}</span>
+          ${post.flair ? html`<span class="inline-flex items-center px-1.5 py-0.5 rounded-[var(--r-1)] text-3xs font-medium border bg-[var(--cyan-16)] text-[var(--color-accent-fg)] border-[var(--cyan-16)]">flair:${post.flair}</span>` : null}
+          ${qualityPercent !== null ? html`
+            <span
+              class=${`inline-flex items-center px-1.5 py-0.5 rounded-[var(--r-1)] text-3xs font-medium border ${contributorQualityBadgeClass(post.contributor_quality)}`}
+              aria-label=${qualityTitle}
+              title=${qualityTitle}
+            >품질 ${qualityPercent}</span>
+          ` : null}
           ${post.hearth ? html`<span class="inline-flex items-center px-1.5 py-0.5 rounded-[var(--r-1)] text-3xs font-medium border bg-[var(--ff-gold-10)] text-[var(--ff-gold-bright)] border-[var(--ff-gold-20)]">${post.hearth}</span>` : null}
           ${post.visibility && visibilityLabel(post.visibility) ? html`<span class="inline-flex items-center px-1.5 py-0.5 rounded-[var(--r-1)] text-3xs font-medium border ${visibilityBadgeColor(post.visibility)}">${visibilityLabel(post.visibility)}</span>` : null}
           <${ModerationBadge} status=${post.moderation_status} reportCount=${post.report_count} targetLabel="게시글" />
@@ -721,20 +805,27 @@ function PostCard({ post }: { post: BoardPost }) {
             ${isDeleting ? '삭제 중...' : '삭제'}
           <//>
         </div>
-        ${reactionPreview ? html`
-          <div
-            class="mt-2"
-            onClick=${(event: Event) => event.stopPropagation()}
-            onKeyDown=${(event: KeyboardEvent) => event.stopPropagation()}
-          >
-            <${ReactionBar}
-              targetType="post"
-              targetId=${post.id}
-              compact
-              initialSummaries=${post.reactions}
-            />
-          </div>
-        ` : null}
+        <div
+          class="mt-2 flex items-center gap-1.5 flex-wrap text-2xs text-[var(--color-fg-muted)]"
+          aria-label=${`게시글 표시 감사: ${auditLabel}; 현재 정렬 ${sortLabel}`}
+          title=${`${auditLabel} · 현재 정렬 ${sortLabel}`}
+        >
+          <span class="inline-flex items-center px-1.5 py-0.5 rounded-[var(--r-1)] border border-[var(--ok-30)] bg-[var(--ok-soft)] text-[var(--color-status-ok)] font-medium">표시 중</span>
+          <span>${auditDetails}</span>
+          <span class="opacity-60">· 정렬 ${sortLabel}</span>
+        </div>
+        <div
+          class=${reactionPreview ? 'mt-2' : 'mt-2 opacity-75 transition-opacity group-hover:opacity-100'}
+          onClick=${(event: Event) => event.stopPropagation()}
+          onKeyDown=${(event: KeyboardEvent) => event.stopPropagation()}
+        >
+          <${ReactionBar}
+            targetType="post"
+            targetId=${post.id}
+            compact
+            initialSummaries=${post.reactions ?? []}
+          />
+        </div>
       </div>
     </article>
   `
@@ -748,6 +839,9 @@ export function BoardSurface() {
   }), [])
   useEffect(() => {
     if (boardHearths.value.length === 0) void refreshBoardHearths()
+  }, [])
+  useEffect(() => {
+    if (boardFlairs.value.length === 0) void refreshBoardFlairs()
   }, [])
   const [contentQuery, setContentQuery] = useState('')
   const rawPosts = boardPosts.value

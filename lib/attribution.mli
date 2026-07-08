@@ -83,13 +83,12 @@ val to_yojson : t -> Yojson.Safe.t
                                "score":0.85,"rationale":"..."}] *)
 
 val of_yojson : Yojson.Safe.t -> (t, string) result
-(** Parse from JSON. Returns [Error] with a human-readable message on
-    malformed input (missing field, unknown [kind], bad types).
-    Missing [evidence] defaults to [`Null]. *)
+(** Deserialize from JSON. Inverse of {!to_yojson}. *)
 
 val show : t -> string
-(** Single-line representation for debug logs. Elides [evidence] and
-    long string fields to keep logs scannable. *)
+(** Concise debug representation. Long fields (evidence, reason,
+    rationale) are elided to […] so the string is safe for logs and
+    test assertions. *)
 
 (** {1 Smart constructors}
 

@@ -1,11 +1,10 @@
 (** Sandbox configuration SSOT.
 
     Mirrors {!Env_config_exec_timeout} (#10426) and the
-    {!Env_config_oas_bridge} precedent (#10094).  This module gathers
-    the sandbox env settings + handful of hardcoded constants that
-    live across {!Env_config_keeper.KeeperSandbox},
-    {!Env_config_keeper.DockerPlayground}, and several
-    [lib/keeper/keeper_*.ml] sites — into one typed surface so:
+    {!Env_config_oas_bridge} precedent (#10094).  This module is the
+    authoritative source for sandbox env settings + hardcoded
+    constants used by keeper sandbox and docker playground execution
+    paths — one typed surface so:
 
     1. Operators can read every effective sandbox setting + its
        provenance from a single JSON dump
@@ -18,12 +17,6 @@
 
 (** {1 Hardening — security policy and resource limits} *)
 module Hardening : sig
-  val hard_mode : unit -> bool
-  (** Forces rootless/userns runtime checks, disables Docker-side
-      git/gh credential dispatch, and forbids ambient operator
-      credential fallback.
-      Env: [MASC_KEEPER_SANDBOX_HARD_MODE].  Default: [false]. *)
-
   val pids_limit : unit -> int
   (** Docker [--pids-limit].  Floored at 32.
       Env: [MASC_KEEPER_SANDBOX_PIDS_LIMIT].  Default: 128. *)
@@ -42,11 +35,6 @@ module Hardening : sig
 
   val relax_fs : unit -> bool
   (** When true, omit [--read-only] and drop [/tmp]'s [noexec] bit.
-      Returns the raw env value; the hard_mode interaction is
-      enforced by callers reading {!read_only_rootfs_args} and
-      {!tmpfs_mount} rather than by this getter.  Operators who set
-      both should expect their explicit [relax_fs] to win against
-      the implicit hard_mode default — change with care.
       Env: [MASC_KEEPER_SANDBOX_RELAX_FS].  Default: [false]. *)
 
   val read_only_rootfs_args : unit -> string list
@@ -64,12 +52,10 @@ module Hardening : sig
 
   val require_rootless : unit -> bool
   (** Fail closed unless Docker reports rootless mode support.
-      Always true when {!hard_mode} is true.
       Env: [MASC_KEEPER_SANDBOX_REQUIRE_ROOTLESS].  Default: [false]. *)
 
   val require_userns : unit -> bool
   (** Fail closed unless Docker reports userns support.
-      Always true when {!hard_mode} is true.
       Env: [MASC_KEEPER_SANDBOX_REQUIRE_USERNS].  Default: [false]. *)
 end
 
@@ -106,17 +92,28 @@ module Runtime : sig
       ["masc-keeper-sandbox:local"]. *)
 
   val git_dispatch : unit -> bool
-  (** When true, keeper_bash commands beginning with ["git "] or
+  (** When true, Execute commands beginning with ["git "] or
       ["gh "] run in a dedicated container with network egress and
-      read-only mounts from the selected root/keeper GitHub identity
-      bundle.  Effective value is [false] when {!Hardening.hard_mode}
-      is true.
+      read-only mounts from the selected root/keeper repo CLI identity
+      bundle.
       Env: [MASC_KEEPER_SANDBOX_GIT_DISPATCH].  Default: [true]. *)
 
   val docker_playground_enabled : unit -> bool
-  (** Route keeper_bash through a Docker container instead of local
+  (** Route Execute through a Docker container instead of local
       subprocess.
       Env: [MASC_KEEPER_DOCKER_PLAYGROUND].  Default: [false]. *)
+
+  val docker_playground_container_name : unit -> string
+  (** Docker container name for keeper playground execution.
+      Env: [MASC_KEEPER_DOCKER_CONTAINER].
+      Default: ["keeper-playground"]. *)
+
+  val docker_playground_container_root : unit -> string
+  (** Container-side root under which keeper playground bundles are
+      mounted.  Host [<base_path>/.masc/playground/<keeper>/…] maps to
+      [<container_playground_root>/<keeper>/…] inside the container.
+      Env: [MASC_KEEPER_DOCKER_PLAYGROUND_ROOT].
+      Default: ["/home/keeper/playground"]. *)
 end
 
 (** {1 Preflight — runtime feasibility check} *)
@@ -169,7 +166,7 @@ module Shell_timeout : sig
             cause cascading 401 retries (see #8688).  15s. *)
     | User_max
         (** Upper bound for user-provided [timeout_sec] in
-            keeper_bash.  180s. *)
+            Execute.  180s. *)
     | Cleanup_rm
         (** [docker rm -f] timeout used by turn-scoped cleanup.
             Currently hardcoded 5.0 in
@@ -222,8 +219,7 @@ val effective_config_json : unit -> Yojson.Safe.t
       where [source] is one of ["env"], ["default"], or
       ["load_bearing_floor"] (for [Gh_min] / [required_commands])
       and [env_var] is [null] for non-overridable values.
-    - [derived.<key>] = effective values after cross-cutting rules
-      (e.g. [hard_mode] coerces [relax_fs] to [false]).
+    - [derived.<key>] = effective values after cross-cutting rules.
 
     Operators read [raw] to confirm "did my env override take?" and
     [derived] to see "what will Docker actually see?". *)

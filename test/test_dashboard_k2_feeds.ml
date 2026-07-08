@@ -12,6 +12,7 @@ open Alcotest
 module Coord = Masc_mcp.Coord
 module Dash = Masc_mcp.Dashboard_http_keeper
 module Keeper_config = Masc_mcp.Keeper_config
+module Keeper_fs = Masc_mcp.Keeper_fs
 module Keeper_types = Masc_mcp.Keeper_types
 module Json = Yojson.Safe.Util
 
@@ -50,7 +51,7 @@ let keeper_meta name =
           [ "name", `String name
           ; "agent_name", `String name
           ; "trace_id", `String ("trace-" ^ name)
-          ; "cascade_name", `String Keeper_config.default_cascade_name
+          ; "cascade_name", `String (Keeper_config.default_cascade_name ())
           ])
   with
   | Ok meta -> meta
@@ -58,7 +59,7 @@ let keeper_meta name =
 ;;
 
 let append_jsonl path json =
-  Keeper_types.mkdir_p (Filename.dirname path);
+  let (_ : string) = Keeper_fs.ensure_dir (Filename.dirname path) in
   Masc_mcp.Keeper_types_support.append_jsonl_line path json
 ;;
 
@@ -83,7 +84,7 @@ let test_decisions_log_evidence_refs_are_real_refs () =
   with_config
   @@ fun config ->
   let meta = keeper_meta "k2-decisions" in
-  let path = Keeper_types.keeper_decision_log_path config meta.name in
+  let path = Masc_mcp.Keeper_types_support.keeper_decision_log_path config meta.name in
   append_jsonl
     path
     (`Assoc
@@ -124,7 +125,7 @@ let test_decisions_log_clamps_low_limit () =
   with_config
   @@ fun config ->
   let meta = keeper_meta "k2-decision-limit" in
-  let path = Keeper_types.keeper_decision_log_path config meta.name in
+  let path = Masc_mcp.Keeper_types_support.keeper_decision_log_path config meta.name in
   append_jsonl
     path
     (`Assoc
@@ -149,7 +150,7 @@ let test_decisions_log_json_shape () =
   with_config
   @@ fun config ->
   let meta = keeper_meta "k2-decisions-shape" in
-  let path = Keeper_types.keeper_decision_log_path config meta.name in
+  let path = Masc_mcp.Keeper_types_support.keeper_decision_log_path config meta.name in
   append_jsonl
     path
     (`Assoc
@@ -190,13 +191,23 @@ let test_decisions_json_terminal_reason_duration_fallback () =
   with_config
   @@ fun config ->
   let meta = keeper_meta "k2-decision-terminal-duration" in
-  let path = Keeper_types.keeper_decision_log_path config meta.name in
+  let path = Masc_mcp.Keeper_types_support.keeper_decision_log_path config meta.name in
   append_jsonl
     path
     (`Assoc
         [ "ts_unix", `Float 1_300.0
         ; "keeper_name", `String meta.name
         ; "outcome", `String "error"
+        ; "choice", `String "use_shell"
+        ; "reason", `String "verify touched test target"
+        ; ( "context"
+          , `Assoc
+              [ "file_path", `String "runtime.ts"
+              ; "line", `Int 19
+              ; "goal_id", `String "goal-decision"
+              ; "task_id", `String "task-decision"
+              ; "log_id", `String "decision-turn-19"
+              ] )
         ; "latency_ms", `Int 321
         ; ( "terminal_reason"
           , `Assoc
@@ -209,6 +220,12 @@ let test_decisions_json_terminal_reason_duration_fallback () =
   let compact =
     Dash.keeper_decisions_json ~config ~keepers:[ meta ] ~limit:10 ()
   in
+  check string "compact dashboard surface" "/api/v1/dashboard/keeper-decisions"
+    Json.(compact |> member "dashboard_surface" |> to_string);
+  check string "compact source" "keeper_decision_log"
+    Json.(compact |> member "source" |> to_string);
+  check string "compact durable store" ".masc/keepers/:name.decisions.jsonl"
+    Json.(compact |> member "retention" |> member "durable_store" |> to_string);
   let compact_event =
     match Json.(compact |> member "events" |> to_list) with
     | event :: _ -> event
@@ -218,6 +235,20 @@ let test_decisions_json_terminal_reason_duration_fallback () =
     Json.(compact_event |> member "terminal_reason_code" |> to_string);
   check (float 0.001) "compact duration fallback" 321.0
     Json.(compact_event |> member "duration_ms" |> to_float);
+  check string "compact choice" "use_shell"
+    Json.(compact_event |> member "choice" |> to_string);
+  check string "compact reason" "verify touched test target"
+    Json.(compact_event |> member "reason" |> to_string);
+  check string "compact context file" "runtime.ts"
+    Json.(compact_event |> member "context" |> member "file_path" |> to_string);
+  check int "compact context line" 19
+    Json.(compact_event |> member "context" |> member "line" |> to_int);
+  check string "compact context goal" "goal-decision"
+    Json.(compact_event |> member "context" |> member "goal_id" |> to_string);
+  check string "compact context task" "task-decision"
+    Json.(compact_event |> member "context" |> member "task_id" |> to_string);
+  check string "compact context log" "decision-turn-19"
+    Json.(compact_event |> member "context" |> member "log_id" |> to_string);
   let log =
     Dash.keeper_decisions_log_json ~config ~keepers:[ meta ] ~limit:10 ()
   in
@@ -251,7 +282,7 @@ let test_memory_log_ids_distinguish_same_timestamp_rows () =
   with_config
   @@ fun config ->
   let meta = keeper_meta "k2-memory" in
-  let path = Keeper_types.keeper_memory_bank_path config meta.name in
+  let path = Masc_mcp.Keeper_types_support.keeper_memory_bank_path config meta.name in
   append_jsonl path (memory_row ~ts:2_000.0 "Ship K2 memory feed row alpha");
   append_jsonl path (memory_row ~ts:2_000.0 "Ship K2 memory feed row beta");
   let json = Dash.keeper_memory_log_json ~config ~keepers:[ meta ] ~limit:999 () in
@@ -268,7 +299,7 @@ let test_memory_log_kind_mapping () =
   with_config
   @@ fun config ->
   let meta = keeper_meta "k2-memory-kind" in
-  let path = Keeper_types.keeper_memory_bank_path config meta.name in
+  let path = Masc_mcp.Keeper_types_support.keeper_memory_bank_path config meta.name in
   (* progress -> episode *)
   append_jsonl
     path

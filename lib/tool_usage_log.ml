@@ -15,8 +15,8 @@ module Char = Stdlib.Char
 module Int = Stdlib.Int
 module Float = Stdlib.Float
 
-module StringSet = Set.Make (String)
-module StringMap = Map.Make (String)
+module StringSet = Set_util.StringSet
+module StringMap = Set_util.StringMap
 
 (** Tool_usage_log -- Durable call logging for System_internal surface tools.
 
@@ -50,9 +50,18 @@ let dashboard_surface = "/api/v1/dashboard/tools"
    "stale" alerts on healthy fleets. 3600 s matches the operational rhythm
    without masking a true write-pipeline failure — Dated_jsonl append errors
    already record a coverage_gap that bypasses this SLO. *)
-let freshness_slo_s = 3600.0
+let freshness_slo_s = Masc_time_constants.hour
 
 let store_dir masc_root = Filename.concat masc_root "tool_usage"
+
+let retention_days () =
+  (* Opt-in: see lib/keeper_tool_call_log.ml retention_days. *)
+  match Sys.getenv_opt "MASC_TOOL_USAGE_LOG_RETENTION_DAYS" with
+  | Some raw ->
+    (match int_of_string_opt (String.trim raw) with
+     | Some days when days > 0 -> Some days
+     | _ -> None)
+  | None -> None
 
 let max_ts_opt current candidate =
   match current with
@@ -174,6 +183,7 @@ let record_coverage_gap ~masc_root ~durable_store ~stale_reason ?caller
       ~dashboard_surface
       ~stale_reason
       ~error
+      ~exn
       ()
   with
   | Eio.Cancel.Cancelled _ as cancel -> raise cancel
@@ -207,7 +217,8 @@ let init ?cluster_name ~base_path () =
   let dir = store_dir masc_root in
   (try
      Fs_compat.mkdir_p dir;
-     let store = Dated_jsonl.create ~base_dir:dir () in
+     let retention_days = retention_days () in
+     let store = Dated_jsonl.create ~base_dir:dir ?retention_days () in
      store_ref := Some store
    with Eio.Cancel.Cancelled _ as e -> raise e | exn ->
      store_ref := None;
@@ -244,6 +255,8 @@ let log_call ~tool_name ~success ~caller =
       let json = record_to_json ~tool_name ~success ~caller in
       (try Dated_jsonl.append store json
        with Eio.Cancel.Cancelled _ as e -> raise e | exn ->
+         Keeper_fd_pressure.note_exception ~site:"tool_usage_log.append" exn;
+         Keeper_disk_pressure.note_exception ~site:"tool_usage_log.append" exn;
          Log.Misc.warn "tool_usage_log: append failed for %s: %s"
            tool_name (Stdlib.Printexc.to_string exn);
          let durable_store = Dated_jsonl.base_dir store in
@@ -258,24 +271,29 @@ let log_call ~tool_name ~success ~caller =
 (* -- Post-hook installation -- *)
 
 (** Caller extraction from tool result data.
-    The caller (agent_name) is not in Tool_result.t directly, so we
+    The caller (agent_name) is not in Tool_result.result directly, so we
     extract it from the structured data if present, or default to None. *)
-let extract_caller (result : Tool_result.t) : string option =
-  match result.data with
+let extract_caller (result : Tool_result.result) : string option =
+  match Tool_result.data result with
   | `Assoc fields ->
       (match List.assoc_opt "agent_name" fields with
        | Some (`String s) -> Some s
        | _ -> None)
   | _ -> None
 
+(* Log only handled System_internal dispatches. Non-handled outcomes are
+   represented by dispatch telemetry, not tool-usage rows. *)
 let install () =
-  Tool_dispatch.register_post_hook (fun (result : Tool_result.t) ->
-    if is_system_internal result.tool_name then
-      log_call
-        ~tool_name:result.tool_name
-        ~success:result.success
-        ~caller:(extract_caller result);
-    result)
+  Tool_dispatch.register_dispatch_observer (fun outcome result ->
+    match outcome, result with
+    | Dispatch_outcome.Handled, Some (result : Tool_result.result) ->
+      let tool_name = Tool_result.tool_name result in
+      if is_system_internal tool_name then
+        log_call
+          ~tool_name
+          ~success:(Tool_result.is_success result)
+          ~caller:(extract_caller result)
+    | _ -> ())
 
 (* -- Read utilities (for analysis) -- *)
 

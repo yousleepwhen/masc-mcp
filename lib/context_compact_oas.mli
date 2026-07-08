@@ -8,15 +8,15 @@
     {!observation_context}.
 
     Internal: 5 \[*_prefix\] string constants (memory summary /
-    goal markers + legacy variants), 9 scoring weights cached
-    from env at module init ([w_recency], [w_role], [w_tool],
-    role weights, tool-presence weights, [anchor_boost],
-    [drop_importance_threshold], [summarize_keep_recent]),
-    \[tool_output_prune_limit\] env constant, 4 dynamic-context
-    thresholds, [first_sentence] / [tool_names_by_id] /
-    [summarize_chunk] / [mask_tool_*] /
-    [oas_strategy_of] / [summarize_old_messages] helpers — all
-    consumed only inside {!compact}'s pipeline. *)
+    goal markers + legacy variants), scoring constants sourced
+    from [Env_config.ContextCompact] at module init ([w_recency],
+    [w_role], [w_tool], role weights, tool-presence weights,
+    [anchor_boost], [drop_importance_threshold],
+    [summarize_keep_recent], [tool_output_prune_limit]), 4
+    dynamic-context thresholds, [first_sentence] / [summarize_chunk] /
+    [extractive_summarizer] / [score_message] / [score_messages] /
+    [oas_strategy_of] helpers — all consumed only inside
+    {!compact}'s pipeline. *)
 
 (** {1 Observation context} *)
 
@@ -72,7 +72,7 @@ val compact :
   unit ->
   Agent_sdk.Types.message list
 (** [compact ~messages ~strategies ?observation ()] applies the
-    compaction pipeline.  When any [strategy] is {!Dynamic} and
+    OAS-backed compaction pipeline.  When any [strategy] is {!Dynamic} and
     [?observation] is supplied, runtime resolution flattens it.
 
     Logs the resolved strategy names + observation summary at
@@ -115,7 +115,7 @@ val score_messages :
     (system / user / assistant / tool weights), tool-call
     presence, and an anchor boost for messages prefixed with
     \[MEMORY_SUMMARY\] / \[GOAL\] (current + legacy markers).
-    Pure — reads only the cached env-derived weights. *)
+    Pure — reads only cached code-reviewed scoring constants. *)
 
 val small_local_ctx_floor : int
 (** Context-window threshold below which {!default_dynamic_selector}
@@ -123,7 +123,7 @@ val small_local_ctx_floor : int
     lightweight strategy set. Mirrors
     [Env_config.ContextCompact.small_local_floor]; exposed so
     boundary tests can pin the threshold without duplicating the
-    env lookup. *)
+    constant. *)
 
 val default_dynamic_selector :
   observation_context -> strategy list
@@ -140,19 +140,11 @@ val default_dynamic_selector :
       ([\[MergeContiguous\]]).
     - Default -> [\[PruneToolOutputs; MergeContiguous\]]. *)
 
-(** {1 Test-visible scoring helper} *)
+(** {1 Test-visible scoring helpers} *)
 
-val score_messages :
-  Agent_sdk.Types.message list -> (int * float) list
-(** [score_messages msgs] returns
-    [(message_index, importance_score)] pairs for the input
-    message list.  Importance combines recency (quadratic ramp
-    over the message list) with role / tool weights.  Pinned for
-    behaviour-tests under {!test/test_context_compact_oas_coverage}. *)
-
-val small_local_ctx_floor : int
-(** [small_local_ctx_floor] is the env-driven context-window
-    floor (read once at module init) below which a local-model
-    keeper is treated as "small local" by
-    {!default_dynamic_selector}.  Pinned for behaviour-tests
-    under {!test/test_context_compact_oas_coverage}. *)
+val score_message :
+  index:int -> total:int -> Agent_sdk.Types.message -> float
+(** [score_message ~index ~total msg] returns the importance score
+    of a single message for context compaction.  Score is in
+    [0.0, 1.0].  Pinned for behaviour-tests and for injecting into
+    OAS {!Agent_sdk.Context_reducer.importance_scored}. *)

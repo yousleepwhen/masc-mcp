@@ -1,12 +1,12 @@
 # RFC-0009 — Cascade Trust Phase 2: Operator Recommendations + Opt-in Persist
 
-**Status**: Draft (2026-04-26)
-**Depends on**: #10292 (Phase 0a), #10331 (Phase 0b), #10365 (Phase 1)
+**Status**: Implemented (Phase 0a/0b via #10292/#10331. Phase 1 first via #10365, reverted, reinstated as `cascade_trust` module via #12589. Phase 2a operator recommendations live in `lib/dashboard_cascade_recommendations.ml` (action variants `Reduce_weight | Disable | Investigate`); Phase 2b opt-in persist live in `lib/cascade/cascade_trust_persist.{ml,mli}` (JSONL snapshot + hydrate, gated by `MASC_CASCADE_TRUST_PERSIST`).)
+**Depends on**: #10292 (Phase 0a), #10331 (Phase 0b), #10365 (Phase 1 — reverted), #12589 (Phase 1 reinstated)
 **Author**: vincent (jeong-sik)
 
 ## Motivation
 
-Phase 1 (#10365) gave the cascade an in-memory `trust_score` that auto-rotates away from rate-limited / persistently failing providers. Replay validation against 4044 live decisions confirmed the algorithm matches operator intent: dead cascades (ollama_only at 1% success → trust 0.000 on 99.5% of decisions), healthy cascades (big_three at 41% success → trust 2.000 ceiling).
+Phase 1 (#10365) gave the cascade an in-memory `trust_score` that auto-rotates away from rate-limited / persistently failing providers. Replay validation against 4044 live decisions confirmed the algorithm matches operator intent: dead cascades (ollama_only at 1% success → trust 0.000 on 99.5% of decisions), healthy cascades (primary at 41% success → trust 2.000 ceiling).
 
 Two gaps remain:
 
@@ -19,11 +19,11 @@ Phase 2 closes both gaps without giving the trust loop authority to silently rew
 
 | Principle | Application |
 |---|---|
-| Live-only persist | Only `~/.masc/config/cascade.toml` is touched; `config/cascade.toml` (repo seed) is never written to by the trust loop. |
+| Live-only persist | Only `<base-path>/.masc/config/cascade.toml` is touched; `config/cascade.toml` (repo seed) is never written to by the trust loop. |
 | Opt-in by default | `MASC_CASCADE_TRUST_PERSIST=1` (or `=dry`) gates everything in this RFC. Default-off for the first release. |
 | Observation over action | Phase 2a (operator recommendation) is observation-only. Phase 2b (persist) is a separate feature flag and a separate PR. |
 | No self-reload loops | Hot-reload must skip files the trust loop just wrote; otherwise each persist triggers a reload triggers a re-emit. |
-| Audit everything | Every persist write goes to `~/.masc/cascade_trust/applied/YYYY-MM/DD.jsonl` with before/after values and reason. |
+| Audit everything | Every persist write goes to `<base_path>/.masc/cascade_trust/applied/YYYY-MM/DD.jsonl` with before/after values and reason. |
 
 ## Phase 2a — Operator recommendation (observation only)
 
@@ -81,7 +81,7 @@ Rendered on the dashboard as a card with a copy-friendly JSON snippet showing th
 |---|---|
 | unset (default) | No persist. Trust is in-memory only, reset on restart. |
 | `dry` | Compute the would-be diff every hour, append to `cascade_trust/applied/<date>.jsonl` with `mode=dry`, no file write. |
-| `1` | Same diff, plus atomic write to `~/.masc/config/cascade.toml`. |
+| `1` | Same diff, plus atomic write to `<base-path>/.masc/config/cascade.toml`. |
 
 ### Persist algorithm
 
@@ -89,11 +89,11 @@ Every `MASC_CASCADE_TRUST_PERSIST_INTERVAL_SEC` (default 3600s):
 
 1. Snapshot `Cascade_health_tracker.global` providers with `events_in_window > 0` AND age of `last_failure_at` < 24h (skip stale).
 2. For each provider, compute target weight: `round(trust_score * 2) / 2` (0.5-step granularity, range [0.5, ceiling × current_weight]).
-3. Diff against current `~/.masc/config/cascade.toml` weights.
+3. Diff against current `<base-path>/.masc/config/cascade.toml` weights.
 4. If diff is empty → emit `mode=skip_no_change` audit event; return.
 5. Atomic write via `lib/atomic_write.ml`:
    - `cascade.toml.tmp` → fsync → rename
-   - Backup previous: `~/.masc/config/.backup/cascade.toml.YYYYMMDD-HHMMSS`
+   - Backup previous: `<base-path>/.masc/config/.backup/cascade.toml.YYYYMMDD-HHMMSS`
    - Top-of-file marker comment: `# auto-tuned by trust_persist at <timestamp>; do not edit by hand within 5s`
 
 ### Hot-reload loop guard
@@ -133,7 +133,7 @@ Recommendation: mtime threshold + a process-local flag (`Atomic.t` with timestam
 ## Out of scope
 
 - **Phase 3** (cost-aware boost via OAS `cost_tracker` token usage) — separate RFC.
-- **Cross-host trust sync** — every host has its own `~/.masc`; no fleet-level reputation in this RFC.
+- **Cross-host trust sync** — every host has its own `<base_path>/.masc`; no fleet-level reputation in this RFC.
 - **Auto-disable of dead cascade** — operator decides; the recommendation only suggests.
 
 ## Verification plan

@@ -143,19 +143,22 @@ Keeper memory bank는 개별 에이전트의 세션 기억을 JSONL 파일로 �
 |------|-------|-----------------------|---------|
 | target_notes | 220 | `memory.max_notes` | `MASC_KEEPER_MEMORY_MAX_NOTES` |
 | trigger_bytes | 120,000 | `memory.compact_trigger_bytes` | `MASC_KEEPER_MEMORY_COMPACT_TRIGGER_BYTES` |
+| LLM summary opt-in | false | `memory.llm_summary` | `MASC_KEEPER_MEMORY_LLM_SUMMARY` |
 
 압축 단계:
 1. JSONL 파싱, 유효하지 않은 행 제거
-2. `ts_unix` 기준 정렬 (최신 우선)
-3. 중복 제거 (kind:text 정규화 키 기준)
-4. 최근 `recent_floor`개 (target/5, 16-64 범위) 무조건 보존
-5. horizon-aware priority 순으로 kind별 cap까지 채움
-6. 미달 시 kind cap 무시하고 recency 순으로 추가 채움
-7. 원자적 파일 교체 (.tmp -> rename)
+2. progress cluster / recurring text consolidation
+3. `ts_unix` 기준 정렬 (최신 우선)
+4. 중복 제거 (kind:text 정규화 키 기준)
+5. 최근 `recent_floor`개 (target/5, 16-64 범위) 무조건 보존
+6. horizon-aware priority 순으로 kind별 cap까지 채움
+7. 미달 시 kind cap 무시하고 recency 순으로 추가 채움
+8. 원자적 파일 교체 (.tmp -> rename)
 
 환경변수 오버라이드:
 - `MASC_KEEPER_MEMORY_MAX_NOTES`: target_notes (범위: 40-4000)
 - `MASC_KEEPER_MEMORY_COMPACT_TRIGGER_BYTES`: trigger bytes (범위: 60KB-20MB)
+- `MASC_KEEPER_MEMORY_LLM_SUMMARY`: opt-in semantic summarizer hook. 기본값은 off이며, keeper turn runtime에서 현재 cascade의 direct completion provider를 사용한다. CLI subprocess provider만 있는 cascade, provider resolve 실패, timeout, 빈 응답은 deterministic summary로 fallback한다.
 
 `keeper_runtime.toml`의 `[memory]` 섹션은 같은 값을 startup boot override로 주입한다.
 프로세스 환경변수가 이미 있으면 환경변수가 우선한다.
@@ -371,10 +374,8 @@ Heuristic 분류는 ~80% 정확도를 보인다 (개발자 추정).
 | `Recent_broadcasts` | 방 내 최근 N개 broadcast |
 | `File_context` | 최근 수정 파일 (mtime scan 기반 구현 완료) |
 
-Keeper turn path는 이것과 별도로 `git status --porcelain` delta를 추적한다.
-즉:
-- `File_context` = 최근 파일 내용을 recall source로 가져오는 것
-- live worktree delta = 지난 keeper turn 이후 바뀐 파일 목록을 다음 turn에 직접 주입하는 것
+Keeper turn path는 이것과 별도로 현재 backlog와 scheduled autonomous trigger를
+live world state로 재확인한다.
 
 ### 8.3 Configuration
 
@@ -403,8 +404,8 @@ type recall_config = {
 | Scratchpad | OAS 내부 관리 | bridge 불필요 |
 | Working | OAS 내부 관리 | bridge 불필요 |
 | Long_term | JSONL/filesystem (`Memory_jsonl`) | `make_backend` |
-| Episodic | `Institution_eio` JSONL episodes | `seed_episodes` / `flush_episodes` |
-| Procedural | `Procedural_memory` | `seed_procedures_as_oas` / `flush_procedures` |
+| Episodic | `Institution_eio` JSONL episodes | `load_episodes_text` / `flush_episodes` |
+| Procedural | `Procedural_memory` | `load_procedures_text` / `flush_procedures` |
 
 ### 9.2 Storage Backends
 
@@ -413,20 +414,24 @@ type recall_config = {
 - Append-only, latest entry wins on read
 - Tombstone: `{"key":"...","value":null,"ts":...}` -- 삭제 표시
 - 50MB 파일 크기 경고, 1MB 단일 값 경고 + 잘라내기
-- Current server bootstrap forces `MASC_STORAGE_TYPE=filesystem`; `MASC_POSTGRES_URL` does not select a memory backend.
+- Current server bootstrap forces `MASC_STORAGE_TYPE=filesystem`; memory runtime state does not select a PostgreSQL backend.
 - PostgreSQL memory backend is not part of the runtime contract.
 
 ### 9.3 Lifecycle
 
 ```
-create_memory_full
+create_memory
   1. make_backend (JSONL/filesystem)
-  2. seed_episodes (Institution JSONL -> OAS Episodic, 기본 50개)
-  3. seed_procedures_as_oas (crystallized procedures -> OAS Procedural, 기본 20개)
-  4. seed_institution (institution.json -> OAS Long_term, 선택)
+  2. Agent_sdk.Memory.create ~long_term:backend
+
+Prompt injection:
+  1. load_episodes_text (Institution JSONL -> prompt context)
+  2. load_procedures_text (crystallized procedures -> prompt context)
+  3. load_world_text (OAS long_term world keys -> prompt context)
+  4. load_institution_text (institution.json -> welcome/context text)
 
 Agent.run 완료 후:
-  flush_all
+  flush_incremental
     1. flush_episodes (OAS -> Institution JSONL, 중복 ID 제거)
     2. flush_procedures (OAS -> Procedural_memory, 변경된 count만)
 ```
@@ -480,8 +485,8 @@ type synapse = {
 1. **Compaction은 원자적이다**: memory bank 재작성은 .tmp 파일에 쓰고 rename한다. 실패 시 원본 불변.
 2. **Dedup은 정규화 기반이다**: `normalize_memory_text_key`가 공백/구두점 제거 + lowercase 후 비교한다.
 3. **kind가 우선순위를 결정한다**: 동일 kind + text는 항상 동일한 priority를 받는다. `signal_bonus`가 키워드 기반 보정을 추가한다.
-4. **OAS bridge는 비파괴적이다**: flush 시 기존 데이터를 제거하지 않고 append 또는 update-in-place만 한다.
-5. **Context compaction은 LLM을 호출하지 않는다**: SummarizeOld를 포함한 모든 전략이 결정론적이다.
+4. **OAS bridge는 비파괴적이다**: load는 prompt context만 만들고, flush 시 기존 데이터를 제거하지 않고 append 또는 update-in-place만 한다.
+5. **Context compaction은 기본적으로 결정론적이다**: Memory-bank progress consolidation만 opt-in LLM summarizer를 제공하며, off/fail/no-direct-provider 상태는 deterministic fallback을 사용한다.
 6. **OAS bridge storage follows current bootstrap truth**: filesystem/JSONL is the active runtime storage lane; PostgreSQL is not used as the primary or fallback backend.
 7. **Procedural crystallization은 비가역적이다**: 일단 결정화되면 evidence가 줄어도 상태가 변하지 않는다.
 8. **Episode ID dedup이 flush boundary를 보호한다**: 이미 JSONL에 존재하는 ID는 다시 쓰지 않는다.
@@ -494,6 +499,7 @@ type synapse = {
 |------|--------|------|
 | `MASC_KEEPER_MEMORY_MAX_NOTES` | profile별 상이 | Memory bank compaction target |
 | `MASC_KEEPER_MEMORY_COMPACT_TRIGGER_BYTES` | target * 360 | Compaction 트리거 크기 |
+| `MASC_KEEPER_MEMORY_LLM_SUMMARY` | false | Memory-bank progress consolidation summarizer hook opt-in |
 | `MASC_CONTEXT_BUDGET_MAX` | 100,000 | Context budget 상한 (tokens) |
 | `MASC_CONTEXT_ROUTER_MODE` | heuristic | Intent classification 모드 |
 | `MASC_MEMORY_OAS_DEFAULT_IMPORTANCE` | 5 | OAS Memory store 기본 importance |

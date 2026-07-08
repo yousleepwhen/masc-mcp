@@ -23,6 +23,36 @@ module Float = Stdlib.Float
 
 open Tool_inline_dispatch_types
 
+(* RFC-0189 PR-2: lifecycle handlers return [Tool_result.result option]
+   directly, matching the shared inline dispatch alias. *)
+
+let inline_ok ~tool_name ~start_time body : Tool_result.result =
+  let data =
+    match Tool_result.structured_payload_of_message body with
+    | Some json -> json
+    | None -> `String body
+  in
+  Tool_result.make_ok ~tool_name ~start_time ~data ()
+;;
+
+let inline_err_runtime ~tool_name ~start_time msg : Tool_result.result =
+  Tool_result.make_err
+    ~tool_name
+    ~class_:Tool_result.Runtime_failure
+    ~start_time
+    msg
+;;
+
+let inline_err_workflow ~tool_name ~start_time msg : Tool_result.result =
+  Tool_result.make_err
+    ~tool_name
+    ~class_:Tool_result.Workflow_rejection
+    ~start_time
+    msg
+;;
+
+let masc_add_task_name = Tool_name.Masc.to_string Tool_name.Masc.Add_task
+
 (** Argument extraction helpers bound to ctx.arguments. *)
 let arg_get_string ctx key default =
   Safe_ops.json_string ~default key ctx.arguments
@@ -31,7 +61,7 @@ let arg_get_string_list ctx key =
   Safe_ops.json_string_list key ctx.arguments
 
 (** masc_start — compound onboarding (set project root + join + optional task) *)
-let handle_start (ctx : context) : tool_result option =
+let handle_start ~tool_name ~start_time (ctx : context) : Tool_result.result option =
   let config = ctx.config in
   let agent_name = ctx.agent_name in
   let state = ctx.state in
@@ -50,10 +80,10 @@ let handle_start (ctx : context) : tool_result option =
     end else begin
       let expanded =
         if String.length path >= 2 && Char.equal path.[0] '~' && Char.equal path.[1] '/' then
-          let home = match Sys.getenv_opt "HOME" with Some h -> h | None -> "/tmp" in
+          let home = match Sys.getenv_opt "HOME" with Some h -> h | None -> Filename.get_temp_dir_name () in
           Filename.concat home (String.sub path 2 (String.length path - 2))
         else if String.length path = 1 && Char.equal path.[0] '~' then
-          (match Sys.getenv_opt "HOME" with Some h -> h | None -> "/tmp")
+          (match Sys.getenv_opt "HOME" with Some h -> h | None -> Filename.get_temp_dir_name ())
         else if Filename.is_relative path then
           Filename.concat (Sys.getcwd ()) path
         else
@@ -76,9 +106,11 @@ let handle_start (ctx : context) : tool_result option =
   in
   match room_result with
   | Error e ->
+      (* room_result Error sources are all caller-input rejections:
+         missing [path] argument or non-existent directory. *)
       Some
-        (false,
-         Printf.sprintf "masc_start failed while setting project scope: %s" e)
+        (inline_err_workflow ~tool_name ~start_time
+           (Printf.sprintf "masc_start failed while setting project scope: %s" e))
   | Ok active_config ->
     (* Step 2: join (idempotent — skip if already joined) *)
     let join_result =
@@ -86,21 +118,33 @@ let handle_start (ctx : context) : tool_result option =
         let _msg = Coord.join active_config ~agent_name ~capabilities:[] () in
         Ok ()
       with Eio.Cancel.Cancelled _ as e -> raise e | exn ->
-        let msg = Stdlib.Printexc.to_string exn in
+        let msg = Tool_error.to_string (Tool_error.of_exn exn) in
         if String.length msg > 0 then Error msg else Error "join failed"
     in
     match join_result with
-    | Error e -> Some (false, Printf.sprintf "masc_start failed at join: %s\nHint: try masc_join separately." e)
+    | Error e ->
+      (* join exception caught from [Coord.join] — internal failure. *)
+      Some
+        (inline_err_runtime ~tool_name ~start_time
+           (Printf.sprintf "masc_start failed at join: %s\nHint: try masc_join separately." e))
     | Ok () ->
       (* Step 3: add_task + claim + plan_set_task (if task_title provided) *)
       if String.equal task_title "" then
         Some
-          (true,
-           Printf.sprintf
-             "masc_start complete (project scope set + joined as %s). No task created — use masc_add_task to create one."
-             agent_name)
+          (inline_ok ~tool_name ~start_time
+             (Printf.sprintf
+                "masc_start complete (project scope set + joined as %s). No task created — use %s to create one."
+                agent_name
+                masc_add_task_name))
       else begin
-        let add_result = Coord_task.add_task active_config ~title:task_title ~priority:3 ~description:"" in
+        (* RFC-0034.v2: per-goal cap guard. masc_start does not pass a
+           [goal_id], so the guard is a no-op for orphan tasks. Wired so
+           a future goal-aware variant inherits the cap automatically. *)
+        let add_result =
+          Coord_task.add_task
+            ~reject_if:(Coord_task_capacity.rejection_for_add_task ?goal_id:None)
+            active_config ~title:task_title ~priority:3 ~description:""
+        in
         (* Extract task ID from result like "Added task-001: title" *)
         let task_id =
           try
@@ -120,23 +164,27 @@ let handle_start (ctx : context) : tool_result option =
         in
         if String.equal task_id "" then
           Some
-            (true,
-             Printf.sprintf
-               "masc_start partial: joined as %s, but task creation failed: %s"
-               agent_name add_result)
+            (inline_ok ~tool_name ~start_time
+               (Printf.sprintf
+                  "masc_start partial: joined as %s, but task creation failed: %s"
+                  agent_name add_result))
         else begin
           let _claim_msg = Coord_task.claim_task active_config ~agent_name ~task_id in
-          Planning_eio.set_current_task active_config ~task_id;
-          Some
-            (true,
-             Printf.sprintf
-               "masc_start complete: project scope set, joined as %s, task %s created+claimed+set as current."
-               agent_name task_id)
+          match Planning_eio.set_current_task active_config ~task_id with
+          | Error msg ->
+            (* [Planning_eio.set_current_task] internal store failure. *)
+            Some (inline_err_runtime ~tool_name ~start_time msg)
+          | Ok () ->
+              Some
+                (inline_ok ~tool_name ~start_time
+                   (Printf.sprintf
+                      "masc_start complete: project scope set, joined as %s, task %s created+claimed+set as current."
+                      agent_name task_id))
         end
       end
 
 (** masc_join — join the active MASC project *)
-let handle_join (ctx : context) : tool_result option =
+let handle_join ~tool_name ~start_time (ctx : context) : Tool_result.result option =
   let config = ctx.config in
   let agent_name = ctx.agent_name in
   let registry = ctx.registry in
@@ -148,10 +196,46 @@ let handle_join (ctx : context) : tool_result option =
     let result =
       Coord.join config ~agent_name:resolved_name ~capabilities:caps ()
     in
-    (* GC: reap zombie agents on join. Best-effort. *)
-    (try let _ = Coord.cleanup_zombies config in ()
-     with Eio.Cancel.Cancelled _ as e -> raise e | exn ->
-       Log.Gc.warn "[sid=%s] join GC failed: %s" sid (Stdlib.Printexc.to_string exn));
+    (* GC: reap zombie agents on join. Best-effort.
+       Typed outcome mirrors sibling [Orchestrator] zombie consumer
+       (PR #15510): each Coord.cleanup_zombie_result constructor and
+       exception class is mapped to a distinct severity, so a future
+       variant addition fails compile rather than slipping through a
+       silent catch-all.  [Eio.Cancel.Cancelled] re-raised unchanged. *)
+    let module Join_gc_outcome = struct
+      type t =
+        | Reaped of { count : int; names : string list }
+        | No_op
+        | Misconfigured
+        | Failed of { benign : bool; reason : string }
+    end in
+    let join_gc_outcome : Join_gc_outcome.t =
+      try
+        match Coord.cleanup_zombies config with
+        | Coord.Cleaned { count = 0; _ } -> Join_gc_outcome.No_op
+        | Coord.Cleaned { count; names; _ } ->
+            Join_gc_outcome.Reaped { count; names }
+        | Coord.No_zombies -> Join_gc_outcome.No_op
+        | Coord.No_agents_dir -> Join_gc_outcome.Misconfigured
+      with
+      | Eio.Cancel.Cancelled _ as e -> raise e
+      | exn ->
+          Join_gc_outcome.Failed
+            { benign = Coord_resilience.ZeroZombie.is_benign_error exn
+            ; reason = Stdlib.Printexc.to_string exn
+            }
+    in
+    (match join_gc_outcome with
+     | Join_gc_outcome.Reaped { count; names } ->
+         Log.Gc.info "[sid=%s] join GC reaped %d zombie(s): %s"
+           sid count (String.concat ", " names)
+     | Join_gc_outcome.No_op -> ()
+     | Join_gc_outcome.Misconfigured ->
+         Log.Gc.warn "[sid=%s] join GC: agents dir missing (misconfig)" sid
+     | Join_gc_outcome.Failed { benign = true; reason } ->
+         Log.Gc.debug "[sid=%s] join GC benign failure: %s" sid reason
+     | Join_gc_outcome.Failed { benign = false; reason } ->
+         Log.Gc.error "[sid=%s] join GC failed: %s" sid reason);
     (* Extract nickname from join result (format: "  Nickname: xxx\n...") *)
     let nickname =
       try
@@ -172,19 +256,10 @@ let handle_join (ctx : context) : tool_result option =
       with Invalid_argument _ -> agent_name
     in
     let _ = Session.register registry ~agent_name:nickname in
-    ctx.write_mcp_session_agent nickname;
-    Log.Misc.debug "[sid=%s] masc_join: saved nickname=%s to MCP session (original=%s)" sid nickname agent_name;
-    if Option.is_none mcp_session_id then begin
-      Log.Misc.warn "[sid=%s] [deprecated] writing agent name to /tmp file for TERM session — migrate to Agent_identity" sid;
-      let term_session_id = Option.value ~default:"default" (Sys.getenv_opt "TERM_SESSION_ID") in
-      let agent_file = Printf.sprintf "/tmp/.masc_agent_%s" term_session_id in
-      (try
-        Fs_compat.save_file agent_file nickname
-      with
-      | Eio.Cancel.Cancelled _ as e -> raise e
-      | e ->
-        Log.Misc.error "[sid=%s] Failed to write agent file %s: %s" sid agent_file (Stdlib.Printexc.to_string e))
-    end;
+    ctx.record_mcp_session_agent nickname;
+    Log.Misc.debug
+      "[sid=%s] masc_join: recorded nickname=%s for MCP session (original=%s)"
+      sid nickname agent_name;
     let institution_welcome = match state.Mcp_server.fs with
       | Some fs ->
           (try Institution_eio.load_and_format_for_welcome ~fs config
@@ -204,7 +279,7 @@ let handle_join (ctx : context) : tool_result option =
     ] in
     let _pushed = Session.push_notification_to_active_agents registry ~event:join_event in
     Mcp_server.sse_broadcast state join_event;
-    Some (true, final_result)
+    Some (inline_ok ~tool_name ~start_time final_result)
   in
   (* RFC P3-a — fail-closed identity gate.
      Keeper_identity.normalize_all_names validates the agent identity
@@ -232,20 +307,20 @@ let handle_join (ctx : context) : tool_result option =
          detail=%s - join rejected"
         sid agent_name outcome
         (Keeper_identity.show_validation_error err);
+      (* Caller-provided identity / persona / credential files invalid. *)
       Some
-        ( false,
-          Printf.sprintf
-            "masc_join rejected: identity validation failed for '%s' — %s. \
-             Ensure the persona and credential files exist for this agent."
-            agent_name (Keeper_identity.show_validation_error err) )
+        (inline_err_workflow ~tool_name ~start_time
+           (Printf.sprintf
+              "masc_join rejected: identity validation failed for '%s' — %s. \
+               Ensure the persona and credential files exist for this agent."
+              agent_name (Keeper_identity.show_validation_error err)))
 
 (** masc_leave — leave a MASC room *)
-let handle_leave (ctx : context) : tool_result option =
+let handle_leave ~tool_name ~start_time (ctx : context) : Tool_result.result option =
   let config = ctx.config in
   let agent_name = ctx.agent_name in
   let registry = ctx.registry in
   let state = ctx.state in
-  let mcp_session_id = ctx.mcp_session_id in
   let leave_event = `Assoc [
     ("type", `String "masc/agent_left");
     ("agent_name", `String agent_name);
@@ -255,9 +330,4 @@ let handle_leave (ctx : context) : tool_result option =
   Mcp_server.sse_broadcast state leave_event;
   let result = Coord.leave config ~agent_name in
   Session.unregister registry ~agent_name;
-  if Option.is_none mcp_session_id then begin
-    let session_id = Option.value ~default:"default" (Sys.getenv_opt "TERM_SESSION_ID") in
-    let agent_file = Printf.sprintf "/tmp/.masc_agent_%s" session_id in
-    Safe_ops.remove_file_logged ~context:"masc_leave" agent_file
-  end;
-  Some (true, result)
+  Some (inline_ok ~tool_name ~start_time result)

@@ -2,7 +2,7 @@
 
     A "passive loop" is N consecutive turns where the LLM only called
     read-only / status tools ([Passive_status] class in
-    [Keeper_tool_disclosure]) without any execution or completion action.
+    [Keeper_tool_progress]) without any execution or completion action.
     This is the proactive-turn equivalent of the stay-silent loop: the
     keeper is cycling but making no progress on its owned task.
 
@@ -31,12 +31,22 @@ let threshold () =
 let required_tool_no_call_progress_class = "required_tool_no_call"
 let required_tool_unsatisfied_progress_class = "required_tool_unsatisfied"
 
-let progress_class_of_terminal_reason_code = function
-  | "required_tool_use_no_tool_call" ->
+(* RFC-0047 follow-up: take a typed [Keeper_turn_disposition.t] instead
+   of pattern-matching on the wire string. The two relevant arms
+   ([Required_tool_use_no_tool_call] and [Required_tool_use_unsatisfied])
+   are dispositions known at construction time; everything else returns
+   [None] without ever needing to introspect the [code] string. *)
+let progress_class_of_disposition (d : Keeper_turn_disposition.t) =
+  match d with
+  | Required_tool_use_no_tool_call ->
       Some required_tool_no_call_progress_class
-  | "required_tool_use_unsatisfied" ->
+  | Required_tool_use_unsatisfied ->
       Some required_tool_unsatisfied_progress_class
-  | _ -> None
+  | Success | External_cancel | Input_required | Turn_wall_clock_timeout
+  | Post_commit_ambiguous
+  | Cascade_attempts_exhausted
+  | Provider_error _ | Unknown _ ->
+      None
 
 type keeper_state = {
   mutable streak : int;
@@ -69,7 +79,7 @@ let get_or_create keeper_name =
    episode at threshold). *)
 let update_streak_gauge keeper_name value =
   Prometheus.set_gauge
-    Prometheus.metric_keeper_consecutive_idle
+    Keeper_metrics.(to_string ConsecutiveIdle)
     ~labels:[("keeper", keeper_name)]
     (float_of_int value)
 
@@ -78,7 +88,7 @@ let update_streak_gauge keeper_name value =
    alert per keeper. *)
 let update_last_productive_gauge keeper_name ts =
   Prometheus.set_gauge
-    Prometheus.metric_keeper_last_productive_ts
+    Keeper_metrics.(to_string LastProductiveTs)
     ~labels:[("keeper", keeper_name)]
     ts
 
@@ -103,8 +113,8 @@ let threshold_for_progress_class progress_class =
 
 let detect_counter_for_progress_class progress_class =
   if is_required_tool_progress_class progress_class
-  then Prometheus.metric_keeper_required_tool_loop_detected_total
-  else Prometheus.metric_keeper_passive_loop_detected_total
+  then Keeper_metrics.(to_string RequiredToolLoopDetectedTotal)
+  else Keeper_metrics.(to_string PassiveLoopDetectedTotal)
 
 let detect_labels_for_progress_class keeper_name progress_class =
   if is_required_tool_progress_class progress_class
@@ -117,7 +127,7 @@ let emit_detected_loop_metrics keeper_name progress_class =
     ~labels:(detect_labels_for_progress_class keeper_name progress_class)
     ();
   Prometheus.inc_counter
-    Prometheus.metric_keeper_zombie_loop_detected_total
+    Keeper_metrics.(to_string ZombieLoopDetectedTotal)
     ~labels:[("keeper_name", keeper_name)]
     ()
 
@@ -189,9 +199,9 @@ let nudge_message_text ~streak ~progress_class =
     Printf.sprintf
       ("ACTION REQUIRED — REQUIRED TOOL LOOP DETECTED: You have failed %d"
        ^^ " consecutive actionable turns without satisfying the required"
-       ^^ " keeper-tool contract (%s). This turn MUST emit a real keeper"
-       ^^ " tool call that advances the active goal/task, such as"
-       ^^ " keeper_shell, keeper_fs_read, keeper_board_post,"
+       ^^ " keeper-tool contract (%s). This turn MUST emit a real tool call"
+       ^^ " from the active schema that advances the active goal/task, such as"
+       ^^ " Execute/ReadFile/WriteFile when listed, keeper_board_post,"
        ^^ " keeper_board_comment, keeper_task_claim, or keeper_task_done."
        ^^ " If no action is actually possible, call keeper_stay_silent only"
        ^^ " with a typed no-work proof instead of returning plain text or"
@@ -203,8 +213,9 @@ let nudge_message_text ~streak ~progress_class =
        ^^ " consecutive turns using only read-only or status tools without any"
        ^^ " execution or completion action. This violates the keeper turn"
        ^^ " contract. You MUST call an execution or completion tool this turn"
-       ^^ " (e.g. keeper_task_done, keeper_task_claim, keeper_shell,"
-       ^^ " keeper_board_post with a concrete update, or another write tool)."
+       ^^ " (e.g. keeper_task_done, keeper_task_claim, Execute/WriteFile when"
+       ^^ " listed, keeper_board_post with a concrete update, or another"
+       ^^ " write tool)."
        ^^ " Do not call read-only tools again without first taking an action.")
       streak
 
@@ -226,6 +237,47 @@ let reset ~keeper_name =
        slot does not appear "alive but never produced" with the
        previous keeper's timestamp. *)
     update_last_productive_gauge keeper_name 0.0)
+
+(** [record_turn_effect ~keeper_name effect] consumes a typed
+    [Keeper_tool_progress.turn_effect] instead of the lossy string
+    [progress_class].
+
+    - [Streak_increment] → same as [record_turn ~progress_class:"passive_status"].
+    - [Streak_reset] → same as [record_turn ~progress_class:"execution"].
+    - [Streak_reset_and_empty_queue_sleep] → resets the streak (empty queue
+      is NOT a passive loop) and logs the reason for observability.
+
+    @since task-555 *)
+let record_turn_effect ~keeper_name turn_effect =
+  match turn_effect with
+  | Keeper_tool_progress.Streak_increment ->
+      record_turn ~keeper_name ~progress_class:"passive_status"
+  | Keeper_tool_progress.Streak_reset ->
+      record_turn ~keeper_name ~progress_class:"execution"
+  | Keeper_tool_progress.Streak_reset_and_empty_queue_sleep { reason } ->
+      (* Empty queue is a deliberate, correct response — it must NOT
+         increment the passive streak.  Reset exactly like a productive
+         turn, but also log the reason so operators can distinguish
+         "no work available" from "work completed". *)
+      with_lock (fun () ->
+        let s = get_or_create keeper_name in
+        if s.streak > 0 then update_streak_gauge keeper_name 0;
+        s.streak <- 0;
+        s.detected_latched <- false;
+        s.last_progress_class <- Some "empty_queue_sleep";
+        let now = Unix.time () in
+        s.last_productive_ts <- now;
+        update_last_productive_gauge keeper_name now;
+        match reason with
+        | No_eligible_tasks { scope_excluded_count; all_goals_excluded } ->
+            Log.Keeper.info
+              "EMPTY_QUEUE: keeper=%s reason=no_eligible_tasks \
+               scope_excluded=%d all_goals_excluded=%B"
+              keeper_name scope_excluded_count all_goals_excluded
+        | No_work_to_report ->
+            Log.Keeper.info
+              "EMPTY_QUEUE: keeper=%s reason=no_work_to_report"
+              keeper_name)
 
 let reset_all_for_test () =
   with_lock (fun () -> Hashtbl.clear state)

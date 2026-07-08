@@ -3,15 +3,15 @@
 import { html } from 'htm/preact'
 import { signal } from '@preact/signals'
 import { useEffect } from 'preact/hooks'
+import { capitalize } from '../lib/format-string'
 import { get } from '../api/core'
 import { createAsyncResource, type AsyncResource } from '../lib/async-state'
 import { formatTimeAgo } from '../lib/format-time'
 import { AsyncContainer } from './common/async-container'
-import { Card } from './common/card'
+import { SectionCard, SurfaceCard } from './common/card'
 import { FilterChips } from './common/filter-chips'
 import { TextInput } from './common/input'
 import { SectionCap } from './common/section-cap'
-import { InfoCard } from './common/info-card'
 import { StatusChip, type StatusChipTone } from './common/status-chip'
 import { KpiStripIsland, type KpiStripIslandData } from './kpi-strip-island'
 
@@ -105,7 +105,20 @@ export async function refreshFeatureHealth(): Promise<void> {
   await loadFeatureHealth()
 }
 
-export function statusLabel(status: FeatureStatus): string {
+/**
+ * Feature-health-domain status → 한국어 라벨.
+ *
+ * Distinct from `statusLabel` in `lib/status-label.ts` (which handles every
+ * runtime/agent status enum). FeatureStatus is a closed 4-enum
+ * (`'healthy' | 'warning' | 'inactive' | 'deprecated'`) with feature-flag
+ * semantics — 'warning' here means "실험적 (experimental)", not "경고"
+ * which is what lib/status-label maps it to.
+ *
+ * Renamed from `statusLabel` to `featureStatusLabel` on 2026-05-27 to close
+ * the SSOT collision: same function name with incompatible semantics across
+ * two modules was an operator-confusion source.
+ */
+export function featureStatusLabel(status: FeatureStatus): string {
   switch (status) {
     case 'healthy':
       return '정상'
@@ -137,13 +150,13 @@ function statusChipTone(status: FeatureStatus): FeatureHealthTone {
 
 function StatusPill({ status }: { status: FeatureStatus }) {
   return html`
-    <${StatusChip} tone=${statusChipTone(status)}>${statusLabel(status)}<//>
+    <${StatusChip} tone=${statusChipTone(status)}>${featureStatusLabel(status)}<//>
   `
 }
 
 function FeatureItem({ item }: { item: FeatureHealthItem }) {
   return html`
-    <${InfoCard}>
+    <${SurfaceCard} variant="compact">
       <div class="flex items-start justify-between gap-3">
         <div class="flex-1">
           <div class="flex items-center gap-2">
@@ -163,7 +176,7 @@ function FeatureItem({ item }: { item: FeatureHealthItem }) {
 }
 
 function CategorySection({ category, categoryData }: { category: string; categoryData: { total: number; enabled: number; features: FeatureHealthItem[] } }) {
-  const categoryLabel = category.charAt(0).toUpperCase() + category.slice(1)
+  const categoryLabel = capitalize(category)
   const enabledRatio = categoryData.total > 0 ? Math.round((categoryData.enabled / categoryData.total) * 100) : 0
 
   return html`
@@ -193,7 +206,7 @@ export function FeatureHealth() {
 
   return html`
     <div class="space-y-4">
-      <${Card} title="기능 상태" class="section">
+      <${SectionCard} label="기능 상태" class="section">
         <${AsyncContainer}
           state=${featureHealth.state}
           loadingMessage="기능 상태 데이터를 불러오는 중..."
@@ -209,10 +222,11 @@ export function FeatureHealth() {
                       <div class="mt-2 text-2xl font-semibold text-[var(--color-fg-primary)]">
                         ${overview.enabled_count} / ${overview.total_features} 기능 활성화
                       </div>
-                      <div class="mt-2 text-sm leading-airy text-[var(--color-fg-secondary)]">
-                        시스템 기능 플래그 상태를 실시간으로 모니터링합니다.
-                        ${overview.overridden_count ? `${overview.overridden_count}개 플래그가 환경변수로 오버라이드되었습니다.` : ''}
-                      </div>
+                      ${overview.overridden_count ? html`
+                        <div class="mt-2 text-sm leading-airy text-[var(--color-fg-secondary)]">
+                          ${overview.overridden_count}개 플래그가 환경변수로 오버라이드되었습니다.
+                        </div>
+                      ` : null}
                     </div>
                     <button
                       type="button"

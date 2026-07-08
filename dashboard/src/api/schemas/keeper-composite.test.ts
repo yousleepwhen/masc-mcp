@@ -4,11 +4,20 @@ import {
   CompositeSchemaDriftError,
 } from './keeper-composite'
 
+// Minimal snapshot carrying every required key of
+// `KeeperCompositeSnapshotSchema`. Optional keys (keeper, collapsed_from,
+// circuit_breaker, phase_diagnosis, execution, runtime_attention,
+// recommended_actions) are added per-test. Value shapes here mirror what
+// `keeper_composite_observer.ml` `snapshot_to_json` emits: lowercase
+// snake_case phase / turn_phase / decision / cascade / compaction (via
+// `Keeper_state_machine.phase_to_string` etc.). Capitalized variants
+// like `"Stable"` are forward-looking — they appear only in schema-
+// permissiveness tests below, never in real backend payloads today.
 const VALID_SNAPSHOT = {
   correlation_id: 'corr-1',
   run_id: 'run-1',
   ts: 1713398400,
-  phase: 'Stable',
+  phase: 'running',
   turn_phase: 'idle',
   decision: { stage: 'undecided' },
   cascade: { state: 'idle' },
@@ -19,7 +28,9 @@ const VALID_SNAPSHOT = {
     no_cascade_before_measurement: true,
     compaction_atomicity: true,
     event_priority_monotone: true,
+    phase_derivation_agreement: true,
   },
+  fsm_guard_violations: 0,
   is_live: true,
   last_outcome: null,
 }
@@ -27,12 +38,43 @@ const VALID_SNAPSHOT = {
 describe('parseKeeperCompositeSnapshot', () => {
   it('parses a valid snapshot', () => {
     const result = parseKeeperCompositeSnapshot(VALID_SNAPSHOT)
-    expect(result.phase).toBe('Stable')
+    expect(result.phase).toBe('running')
     expect(result.collapsed_from).toBeUndefined()
     expect(result.turn_phase).toBe('idle')
     expect(result.is_live).toBe(true)
     expect(result.last_outcome).toBeNull()
     expect(result.recommended_actions).toEqual([])
+    expect(result.fsm_guard_violations).toBe(0)
+  })
+
+  it('parses a non-zero fsm_guard_violations count', () => {
+    const result = parseKeeperCompositeSnapshot({ ...VALID_SNAPSHOT, fsm_guard_violations: 3 })
+    expect(result.fsm_guard_violations).toBe(3)
+  })
+
+  it('parses fsm guard violation breakdown buckets', () => {
+    const result = parseKeeperCompositeSnapshot({
+      ...VALID_SNAPSHOT,
+      fsm_guard_violations: 3,
+      fsm_guard_violation_breakdown: [
+        { action: 'turn_phase_transition', stage: 'guard', count: 2 },
+        { action: 'completion_contract', stage: 'finalize', count: 1 },
+      ],
+    })
+    expect(result.fsm_guard_violation_breakdown).toEqual([
+      { action: 'turn_phase_transition', stage: 'guard', count: 2 },
+      { action: 'completion_contract', stage: 'finalize', count: 1 },
+    ])
+  })
+
+  it('defaults fsm guard violation breakdown to an empty list for old payloads', () => {
+    const result = parseKeeperCompositeSnapshot(VALID_SNAPSHOT)
+    expect(result.fsm_guard_violation_breakdown).toEqual([])
+  })
+
+  it('throws CompositeSchemaDriftError when fsm_guard_violations is absent', () => {
+    const { fsm_guard_violations: _, ...noViolations } = VALID_SNAPSHOT
+    expect(() => parseKeeperCompositeSnapshot(noViolations)).toThrow(CompositeSchemaDriftError)
   })
 
   it('parses explicit keeper identity when emitted by the backend', () => {
@@ -43,8 +85,27 @@ describe('parseKeeperCompositeSnapshot', () => {
     expect(result.keeper).toBe('analyst')
   })
 
-  it('parses all valid phase values', () => {
-    for (const phase of ['Running', 'Failing', 'Overflowed', 'Compacting', 'HandingOff', 'Draining', 'Stable']) {
+  // Every phase string the backend can emit, per
+  // `Keeper_state_machine.phase_to_string` (13 ctors, lowercase
+  // snake_case). The schema must round-trip each one verbatim.
+  it('round-trips every phase the backend can emit', () => {
+    for (const phase of [
+      'offline', 'running', 'failing', 'overflowed', 'compacting',
+      'handing_off', 'draining', 'paused', 'stopped', 'crashed',
+      'restarting', 'dead', 'zombie',
+    ]) {
+      const result = parseKeeperCompositeSnapshot({ ...VALID_SNAPSHOT, phase })
+      expect(result.phase).toBe(phase)
+    }
+  })
+
+  // Forward-looking: the schema's `phase` is an open string and tolerates
+  // values that the runtime doesn't emit today (capitalized TLA+ projection
+  // names like "Stable"). Keeping this test pins that openness so a future
+  // `z.enum`-tightening doesn't silently break a planned composite-projection
+  // backend rollout.
+  it('schema is open to non-runtime phase values (e.g. TLA projection "Stable")', () => {
+    for (const phase of ['Stable', 'Running', 'Failing']) {
       const result = parseKeeperCompositeSnapshot({ ...VALID_SNAPSHOT, phase })
       expect(result.phase).toBe(phase)
     }
@@ -78,12 +139,12 @@ describe('parseKeeperCompositeSnapshot', () => {
         ended_at: 1713398500,
         decision_stage: 'guard_ok',
         cascade_state: 'done',
-        selected_model: 'claude-sonnet',
+        selected_model: 'agent-llm-a-sonnet',
       },
     })
     expect(result.last_outcome).not.toBeNull()
     expect(result.last_outcome!.turn_id).toBe(5)
-    expect(result.last_outcome!.selected_model).toBe('claude-sonnet')
+    expect(result.last_outcome!.selected_model).toBe('agent-llm-a-sonnet')
   })
 
   it('parses optional execution receipt summary', () => {
@@ -96,9 +157,11 @@ describe('parseKeeperCompositeSnapshot', () => {
         terminal_reason_code: 'config_error',
         operator_disposition: 'pause_human',
         operator_disposition_reason: 'tool_required_unsatisfied',
-        model_used: 'claude_code:auto',
+        model_used: 'cli-tool-d:auto',
         stop_reason: 'max_turns',
         tool_contract_result: 'violated',
+        unexpected_tools: ['keeper_board_list'],
+        unexpected_tool_count: 1,
         duration_ms: 87736,
         error: {
           kind: 'config',
@@ -106,8 +169,8 @@ describe('parseKeeperCompositeSnapshot', () => {
           message_truncated: false,
         },
         cascade: {
-          name: 'big_three',
-          selected_model: 'claude_code:auto',
+          name: 'primary',
+          selected_model: 'cli-tool-d:auto',
           attempt_count: 2,
           fallback_applied: true,
           outcome: 'exhausted',
@@ -117,9 +180,15 @@ describe('parseKeeperCompositeSnapshot', () => {
         },
         tool_surface: {
           tool_requirement: 'required',
+          turn_lane: 'tool_required',
+          tool_surface_class: 'runtime_mcp',
+          visible_tool_count: 2,
           tool_gate_enabled: true,
+          tool_surface_fallback_used: false,
           missing_required_tools: ['keeper_task_claim'],
           required_tools: ['keeper_task_claim'],
+          unexpected_tools: ['keeper_board_list'],
+          unexpected_tool_count: 1,
         },
       },
     })
@@ -127,6 +196,14 @@ describe('parseKeeperCompositeSnapshot', () => {
     expect(result.execution?.latest_receipt_present).toBe(true)
     expect(result.execution?.terminal_reason_code).toBe('config_error')
     expect(result.execution?.cascade?.fallback_reason).toBe('turn_timeout')
+    expect(result.execution?.tool_surface?.turn_lane).toBe('tool_required')
+    expect(result.execution?.tool_surface?.tool_surface_class).toBe('runtime_mcp')
+    expect(result.execution?.tool_surface?.visible_tool_count).toBe(2)
+    expect(result.execution?.tool_surface?.tool_surface_fallback_used).toBe(false)
+    expect(result.execution?.unexpected_tools).toEqual(['keeper_board_list'])
+    expect(result.execution?.unexpected_tool_count).toBe(1)
+    expect(result.execution?.tool_surface?.unexpected_tools).toEqual(['keeper_board_list'])
+    expect(result.execution?.tool_surface?.unexpected_tool_count).toBe(1)
     expect(result.execution?.error?.message_preview).toContain('fallback_cascade')
   })
 
@@ -200,8 +277,13 @@ describe('parseKeeperCompositeSnapshot', () => {
   })
 
   it('parses collapsed_from when Stable hides a raw keeper phase', () => {
+    // `Stable` is the TLA+ composite projection of seven raw keeper phases
+    // (Offline/Paused/Stopped/Crashed/Restarting/Dead/Zombie). The runtime
+    // observer does not emit it today; the schema supports it for a planned
+    // backend that surfaces the collapse with the raw phase in `collapsed_from`.
     const result = parseKeeperCompositeSnapshot({
       ...VALID_SNAPSHOT,
+      phase: 'Stable',
       collapsed_from: 'paused',
     })
     expect(result.phase).toBe('Stable')

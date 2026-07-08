@@ -4,11 +4,11 @@ type tool_call_detail =
   { tool_name : string
   ; provider : string
   ; outcome : string
+  ; typed_outcome : Keeper_tool_outcome.t option
   ; latency_ms : float
+  ; task_id : string option
   ; route_evidence : Yojson.Safe.t option
   }
-
-val tool_call_detail_to_json : tool_call_detail -> Yojson.Safe.t
 
 (** Result of a single Agent.run() keeper turn. *)
 type run_result =
@@ -16,7 +16,7 @@ type run_result =
   ; model_used : string
   ; prompt_metrics : Keeper_agent_prompt_metrics.prompt_metrics
   ; ctx_composition : Keeper_agent_prompt_metrics.ctx_composition_metrics
-  ; cascade_observation : Oas_worker.cascade_observation option
+  ; cascade_observation : Cascade_observation.cascade_observation option
   ; turn_count : int
   ; tool_calls_made : int
   ; usage : Agent_sdk.Types.api_usage
@@ -24,22 +24,26 @@ type run_result =
   ; tools_used : string list
   ; tool_calls : tool_call_detail list
   ; checkpoint : Agent_sdk.Checkpoint.t option
-  ; proof : Agent_sdk.Cdal_proof.t option
+  ; proof : Masc_mcp_cdal_runtime.Cdal_proof.t option
   ; trace_ref : Agent_sdk.Raw_trace.run_ref option
   ; run_validation : Agent_sdk.Raw_trace.run_validation option
-  ; stop_reason : Oas_worker.stop_reason
+  ; stop_reason : Cascade_runner.stop_reason
   ; inference_telemetry : Agent_sdk.Types.inference_telemetry option
   ; tool_surface : Keeper_agent_tool_surface.tool_surface_metrics
+  ; pre_dispatch_compacted : bool
+  ; pre_dispatch_compaction_trigger : string option
+  ; pre_dispatch_compaction_before_tokens : int option
+  ; pre_dispatch_compaction_after_tokens : int option
   }
 
-(** Trim and return [None] if the result is empty. *)
-val nonempty_trimmed : string -> string option
+val tool_call_detail_to_json : tool_call_detail -> Yojson.Safe.t
+(** Serialize a tool call detail to JSON. Reached via the
+    [include Keeper_agent_result] chain in [Keeper_agent_run], where
+    the public surface is exposed under [Keeper_agent_run.mli]. *)
 
-(** Resolve the model name to display in user-facing surfaces.
-    Prefers cascade-observation [model_label] over [model_id], falls
-    back to provider-reported [model_used]. *)
-val surface_model_used : run_result -> string
+val runtime_lane_label : string
+(** Boundary-redacted label used wherever MASC's keeper metrics surface
+    exposes a model identity field. OAS owns concrete provider/model
+    identity; the keeper-side surface collapses to this single label
+    via [Boundary_redaction]. *)
 
-(** Resolve the concrete model id (always prefers [model_id] over any
-    cascade label) for accountability. See #9953. *)
-val surface_resolved_model_id : run_result -> string

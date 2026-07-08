@@ -233,8 +233,8 @@ let test_runtime_status_and_judgments_are_live () =
         (judge |> member "judge_online" |> to_bool);
       check string "judge status is online" "online"
         (judge |> member "status" |> to_string);
-      check string "judge model uses runtime" "llama:qwen3.5"
-        (judge |> member "model_used" |> to_string);
+      check bool "judge model is redacted" true
+        (judge |> member "model_used" = `Null);
       let judgments = json |> member "judgments" |> to_list in
       check int "legacy judgment surfaced" 1 (List.length judgments);
       let first = List.hd judgments in
@@ -396,7 +396,7 @@ let test_parse_governance_response_requires_guardrail_state () =
   match
     Lib.Dashboard_governance_judge.parse_governance_response_for_testing
       ~raw_text:raw ~generated_at:"2026-05-06T00:00:00Z"
-      ~expires_at:"2026-05-06T00:10:00Z" ~model_used:"glm:test"
+      ~expires_at:"2026-05-06T00:10:00Z" ~model_used:"provider_k:test"
   with
   | Error (Lib.Dashboard_governance_judge.Structural_error reason) ->
       check bool "reason names guardrail_state" true
@@ -434,7 +434,7 @@ let test_parse_governance_response_preserves_guardrail_state () =
   match
     Lib.Dashboard_governance_judge.parse_governance_response_for_testing
       ~raw_text:raw ~generated_at:"2026-05-06T00:00:00Z"
-      ~expires_at:"2026-05-06T00:10:00Z" ~model_used:"glm:test"
+      ~expires_at:"2026-05-06T00:10:00Z" ~model_used:"provider_k:test"
   with
   | Error _ -> fail "valid guardrail_state should parse"
   | Ok [ judgment ] ->
@@ -476,7 +476,7 @@ let test_parse_governance_response_requires_guardrail_fields () =
   match
     Lib.Dashboard_governance_judge.parse_governance_response_for_testing
       ~raw_text:raw ~generated_at:"2026-05-06T00:00:00Z"
-      ~expires_at:"2026-05-06T00:10:00Z" ~model_used:"glm:test"
+      ~expires_at:"2026-05-06T00:10:00Z" ~model_used:"provider_k:test"
   with
   | Error (Lib.Dashboard_governance_judge.Structural_error reason) ->
       check bool "reason names missing field" true
@@ -490,7 +490,7 @@ let test_parse_governance_response_requires_items_array () =
   match
     Lib.Dashboard_governance_judge.parse_governance_response_for_testing
       ~raw_text:raw ~generated_at:"2026-05-06T00:00:00Z"
-      ~expires_at:"2026-05-06T00:10:00Z" ~model_used:"glm:test"
+      ~expires_at:"2026-05-06T00:10:00Z" ~model_used:"provider_k:test"
   with
   | Error (Lib.Dashboard_governance_judge.Structural_error reason) ->
       check bool "reason names items array" true
@@ -504,7 +504,7 @@ let test_parse_governance_response_rejects_unparseable_recovered_block () =
   match
     Lib.Dashboard_governance_judge.parse_governance_response_for_testing
       ~raw_text:raw ~generated_at:"2026-05-06T00:00:00Z"
-      ~expires_at:"2026-05-06T00:10:00Z" ~model_used:"glm:test"
+      ~expires_at:"2026-05-06T00:10:00Z" ~model_used:"provider_k:test"
   with
   | Error (Lib.Dashboard_governance_judge.Lenient_fallback recovered) ->
       check bool "fallback keeps recovered fragment" true
@@ -531,7 +531,7 @@ let test_refresh_failure_keeps_fresh_cache_online () =
         st.generated_at_unix <- Some now;
         st.expires_at <- Some expires_at;
         st.expires_at_unix <- Some (now +. 300.0);
-        st.model_used <- Some "glm:test";
+        st.model_used <- Some "provider_k:test";
         st.last_error <- None;
         Lib.Dashboard_governance_judge.mark_refresh_failure
           ~now_ts:now st ~message:"Execution timed out after 60.0s");
@@ -549,7 +549,7 @@ let test_refresh_failure_keeps_fresh_cache_online () =
         status.cached_judgments_visible;
       check (option string) "last_error recorded"
         (Some "Execution timed out after 60.0s") status.last_error;
-      check (option string) "model preserved" (Some "glm:test")
+      check (option string) "model redacted" None
         status.model_used)
 
 let test_refresh_failure_marks_expired_cache_offline () =
@@ -581,6 +581,47 @@ let test_refresh_failure_marks_expired_cache_offline () =
         status.cached_judgments_visible;
       check (option string) "last_error recorded"
         (Some "Execution timed out after 60.0s") status.last_error)
+
+let test_refresh_failure_sets_timeout_backoff () =
+  let dir = test_dir () in
+  Fun.protect
+    ~finally:(fun () -> cleanup_dir dir)
+    (fun () ->
+      Eio_main.run @@ fun env ->
+      with_test_fs env @@ fun () ->
+      let st = Lib.Dashboard_governance_judge.get_state dir in
+      let now = Unix.gettimeofday () in
+      let next_compute_after =
+        Lib.Dashboard_governance_judge.with_lock st (fun () ->
+          Lib.Dashboard_governance_judge.mark_refresh_failure
+            ~now_ts:now st ~message:"Execution timed out after 45.0s";
+          st.next_compute_after_unix)
+      in
+      match next_compute_after with
+      | Some next ->
+          check bool "timeout backoff is in the future" true (next > now);
+          check bool "timeout backoff is capped" true (next <= now +. 300.1)
+      | None -> fail "expected timeout backoff deadline")
+
+let test_refresh_failure_clears_timeout_backoff_for_non_timeout () =
+  let dir = test_dir () in
+  Fun.protect
+    ~finally:(fun () -> cleanup_dir dir)
+    (fun () ->
+      Eio_main.run @@ fun env ->
+      with_test_fs env @@ fun () ->
+      let st = Lib.Dashboard_governance_judge.get_state dir in
+      let now = Unix.gettimeofday () in
+      let next_compute_after =
+        Lib.Dashboard_governance_judge.with_lock st (fun () ->
+          st.next_compute_after_unix <- Some (now +. 60.0);
+          Lib.Dashboard_governance_judge.mark_refresh_failure
+            ~now_ts:now st
+            ~message:"Governance judge returned invalid JSON: malformed";
+          st.next_compute_after_unix)
+      in
+      check (option (float 0.001)) "non-timeout clears timeout backoff" None
+        next_compute_after)
 
 let test_refresh_failure_marks_judge_output_invalid () =
   let dir = test_dir () in
@@ -655,7 +696,7 @@ let test_refresh_once_skips_fresh_cached_result () =
         st.generated_at_unix <- Some now;
         st.expires_at <- Some expires_at;
         st.expires_at_unix <- Some expires_at_unix;
-        st.model_used <- Some "glm:cached";
+        st.model_used <- Some "provider_k:cached";
         st.last_error <- None);
       let build_called = ref false in
       Eio.Switch.run @@ fun sw ->
@@ -663,13 +704,13 @@ let test_refresh_once_skips_fresh_cached_result () =
         ~net:(Eio.Stdenv.net env)
         ~masc_tools:[]
         ~dispatch:(fun ~name ~args:_ ->
-          {
-            Lib.Tool_result.success = false;
-            data = `String "unused";
-            legacy_message = "unused";
-            tool_name = name;
-            duration_ms = 0.0;
-          })
+          Error
+            { Tool_result.class_ = Tool_result.Runtime_failure
+            ; message = "unused"
+            ; data = `String "unused"
+            ; tool_name = name
+            ; duration_ms = 0.0
+            })
         ~base_path:dir
         ~build_facts:(fun () ->
           build_called := true;
@@ -683,6 +724,47 @@ let test_refresh_once_skips_fresh_cached_result () =
       check bool "refreshing cleared" false status.refreshing;
       check string "runtime status is online" "online" status.status;
       check (option string) "last_error stays clear" None status.last_error)
+
+let test_refresh_once_skips_timeout_backoff () =
+  let dir = test_dir () in
+  Fun.protect
+    ~finally:(fun () -> cleanup_dir dir)
+    (fun () ->
+      Eio_main.run @@ fun env ->
+      with_test_fs env @@ fun () ->
+      let st = Lib.Dashboard_governance_judge.get_state dir in
+      let now = Unix.gettimeofday () in
+      Lib.Dashboard_governance_judge.with_lock st (fun () ->
+        st.refreshing <- false;
+        st.judge_online <- false;
+        st.runtime_status <- "offline";
+        st.degraded_reason <- Some "timeout";
+        st.last_error <- Some "Execution timed out after 45.0s";
+        st.next_compute_after_unix <- Some (now +. 3600.0));
+      let build_called = ref false in
+      Eio.Switch.run @@ fun sw ->
+      Lib.Dashboard_governance_judge.refresh_once ~sw
+        ~net:(Eio.Stdenv.net env)
+        ~masc_tools:[]
+        ~dispatch:(fun ~name ~args:_ ->
+          Error
+            { Tool_result.class_ = Tool_result.Runtime_failure
+            ; message = "unused"
+            ; data = `String "unused"
+            ; tool_name = name
+            ; duration_ms = 0.0
+            })
+        ~base_path:dir
+        ~build_facts:(fun () ->
+          build_called := true;
+          `Assoc []);
+      check bool "timeout backoff skips build_facts" false !build_called;
+      let status =
+        Lib.Dashboard_governance_judge.runtime_status_at
+          ~now_ts:(Unix.gettimeofday ()) dir
+      in
+      check (option string) "last timeout remains visible"
+        (Some "Execution timed out after 45.0s") status.last_error)
 
 let test_backoff_runtime_status_is_structured () =
   let dir = test_dir () in
@@ -836,9 +918,10 @@ let test_dashboard_exposes_keeper_approval_queue () =
         let decision =
           Lib.Keeper_approval_queue.submit_and_await
             ~keeper_name:"dashboard-keeper"
-            ~tool_name:"masc_code_delete"
+            ~tool_name:"tool_edit_file"
             ~input:(`Assoc [ ("path", `String "/tmp/danger") ])
             ~risk_level:Lib.Keeper_approval_queue.Critical
+            ~selected_model:"provider_d:gpt-5.4"
             ()
         in
         decision_result := Some decision);
@@ -856,10 +939,12 @@ let test_dashboard_exposes_keeper_approval_queue () =
       let approval = List.hd approval_queue in
       check string "approval keeper name" "dashboard-keeper"
         (approval |> member "keeper_name" |> to_string);
-      check string "approval tool name" "masc_code_delete"
+      check string "approval tool name" "tool_edit_file"
         (approval |> member "tool_name" |> to_string);
       check string "approval risk level" "critical"
         (approval |> member "risk_level" |> to_string);
+      check bool "approval selected model is redacted" true
+        (approval |> member "selected_model" = `Null);
       check string "approval preview"
         {|{"path":"/tmp/danger"}|}
         (approval |> member "input_preview" |> to_string);
@@ -931,8 +1016,13 @@ let test_approval_queue_surfaces_action_key_and_sandbox_target () =
       let id =
         Lib.Keeper_approval_queue.submit_pending
           ~keeper_name:"governance-judge"
-          ~tool_name:"keeper_shell"
-          ~input:(`Assoc [("op", `String "gh"); ("cmd", `String "pr view 123")])
+          ~tool_name:"tool_execute"
+          ~input:
+            (`Assoc
+              [ ("action", `String "pr_view")
+              ; ("executable", `String "gh")
+              ; ("argv", `List [ `String "pr"; `String "view"; `String "123" ])
+              ])
           ~risk_level:Lib.Keeper_approval_queue.Medium
           ~runtime_contract:
             (`Assoc [("backend", `String "docker"); ("sandbox_target", `String "docker")])
@@ -955,7 +1045,7 @@ let test_approval_queue_surfaces_action_key_and_sandbox_target () =
           let approval =
             json |> member "approval_queue" |> to_list |> List.hd
           in
-          check string "action key surfaced" "op:gh"
+          check string "action key surfaced" "action:pr_view"
             (approval |> member "action_key" |> to_string);
           check string "sandbox target surfaced" "docker"
             (approval |> member "sandbox_target" |> to_string)))
@@ -991,12 +1081,18 @@ let () =
             test_refresh_failure_keeps_fresh_cache_online;
           test_case "refresh failure marks expired cache offline" `Quick
             test_refresh_failure_marks_expired_cache_offline;
+          test_case "refresh failure sets timeout backoff" `Quick
+            test_refresh_failure_sets_timeout_backoff;
+          test_case "non-timeout failure clears timeout backoff" `Quick
+            test_refresh_failure_clears_timeout_backoff_for_non_timeout;
           test_case "refresh failure marks judge output invalid" `Quick
             test_refresh_failure_marks_judge_output_invalid;
           test_case "refresh failure marks invalid JSON invalid" `Quick
             test_refresh_failure_marks_invalid_json_as_judge_output_invalid;
           test_case "refresh_once skips fresh cached result" `Quick
             test_refresh_once_skips_fresh_cached_result;
+          test_case "refresh_once skips timeout backoff" `Quick
+            test_refresh_once_skips_timeout_backoff;
           test_case "backoff runtime status is structured" `Quick
             test_backoff_runtime_status_is_structured;
           test_case "monitoring uses live runtime" `Quick

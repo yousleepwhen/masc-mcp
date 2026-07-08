@@ -29,14 +29,55 @@
    (re_export masc_compression)
    (re_export masc_core)
    (re_export masc_eio_context)
+   ; RFC-0107 Phase D.2d — pool unit tests need access to Pool module.
+   (re_export masc_mcp.http_client)
    (re_export masc_log)
    (re_export masc_mcp)
    (re_export masc_mcp.oas_compat)
    (re_export masc_mcp.activity_graph)
+   ;; PR #14267 atomic flip moved Cdal_proof / Proof_store / Risk_class /
+   ;; Execution_mode / Risk_contract from agent_sdk into this sub-library;
+   ;; tests need it re-exported so [Masc_mcp_cdal_runtime.*] resolves.
+   (re_export masc_mcp.cdal_runtime)
+   ;; RFC-0056 Phase 0 — CDAL Phase 1A evaluator extracted to lib/cdal/.
+   ;; Hosts Cdal_types + Adversarial_eval + Labeling. Re-exported so
+   ;; test_cdal_types / test_labeling / test_adversarial_eval and other
+   ;; consumers keep resolving these unprefixed module names.
+   (re_export masc_mcp.cdal)
+   ;; RFC-0056 Phase 1A — Trajectory leaf module sub-library.
+   ;; Tests previously wrote `Masc_mcp.Trajectory.X` (wrapped pattern);
+   ;; after this re-export they use bare `Trajectory.X` per the
+   ;; G5 qualifier-removal budget.
+   (re_export masc_mcp.trajectory)
+   ;; RFC-0056 Phase 1B — Keeper_skill_routing leaf utility sub-library.
+   (re_export masc_mcp.keeper_skill_routing)
+   ;; RFC-0056 Phase 1C — Host_config leaf utility sub-library.
+   (re_export masc_mcp.host_config)
+   ;; RFC-0056 Phase 1D — Briefing_compactors leaf utility sub-library.
+   (re_export masc_mcp.briefing_compactors)
+   ;; RFC-0056 Phase 1E — Dashboard_eval_feed leaf module sub-library.
+   (re_export masc_mcp.dashboard_eval_feed)
+   ;; RFC-0056 Phase 1F — Memory_jsonl leaf module sub-library.
+   (re_export masc_mcp.memory_jsonl)
+   ;; RFC-0056 Phase 1G — Chronicle_event leaf module sub-library.
+   (re_export masc_mcp.chronicle_event)
+   ;; RFC-0056 Phase 1H — Tool_call_quality_benchmark family sub-library.
+   (re_export masc_mcp.tool_call_quality_benchmark)
+   ;; RFC-0056 Phase 1I — Keeper_event_queue leaf module sub-library
+   ;; (first lib/keeper/ promotion).
+   (re_export masc_mcp.keeper_event_queue)
+   ;; RFC-0056 Phase 1J — Keeper_invariant leaf module sub-library
+   ;; (second lib/keeper/ promotion).
+   (re_export masc_mcp.keeper_invariant)
+   ;; RFC-0056 Phase 1K — Compaction_trigger leaf sub-library.
+   (re_export masc_mcp.compaction_trigger)
+   ;; RFC-0058 Phase 1 — Declarative cascade TOML parser sub-library.
+   (re_export masc_mcp.cascade_decl)
    (re_export masc_mcp.ag_ui)
    (re_export masc_mcp.config)
    (re_export masc_mcp.fs_compat)
    (re_export masc_mcp.gate)
+   (re_export masc_mcp.ide)
    (re_export masc_mcp.masc_backend)
    (re_export masc_mcp.masc_compression)
    (re_export masc_mcp.mcp_session)
@@ -48,12 +89,25 @@
    (re_export masc_mcp.resilience)
    (re_export masc_mcp.response)
    (re_export masc_mcp.shared_audit)
-   ;; masc_mcp.swarm_status removed (retire swarm read surfaces, #7572)
-   ;; masc_mcp.team_session_types removed (Epic #6107)
    (re_export masc_mcp.tool_schemas)
+   (re_export masc_mcp.tool_catalog_surfaces)
+   (re_export masc_mcp.config_dir_resolver)
+   ;; RFC-0086 PR-2F — Cascade_ref leaf extracted to lib/cascade_ref/.
+   ;; Re-export so test code using bare `Cascade_ref.X` resolves.
+   (re_export masc_mcp.cascade_ref)
+   ;; RFC-0163 Phase D1 — Cascade_name leaf extracted to lib/cascade_name/.
+   ;; Re-export so test code using bare `Cascade_name.X` resolves.
+   (re_export masc_mcp.cascade_name)   ;; RFC-0086 PR-2H — Tool_args + Tool_result shared types extracted to
+   ;; lib/tool_types/. Re-export so test code using bare
+   ;; `Tool_args.X` / `Tool_result.X` resolves.
+   (re_export masc_mcp.tool_types)
    (re_export masc_mcp.masc_tool_blob_store)
    (re_export masc_process)
    (re_export masc_mcp.masc_exec)
+   ;; Exec shell command gate SSOT. Re-exported so test code can use
+   ;; [Masc_exec_command_gate.Shell_command_gate] directly.
+   (re_export masc_mcp.masc_exec_command_gate)
+   (re_export masc_mcp.masc_exec_bash_parser)
    (re_export masc_coord)
    (re_export masc_types)
    (re_export mirage-crypto)
@@ -62,6 +116,10 @@
    (re_export multimodal)
    (re_export ocaml-protoc-plugin)
    (re_export ocaml-webrtc)
+   ; RFC-0129 — Pool.For_testing.read_body_with_idle tests build a mock
+   ; Piaf.Body via Piaf.Stream.create + Piaf.Body.of_string_stream.
+   (re_export piaf)
+   (re_export piaf.stream)
    (re_export qcheck-alcotest)
    (re_export qcheck-core)
    (re_export re)
@@ -71,5 +129,6 @@
    (re_export unix)
    (re_export uri)
    (re_export uuidm)
+   (re_export otoml)
    (re_export yojson)
    (re_export zstd)))

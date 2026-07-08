@@ -6,7 +6,7 @@ open Server_h2_gateway_helpers
 
 (* Dispatch board, governance, voice, karma, and static asset routes.
    Returns [true] if the route was handled, [false] otherwise. *)
-let dispatch ~h2_reqd ~httpun_request ~cors ~path
+let dispatch ~h2_reqd ~httpun_request ~cors ~path ~config
     (httpun_meth : [ `GET | `POST | `DELETE | `OPTIONS | `PUT | `HEAD
                     | `CONNECT | `TRACE | `Other of string ]) =
   match httpun_meth, path with
@@ -15,8 +15,7 @@ let dispatch ~h2_reqd ~httpun_request ~cors ~path
       let status =
         match status with `OK -> `OK | `Error -> `Internal_server_error
       in
-      h2_respond_json h2_reqd (Yojson.Safe.to_string json) ~status
-        ~extra_headers:cors;
+      h2_respond_json_value h2_reqd json ~status ~extra_headers:cors;
       true
 
   | `GET, "/api/v1/board" ->
@@ -56,13 +55,15 @@ let dispatch ~h2_reqd ~httpun_request ~cors ~path
           ~voter
       in
       let reactions_for = board_reactions_lookup reaction_rows in
+      let contributor_quality_for = board_contributor_quality_lookup ?config () in
       let posts_json = List.map (fun (p : Board.post) ->
         let author = Board.Agent_id.to_string p.author in
         let post_id = Board.Post_id.to_string p.id in
         let current_vote = board_current_vote_for_post ~voter ~post_id in
         let reactions = reactions_for (Board.Reaction_post, post_id) in
+        let contributor_quality = contributor_quality_for author in
         board_post_dashboard_json ~blind_votes ?current_vote ~reactions
-          ~author_karma:(get_karma author) p
+          ?contributor_quality ~author_karma:(get_karma author) p
       ) paged in
       let json = `Assoc [
         ("posts", `List posts_json);
@@ -71,7 +72,7 @@ let dispatch ~h2_reqd ~httpun_request ~cors ~path
         ("offset", `Int offset);
         ("sort_by", `String (board_sort_label sort_by));
       ] in
-      h2_respond_json h2_reqd (Yojson.Safe.to_string json) ~extra_headers:cors;
+      h2_respond_json_value h2_reqd json ~extra_headers:cors;
       true
 
   | `GET, "/api/v1/board/curation" ->
@@ -81,7 +82,7 @@ let dispatch ~h2_reqd ~httpun_request ~cors ~path
         | Some snap ->
             `Assoc [("snapshot", Board_curation.snapshot_to_yojson snap)]
       in
-      h2_respond_json h2_reqd (Yojson.Safe.to_string json) ~extra_headers:cors;
+      h2_respond_json_value h2_reqd json ~extra_headers:cors;
       true
 
   | `GET, "/api/v1/board/hearths" ->
@@ -91,40 +92,25 @@ let dispatch ~h2_reqd ~httpun_request ~cors ~path
           `Assoc [("name", `String name); ("count", `Int count)]
         ) hearths));
       ] in
-      h2_respond_json h2_reqd (Yojson.Safe.to_string json) ~extra_headers:cors;
+      h2_respond_json_value h2_reqd json ~extra_headers:cors;
       true
 
   | `GET, "/api/v1/board/flairs" ->
       let flairs = List.map Board.flair_to_yojson Board.available_flairs in
       let json = `Assoc [("flairs", `List flairs)] in
-      h2_respond_json h2_reqd (Yojson.Safe.to_string json) ~extra_headers:cors;
+      h2_respond_json_value h2_reqd json ~extra_headers:cors;
       true
 
-  | `GET, p
-    when String.starts_with ~prefix:"/api/v1/board/" p
-         && String.length p > 14 ->
-      let post_id = String.sub p 14 (String.length p - 14) in
-      let format = Option.value ~default:"nested" (query_param httpun_request "format") in
-      let voter = board_voter_query httpun_request in
-      let blind_votes =
-        bool_query_param httpun_request "blind_votes" ~default:false
+  | `GET, "/api/v1/board/sub-boards" ->
+      let sub_boards = Board_dispatch.list_sub_boards () in
+      let json =
+        `Assoc
+          [
+            ( "sub_boards",
+              `List (List.map Board.sub_board_to_yojson sub_boards) );
+          ]
       in
-      let (status, body) =
-        board_post_detail_json ~include_moderation:false ~blind_votes ~voter
-          ~response_format:format ~post_id
-      in
-      h2_respond_json h2_reqd body ~status ~extra_headers:cors;
-      true
-
-  | `GET, "/api/v1/karma" ->
-      let karma_list = Board_dispatch.get_all_karma () in
-      let sorted = List.sort (fun (_, a) (_, b) -> compare b a) karma_list in
-      let json = `Assoc [
-        ("karma", `List (List.map (fun (agent, k) ->
-          `Assoc [("agent", `String agent); ("karma", `Int k)]
-        ) sorted));
-      ] in
-      h2_respond_json h2_reqd (Yojson.Safe.to_string json) ~extra_headers:cors;
+      h2_respond_json_value h2_reqd json ~extra_headers:cors;
       true
 
   | `GET, "/api/v1/board/karma/ledger" ->
@@ -138,20 +124,54 @@ let dispatch ~h2_reqd ~httpun_request ~cors ~path
         |> clamp ~min_v:1 ~max_v:5000
       in
       let events = Board_dispatch.get_karma_ledger ?agent ~limit () in
-      let totals = Board_dispatch.get_all_karma () |> List.sort (fun (_, a) (_, b) -> compare b a) in
-      let json =
-        `Assoc [
-          ("events",
-           `List (List.map Board.karma_event_to_yojson events));
-          ("count", `Int (List.length events));
-          ("scoring_rule", `String "up=+1,down=0");
-          ("totals",
-           `List (List.map (fun (agent_name, k) ->
-               `Assoc [("agent", `String agent_name); ("karma", `Int k)])
-             totals));
-        ]
+      let totals =
+        Board_dispatch.get_all_karma ()
+        |> List.sort (fun (_, a) (_, b) -> compare b a)
       in
-      h2_respond_json h2_reqd (Yojson.Safe.to_string json) ~extra_headers:cors;
+      let json =
+        `Assoc
+          [
+            ("events", `List (List.map Board.karma_event_to_yojson events));
+            ("count", `Int (List.length events));
+            ("scoring_rule", `String "up=+1,down=0");
+            ( "totals",
+              `List
+                (List.map
+                   (fun (agent_name, k) ->
+                     `Assoc
+                       [ ("agent", `String agent_name); ("karma", `Int k) ])
+                   totals) );
+          ]
+      in
+      h2_respond_json_value h2_reqd json ~extra_headers:cors;
+      true
+
+  | `GET, p
+    when String.starts_with ~prefix:"/api/v1/board/" p
+         && String.length p > 14 ->
+      let post_id = String.sub p 14 (String.length p - 14) in
+      let format = Option.value ~default:"nested" (query_param httpun_request "format") in
+      let voter = board_voter_query httpun_request in
+      let blind_votes =
+        bool_query_param httpun_request "blind_votes" ~default:false
+      in
+      let (status, body) =
+        board_post_detail_json ~include_moderation:false ~blind_votes ~voter
+          ~config
+          ~response_format:format ~post_id
+      in
+      h2_respond_json h2_reqd body ~status ~extra_headers:cors;
+      true
+
+  | `GET, "/api/v1/karma" ->
+      let karma_list = Board_dispatch.get_all_karma () in
+      let sorted = List.sort (fun (_, a) (_, b) -> compare b a) karma_list in
+      let json = `Assoc [
+        ("karma", `List (List.map (fun (agent, k) ->
+          `Assoc [("agent", `String agent); ("karma", `Int k)]
+        ) sorted));
+      ] in
+      h2_respond_json_value h2_reqd json ~extra_headers:cors;
       true
 
   | `GET, "/static/css/middleware.css" ->
@@ -200,20 +220,14 @@ let dispatch ~h2_reqd ~httpun_request ~cors ~path
                || Filename.check_suffix filename ".css"
                || Filename.check_suffix filename ".svg"
              in
-             let accepts_zstd =
-               Http_server_eio.Compression.accepts_zstd httpun_request
-             in
              let final_body, encoding_headers =
-               if is_compressible && accepts_zstd then
-                 let (compressed, did_compress) =
-                   Http_server_eio.Compression.compress_zstd ~level:3 body
-                 in
-                 if did_compress then
-                   (compressed, [("content-encoding", "zstd"); ("vary", "Accept-Encoding")])
-                 else
-                   (body, [])
-               else
-                 (body, [])
+               Http_response_payload.compress_body
+                 ~compress:is_compressible
+                 ~accept_encoding:
+                   (Httpun.Headers.get
+                      httpun_request.Httpun.Request.headers
+                      "accept-encoding")
+                 body
              in
              let base_headers = [
                ("content-type", ct);

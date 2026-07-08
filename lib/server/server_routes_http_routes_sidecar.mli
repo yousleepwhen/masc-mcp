@@ -24,7 +24,6 @@ val parse_name : Httpun.Request.t -> (string, string) result
 
 (** {1 String helpers} *)
 
-val starts_with : prefix:string -> string -> bool
 val trim_opt : string option -> string option
 
 (** {1 Base-path / project root resolution} *)
@@ -38,9 +37,6 @@ val request_base_path : Mcp_server.server_state -> string
 
 val dir_exists : string -> bool
 (** [Sys.file_exists]+[is_directory] guarded against EACCES. *)
-
-val dedupe_keep_order : 'a list -> 'a list
-(** Keep first occurrence of each value. *)
 
 val project_root_from_executable : unit -> string option
 (** Resolve the masc-mcp project root from [Sys.executable_name];
@@ -140,9 +136,15 @@ val runtime_sidecar_script_result :
 (** Locate the sidecar directory and start script for runtime
     operations; [Error msg] when missing, with a path enumeration. *)
 
-val sidecar_start_shell_command : base_path:string -> script:string -> string
-(** Render the shell command used by the start route to launch
-    [script] under [base_path]. *)
+type sidecar_start_plan = {
+  argv : string list;
+  env : string array;
+}
+(** argv/env bundle used by the start route to launch [script] under
+    [base_path] without shell interpolation. *)
+
+val sidecar_start_plan : base_path:string -> script:string -> sidecar_start_plan
+val start_sidecar_process : base_path:string -> script:string -> (unit, string) result
 
 (** {1 Declarative state machine} *)
 
@@ -236,10 +238,10 @@ val reconcile_desired_once :
   ?write_attempt:(attempt_record -> (unit, 'a) result) ->
   current_generation:int ->
   observed_state:observed_state ->
-  start_shell:(unit -> 'b) -> desired_record -> reconcile_result
+  start_process:(unit -> 'b) -> desired_record -> reconcile_result
 (** Single reconciliation tick: compares [desired_record] vs
     [observed_state], honours backoff, and either invokes
-    [start_shell] or returns a [Reconcile_noop] reason. *)
+    [start_process] or returns a [Reconcile_noop] reason. *)
 
 val reconcile_preview :
   ?now:string ->
@@ -334,6 +336,6 @@ val handle_start :
   Httpun.Request.t -> Httpun.Reqd.t -> unit
 
 val add_routes :
-  sw:'a -> clock:'b -> Http.Router.route list -> Http.Router.route list
+  sw:'a -> clock:'b -> Http.Router.t -> Http.Router.t
 (** Compose every sidecar route on top of [routes].  Called from the
     HTTP routing assembly. *)

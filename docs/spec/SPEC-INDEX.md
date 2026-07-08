@@ -1,6 +1,6 @@
 ---
 status: reference
-last_verified: 2026-04-23
+last_verified: 2026-05-17
 code_refs:
   - docs/spec/
   - dune-project
@@ -10,16 +10,16 @@ code_refs:
 
 > Supersedes: `docs/SPEC.md`, `docs/MERGED-ARCHITECTURE-SSOT.md`
 > Status: Living draft
-> Last Updated: 2026-05-06
-> Snapshot baseline: `dune-project` version `0.19.11`
+> Last Updated: 2026-05-24
+> Snapshot baseline: `dune-project` version `0.19.31`
 
-MASC (Multi-Agent Streaming Coordination)는 OCaml 5.x / Eio 기반 MCP 서버로, 여러 AI 에이전트(Claude, Gemini, Codex, 로컬 LLM 등)가 동일 코드베이스에서 동시에 작업할 때 발생하는 조율 문제를 해결한다. Room 기반 세션 관리, Task 할당, Heartbeat 모니터링, Keeper 자율 에이전트, dashboard/operator read visibility를 제공하며, MCP JSON-RPC 프로토콜을 통해 주요 AI IDE/CLI와 통합된다. Historical compatibility lane과 internal orchestration reference는 migration context로만 남긴다.
+MASC (Multi-Agent Streaming Coordination)는 OCaml 5.x / Eio 기반 MCP 서버로, 여러 AI 에이전트(Agent-LLM-A, Provider-F, Agent-Code, 로컬 LLM 등)가 동일 코드베이스에서 동시에 작업할 때 발생하는 조율 문제를 해결한다. Room 기반 세션 관리, Task 할당, Heartbeat 모니터링, Keeper 자율 에이전트, dashboard/operator read visibility를 제공하며, MCP JSON-RPC 프로토콜을 통해 주요 AI IDE/CLI와 통합된다. Retired orchestration surfaces and internal references remain only as migration context.
 
 ## Snapshot Metadata
 
 | 항목 | 값 |
 |------|-----|
-| Release baseline | 0.19.11 |
+| Release baseline | 0.19.31 |
 | Language | OCaml 5.x (Eio-native, effect-based concurrency) |
 | LOC (lib, `.ml` + `.mli`) | ~248K |
 | LOC (test, `.ml` + `.mli`) | ~155K |
@@ -27,7 +27,7 @@ MASC (Multi-Agent Streaming Coordination)는 OCaml 5.x / Eio 기반 MCP 서버�
 | `.mli` interfaces under `lib/` | 401 |
 | MCP tool modules (`tool_*.ml`) | 109 |
 | Test files (`test/*.ml`) | 449 |
-| Executables | 7 public (`masc-mcp`, `masc-mcp-stdio`, `masc-cost`, `masc-compaction-audit`, `masc-tui`, `cdal-label`, `masc-worker-run`) + 3 internal (`public_tool_manifest`, `cascade_materialize`, `trace_to_tla`) |
+| Executables | 9 public (`masc-mcp`, `masc-mcp-stdio`, `masc-cost`, `masc-compaction-audit`, `masc-keeper-feature-proof`, `masc-trace`, `masc-tui`, `cdal-label`, `masc-worker-run`) + 6 internal (`public_tool_manifest`, `env_knob_catalog`, `trace_to_tla`, `poc_shell_ir_gen`, `gen_shell_ir_walkers`, `gen_tool_descriptors`) |
 
 숫자는 2026-04-23 repo snapshot 기준. `rg --files lib/ test/ bin/` 및 `wc -l`로 재계산. 최신 truth는 다시 계산 권장.
 
@@ -35,7 +35,7 @@ MASC (Multi-Agent Streaming Coordination)는 OCaml 5.x / Eio 기반 MCP 서버�
 
 ```mermaid
 graph TB
-    L6["Layer 6: Integration<br/>OAS bridge, autoresearch, research loop"]
+    L6["Layer 6: Integration<br/>OAS bridge, research loop"]
     L5["Layer 5: Surface<br/>dashboard, operator, TUI, web"]
     L4["Layer 4: Protocol<br/>MCP server, HTTP transport, gRPC, SSE"]
     L3["Layer 3: Engine<br/>chain, keeper, swarm"]

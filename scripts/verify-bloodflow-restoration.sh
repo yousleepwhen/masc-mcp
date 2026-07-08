@@ -38,9 +38,18 @@
 # missing) are checked explicitly below.
 set -o pipefail
 
-LOG_DIR="${MASC_LOG_DIR:-$HOME/.masc/logs}"
 SINCE=""
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+default_base_path() {
+  if [ -n "${MASC_BASE_PATH:-}" ]; then
+    printf '%s\n' "$MASC_BASE_PATH"
+  else
+    printf '%s\n' "$ROOT"
+  fi
+}
+
+LOG_DIR="${MASC_LOG_DIR:-$(default_base_path)/.masc/logs}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -175,9 +184,9 @@ echo "   legacy is_prefix \"api\" files:         $api_prefix (target 0)"
 
 # ----- Composite KPI: mutation_to_passive_ratio --------------------------
 echo
-mutating=$(count_pattern_in '"tool":"keeper_bash"' "${kp_logs[@]}")
-mutating=$(( mutating + $(count_pattern_in '"tool":"keeper_shell"'   "${kp_logs[@]}") ))
-mutating=$(( mutating + $(count_pattern_in '"tool":"keeper_fs_edit"' "${kp_logs[@]}") ))
+mutating=$(count_pattern_in '"tool":"tool_execute"' "${kp_logs[@]}")
+mutating=$(( mutating + $(count_pattern_in '"tool":"tool_search_files"'   "${kp_logs[@]}") ))
+mutating=$(( mutating + $(count_pattern_in '"tool":"tool_edit_file"' "${kp_logs[@]}") ))
 mutating=$(( mutating + $(count_pattern_in '"tool":"keeper_git"'     "${kp_logs[@]}") ))
 
 passive=$(count_pattern_in '"tool":"masc_status"'       "${kp_logs[@]}")

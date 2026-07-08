@@ -5,9 +5,14 @@ module Types = Masc_domain
 module Tool_spec = Masc_mcp.Tool_spec
 module Tool_dispatch = Masc_mcp.Tool_dispatch
 module Tool_catalog = Masc_mcp.Tool_catalog
+module Tool_capability = Masc_mcp.Tool_capability
 
 (** Helper: minimal input_schema for test tools. *)
 let empty_schema = `Assoc [ ("type", `String "object") ]
+
+let tool_ok ?(tool_name = "") message =
+  Tool_result.make_ok ~tool_name ~start_time:0.0 ~data:(`String message) ()
+;;
 
 let () =
   let open Alcotest in
@@ -29,6 +34,8 @@ let () =
             check string "description" "test required only" spec.description;
             check bool "is_read_only default" false spec.is_read_only;
             check bool "requires_join default" false spec.requires_join;
+            check bool "mcp_context_required default" false
+              spec.mcp_context_required;
             check bool "is_destructive default" false spec.is_destructive;
             check bool "is_idempotent default" false spec.is_idempotent;
             check bool "allow_direct_call default" false spec.allow_direct_call_when_hidden;
@@ -102,7 +109,7 @@ let () =
             Tool_spec.register spec;
             check bool "schema registered" true
               (Option.is_some (Tool_dispatch.lookup_schema "__test_spec_schema_reg")));
-          test_case "register sets read_only" `Quick (fun () ->
+          test_case "register sets read_only metadata" `Quick (fun () ->
             let spec =
               Tool_spec.create
                 ~name:"__test_spec_ro"
@@ -115,8 +122,8 @@ let () =
             in
             Tool_spec.register spec;
             check bool "is_read_only" true
-              (Tool_dispatch.is_read_only "__test_spec_ro"));
-          test_case "register non-read_only stays out of set" `Quick (fun () ->
+              (Tool_capability.has Tool_capability.Read_only "__test_spec_ro"));
+          test_case "register non-read_only stays mutable" `Quick (fun () ->
             let spec =
               Tool_spec.create
                 ~name:"__test_spec_rw"
@@ -128,8 +135,8 @@ let () =
             in
             Tool_spec.register spec;
             check bool "not read_only" false
-              (Tool_dispatch.is_read_only "__test_spec_rw"));
-          test_case "register sets requires_join" `Quick (fun () ->
+              (Tool_capability.has Tool_capability.Read_only "__test_spec_rw"));
+          test_case "register sets requires_join metadata" `Quick (fun () ->
             let spec =
               Tool_spec.create
                 ~name:"__test_spec_join"
@@ -142,10 +149,29 @@ let () =
             in
             Tool_spec.register spec;
             check bool "is_join_required" true
-              (Tool_dispatch.is_join_required "__test_spec_join");
+              (Tool_capability.has Tool_capability.Requires_join "__test_spec_join");
             let meta = Tool_catalog.metadata "__test_spec_join" in
+            check bool "catalog requires_join" true
+              (meta.requires_join = Some true);
             check bool "requires_join implies actor binding" true
               (meta.requires_actor_binding = Some true));
+          test_case "register sets mcp context required" `Quick (fun () ->
+            let spec =
+              Tool_spec.create
+                ~name:"__test_spec_mcp_context"
+                ~description:"mcp context test"
+                ~module_tag:Tool_dispatch.Mod_misc
+                ~input_schema:empty_schema
+                ~handler_binding:Tag_dispatch
+                ~mcp_context_required:true
+                ()
+            in
+            Tool_spec.register spec;
+            check bool "is_mcp_context_required" true
+              (Tool_capability.has Tool_capability.Mcp_context_required "__test_spec_mcp_context");
+            let meta = Tool_catalog.metadata "__test_spec_mcp_context" in
+            check bool "catalog mcp_context_required" true
+              (meta.mcp_context_required = Some true));
           test_case "register sets catalog metadata" `Quick (fun () ->
             let spec =
               Tool_spec.create
@@ -156,7 +182,7 @@ let () =
                 ~handler_binding:Tag_dispatch
                 ~is_destructive:true
                 ~required_permission:Masc_domain.CanAdmin
-                ~effect_domain:Tool_catalog.Main_worktree_write
+                ~effect_domain:Tool_catalog.Host_repo_write
                 ~requires_actor_binding:true
                 ~visibility:Tool_catalog.Hidden
                 ~reason:"test hidden"
@@ -168,7 +194,7 @@ let () =
             check bool "required_permission" true
               (meta.required_permission = Some Masc_domain.CanAdmin);
             check bool "effect_domain" true
-              (meta.effect_domain = Some Tool_catalog.Main_worktree_write);
+              (meta.effect_domain = Some Tool_catalog.Host_repo_write);
             check bool "requires_actor_binding" true
               (meta.requires_actor_binding = Some true);
             check bool "hidden" true (meta.visibility = Tool_catalog.Hidden);
@@ -258,14 +284,11 @@ let () =
               check_group "keeper_library_read" "knowledge";
               check_group "keeper_task_claim" "tasks";
               check_group "keeper_voice_speak" "voice";
-              check_group "keeper_fs_read" "filesystem";
-              check_group "keeper_bash" "filesystem";
+              check_group "tool_read_file" "filesystem";
+              check_group "tool_execute" "filesystem";
               check_group "masc_board_post" "masc_board";
               check_group "masc_keeper_status" "masc_keeper";
               check_group "masc_plan_get" "masc_plan";
-              check_group "masc_worktree_list" "masc_worktree";
-              check_group "masc_code_write" "masc_code";
-              check_group "masc_autoresearch_status" "masc_autoresearch";
               check_group "masc_agents" "masc_agent";
               check_group "masc_status" "masc_core";
               check (option string) "unknown" None
@@ -295,20 +318,6 @@ let () =
             let missing = Tool_spec.verify_handler_coverage () in
             check bool "Tag_dispatch not in missing" false
               (List.mem "__test_spec_tag_dispatch" missing));
-          test_case "Match_chain binding not in verify missing" `Quick (fun () ->
-            let spec =
-              Tool_spec.create
-                ~name:"__test_spec_match_chain"
-                ~description:"match chain test"
-                ~module_tag:Tool_dispatch.Mod_misc
-                ~input_schema:empty_schema
-                ~handler_binding:Match_chain
-                ()
-            in
-            Tool_spec.register spec;
-            let missing = Tool_spec.verify_handler_coverage () in
-            check bool "Match_chain not in missing" false
-              (List.mem "__test_spec_match_chain" missing));
           test_case "Direct binding registers handler" `Quick (fun () ->
             let name = "__test_spec_direct_handler" in
             let spec =
@@ -317,7 +326,7 @@ let () =
                 ~description:"direct handler test"
                 ~module_tag:Tool_dispatch.Mod_misc
                 ~input_schema:empty_schema
-                ~handler_binding:(Direct (fun ~name:_ ~args:_ -> Some (true, "ok")))
+                ~handler_binding:(Direct (fun ~name:_ ~args:_ -> Some (tool_ok "ok")))
                 ()
             in
             Tool_spec.register spec;

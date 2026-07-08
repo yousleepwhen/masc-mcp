@@ -5,6 +5,11 @@
 import { html } from 'htm/preact'
 import { useEffect, useState } from 'preact/hooks'
 import { formatPct1 } from '../lib/format-number'
+import {
+  compactToken,
+  deriveKeeperRuntimeProjection,
+  type KeeperRuntimeProjectionRuntimeInput,
+} from '../lib/keeper-runtime-projection'
 import { ActionButton } from './common/button'
 import { CollapsibleSection } from './common/collapsible'
 import { DistributionBars, type DistributionItem } from './common/distribution-bars'
@@ -13,9 +18,21 @@ import { TimeAgo } from './common/time-ago'
 import { SectionHeader } from './common/section-header'
 import { StatusChip, type StatusChipTone } from './common/status-chip'
 import { toolCategory } from './tool-call-shared'
+import { formatIndependentCounters, formatRatioPair } from './counter-format'
 import type { Keeper } from '../types'
-import { serverStatus } from '../store'
+import type {
+  KeeperCompositeSnapshot,
+  KeeperRuntimeLensClockEdge,
+  KeeperRuntimeLensClockGroup,
+  KeeperRuntimeLensLane,
+  KeeperRuntimeLensPayloadRoleAxis,
+  KeeperRuntimeLensSourceClockAxis,
+  KeeperRuntimeLensToolLineageAxis,
+  KeeperRuntimeTraceResponse,
+} from '../api/keeper'
+import { serverStatus, shellRuntimeResolution } from '../store'
 import { operatorSnapshot } from '../operator-store'
+import type { KeeperDetailEvidenceState } from './keeper-detail-hooks'
 import {
   allowlistEmptyState,
   auditMetadataState,
@@ -54,11 +71,241 @@ export function resolveKeeperCurrentTaskLabel(
 
 // ── Shared row component ─────────────────────────────────
 
-function SignalRow({ label, value }: { label: string; value: string | number }) {
+function SignalRow({ label, value, title }: { label: string; value: string | number; title?: string }) {
+  const valueText = String(value)
   return html`
-    <div class="flex items-center justify-between py-2 px-3 rounded-[var(--r-1)] bg-[var(--color-bg-surface)]">
-      <span class="text-xs text-[var(--color-fg-muted)]">${label}</span>
-      <span class="text-xs font-medium text-[var(--color-fg-secondary)]">${value}</span>
+    <div class="flex items-center justify-between gap-3 py-2 px-3 rounded-[var(--r-1)] bg-[var(--color-bg-surface)] min-w-0">
+      <span class="text-xs text-[var(--color-fg-muted)] shrink-0">${label}</span>
+      <span class="text-xs font-medium text-[var(--color-fg-secondary)] text-right truncate min-w-0" title=${title ?? valueText}>${valueText}</span>
+    </div>
+  `
+}
+
+type KeeperLiveTruthRuntimeInput = KeeperRuntimeProjectionRuntimeInput
+
+export interface KeeperLiveTruthRow {
+  label: string
+  value: string
+  detail: string
+  tone: StatusChipTone
+}
+
+export interface KeeperLiveTruthSummary {
+  headline: string
+  tone: StatusChipTone
+  rows: KeeperLiveTruthRow[]
+  runtimeWarnings: string[]
+  runtimeBuildLabel: string | null
+  runtimeRepoLabel: string | null
+}
+
+export function deriveKeeperLiveTruth({
+  keeper,
+  compositeSnapshot,
+  runtimeTrace,
+  runtimeResolution,
+}: {
+  keeper: Keeper
+  compositeSnapshot: KeeperCompositeSnapshot | null
+  runtimeTrace: KeeperRuntimeTraceResponse | null
+  runtimeResolution?: KeeperLiveTruthRuntimeInput | null
+}): KeeperLiveTruthSummary {
+  const projection = deriveKeeperRuntimeProjection({
+    keeper,
+    composite: compositeSnapshot,
+    runtimeTrace,
+    runtimeResolution,
+    linkedState: linkedRuntimeState(keeper),
+  })
+
+  const opState = projection.opState
+  const fiberAlive = projection.fiberAlive.alive
+  const stuckByBlockerClass = opState.kind === 'stuck'
+  const staleBlocker = opState.kind === 'running' ? opState.staleBlocker : null
+  const attention = opState.attention
+  const blocked = projection.blocked
+  const traceEvidence = projection.traceEvidence
+  // guardCount / invariantFailed have moved to FsmHub mode='detail' — they
+  // are rendered on the dedicated FSM lane strip directly under this panel
+  // and no longer need to be projected as a row here.
+  // The dedicated `동기화` row is the coupled projection: heartbeat/context/
+  // social/fiber/stop/trace/tool/FSM lanes move as one derived object while
+  // FsmHub still renders raw lanes below this panel.
+  const fiberLabel = fiberAlive ? 'fiber alive' : 'fiber not proven'
+  const liveTurnLabel = projection.activeTurn ? `${projection.turnPhase} live` : 'no live turn'
+  return {
+    headline: projection.headline,
+    tone: projection.tone,
+    runtimeWarnings: projection.runtimeWarnings,
+    runtimeBuildLabel: projection.runtimeBuildLabel,
+    runtimeRepoLabel: projection.runtimeRepoLabel,
+    rows: [
+      {
+        label: '동기화',
+        value: projection.synchronizationLabel,
+        detail: projection.synchronizationDetail,
+        tone: projection.tone,
+      },
+      {
+        label: '런타임',
+        value: fiberLabel,
+        detail: `roster ${keeper.status} · linked ${projection.linkedState} · ${projection.fiberAlive.source}`,
+        tone: fiberAlive ? 'ok' : 'warn',
+      },
+      {
+        label: '현재 턴',
+        value: liveTurnLabel,
+        detail: `${compositeSnapshot ? (compositeSnapshot.is_live === true ? 'is_live=true' : 'is_live=false') : 'is_live=unknown'} · ${projection.turnPhase} · ${projection.idleLabel}`,
+        tone: projection.activeTurn ? 'ok' : 'neutral',
+      },
+      {
+        label: '최신 증거',
+        value: traceEvidence.value,
+        detail: traceEvidence.detail,
+        tone: traceEvidence.tone,
+      },
+      {
+        label: '차단',
+        // RFC-0135 PR-5: typed reason takes precedence so the row text
+        // matches the roster card ("synthetic_stall" vs bare "blocked").
+        // When the receipt is from a prior turn (`staleBlocker` set),
+        // the row stays at 'none' (current execution is not blocked)
+        // and the prior-turn class is shown in the detail line below.
+        // This preserves the pre-RFC "차단 = none means clean now"
+        // operator mental model.
+        value: stuckByBlockerClass
+          ? opState.reason
+          : attention !== 'clean'
+            ? compactToken(compositeSnapshot?.runtime_attention?.state, 'blocked')
+            : 'none',
+        detail: staleBlocker !== null
+          ? `${projection.runtimeReason} · ${projection.toolContract} · 이전 차단: ${staleBlocker}`
+          : `${projection.runtimeReason} · ${projection.toolContract}`,
+        tone: blocked ? 'warn' : 'ok',
+      },
+    ],
+  }
+}
+
+type EvidenceStampVisual = {
+  tone: StatusChipTone
+  label: string
+  timestamp: number | null
+  errorMessage: string | null
+}
+
+/** Project the typed evidence union onto the stamp display fields.
+ *  Exhaustive `switch` — TypeScript's `noFallthroughCasesInSwitch` plus
+ *  the absence of `default:` make a new union arm a compile error. */
+function projectEvidenceStamp(state: KeeperDetailEvidenceState<unknown>): EvidenceStampVisual {
+  switch (state.kind) {
+    case 'fresh':
+      return { tone: 'ok', label: 'fresh', timestamp: state.fetchedAt, errorMessage: null }
+    case 'stale':
+      // Stale = previously fresh, current fetch failed. Surface the
+      // age via timestamp AND the failure message — the operator must
+      // see both, not just the cached data underneath.
+      return { tone: 'warn', label: 'stale', timestamp: state.fetchedAt, errorMessage: state.error }
+    case 'error':
+      return { tone: 'warn', label: 'error', timestamp: null, errorMessage: state.error }
+    case 'loading':
+      return { tone: 'neutral', label: 'loading', timestamp: null, errorMessage: null }
+  }
+}
+
+function EvidenceStamp({
+  label,
+  evidence,
+}: {
+  label: string
+  evidence: KeeperDetailEvidenceState<unknown>
+}) {
+  const visual = projectEvidenceStamp(evidence)
+  return html`
+    <span class="inline-flex min-w-0 items-center gap-1.5 text-3xs text-[var(--color-fg-muted)]">
+      <${StatusChip} tone=${visual.tone} uppercase=${false}>${label}<//>
+      ${visual.timestamp !== null
+        ? html`<${TimeAgo} timestamp=${visual.timestamp} />`
+        : html`<span>${visual.label}</span>`}
+      ${visual.errorMessage !== null
+        ? html`<span class="truncate text-[var(--color-status-warn)]">${visual.errorMessage}</span>`
+        : null}
+    </span>
+  `
+}
+
+export function KeeperLiveTruthPanel({
+  keeper,
+  compositeSnapshot,
+  runtimeTrace,
+  compositeEvidence,
+  runtimeTraceEvidence,
+}: {
+  keeper: Keeper
+  compositeSnapshot: KeeperCompositeSnapshot | null
+  runtimeTrace: KeeperRuntimeTraceResponse | null
+  compositeEvidence: KeeperDetailEvidenceState<KeeperCompositeSnapshot>
+  runtimeTraceEvidence: KeeperDetailEvidenceState<KeeperRuntimeTraceResponse>
+}) {
+  const runtimeResolution = shellRuntimeResolution.value
+  const summary = deriveKeeperLiveTruth({
+    keeper,
+    compositeSnapshot,
+    runtimeTrace,
+    runtimeResolution,
+  })
+  // RFC-0046 §4.3 partial closure: the four inline detail badges that used
+  // to live next to the headline (`phase X · turn Y · fiber ... · live ...`)
+  // were a string-concat-then-split-back projection of the same fields the
+  // row grid below already shows. Dropped — single representation per axis.
+  const firstWarning = summary.runtimeWarnings[0] ?? null
+  const extraWarningCount = Math.max(0, summary.runtimeWarnings.length - 1)
+
+  return html`
+    <div
+      class="w-full max-w-[calc(100vw-3rem)] rounded-[var(--r-5)] border border-[var(--color-border-default)] bg-[var(--color-bg-panel-alt)] p-4 lg:max-w-none"
+      data-testid="keeper-live-truth"
+    >
+      <div class="flex flex-wrap items-start justify-between gap-3">
+        <div class="min-w-0">
+          <div class="text-3xs font-semibold uppercase tracking-[var(--track-caps)] text-[var(--color-fg-muted)]">Live truth</div>
+          <div class="mt-1 flex flex-wrap items-center gap-2">
+            <${StatusChip} tone=${summary.tone} uppercase=${false}>${summary.headline}<//>
+          </div>
+        </div>
+        <div class="flex min-w-0 flex-wrap justify-start gap-2 sm:justify-end">
+          <${EvidenceStamp} label="composite" evidence=${compositeEvidence} />
+          <${EvidenceStamp} label="trace" evidence=${runtimeTraceEvidence} />
+        </div>
+      </div>
+
+      ${firstWarning ? html`
+        <div class="mt-3 flex min-w-0 flex-wrap items-center gap-2 rounded-[var(--r-1)] border border-[var(--warn-20)] bg-[var(--warn-10)] px-3 py-2 text-xs text-[var(--color-fg-secondary)]">
+          <${StatusChip} tone="warn" uppercase=${false}>runtime warning<//>
+          <span class="min-w-0 flex-1 truncate">${firstWarning}</span>
+          ${extraWarningCount > 0 ? html`<span class="text-3xs text-[var(--color-fg-muted)]">+${extraWarningCount}</span>` : null}
+        </div>
+      ` : null}
+
+      <div class="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-5">
+        ${summary.rows.map(row => html`
+          <div class="min-w-0 rounded-[var(--r-1)] border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-2">
+            <div class="flex items-center justify-between gap-2">
+              <span class="text-3xs font-semibold uppercase tracking-[var(--track-caps)] text-[var(--color-fg-muted)]">${row.label}</span>
+              <${StatusChip} tone=${row.tone} uppercase=${false}>${row.tone}<//>
+            </div>
+            <div class="mt-1 truncate text-sm font-medium text-[var(--color-fg-primary)]" title=${row.value}>${row.value}</div>
+            <div class="mt-1 truncate text-3xs text-[var(--color-fg-muted)]" title=${row.detail}>${row.detail}</div>
+          </div>
+        `)}
+      </div>
+
+      ${(summary.runtimeBuildLabel || summary.runtimeRepoLabel) ? html`
+        <div class="mt-3 flex flex-wrap gap-2 text-3xs text-[var(--color-fg-muted)]">
+          ${summary.runtimeBuildLabel ? html`<span class="font-mono">build ${summary.runtimeBuildLabel}</span>` : null}
+          ${summary.runtimeRepoLabel ? html`<span class="font-mono">repo ${summary.runtimeRepoLabel}</span>` : null}
+        </div>
+      ` : null}
     </div>
   `
 }
@@ -394,7 +641,7 @@ export function RuntimeSignals({ keeper }: { keeper: Keeper }) {
       title: '폴백',
       rows: [
         { label: '전체 폴백', value: formatPct1(mw?.fallback_rate) },
-        { label: '모델 폴백', value: formatPct1(mw?.model_fallback_rate) },
+        { label: '런타임 폴백', value: formatPct1(mw?.model_fallback_rate) },
         { label: '프로액티브 폴백', value: formatPct1(mw?.proactive_fallback_rate) },
       ],
     },
@@ -452,7 +699,6 @@ export function RuntimeSignals({ keeper }: { keeper: Keeper }) {
 
   const topListSections = [
     topListDistribution(mw?.top_tools, 'tool', '주요 도구'),
-    topListDistribution(mw?.top_models, 'model', '주요 모델'),
     topListDistribution(mw?.top_work_kinds, 'kind', '주요 작업 종류'),
   ].filter((section): section is {
     title: string
@@ -558,6 +804,359 @@ function topListDistribution(
     subtitle: 'metrics_window Top-N 집계를 막대 형태로 표시합니다.',
     items,
   }
+}
+
+// ── Runtime Lens ─────────────────────────────────────────
+
+function formatLensList(values: string[], emptyLabel = 'none'): string {
+  if (values.length === 0) return emptyLabel
+  if (values.length <= 3) return values.join(', ')
+  return `${values.slice(0, 3).join(', ')} +${values.length - 3}`
+}
+
+function formatToolLineage(lineage: KeeperRuntimeLensToolLineageAxis): string {
+  if (!lineage.recorded) return 'not recorded'
+  const stages = ['searched', 'visible', 'materialized', 'emitted', 'executed', 'verified']
+  const parts: string[] = []
+  for (const key of stages) {
+    const stage = lineage.decision?.[key]
+    if (stage) {
+      parts.push(`${key}:${stage.count}`)
+    }
+  }
+  return parts.length > 0 ? parts.join(' → ') : 'recorded (no stages)'
+}
+
+function formatPayloadRole(axis: KeeperRuntimeLensPayloadRoleAxis): string {
+  const entries = Object.entries(axis.counts)
+  if (entries.length === 0) return 'none'
+  return entries.map(([role, count]) => `${role}:${count}`).join(' · ')
+}
+
+function formatSourceClock(axis: KeeperRuntimeLensSourceClockAxis): string {
+  const entries = Object.entries(axis.counts)
+  if (entries.length === 0) return 'none'
+  return entries.map(([clock, count]) => `${clock}:${count}`).join(' · ')
+}
+
+function runtimeTraceProviderTerminal(trace: KeeperRuntimeTraceResponse): string {
+  const provider = trace.provider_attempts
+  const status = compactToken(provider.terminal_status, 'unknown')
+  return provider.terminal_exception_kind
+    ? `${status} / ${provider.terminal_exception_kind}`
+    : status
+}
+
+function runtimeTraceEventIds(trace: KeeperRuntimeTraceResponse): string {
+  const eventBus = trace.event_bus
+  return [
+    `corr ${formatLensList(eventBus.correlation_ids)}`,
+    `run ${formatLensList(eventBus.run_ids)}`,
+  ].join(' · ')
+}
+
+function runtimeTraceMemoryEvidence(trace: KeeperRuntimeTraceResponse): string {
+  const memory = trace.memory
+  // inj present/injected is a true ratio pair: scan increments
+  // memory_injected_count unconditionally and memory_injected_present_count
+  // only when content is present, so present ≤ injected always holds.
+  // (see server_dashboard_http_keeper_runtime_manifest_scan.ml:152-154)
+  //
+  // flush success/error are independent monotonic counters; rendering as
+  // "N/M" would falsely imply a ratio. Use formatIndependentCounters.
+  //
+  // ep/proc episodes_flushed/procedures_flushed are also independent.
+  return [
+    `inj ${formatRatioPair({
+      numerator: memory.memory_injected_present_count,
+      denominator: memory.memory_injected_count,
+    })}`,
+    `flush ${formatIndependentCounters({
+      leftLabel: 'success',
+      leftValue: memory.memory_flush_success_count,
+      rightLabel: 'error',
+      rightValue: memory.memory_flush_error_count,
+    })}`,
+    `ep/proc ${formatIndependentCounters({
+      leftLabel: 'ep',
+      leftValue: memory.episodes_flushed,
+      rightLabel: 'proc',
+      rightValue: memory.procedures_flushed,
+    })}`,
+  ].join(' · ')
+}
+
+function artifactEvidenceLabel(artifacts: readonly { present: boolean }[]): string {
+  if (artifacts.length === 0) return '0/0'
+  const present = artifacts.filter(item => item.present).length
+  return `${present}/${artifacts.length}`
+}
+
+function artifactEvidenceTitle(artifacts: readonly { kind: string; path: string; present: boolean }[]): string {
+  if (artifacts.length === 0) return 'no linked artifacts'
+  return artifacts
+    .map(item => `${item.present ? 'present' : 'missing'} ${item.kind}: ${item.path || '-'}`)
+    .join('\n')
+}
+
+function lensGapTone(severity: string): StatusChipTone {
+  switch (severity) {
+    case 'bad':
+    case 'error':
+      return 'bad'
+    case 'warn':
+    case 'warning':
+      return 'warn'
+    default:
+      return 'neutral'
+  }
+}
+
+function lensLaneTone(lane: KeeperRuntimeLensLane): StatusChipTone {
+  if (lane.gap_codes.length > 0) return 'warn'
+  if (lane.terminal_status === 'empty' || lane.event_count === 0) return 'neutral'
+  if (lane.terminal_status.includes('error') || lane.terminal_status.includes('missing')) return 'bad'
+  return 'ok'
+}
+
+function clockEdgeTitle(edge: KeeperRuntimeLensClockEdge): string {
+  return [
+    `edge ${edge.edge_id}`,
+    `trace ${edge.trace_id || '-'}`,
+    `keeper ${edge.keeper_turn_id ?? '-'}`,
+    `oas ${edge.oas_turn_count ?? '-'}`,
+    edge.provider_attempt_id ? `provider ${edge.provider_attempt_id}` : null,
+    edge.tool_batch_id ? `tool ${edge.tool_batch_id}` : null,
+    edge.checkpoint_id ? `checkpoint ${edge.checkpoint_id}` : null,
+    edge.memory_injection_id ? `memory ${edge.memory_injection_id}` : null,
+    edge.event_bus_correlation_id ? `corr ${edge.event_bus_correlation_id}` : null,
+    edge.event_bus_run_id ? `run ${edge.event_bus_run_id}` : null,
+    edge.event_bus_event_count !== null ? `event-bus events ${edge.event_bus_event_count}` : null,
+    edge.event_bus_payload_kinds.length > 0 ? `payloads ${edge.event_bus_payload_kinds.join(', ')}` : null,
+    edge.parent_event_id ? `parent ${edge.parent_event_id}` : null,
+    edge.caused_by ? `caused by ${edge.caused_by}` : null,
+    edge.started_at ? `started ${edge.started_at}` : null,
+    edge.finished_at ? `finished ${edge.finished_at}` : null,
+  ].filter(Boolean).join('\n')
+}
+
+function clockGroupTitle(group: KeeperRuntimeLensClockGroup): string {
+  return [
+    `${group.group_type} ${group.group_id}`,
+    `${group.edge_count} edges`,
+    group.lanes.length > 0 ? `lanes ${group.lanes.join(', ')}` : null,
+    group.events.length > 0 ? `events ${group.events.join(', ')}` : null,
+    group.statuses.length > 0 ? `statuses ${group.statuses.join(', ')}` : null,
+    group.terminal_events.length > 0 ? `terminal ${group.terminal_events.join(', ')}` : null,
+    group.parent_event_ids.length > 0 ? `parents ${group.parent_event_ids.join(', ')}` : null,
+    group.caused_by.length > 0 ? `caused by ${group.caused_by.join(', ')}` : null,
+    group.event_bus_event_count > 0 ? `event-bus events ${group.event_bus_event_count}` : null,
+    group.event_bus_payload_kinds.length > 0 ? `payloads ${group.event_bus_payload_kinds.join(', ')}` : null,
+    group.first_observed_at ? `first ${group.first_observed_at}` : null,
+    group.last_observed_at ? `last ${group.last_observed_at}` : null,
+  ].filter(Boolean).join('\n')
+}
+
+function RuntimeLensClockGroupRow({ group }: { group: KeeperRuntimeLensClockGroup }) {
+  const detail =
+    group.event_bus_payload_kinds.length > 0
+      ? group.event_bus_payload_kinds.join(' · ')
+      : group.events.join(' · ') || 'no events'
+  return html`
+    <div
+      class="grid grid-cols-[minmax(7rem,0.9fr)_minmax(9rem,1.5fr)_auto] gap-2 items-center rounded-[var(--r-1)] border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-2 min-w-0"
+      title=${clockGroupTitle(group)}
+    >
+      <div class="min-w-0">
+        <div class="text-xs font-medium text-[var(--color-fg-secondary)] truncate">${group.group_type}</div>
+        <div class="text-3xs text-[var(--color-fg-muted)] font-mono truncate">${group.edge_count} edges</div>
+      </div>
+      <div class="min-w-0">
+        <div class="text-xs text-[var(--color-fg-secondary)] truncate">${group.group_id}</div>
+        <div class="text-3xs text-[var(--color-fg-muted)] font-mono truncate">${detail}</div>
+      </div>
+      <span class="text-3xs font-mono text-[var(--color-fg-muted)] tabular-nums justify-self-end truncate max-w-32">
+        ${group.closed ? 'closed' : 'open'}
+      </span>
+    </div>
+  `
+}
+
+function RuntimeLensClockEdgeRow({ edge }: { edge: KeeperRuntimeLensClockEdge }) {
+  return html`
+    <div
+      class="grid grid-cols-[minmax(7rem,0.9fr)_minmax(9rem,1.5fr)_auto] gap-2 items-center rounded-[var(--r-1)] border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-2 min-w-0"
+      title=${clockEdgeTitle(edge)}
+    >
+      <div class="min-w-0">
+        <div class="text-xs font-medium text-[var(--color-fg-secondary)] truncate">${edge.lane}</div>
+        <div class="text-3xs text-[var(--color-fg-muted)] font-mono truncate">${edge.source_clock}</div>
+      </div>
+      <div class="min-w-0">
+        <div class="text-xs text-[var(--color-fg-secondary)] truncate">${edge.event}</div>
+        <div class="text-3xs text-[var(--color-fg-muted)] font-mono truncate">${edge.edge_id}</div>
+      </div>
+      <span class="text-3xs font-mono text-[var(--color-fg-muted)] tabular-nums justify-self-end truncate max-w-32">
+        ${edge.event_bus_event_count !== null ? `${edge.event_bus_event_count} evt` : edge.status}
+      </span>
+    </div>
+  `
+}
+
+function RuntimeLensLaneRow({ lane }: { lane: KeeperRuntimeLensLane }) {
+  return html`
+    <div class="grid grid-cols-[minmax(8rem,1fr)_auto] md:grid-cols-[minmax(9rem,1fr)_auto_auto] gap-2 items-center rounded-[var(--r-1)] border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-2 min-w-0">
+      <div class="min-w-0">
+        <div class="text-xs font-medium text-[var(--color-fg-secondary)] truncate">${lane.label}</div>
+        <div class="text-3xs text-[var(--color-fg-muted)] font-mono truncate">
+          ${lane.events.length > 0
+            ? lane.events.map(event => `${event.event}:${event.count}`).join(' · ')
+            : 'no events'}
+        </div>
+      </div>
+      <span class="text-3xs font-mono text-[var(--color-fg-muted)] tabular-nums justify-self-end">
+        ${lane.event_count}
+      </span>
+      <div class="col-span-2 md:col-span-1 flex flex-wrap gap-1 justify-start md:justify-end min-w-0">
+        <${StatusChip} tone=${lensLaneTone(lane)} uppercase=${false}>${lane.terminal_status}<//>
+        ${lane.gap_codes.map(code => html`
+          <${StatusChip} tone="warn" uppercase=${false}>${code}<//>
+        `)}
+      </div>
+    </div>
+  `
+}
+
+export function RuntimeLensSection({
+  trace,
+}: {
+  trace: KeeperRuntimeTraceResponse | null
+}) {
+  if (!trace) {
+    return html`
+      <div class="text-2xs text-[var(--color-fg-muted)] italic">
+        runtime_trace_unavailable
+      </div>
+    `
+  }
+
+  const lens = trace.runtime_lens
+  const tool = lens.axes.tool_surface
+  const lane = lens.axes.provider_lane
+  const claim = lens.axes.claim_scope
+  const drift = lens.axes.config_drift
+  const proof = lens.axes.runtime_proof
+  const context = lens.axes.context
+  const memory = lens.axes.memory
+  const clock = lens.turn_clock
+  const artifacts = trace.linked_artifacts
+  const clockEdges = lens.clock_edges
+  const clockGroups = lens.clock_groups
+  const swimlanes = [
+    lens.swimlanes.keeper,
+    lens.swimlanes.masc_policy_cascade,
+    lens.swimlanes.oas_agent,
+    lens.swimlanes.provider,
+    lens.swimlanes.tool_runtime,
+    lens.swimlanes.memory_context,
+  ]
+
+  return html`
+    <div class="flex flex-col gap-3" data-testid="runtime-lens">
+      <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-1.5">
+        <${SignalRow} label="keeper / OAS turn" value=${`${clock.keeper_turn_id ?? '-'} / ${clock.max_oas_turn_count ?? '-'}`} />
+        <${SignalRow} label="terminal event" value=${clock.terminal_event_present ? clock.terminal_event ?? 'present' : 'missing'} />
+        <${SignalRow} label="runtime lane" value=${lane.resolved_lane ?? lane.status ?? 'unknown'} />
+        <${SignalRow} label="tool required" value=${formatLensList(tool.required_tools)} />
+        <${SignalRow} label="tool materialized" value=${formatLensList(tool.materialized_tools)} />
+        <${SignalRow} label="tool missing" value=${formatLensList(tool.missing_required_tools)} />
+        <${SignalRow} label="tool lineage" value=${formatToolLineage(lens.axes.tool_lineage)} />
+        <${SignalRow} label="payload role" value=${formatPayloadRole(lens.axes.payload_role)} />
+        <${SignalRow} label="source clock" value=${formatSourceClock(lens.axes.source_clock)} />
+        <${SignalRow} label="claim scope" value=${claim.present ? `${claim.mode ?? 'unknown'} / ${claim.status}` : 'not observed'} />
+        <${SignalRow} label="claim excluded" value=${claim.excluded_count === null ? '-' : String(claim.excluded_count)} />
+        <${SignalRow} label="claim goals" value=${formatLensList(claim.effective_goal_ids)} />
+        <${SignalRow} label="cascade drift" value=${drift.cascade_override ? `${drift.default_cascade_name ?? '-'} -> ${drift.live_cascade_name ?? '-'}` : drift.status} />
+        <${SignalRow} label="override fields" value=${formatLensList(drift.override_fields)} />
+        <${SignalRow} label="runtime proof" value=${`${proof.status} / ${proof.matched_tool_call_count} calls`} />
+        <${SignalRow} label="sandbox proof" value=${proof.docker_visible ? formatLensList(proof.sandbox_profiles, 'docker') : 'not observed'} />
+        <${SignalRow}
+          label="repo CLI proof"
+          value=${`${proof.git_credentials_enabled ? 'git creds' : 'no git creds'} / ${proof.repo_cli_identity_materialized ? 'identity materialized' : 'identity missing'}`}
+        />
+        <${SignalRow} label="proof tools" value=${formatLensList(proof.tools)} />
+        <${SignalRow} label="network proof" value=${formatLensList(proof.network_modes)} />
+        <${SignalRow} label="context compaction" value=${formatRatioPair({ numerator: context.context_compacted_count, denominator: context.context_compact_started_count })} />
+        <${SignalRow} label="working loops" value=${context.active_open_loop_count} />
+        <${SignalRow} label="memory flush" value=${formatIndependentCounters({ leftLabel: 'success', leftValue: memory.memory_flush_success_count, rightLabel: 'error', rightValue: memory.memory_flush_error_count })} />
+        <${SignalRow} label="trace id" value=${compactToken(trace.trace_id)} />
+        <${SignalRow}
+          label="manifest file"
+          value=${trace.manifest_path_present ? 'present' : 'missing'}
+          title=${trace.manifest_path}
+        />
+        <${SignalRow} label="manifest rows" value=${formatRatioPair({ numerator: trace.manifest_returned_rows, denominator: trace.manifest_total_rows })} />
+        <${SignalRow} label="receipt rows" value=${trace.receipt_returned_rows} />
+        <${SignalRow} label="manifest raw rows" value=${trace.manifest_rows.length} />
+        <${SignalRow} label="receipt raw rows" value=${trace.receipts.length} />
+        <${SignalRow}
+          label="receipt artifacts"
+          value=${artifactEvidenceLabel(artifacts.receipts)}
+          title=${artifactEvidenceTitle(artifacts.receipts)}
+        />
+        <${SignalRow}
+          label="checkpoint artifacts"
+          value=${artifactEvidenceLabel(artifacts.checkpoints)}
+          title=${artifactEvidenceTitle(artifacts.checkpoints)}
+        />
+        <${SignalRow}
+          label="tool log artifacts"
+          value=${artifactEvidenceLabel(artifacts.tool_call_logs)}
+          title=${artifactEvidenceTitle(artifacts.tool_call_logs)}
+        />
+        <${SignalRow} label="provider attempts" value=${`${trace.provider_attempts.started_count}/${trace.provider_attempts.finished_count}`} />
+        <${SignalRow} label="provider terminal" value=${runtimeTraceProviderTerminal(trace)} />
+        <${SignalRow} label="clock edges" value=${clockEdges.length} />
+        <${SignalRow} label="clock groups" value=${clockGroups.length} />
+        <${SignalRow} label="event ids" value=${runtimeTraceEventIds(trace)} />
+        <${SignalRow} label="memory evidence" value=${runtimeTraceMemoryEvidence(trace)} />
+        <${SignalRow} label="stale reason" value=${compactToken(trace.stale_reason, 'none')} />
+      </div>
+
+      <div class="flex flex-wrap gap-1.5 min-w-0" data-testid="runtime-lens-gaps">
+        ${lens.gaps.length > 0
+          ? lens.gaps.map(gap => html`
+              <${StatusChip}
+                tone=${lensGapTone(gap.severity)}
+                uppercase=${false}
+              >
+                ${gap.code}
+              <//>
+            `)
+          : html`<${StatusChip} tone="ok" uppercase=${false}>no lens gaps<//>`}
+      </div>
+
+      <div class="grid grid-cols-1 xl:grid-cols-2 gap-2">
+        ${swimlanes.map(lane => html`<${RuntimeLensLaneRow} lane=${lane} />`)}
+      </div>
+
+      ${clockGroups.length > 0
+        ? html`
+            <div class="grid grid-cols-1 xl:grid-cols-2 gap-2" data-testid="runtime-lens-clock-groups">
+              ${clockGroups.slice(0, 8).map(group => html`<${RuntimeLensClockGroupRow} group=${group} />`)}
+            </div>
+          `
+        : null}
+
+      ${clockEdges.length > 0
+        ? html`
+            <div class="grid grid-cols-1 xl:grid-cols-2 gap-2" data-testid="runtime-lens-clock-edges">
+              ${clockEdges.slice(0, 8).map(edge => html`<${RuntimeLensClockEdgeRow} edge=${edge} />`)}
+            </div>
+          `
+        : null}
+    </div>
+  `
 }
 
 // ── Neighborhood & Tool Audit ────────────────────────────

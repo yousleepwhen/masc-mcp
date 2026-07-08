@@ -1,4 +1,4 @@
-(** Tests for [Oas_bus_instrument].
+(** Tests for [Agent_sdk_metrics_bridge].
 
     Covers:
     - [subscribe] registers purpose, [unsubscribe] removes it.
@@ -13,7 +13,7 @@
 
 open Alcotest
 
-module I = Masc_mcp.Oas_bus_instrument
+module I = Masc_mcp.Agent_sdk_metrics_bridge
 
 let mk_bus () = Agent_sdk.Event_bus.create ()
 
@@ -40,6 +40,18 @@ let test_subscribe_tracks_purpose () =
     I.unsubscribe bus h;
     check int "unsubscribe clears tracking"
       (-1) (I.For_testing.current_depth ~purpose:"test_sub_a"))
+
+let test_subscribe_forwards_purpose_to_oas_stats () =
+  I.For_testing.reset ();
+  run_eio (fun ~sw:_ ~env:_ ->
+    let bus = mk_bus () in
+    let h = I.subscribe ~purpose:"compact_audit" bus in
+    let stats = Agent_sdk.Event_bus.stats bus in
+    (match stats.subscriptions with
+     | [ sub_stats ] ->
+       check (option string) "oas purpose" (Some "compact_audit") sub_stats.purpose
+     | _ -> fail "expected one OAS subscription");
+    I.unsubscribe bus h)
 
 let test_publish_increments_matching_depth () =
   I.For_testing.reset ();
@@ -157,6 +169,8 @@ let () =
     ("backpressure", [
       test_case "subscribe tracks purpose" `Quick
         test_subscribe_tracks_purpose;
+      test_case "subscribe forwards purpose to OAS stats" `Quick
+        test_subscribe_forwards_purpose_to_oas_stats;
       test_case "publish increments matching depth" `Quick
         test_publish_increments_matching_depth;
       test_case "drain decrements depth" `Quick

@@ -2,7 +2,7 @@
 
     Covers three safety layers:
     1. Eval_gate.detect_destructive — all 19 patterns + safe commands
-    2. Keeper_exec_tools.keeper_allowed_tool_names — policy mode tool grants
+    2. Agent_tool_dispatch_runtime.keeper_allowed_tool_names — policy mode tool grants
     3. Keeper_guards.extract_command_from_input — JSON command extraction
 
     Closes the P1 test gap from the keeper safety audit. *)
@@ -187,53 +187,48 @@ let test_safe_empty () =
 let test_write_done_kills_all () =
   let meta = make_meta
     ~policy_voice_enabled:true  () in
-  let tools = Keeper_exec_tools.keeper_allowed_tool_names ~write_done:true meta in
+  let tools = Agent_tool_dispatch_runtime.keeper_allowed_tool_names ~write_done:true meta in
   check (list string) "write_done returns empty" [] tools
 
 let test_all_keepers_get_full_toolset () =
   let meta = make_meta ~preset:Keeper_types.Full () in
-  let tools = Keeper_exec_tools.keeper_allowed_tool_names meta in
-  check bool "has keeper_fs_read" true (List.mem "keeper_fs_read" tools);
+  let tools = Agent_tool_dispatch_runtime.keeper_allowed_tool_names meta in
+  check bool "has tool_read_file" true (List.mem "tool_read_file" tools);
   check bool "has keeper_board_list" true (List.mem "keeper_board_list" tools);
   check bool "has keeper_board_get" true (List.mem "keeper_board_get" tools);
-  check bool "has keeper_shell" true (List.mem "keeper_shell" tools)
+  check bool "has tool_search_files" true (List.mem "tool_search_files" tools)
 
 let test_all_keepers_have_research_tools () =
   let meta = make_meta ~preset:Keeper_types.Research  () in
-  let tools = Keeper_exec_tools.keeper_allowed_tool_names meta in
-  let has_any_research = List.exists (fun t ->
-    String.length t > 5 &&
-    (try ignore (Str.search_forward (Str.regexp_string "research") t 0); true
-     with Not_found -> false)
-  ) tools in
-  check bool "has research tools" true has_any_research
+  let tools = Agent_tool_dispatch_runtime.keeper_allowed_tool_names meta in
+  check bool "research has library search" true (List.mem "keeper_library_search" tools);
+  check bool "research has web search" true (List.mem "masc_web_search" tools);
+  check bool "research has file search" true (List.mem "tool_search_files" tools)
 
 let test_heuristic_mode_tools () =
   let meta = make_meta ~preset:Keeper_types.Minimal () in
-  let tools = Keeper_exec_tools.keeper_allowed_tool_names meta in
+  let tools = Agent_tool_dispatch_runtime.keeper_allowed_tool_names meta in
   check bool "heuristic returns nonempty tools" true (List.length tools > 0)
 
 let test_messaging_preset_tools () =
   let meta = make_meta ~preset:Keeper_types.Messaging () in
-  let tools = Keeper_exec_tools.keeper_allowed_tool_names meta in
+  let tools = Agent_tool_dispatch_runtime.keeper_allowed_tool_names meta in
   check bool "has board tools" true (List.mem "keeper_board_post" tools);
-  check bool "has keeper_fs_read" true (List.mem "keeper_fs_read" tools);
-  check bool "has keeper_shell" true (List.mem "keeper_shell" tools);
-  (* keeper_github tool was removed in #7306 (use keeper_shell op=gh). *)
-  check bool "no keeper_github (removed)" false (List.mem "keeper_github" tools)
+  check bool "has tool_read_file" true (List.mem "tool_read_file" tools);
+  check bool "has tool_search_files" true (List.mem "tool_search_files" tools)
 
-let test_all_keepers_have_shell_and_coding () =
-  let meta = make_meta ~preset:Keeper_types.Coding () in
-  let tools = Keeper_exec_tools.keeper_allowed_tool_names meta in
-  check bool "keeper_shell included" true (List.mem "keeper_shell" tools);
-  check bool "keeper_fs_read included" true (List.mem "keeper_fs_read" tools);
+let test_execution_preset_has_repo_tools () =
+  let meta = make_meta ~preset:Keeper_types.Delivery () in
+  let tools = Agent_tool_dispatch_runtime.keeper_allowed_tool_names meta in
+  check bool "tool_search_files included" true (List.mem "tool_search_files" tools);
+  check bool "tool_read_file included" true (List.mem "tool_read_file" tools);
   check bool "keeper_board_get included" true (List.mem "keeper_board_get" tools)
 
 let test_all_modes_produce_same_tools () =
   let meta_a = make_meta ~preset:Keeper_types.Minimal () in
   let meta_b = make_meta ~preset:Keeper_types.Full () in
-  let tools_a = Keeper_exec_tools.keeper_allowed_tool_names meta_a in
-  let tools_b = Keeper_exec_tools.keeper_allowed_tool_names meta_b in
+  let tools_a = Agent_tool_dispatch_runtime.keeper_allowed_tool_names meta_a in
+  let tools_b = Agent_tool_dispatch_runtime.keeper_allowed_tool_names meta_b in
   check bool "full has more tools" true (List.length tools_b > List.length tools_a)
 
 (* ================================================================ *)
@@ -300,10 +295,14 @@ let test_extract_non_string_command () =
 (* ================================================================ *)
 
 let test_destructive_check_tools_membership () =
-  check bool "keeper_bash is destructive" true (Tool_dispatch.is_destructive "keeper_bash");
-  check bool "keeper_fs_edit is destructive" true (Tool_dispatch.is_destructive "keeper_fs_edit");
-  check bool "keeper_fs_read not destructive" false (Tool_dispatch.is_destructive "keeper_fs_read");
-  check bool "keeper_board_post not destructive" false (Tool_dispatch.is_destructive "keeper_board_post")
+  check bool "tool_execute is destructive" true
+    (Tool_capability.has Tool_capability.Destructive "tool_execute");
+  check bool "tool_edit_file is destructive" true
+    (Tool_capability.has Tool_capability.Destructive "tool_edit_file");
+  check bool "tool_read_file not destructive" false
+    (Tool_capability.has Tool_capability.Destructive "tool_read_file");
+  check bool "keeper_board_post not destructive" false
+    (Tool_capability.has Tool_capability.Destructive "keeper_board_post")
 
 (* ================================================================ *)
 (* Group 5: Integration — extract + detect combined                  *)
@@ -327,9 +326,8 @@ let test_integration_github_force_push () =
   let input = `Assoc [("cmd", `String "push --force origin main")] in
   let cmd = Keeper_guards.extract_command_from_input input in
   (* The actual command seen by the gate would be "push --force origin main",
-     but detect_destructive looks for "git push --force" which requires "git" prefix.
-     The keeper_shell op=gh path prepends "gh" not "git", so this would NOT match
-     the git-specific patterns. This verifies the actual behavior. *)
+     but detect_destructive looks for "git push --force" which requires "git"
+     prefix. This verifies the actual behavior for an unprefixed command. *)
   match Eval_gate.detect_destructive cmd with
   | None -> ()  (* Expected: "push --force" without "git" prefix is not detected *)
   | Some _ -> () (* If it matches something else, that's also fine *)
@@ -347,8 +345,8 @@ let test_integration_edit_destructive_content () =
 
 let () =
   let base_path = Masc_test_deps.find_project_root () in
-  Keeper_exec_tools.inject_masc_schemas Config.raw_all_tool_schemas;
-  ignore (Result.get_ok (Keeper_exec_tools.init_policy_config ~base_path));
+  Agent_tool_dispatch_runtime.inject_masc_schemas Config.raw_all_tool_schemas;
+  ignore (Result.get_ok (Agent_tool_dispatch_runtime.init_policy_config ~base_path));
   Alcotest.run "Keeper_safety_gates" [
     ("detect_destructive_all_patterns", [
       test_case "rm -rf" `Quick test_detect_rm_rf;
@@ -391,7 +389,7 @@ let () =
       test_case "allowlisted keepers have research tools" `Quick test_all_keepers_have_research_tools;
       test_case "heuristic mode" `Quick test_heuristic_mode_tools;
       test_case "messaging preset tools" `Quick test_messaging_preset_tools;
-      test_case "all keepers have shell and coding" `Quick test_all_keepers_have_shell_and_coding;
+      test_case "execution preset has repo tools" `Quick test_execution_preset_has_repo_tools;
       test_case "all modes produce same tools" `Quick test_all_modes_produce_same_tools;
     ]);
     ("extract_command_from_input", [

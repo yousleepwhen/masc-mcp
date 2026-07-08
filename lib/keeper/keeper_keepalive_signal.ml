@@ -121,7 +121,7 @@ let interruptible_sleep ~clock ~stop ~wakeup duration : sleep_outcome =
     when a @mention targets a running keeper.
 
     When [?stimulus] is provided, the stimulus is appended to the keeper's
-    Event Layer queue ([Keeper_registry.enqueue_event]) before the wakeup
+    Event Layer queue ([Keeper_registry_event_queue.enqueue]) before the wakeup
     flag flips. This is RFC-0020 Rule 1 (enqueue is independent of policy)
     + the data-channel half of the layer split — [fiber_wakeup] remains the
     hint signal, the queue is the authoritative payload. *)
@@ -132,7 +132,7 @@ let wakeup_keeper ?base_path ?stimulus name =
     then begin
       Option.iter
         (fun s ->
-          Keeper_registry.enqueue_event ~base_path:entry.base_path name s)
+          Keeper_registry_event_queue.enqueue ~base_path:entry.base_path name s)
         stimulus;
       Keeper_registry.wakeup ~base_path:entry.base_path name
     end)
@@ -242,6 +242,8 @@ let board_signal_stimulus ~(reason : string) (signal : Board_dispatch.keeper_boa
       ; "title", `String signal.title
       ; "content", `String signal.content
       ; "hearth", (match signal.hearth with Some v -> `String v | None -> `Null)
+      ; ( "updated_at_unix"
+        , match signal.updated_at with Some v -> `Float v | None -> `Null )
       ; "wake_reason", `String reason
       ]
     |> Yojson.Safe.to_string
@@ -256,14 +258,65 @@ let board_signal_stimulus ~(reason : string) (signal : Board_dispatch.keeper_boa
   }
 ;;
 
+let board_signal_entry_is_wakeup_candidate (entry : Keeper_registry.registry_entry) =
+  match entry.phase with
+  | Keeper_state_machine.Running | Keeper_state_machine.Paused -> true
+  | _ -> false
+;;
+
+let board_signal_wake_paused_keeper
+      ~(config : Coord.config)
+      ~(stimulus : Keeper_event_queue.stimulus)
+      (meta : keeper_meta)
+  =
+  let resumed_meta = { meta with paused = false; updated_at = now_iso () } in
+  match
+    write_meta_with_merge
+      ~merge:Keeper_meta_merge.heartbeat_fields_from_disk
+      config
+      resumed_meta
+  with
+  | Ok () ->
+    Keeper_registry.update_meta ~base_path:config.base_path meta.name resumed_meta;
+    Keeper_registry.dispatch_event_unit
+      ~base_path:config.base_path
+      resumed_meta.name
+      Keeper_state_machine.Operator_resume;
+    Keeper_registry_event_queue.enqueue
+      ~base_path:config.base_path
+      resumed_meta.name
+      stimulus;
+    Keeper_registry.wakeup ~base_path:config.base_path resumed_meta.name;
+    Ok ()
+  | Error err ->
+    Prometheus.inc_counter
+      Keeper_metrics.(to_string WriteMetaFailures)
+      ~labels:[ ("keeper", meta.name); ("phase", "board_signal_resume_sync") ]
+      ();
+    Error (Printf.sprintf "failed to write resumed meta: %s" err)
+;;
+
+let board_signal_wake_keeper
+      ~(config : Coord.config)
+      ~(reason : string)
+      ~(signal : Board_dispatch.keeper_board_signal)
+      (meta : keeper_meta)
+  =
+  let stimulus = board_signal_stimulus ~reason signal in
+  if meta.paused
+  then board_signal_wake_paused_keeper ~config ~stimulus meta
+  else (
+    wakeup_keeper ~base_path:config.base_path ~stimulus meta.name;
+    Ok ())
+;;
+
 let wakeup_relevant_keeper_for_board_signal
       ~(config : Coord.config)
       (signal : Board_dispatch.keeper_board_signal)
   =
-  let running_names =
+  let registry_entries =
     Keeper_registry.all ~base_path:config.base_path ()
-    |> List.filter_map (fun (e : Keeper_registry.registry_entry) ->
-      if e.phase = Keeper_state_machine.Running then Some e.name else None)
+    |> List.filter board_signal_entry_is_wakeup_candidate
   in
   let signal_kind_label =
     match signal.kind with
@@ -274,10 +327,10 @@ let wakeup_relevant_keeper_for_board_signal
      when many keepers share a domain.  Yield every ~1000 iterations. *)
   let board_ym = Eio_guard.create_yield_meter () in
   let candidates =
-    running_names
-    |> List.filter_map (fun name ->
+    registry_entries
+    |> List.filter_map (fun (entry : Keeper_registry.registry_entry) ->
       let result =
-        match read_meta config name with
+        match read_meta config entry.name with
         | Ok (Some meta) ->
           let wake_reason =
             Keeper_world_observation.board_signal_wake_reason
@@ -293,17 +346,22 @@ let wakeup_relevant_keeper_for_board_signal
              had no addressee and one that was silently dropped by a
              keeper whose [room_signal_prompt_enabled] / mention_targets
              configuration is too narrow. *)
-          (match wake_reason with
-           | None ->
+          (match wake_reason, entry.phase with
+           | None, Keeper_state_machine.Running ->
              Prometheus.inc_counter
-               Prometheus.metric_keeper_board_signal_no_wake_total
+               Keeper_metrics.(to_string BoardSignalNoWakeTotal)
                ~labels:[
                  ("keeper", meta.name);
                  ("kind", signal_kind_label);
                ]
                ()
-           | Some _ -> ());
-          Some (meta, wake_reason)
+           | None, _ | Some _, _ -> ());
+          (match entry.phase, wake_reason with
+           | Keeper_state_machine.Paused, Some "explicit_mention" ->
+             Some (meta, wake_reason)
+           | Keeper_state_machine.Paused, _ -> None
+           | Keeper_state_machine.Running, _ -> Some (meta, wake_reason)
+           | _ -> None)
         | _ -> None
       in
       Eio_guard.yield_step board_ym;
@@ -316,15 +374,21 @@ let wakeup_relevant_keeper_for_board_signal
         ~keeper_name:meta.name
         ~post_id:signal.post_id
     then (
-      wakeup_keeper
-        ~base_path:config.base_path
-        ~stimulus:(board_signal_stimulus ~reason signal)
-        meta.name;
-      Log.Keeper.info
-        "board signal wakeup: keeper=%s reason=%s post=%s"
-        meta.name
-        reason
-        signal.post_id)
+      match board_signal_wake_keeper ~config ~reason ~signal meta with
+      | Ok () ->
+        Log.Keeper.info
+          "board signal wakeup: keeper=%s reason=%s post=%s paused_auto_resume=%b"
+          meta.name
+          reason
+          signal.post_id
+          meta.paused
+      | Error err ->
+        Log.Keeper.warn
+          "board signal wakeup failed: keeper=%s reason=%s post=%s error=%s"
+          meta.name
+          reason
+          signal.post_id
+          err)
   in
   let selected, dropped = select_board_wakeup_candidates candidates in
   let yield_meter = Eio_guard.create_yield_meter ~interval:1 () in
@@ -333,12 +397,17 @@ let wakeup_relevant_keeper_for_board_signal
          wake_meta meta reason;
          Eio_guard.yield_step yield_meter);
   if dropped > 0 then begin
+    (* Counter tracks wakeups dropped by the cap, not capped events; under
+       high fanout [dropped] can be >1 per signal, so add the actual amount
+       (not a fixed 1) to keep BOARD-CAPPED accurate on the compact dashboard. *)
     Prometheus.inc_counter
-      Prometheus.metric_keeper_keepalive_signal_failures
-      ~labels:[("keeper", "aggregate"); ("site", "board_capped")]
+      Keeper_metrics.(to_string BoardSignalWakeupCappedTotal)
+      ~labels:[("kind", signal_kind_label)]
+      ~delta:(float_of_int dropped)
       ();
-    Log.Keeper.warn
-      "board signal wakeup capped: dropped=%d post=%s generic_limit=%d total_limit=%d"
+    Log.Keeper.info
+      "board signal wakeup capped by configured fanout: dropped=%d post=%s \
+       generic_limit=%d total_limit=%d"
       dropped
       signal.post_id
       board_reactive_generic_wakeup_limit
@@ -426,7 +495,7 @@ let dispatch_keepalive_event_with_audit
      | Ok _ -> ()
      | Error err ->
          Prometheus.inc_counter
-           Prometheus.metric_keeper_keepalive_signal_failures
+           Keeper_metrics.(to_string KeepaliveSignalFailures)
            ~labels:[("keeper", keeper_name); ("site", "late_event_rejected")]
            ();
          Log.Keeper.warn

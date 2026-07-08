@@ -6,12 +6,13 @@
 // Backend contract: see `docs/DOCTOR-ARCHITECTURE.md` "Backend endpoint" section.
 
 import { html } from 'htm/preact'
+import { capitalize } from '../lib/format-string'
 import { useSignal } from '@preact/signals'
 import { useEffect } from 'preact/hooks'
 import { get } from '../api/core'
 import { createAsyncResource, type AsyncResource } from '../lib/async-state'
 import { AsyncContainer } from './common/async-container'
-import { Card } from './common/card'
+import { SectionCard } from './common/card'
 import { SectionCap } from './common/section-cap'
 import { Chip } from './chip'
 import { Pill, type PillKind } from './pill'
@@ -105,7 +106,7 @@ function severityBandKind(code: number): BandKind {
 // for display; config kind renders as "설정".
 export function doctorHeading(entry: DoctorEntry): string {
   if (entry.kind === 'config') return '설정'
-  return entry.name.charAt(0).toUpperCase() + entry.name.slice(1)
+  return capitalize(entry.name)
 }
 
 // Aggregate breakdown string, e.g. "6건 진단 · 정상 3 · 경고 2 · 오류 1".
@@ -329,7 +330,7 @@ export function DoctorPanel() {
 
   return html`
     <div class="space-y-4">
-      <${Card} title="진단" class="section">
+      <${SectionCard} label="진단" class="section">
         <${AsyncContainer}
           state=${doctorEnvelope.state}
           loadingMessage="진단 데이터를 불러오는 중..."
@@ -354,7 +355,7 @@ export function DoctorPanel() {
                   >새로고침</button>
                 </div>
               </div>
-              <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-2">
                 ${data.doctors.map((entry) => html`<${DoctorEntryCard} entry=${entry} />`)}
               </div>
             </div>

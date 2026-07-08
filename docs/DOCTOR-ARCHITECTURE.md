@@ -130,7 +130,7 @@ class AutoFix:
 | 계층 | Doctor | 구현 상태 |
 |------|--------|-----------|
 | OCaml 서버 | `masc-mcp doctor config` — 베이스 경로 / 활성 config root | 운영 중 (`docs/CONFIG-DOCTOR.md`) |
-| OCaml 서버 | `masc-mcp doctor auth` — auth mode / admin bearer readiness / role mismatch / Codex MCP bearer env + config pipeline | 운영 중 (`docs/LOCAL-DASHBOARD-AUTH-RUNBOOK.md`) |
+| OCaml 서버 | `masc-mcp doctor auth` — auth mode / admin bearer readiness / role mismatch / Agent-Code MCP bearer env + config pipeline | 운영 중 (`docs/LOCAL-DASHBOARD-AUTH-RUNBOOK.md`) |
 | Discord sidecar | `masc-mcp doctor sidecar discord` ↔ `python -m src doctor` | 운영 중 |
 | Slack sidecar | `masc-mcp doctor sidecar slack` ↔ `python -m src doctor` | 운영 중 |
 | Telegram sidecar | `masc-mcp doctor sidecar telegram` ↔ `python -m src doctor` | 운영 중 |
@@ -145,7 +145,7 @@ class AutoFix:
 ```
 masc-mcp doctor                     # default → config (backward-compat)
 masc-mcp doctor config              # base path / config root 진단
-masc-mcp doctor auth                # auth/bearer/role mismatch + Codex MCP bearer env/config pipeline 진단
+masc-mcp doctor auth                # auth/bearer/role mismatch + Agent-Code MCP bearer env/config pipeline 진단
 masc-mcp doctor sidecar <name>      # python -m src doctor 를 해당 sidecar 디렉터리에서 실행
 masc-mcp doctor sidecar <name> --json
 masc-mcp doctor all                 # config + 5 sidecar 연쇄 실행 + aggregate 요약
@@ -222,7 +222,7 @@ config=정상 · discord=경고 · slack=경고 · telegram=오류 · imessage=�
 | `gate reachable` | 연결 실패 error, 4xx warn |
 | `keeper names exist` | gate keepers 목록에 없는 이름이면 error |
 | `binding paths writable` | 쓰기 불가 error (`--fix` 로 chmod 시도) |
-| `legacy runtime paths` | `.masc/connectors/discord/*` 잔존 시 warn (자동 이관 안내) |
+| `legacy runtime paths` | `.masc/connectors/discord/*` 잔존 시 warn (수동 정리 안내) |
 
 ## 확장 규칙
 

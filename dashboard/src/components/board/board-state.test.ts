@@ -5,6 +5,7 @@ vi.mock('../../api', async (importOriginal) => {
   return {
     ...actual,
     fetchBoardHearths: vi.fn(),
+    fetchBoardFlairs: vi.fn(),
   }
 })
 
@@ -13,6 +14,9 @@ vi.mock('../common/toast', () => ({
 }))
 
 import {
+  boardFlairs,
+  boardFlairsError,
+  boardFlairsLoading,
   boardHearths,
   boardHearthsError,
   boardHearthsLoading,
@@ -23,14 +27,16 @@ import {
   authorAvatar,
   kindLabel,
   visibilityLabel,
+  postVisibilityAuditLabel,
   filterHint,
   splitVisiblePosts,
+  refreshBoardFlairs,
   refreshBoardHearths,
   type ContentCategory,
   type VisibleBoardGroups,
 } from './board-state'
 import type { BoardPost } from '../../types'
-import { fetchBoardHearths, type BoardHearth } from '../../api'
+import { fetchBoardFlairs, fetchBoardHearths, type BoardFlair, type BoardHearth } from '../../api'
 import { showToast } from '../common/toast'
 
 // Reset module-scope signals between tests
@@ -66,7 +72,11 @@ beforeEach(() => {
   boardHearths.value = []
   boardHearthsError.value = false
   boardHearthsLoading.value = false
+  boardFlairs.value = []
+  boardFlairsError.value = false
+  boardFlairsLoading.value = false
   vi.mocked(fetchBoardHearths).mockReset()
+  vi.mocked(fetchBoardFlairs).mockReset()
   vi.mocked(showToast).mockReset()
 })
 
@@ -185,6 +195,26 @@ describe('visibilityLabel', () => {
   })
 })
 
+describe('postVisibilityAuditLabel', () => {
+  it('summarizes visible, scoped, hidden-score, and updated state', () => {
+    expect(postVisibilityAuditLabel(makePost({
+      visibility: 'internal',
+      comment_count: 13,
+      votes: null,
+      vote_blind: true,
+      updated_at: '2026-04-17T01:00:00Z',
+    }))).toBe('표시 중 · 내부 · 댓글 13개 · 점수 투표 후 공개 · 최근 갱신됨')
+  })
+
+  it('uses public scope and numeric score for ordinary posts', () => {
+    expect(postVisibilityAuditLabel(makePost({
+      visibility: 'public',
+      comment_count: 2,
+      votes: 7,
+    }))).toBe('표시 중 · 공개 · 댓글 2개 · 점수 7 · 원본 작성 시각 기준')
+  })
+})
+
 describe('splitVisiblePosts', () => {
   it('groups posts by content category', () => {
     const posts = [
@@ -272,5 +302,29 @@ describe('refreshBoardHearths', () => {
     expect(boardHearthsError.value).toBe(false)
     expect(boardHearthsLoading.value).toBe(false)
     expect(showToast).not.toHaveBeenCalled()
+  })
+})
+
+describe('refreshBoardFlairs', () => {
+  it('loads flair options for the composer catalog', async () => {
+    const flairs: BoardFlair[] = [{ name: 'insight', emoji: '💡', label: 'Insight' }]
+    vi.mocked(fetchBoardFlairs).mockResolvedValue(flairs)
+
+    await refreshBoardFlairs()
+
+    expect(boardFlairs.value).toEqual(flairs)
+    expect(boardFlairsError.value).toBe(false)
+    expect(boardFlairsLoading.value).toBe(false)
+  })
+
+  it('keeps the composer usable when flair loading fails', async () => {
+    vi.mocked(fetchBoardFlairs).mockRejectedValue(new Error('offline'))
+
+    await refreshBoardFlairs()
+
+    expect(boardFlairs.value).toEqual([])
+    expect(boardFlairsError.value).toBe(true)
+    expect(boardFlairsLoading.value).toBe(false)
+    expect(showToast).toHaveBeenCalledWith('Flair 목록을 불러오지 못했습니다', 'error')
   })
 })

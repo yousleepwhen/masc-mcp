@@ -3,22 +3,29 @@
 
 import { html } from 'htm/preact'
 import { signal } from '@preact/signals'
-import { authHeaders, get, post } from '../api/core'
 import {
+  fetchCredentials,
+  createCredential,
+  deleteCredential,
   coerceCredentialType,
-  normalizeCredentialsResponse,
+  sanitizeOptionalString,
+  githubLoginCommand,
   type Credential,
   type CredentialCreatePayload,
+  type CredentialOauthMethod,
   type CredentialState,
   type CredentialType,
 } from '../api/credentials'
+
+const DEFAULT_OAUTH_METHOD: CredentialOauthMethod = 'web'
 import { createAsyncResource } from '../lib/async-state'
 import { showToast } from './common/toast'
 import { ErrorState, LoadingState } from './common/feedback-state'
+import { BTN_FILLED_BASE } from './common/button-filled-base'
+import { FIELD_STYLE_BASE } from './common/field-style-base'
 
 export {
   coerceCredentialType,
-  isRecord,
   normalizeCredentialsResponse,
   parseCredentialState,
 } from '../api/credentials'
@@ -45,33 +52,11 @@ const addDraft = signal<CredentialCreatePayload>({
   name: '',
   username: '',
   type: 'github',
-  oauth_method: 'web',
+  oauth_method: DEFAULT_OAUTH_METHOD,
   description: '',
 })
 
-// ── API ──────────────────────────────────────────────────
-
-async function fetchCredentials(): Promise<Credential[]> {
-  const data = await get<unknown>('/api/v1/credentials')
-  return normalizeCredentialsResponse(data)
-}
-
-async function createCredential(payload: CredentialCreatePayload): Promise<void> {
-  await post('/api/v1/credentials', buildCredentialCreateRequest(payload))
-}
-
-async function deleteCredential(id: string): Promise<void> {
-  const res = await fetch(`/api/v1/credentials/${encodeURIComponent(id)}`, {
-    method: 'DELETE',
-    headers: authHeaders(),
-  })
-  if (!res.ok) {
-    const text = await res.text().catch(() => '삭제 요청 실패')
-    throw new Error(text)
-  }
-}
-
-// ── Helpers ──────────────────────────────────────────────
+// ── UI Helpers ────────────────────────────────────────────
 
 export function credentialTypeLabel(type: CredentialType): string {
   switch (type) {
@@ -118,43 +103,8 @@ export function credentialStateBadgeClass(state: CredentialState | null | undefi
   }
 }
 
-export function sanitizeOptionalString(value: string | null | undefined): string | null {
-  const trimmed = value?.trim() ?? ''
-  return trimmed === '' ? null : trimmed
-}
-
-function shellQuote(value: string): string {
-  return `'${value.split("'").join("'\\''")}'`
-}
-
-export function githubLoginCommand(ghConfigDir: string | null | undefined): string | null {
-  const dir = sanitizeOptionalString(ghConfigDir)
-  if (!dir) return null
-  return `GH_CONFIG_DIR=${shellQuote(dir)} gh auth login --hostname github.com --git-protocol https --web --clipboard`
-}
-
-export function buildCredentialCreateRequest(payload: CredentialCreatePayload): Record<string, unknown> {
-  const ghConfigDir = sanitizeOptionalString(payload.gh_config_dir)
-  const sshKeyPath = sanitizeOptionalString(payload.ssh_key_path)
-  const gpgKeyId = sanitizeOptionalString(payload.gpg_key_id)
-  const oauthMethod =
-    payload.type === 'github'
-      ? payload.oauth_method === 'with_token' ? 'with_token' : 'web'
-      : 'web'
-  return {
-    id: payload.id.trim(),
-    cred_type: payload.type,
-    username: (payload.username || payload.name).trim(),
-    gh_config_dir: ghConfigDir,
-    ssh_key_path: sshKeyPath,
-    gpg_key_id: gpgKeyId,
-    oauth_method: oauthMethod,
-    token: oauthMethod === 'with_token' ? sanitizeOptionalString(payload.token) : null,
-  }
-}
-
 function resetAddDraft() {
-  addDraft.value = { id: '', name: '', username: '', type: 'github', oauth_method: 'web', description: '' }
+  addDraft.value = { id: '', name: '', username: '', type: 'github', oauth_method: DEFAULT_OAUTH_METHOD, description: '' }
   saveError.value = null
 }
 
@@ -255,7 +205,7 @@ export function CredentialSettings() {
         gh_config_dir: sanitizeOptionalString(draft.gh_config_dir),
         ssh_key_path: sanitizeOptionalString(draft.ssh_key_path),
         gpg_key_id: sanitizeOptionalString(draft.gpg_key_id),
-        oauth_method: draft.oauth_method ?? 'web',
+        oauth_method: draft.oauth_method ?? DEFAULT_OAUTH_METHOD,
         token: sanitizeOptionalString(draft.token),
         description: draft.description?.trim() || undefined,
       })
@@ -287,8 +237,6 @@ export function CredentialSettings() {
     }
   }
 
-  const btnBase = 'py-1.5 px-4 rounded-[var(--r-1)] text-xs font-semibold cursor-pointer border-none'
-  const fieldStyle = 'w-full bg-card/60 backdrop-blur-sm text-text-strong text-sm border border-card-border rounded-[var(--r-1)] py-2 px-3 font-sans focus:outline-none focus:border-accent-fg/50 focus:ring-1 focus:ring-accent-fg/50 transition-[border-color,box-shadow] duration-[var(--t-med)] shadow-inset'
   const helperStyle = 'mt-1 text-3xs leading-relaxed text-text-dim'
 
   return html`
@@ -297,7 +245,7 @@ export function CredentialSettings() {
         <h2 class="text-sm font-bold text-text-strong">크리덴셜 관리</h2>
         <button
           type="button"
-          class="${btnBase} bg-[var(--purple)] text-[var(--color-bg-0)]"
+          class="${BTN_FILLED_BASE} bg-[var(--purple)] text-[var(--color-bg-0)]"
           onClick=${() => {
             showAddForm.value = !isAdding
             if (!isAdding) resetAddDraft()
@@ -315,7 +263,7 @@ export function CredentialSettings() {
               <label class="block text-2xs font-semibold uppercase tracking-wider text-text-muted mb-1.5">ID</label>
               <input
                 type="text"
-                class="${fieldStyle}"
+                class="${FIELD_STYLE_BASE}"
                 placeholder="my-credential"
                 value=${draft.id}
                 onInput=${(e: Event) => { addDraft.value = { ...draft, id: (e.target as HTMLInputElement).value } }}
@@ -325,7 +273,7 @@ export function CredentialSettings() {
               <label class="block text-2xs font-semibold uppercase tracking-wider text-text-muted mb-1.5">이름</label>
               <input
                 type="text"
-                class="${fieldStyle}"
+                class="${FIELD_STYLE_BASE}"
                 placeholder="선택 사항"
                 value=${draft.name}
                 onInput=${(e: Event) => { addDraft.value = { ...draft, name: (e.target as HTMLInputElement).value } }}
@@ -335,7 +283,7 @@ export function CredentialSettings() {
               <label class="block text-2xs font-semibold uppercase tracking-wider text-text-muted mb-1.5">사용자명</label>
               <input
                 type="text"
-                class="${fieldStyle}"
+                class="${FIELD_STYLE_BASE}"
                 placeholder="github-user"
                 value=${draft.username}
                 onInput=${(e: Event) => { addDraft.value = { ...draft, username: (e.target as HTMLInputElement).value } }}
@@ -344,14 +292,14 @@ export function CredentialSettings() {
             <div>
               <label class="block text-2xs font-semibold uppercase tracking-wider text-text-muted mb-1.5">타입</label>
               <select
-                class="${fieldStyle}"
+                class="${FIELD_STYLE_BASE}"
                 value=${draft.type}
                 onChange=${(e: Event) => {
                   const nextType = coerceCredentialType((e.target as HTMLSelectElement).value)
                   addDraft.value = {
                     ...draft,
                     type: nextType,
-                    oauth_method: nextType === 'github' ? draft.oauth_method ?? 'web' : 'web',
+                    oauth_method: nextType === 'github' ? draft.oauth_method ?? DEFAULT_OAUTH_METHOD : DEFAULT_OAUTH_METHOD,
                     token: nextType === 'github' ? draft.token ?? '' : '',
                   }
                 }}
@@ -365,12 +313,12 @@ export function CredentialSettings() {
               <div>
                 <label class="block text-2xs font-semibold uppercase tracking-wider text-text-muted mb-1.5">gh login</label>
                 <select
-                  class="${fieldStyle}"
-                  value=${draft.oauth_method ?? 'web'}
+                  class="${FIELD_STYLE_BASE}"
+                  value=${draft.oauth_method ?? DEFAULT_OAUTH_METHOD}
                   onChange=${(e: Event) => {
                     addDraft.value = {
                       ...draft,
-                      oauth_method: (e.target as HTMLSelectElement).value === 'with_token' ? 'with_token' : 'web',
+                      oauth_method: (e.target as HTMLSelectElement).value === 'with_token' ? 'with_token' : DEFAULT_OAUTH_METHOD,
                     }
                   }}
                 >
@@ -382,7 +330,7 @@ export function CredentialSettings() {
                 <label class="block text-2xs font-semibold uppercase tracking-wider text-text-muted mb-1.5">GH_CONFIG_DIR</label>
                 <input
                   type="text"
-                  class="${fieldStyle}"
+                  class="${FIELD_STYLE_BASE}"
                   placeholder="base_path/.masc/github-identities/<credential-id>/gh"
                   value=${draft.gh_config_dir ?? ''}
                   onInput=${(e: Event) => { addDraft.value = { ...draft, gh_config_dir: (e.target as HTMLInputElement).value } }}
@@ -393,7 +341,7 @@ export function CredentialSettings() {
                 <div>
                   <label class="block text-2xs font-semibold uppercase tracking-wider text-text-muted mb-1.5">Token</label>
                   <textarea
-                    class="${fieldStyle} min-h-20 resize-y"
+                    class="${FIELD_STYLE_BASE} min-h-20 resize-y"
                     placeholder="gh auth login --with-token 입력값"
                     value=${draft.token ?? ''}
                     onInput=${(e: Event) => { addDraft.value = { ...draft, token: (e.target as HTMLTextAreaElement).value } }}
@@ -406,7 +354,7 @@ export function CredentialSettings() {
                 <label class="block text-2xs font-semibold uppercase tracking-wider text-text-muted mb-1.5">SSH key path</label>
                 <input
                   type="text"
-                  class="${fieldStyle}"
+                  class="${FIELD_STYLE_BASE}"
                   placeholder="base_path/.masc/github-identities/<credential-id>/ssh/id_ed25519"
                   value=${draft.ssh_key_path ?? ''}
                   onInput=${(e: Event) => { addDraft.value = { ...draft, ssh_key_path: (e.target as HTMLInputElement).value } }}
@@ -417,7 +365,7 @@ export function CredentialSettings() {
               <label class="block text-2xs font-semibold uppercase tracking-wider text-text-muted mb-1.5">GPG key id</label>
               <input
                 type="text"
-                class="${fieldStyle}"
+                class="${FIELD_STYLE_BASE}"
                 placeholder="선택 사항"
                 value=${draft.gpg_key_id ?? ''}
                 onInput=${(e: Event) => { addDraft.value = { ...draft, gpg_key_id: (e.target as HTMLInputElement).value } }}
@@ -427,7 +375,7 @@ export function CredentialSettings() {
               <label class="block text-2xs font-semibold uppercase tracking-wider text-text-muted mb-1.5">설명</label>
               <input
                 type="text"
-                class="${fieldStyle}"
+                class="${FIELD_STYLE_BASE}"
                 placeholder="선택 사항"
                 value=${draft.description ?? ''}
                 onInput=${(e: Event) => { addDraft.value = { ...draft, description: (e.target as HTMLInputElement).value } }}
@@ -437,7 +385,7 @@ export function CredentialSettings() {
             <div class="flex gap-2 mt-1">
               <button
                 type="button"
-                class="${btnBase} bg-[var(--color-status-ok)] text-[var(--color-fg-on-ok)]"
+                class="${BTN_FILLED_BASE} bg-[var(--color-status-ok)] text-[var(--color-fg-on-ok)]"
                 onClick=${handleSave}
                 disabled=${isSaving}
               >
@@ -445,7 +393,7 @@ export function CredentialSettings() {
               </button>
               <button
                 type="button"
-                class="${btnBase} bg-[var(--color-bg-hover)] text-text-body"
+                class="${BTN_FILLED_BASE} bg-[var(--color-bg-hover)] text-text-body"
                 onClick=${() => { showAddForm.value = false; resetAddDraft() }}
               >
                 취소

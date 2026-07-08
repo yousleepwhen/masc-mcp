@@ -20,14 +20,11 @@ async function loadPanel() {
   vi.doMock('./governance', () => ({
     Governance: () => html`<div data-testid="governance">Governance</div>`,
   }))
-  vi.doMock('./connector-status', () => ({
-    ConnectorStatusPanel: () => html`<div data-testid="connectors">Connectors</div>`,
-  }))
   vi.doMock('./lab-inspector', () => ({
     LabInspector: () => html`<div data-testid="inspector">Inspector</div>`,
   }))
-  vi.doMock('./safe-autonomy', () => ({
-    SafeAutonomyPanel: () => html`<div data-testid="safety">Safety</div>`,
+  vi.doMock('./surface-readiness-panel', () => ({
+    SurfaceReadinessPanel: () => html`<div data-testid="surfaces">Surfaces</div>`,
   }))
   return import('./operations-panel')
 }
@@ -50,19 +47,18 @@ describe('OperationsPanel', () => {
     vi.doUnmock('../router')
     vi.doUnmock('./ops')
     vi.doUnmock('./governance')
-    vi.doUnmock('./connector-status')
     vi.doUnmock('./lab-inspector')
-    vi.doUnmock('./safe-autonomy')
+    vi.doUnmock('./surface-readiness-panel')
   })
 
-  it('renders Ops, Governance, and Safety when view is not set (default)', async () => {
+  it('renders Ops, Governance, and Surfaces when view is not set (default)', async () => {
     const { OperationsPanel } = await loadPanel()
     render(html`<${OperationsPanel} />`, container)
     await flushUi()
 
     expect(container.textContent).toContain('Ops')
     expect(container.textContent).toContain('Governance')
-    expect(container.textContent).toContain('Safety')
+    expect(container.textContent).toContain('Surfaces')
   })
 
   it('renders only Ops when view is ops', async () => {
@@ -73,7 +69,7 @@ describe('OperationsPanel', () => {
 
     expect(container.querySelector('[data-testid="ops"]')).not.toBeNull()
     expect(container.querySelector('[data-testid="governance"]')).toBeNull()
-    expect(container.querySelector('[data-testid="safety"]')).toBeNull()
+    expect(container.querySelector('[data-testid="surfaces"]')).toBeNull()
   })
 
   it('renders only Governance when view is governance', async () => {
@@ -84,10 +80,21 @@ describe('OperationsPanel', () => {
 
     expect(container.textContent).not.toContain('Ops')
     expect(container.textContent).toContain('Governance')
-    expect(container.querySelector('[data-testid="safety"]')).toBeNull()
+    expect(container.querySelector('[data-testid="surfaces"]')).toBeNull()
   })
 
-  it('renders FilterChips options without legacy connectors view', async () => {
+  it('renders only Surface Readiness when view is surfaces', async () => {
+    route.value.params = { section: 'operations', view: 'surfaces' }
+    const { OperationsPanel } = await loadPanel()
+    render(html`<${OperationsPanel} />`, container)
+    await flushUi()
+
+    expect(container.querySelector('[data-testid="ops"]')).toBeNull()
+    expect(container.querySelector('[data-testid="governance"]')).toBeNull()
+    expect(container.querySelector('[data-testid="surfaces"]')).not.toBeNull()
+  })
+
+  it('renders FilterChips options for the current operations views', async () => {
     const { OperationsPanel } = await loadPanel()
     render(html`<${OperationsPanel} />`, container)
     await flushUi()
@@ -99,9 +106,8 @@ describe('OperationsPanel', () => {
     expect(labels).toContain('All')
     expect(labels).toContain('Intervene')
     expect(labels).toContain('Governance')
-    expect(labels).toContain('Safety')
+    expect(labels).toContain('Surfaces')
     expect(labels).toContain('Inspector')
-    expect(labels).not.toContain('Connectors')
   })
 
   it('falls back to default for unknown view param', async () => {
@@ -112,7 +118,7 @@ describe('OperationsPanel', () => {
 
     expect(container.textContent).toContain('Ops')
     expect(container.textContent).toContain('Governance')
-    expect(container.querySelector('[data-testid="safety"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="surfaces"]')).not.toBeNull()
   })
 
   it('marks the active chip with aria-selected=true', async () => {

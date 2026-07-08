@@ -1,7 +1,7 @@
 # RFC-0035: Cognitive IDE Master Plan Integration
 
-- **Status**: Draft
-- **Author**: Claude (autonomous, /loop iteration 1)
+- **Status**: Active (PR-3 row updates show #13768/#13773/#13779/#13797 merged; #13781 event-stream-gradient-attraction still open per body table.)
+- **Author**: Agent-LLM-A (autonomous, /loop iteration 1)
 - **Created**: 2026-05-06
 - **Source basis**: self-contained summary of the operator-provided Master
   Report (137KB / 3417 lines / 12 chapters / 11 dimensions). This RFC records
@@ -70,14 +70,14 @@ further code is written.
 | 01 | Temporal Synchronization | dashboard | `dashboard/.../event-stream-temporal-sync*` | merged (#13779) |
 | 01 | **Semantic Gravity** (ranking, backend) | **lib** | `lib/cognitive_gravity.ml` | merged (PR-1, #13797) |
 | 01 | Semantic Gravity (dashboard renderer) | dashboard | `dashboard/src/components/common/event-stream*` | merged (#13800) |
-| 01 | Intentional Projection (backend) | lib | `lib/intentional_projection.ml` | in-flight (PR-2, #13821) |
+| 01 | Intentional Projection (backend) | lib | `lib/intentional_projection.ml` | merged (PR-2, #13821) |
 | 01 | Intentional Projection (dashboard renderer) | dashboard | `dashboard/src/components/common/event-stream*` | merged (#13800) |
-| 02 | Chronicle data model | lib + dashboard | `lib/chronicle_event.ml` (TBD), `dashboard/.../chronicle-navigator*` (#13823 read model) | partial (P1, dashboard read model only) |
+| 02 | Chronicle data model | lib + dashboard | `lib/chronicle_event.ml` (PR-4, in-flight), `dashboard/.../chronicle-navigator*` (#13823 read model, merged) | in-flight (PR-4 lib) |
 | 02 | Librarian RAG pipeline | lib + adapters | TBD; reuse `pgvector` infra | deferred (P1) |
 | 03 | Code-Plan Alignment metrics | lib | `lib/alignment_score*.ml` (TBD) | deferred (P2) |
 | 04 | Category-theoretic code analysis | lib + ppx | TBD | deferred (P3) |
 | 05 | Design Metrology (color/layout drift) | tooling | likely in `dashboard/` test harness | deferred (P2) |
-| 06 | FSM-based Tools / Structured Bash | lib | overlaps with `keeper_shell_*`, `tool_*` | partial — already exists, audit pending |
+| 06 | FSM-based Tools / Structured Execute | lib | overlaps with `agent_tool_execute_*`, `tool_*` | partial — already exists, audit pending |
 | 07 | Transformer→IDE direct mapping | dashboard | overlaps with cockpit | deferred (P3) |
 | 08 | Minority opinion (1..N agents) | lib | overlaps with `cascade_*` | partial — already exists |
 | 09 | Goal-driven design | lib | overlaps with `goal_loop`, `goals.json` | partial — already exists |
@@ -142,11 +142,11 @@ PR-1 is mergeable only if all of the following hold:
 | PR | Topic | Confidence tier | Status |
 |----|-------|-----------------|--------|
 | PR-1 | `cognitive_gravity` ranker | P0 | merged (#13797) |
-| PR-2 | `intentional_projection` ranker | P0 | in-flight (#13821) |
-| PR-3 | bump 0.19.12 → 0.19.13 + this RFC refresh | chore | in-flight (this PR) |
-| PR-4 | `chronicle_event` data model | P1 | not started |
-| PR-5 | Librarian retriever (lib only) | P1 | not started |
-| PR-6 | Alignment score metric backbone | P2 | not started |
+| PR-2 | `intentional_projection` ranker | P0 | merged (#13821) |
+| PR-3 | bump 0.19.12 → 0.19.13 + this RFC refresh | chore | merged (#13841) |
+| PR-4 | `chronicle_event` data model | P1 | merged (#13937) |
+| PR-5 | `chronicle_librarian` retriever (lib only) | P1 | in-flight (#13944) |
+| PR-6 | `alignment_score` metric backbone (Dim03 P2) | P2 | in-flight (this PR) |
 
 PR-4 onward will be sequenced in further `/loop` iterations and will not be
 opened in parallel.

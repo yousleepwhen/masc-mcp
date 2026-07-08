@@ -58,9 +58,21 @@ val gate_decision_to_string : gate_decision -> string
 
 val gate_decision_is_rejection : gate_decision -> bool
 
+(** Log severity for repeated gate rejections.  The first sighting stays WARN;
+    repeated sightings downgrade so a bad plan does not flood WARN logs every
+    keeper cycle. *)
+type gate_rejection_log_severity =
+  | Gate_rejection_first_warn
+  | Gate_rejection_repeat_info of int
+  | Gate_rejection_repeat_debug of int
+
+val gate_rejection_log_severity_to_string :
+  gate_rejection_log_severity -> string
+
 (** Telemetry payload reported to the gate observer. *)
 type gate_decision_event =
   { stage : string
+  ; keeper_name : string
   ; decision : gate_decision
   ; reason_code : string
   ; reason_text : string
@@ -77,7 +89,10 @@ type gate_decision_event =
 val ignore_gate_decision : gate_decision_event -> unit
 
 (** Invoke [on_gate_decision] with [event]; logs and swallows
-    non-cancel exceptions. *)
+    non-cancel exceptions.  Observer-failure warnings include
+    [keeper=<name>] so log readers can attribute failures by keeper;
+    dashboard/microlog integrations should use metric labels or event
+    payloads instead of parsing this warning line. *)
 val notify_gate_decision :
   (gate_decision_event -> unit) -> gate_decision_event -> unit
 
@@ -168,8 +183,8 @@ val cost_guard :
   max_cost_usd:float option ->
   Agent_sdk.Hooks.hooks
 
-(** Destructive-pattern detection for tools flagged by
-    [Tool_dispatch.is_destructive]; runs only when [enabled]. *)
+(** Destructive-pattern detection for tools flagged by descriptor-aware
+    capability projection; runs only when [enabled]. *)
 val destructive_guard :
   meta_ref:Keeper_types.keeper_meta ref ->
   on_gate_decision:(gate_decision_event -> unit) ->
@@ -198,3 +213,19 @@ val build_chain :
   pre_tool_use_guard:
     (tool_name:string -> input:Yojson.Safe.t -> string option) ->
   Agent_sdk.Hooks.hooks
+
+module For_testing : sig
+  val reset_gate_rejection_log_counts : unit -> unit
+
+  val record_gate_rejection_log_severity :
+    ?reason_key:string ->
+    keeper_name:string ->
+    stage:string ->
+    tool_name:string ->
+    reason_code:string ->
+    unit ->
+    gate_rejection_log_severity
+
+  val planner_alternative_for_gate :
+    stage:string -> tool_name:string -> string
+end

@@ -2,9 +2,10 @@
 
 import { html } from 'htm/preact'
 import { useEffect } from 'preact/hooks'
-import { navigate } from '../router'
 import { formatPct1 } from '../lib/format-number'
-import { Card } from './common/card'
+import { formatTimestampKo } from '../lib/format-time'
+import { assertExhaustive } from '../lib/exhaustive'
+import { SectionCard } from './common/card'
 import { SectionCap } from './common/section-cap'
 import { MermaidGraph } from './common/mermaid-graph'
 import { KpiStripIsland, type KpiStripIslandData } from './kpi-strip-island'
@@ -13,8 +14,6 @@ import {
   loadHarnessHealth,
   clearHarnessReloadTimer,
   handleHarnessSSE,
-  resetHarnessHealthState,
-  refreshHarnessSurface,
 } from './harness-health-state'
 import type {
   RailStatus,
@@ -23,7 +22,6 @@ import type {
 import {
   railStatusLabel,
   freshnessLabel,
-  formatTimestamp,
   heroTitle,
   heroBody,
   railDetail,
@@ -37,8 +35,6 @@ import {
   PreCompactList,
   HandoffList,
 } from './harness-health-sections'
-
-export { resetHarnessHealthState, refreshHarnessSurface }
 
 // ── Mermaid flow helpers (live state graph) ──
 // Mermaid classDef requires literal hex values — CSS vars are not resolved.
@@ -73,9 +69,9 @@ function railTitle(rail: HarnessRailKey): string {
     case 'pre_compact':
       return '압축 전 상태'
     case 'handoff':
-    default:
       return '세대 교체'
   }
+  return assertExhaustive(rail, 'HarnessRailKey')
 }
 
 function railEventAt(data: HarnessHealthData, rail: HarnessRailKey): number | null {
@@ -85,9 +81,9 @@ function railEventAt(data: HarnessHealthData, rail: HarnessRailKey): number | nu
     case 'pre_compact':
       return data.overview.pre_compact_last_event_at
     case 'handoff':
-    default:
       return data.overview.handoff_last_event_at
   }
+  return assertExhaustive(rail, 'HarnessRailKey')
 }
 
 function activeRail(data: HarnessHealthData): HarnessRailKey | null {
@@ -113,6 +109,11 @@ function flowNodeLabel(title: string, status: RailStatus, detail: string, freshn
   return escapeMermaidLabel(`${title}<br/>${railStatusLabel(status)}<br/>${detail}<br/>최근 ${freshness}`)
 }
 
+// See harness-health-sections.ts comment above railStatusLabel for why
+// the `idle: default:` pattern is preserved on RailStatus consumers
+// despite the FSM exhaustive-match anti-pattern: wire data arrives via
+// type assertion at the API boundary, so the default is load-bearing
+// until a `membershipParse<RailStatus>` boundary parser RFC lands.
 function flowStatusClass(status: RailStatus): string {
   switch (status) {
     case 'healthy':
@@ -278,11 +279,6 @@ export function HarnessHealth() {
                 class="rounded-[var(--r-1)] border border-[var(--color-border-default)] px-2.5 py-1 text-2xs text-[var(--color-fg-muted)] transition-colors hover:border-[var(--color-accent-fg)] hover:text-[var(--color-fg-primary)]"
                 onClick=${() => { void loadHarnessHealth() }}
               >새로고침</button>
-              <button
-                type="button"
-                class="rounded-[var(--r-1)] border border-[var(--color-border-default)] px-2.5 py-1 text-2xs text-[var(--color-fg-muted)] transition-colors hover:border-[var(--ok-30)] hover:text-[var(--color-fg-primary)]"
-                onClick=${() => navigate('lab', { section: 'autoresearch' })}
-              >오토리서치 보기</button>
             </div>
           </div>
 
@@ -308,7 +304,7 @@ export function HarnessHealth() {
           </div>
 
           <div class="mt-4 text-xs text-[var(--color-fg-disabled)]">
-            generated ${formatTimestamp(data.generated_at)} · 마지막 안전 신호 ${freshnessLabel(data.overview.last_signal_at)}
+            generated ${formatTimestampKo(data.generated_at)} · 마지막 안전 신호 ${freshnessLabel(data.overview.last_signal_at)}
           </div>
         </div>
 
@@ -323,11 +319,11 @@ export function HarnessHealth() {
 
   return html`
     <div class="space-y-4">
-      <${Card} title="안전 감시" class="section">
+      <${SectionCard} label="안전 감시" class="section">
         ${overviewContent}
       <//>
 
-      <${Card} title="감시 흐름도" class="section">
+      <${SectionCard} label="감시 흐름도" class="section">
         ${!data || !flowSource ? html`
           <${EmptySignal} text="감시 흐름 데이터가 없습니다." />
         ` : html`
@@ -335,7 +331,7 @@ export function HarnessHealth() {
         `}
       <//>
 
-      <${Card} title="평가 모델 건강도" class="section">
+      <${SectionCard} label="평가 모델 건강도" class="section">
         ${!data || !cal ? html`
           <${EmptySignal} text="평가 모델 데이터가 없습니다." />
         ` : html`
@@ -400,7 +396,7 @@ export function HarnessHealth() {
         `}
       <//>
 
-      <${Card} title="압축 전 상태" class="section">
+      <${SectionCard} label="압축 전 상태" class="section">
         ${!data ? html`
           <${EmptySignal} text="압축 전 상태 데이터가 없습니다." />
         ` : html`
@@ -440,7 +436,7 @@ export function HarnessHealth() {
         `}
       <//>
 
-      <${Card} title="세대 교체 기록" class="section">
+      <${SectionCard} label="세대 교체 기록" class="section">
         ${!data ? html`
           <${EmptySignal} text="세대 교체 데이터가 없습니다." />
         ` : html`

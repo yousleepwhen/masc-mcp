@@ -7,12 +7,12 @@ module RL = Keeper_approval_queue
 
 (** Extract a routine action from a tool input JSON.
 
-    Tools in the allowlist use either an [op] key (keeper_shell,
-    keeper_bash) or an [action] key (masc_transition family); we
+    Tools in the allowlist use either an [op] key (structured search /
+    Execute family) or an [action] key (masc_transition family); we
     accept both so a single rule type can describe both surfaces.
     Prefer [op] when it is present because shell execution semantics
     come from [op], and an unrelated [action] key must not be able to
-    mask a dangerous shell op. *)
+      mask a dangerous command op. *)
 let action_of_input (input : Yojson.Safe.t) : string option =
   let trimmed_lc raw =
     let s = String.trim raw in
@@ -54,9 +54,9 @@ type rule = {
     - destructive force_* actions (these are classified Critical via
       "force" pattern and stopped by [auto_approval_forbidden] anyway,
       but listing them here would be a defense-in-depth hole);
-    - shell or git tools except exact, op-backed keeper routines such as
-      [keeper_shell op=git_clone];
-    - high/critical-risk tools.
+    - shell or git tools;
+    - broad high/critical-risk tools. The path-aware sandbox worktree code
+      write exception lives below, outside this static table.
     *)
 let rules : rule list =
   [
@@ -89,6 +89,12 @@ let rules : rule list =
       label = "keeper_routine.keeper_task_claim";
     };
     {
+      tool = "keeper_task_create";
+      max_risk = RL.Medium;
+      allowed_actions = None;
+      label = "keeper_routine.keeper_task_create";
+    };
+    {
       tool = "keeper_task_done";
       max_risk = RL.Medium;
       allowed_actions = None;
@@ -101,20 +107,30 @@ let rules : rule list =
       label = "keeper_routine.keeper_task_submit_for_verification";
     };
 
-    (* PR-E (Plan v3 Leak 3): keeper_shell op=git_clone is the canonical
-       way for a keeper to bring its work tree into the docker sandbox.
-       Without this rule the [keeper_shell] tool name itself trips
-       Governance.destructive_tool_or_op (the "shell" substring filter)
-       and every git_clone is queued for operator approval, even though
-       the [op] is one of the safest possible.  Narrow the allowlist to
-       just [op=git_clone]; force_*, sh -c, and write-side ops still
-       pass through the standard approval path. *)
+    (* Goal Store routine planning/proof surface. Lifecycle decisions that
+       assert operator authority or drop goals stay High and are not listed
+       here; routine upserts, completion requests, pause/resume/reopen, and
+       verifier votes may proceed through the keeper path. *)
     {
-      tool = "keeper_shell";
+      tool = "masc_goal_upsert";
       max_risk = RL.Medium;
-      allowed_actions = Some [ "git_clone" ];
-      label = "keeper_routine.keeper_shell.git_clone";
+      allowed_actions = None;
+      label = "keeper_routine.masc_goal_upsert";
     };
+    {
+      tool = "masc_goal_transition";
+      max_risk = RL.Medium;
+      allowed_actions =
+        Some [ "request_complete"; "pause"; "resume"; "reopen" ];
+      label = "keeper_routine.masc_goal_transition";
+    };
+    {
+      tool = "masc_goal_verify";
+      max_risk = RL.Medium;
+      allowed_actions = None;
+      label = "keeper_routine.masc_goal_verify";
+    };
+
   ]
 
 (* ── Matching ─────────────────────────────────────────────── *)
@@ -143,6 +159,57 @@ let rule_label ~tool_name ~input ~risk_level =
   Option.map
     (fun (rule : rule) -> rule.label)
     (find_rule ~tool_name ~input ~risk_level)
+
+let known_code_write_tool tool_name =
+  match String.lowercase_ascii (String.trim tool_name) with
+  | "writefile"
+  | "editfile"
+  | "tool_edit_file"
+  | "tool_write_file" -> true
+  | _ -> false
+
+let first_nonempty_string_field keys = function
+  | `Assoc fields ->
+    List.find_map
+      (fun key ->
+         match List.assoc_opt key fields with
+         | Some (`String value) ->
+           let trimmed = String.trim value in
+           if String.equal trimmed "" then None else Some trimmed
+         | _ -> None)
+      keys
+  | _ -> None
+
+
+let path_has_git_dir path =
+  String.equal (Filename.basename path) ".git" || String_util.contains_substring path "/.git/"
+
+let sandbox_worktree_code_path path =
+  String_util.contains_substring path "/repos/"
+  && String_util.contains_substring path "/.worktrees/"
+  && not (path_has_git_dir path)
+
+let sandboxed_code_write_rule_label
+      ~(config : Coord.config)
+      ~(meta : Keeper_types.keeper_meta)
+      ~tool_name
+      ~input
+      ~risk_level
+  =
+  if (not (known_code_write_tool tool_name))
+     || RL.risk_level_to_int risk_level > RL.risk_level_to_int RL.High
+     || Option.is_none meta.current_task_id
+  then None
+  else (
+    match first_nonempty_string_field [ "file_path"; "path"; "target_path" ] input with
+    | None -> None
+    | Some raw_path ->
+      (match Agent_tool_shared_runtime.resolve_keeper_path ~config ~meta ~raw_path with
+       | Error _ -> None
+       | Ok resolved ->
+         if sandbox_worktree_code_path resolved
+         then Some "keeper_routine.sandbox_worktree_code_write"
+         else None))
 
 (* ── Observability ────────────────────────────────────────── *)
 

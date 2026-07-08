@@ -1,8 +1,8 @@
-(** Tests for the autonomy liberation refactoring (Phases 1-5). *)
+(** Tests for the autonomy liberation refactoring (Phases 2-5). *)
 
-module Spawn = Masc_mcp.Spawn
 module Agent_tool_surfaces = Masc_mcp.Agent_tool_surfaces
 module Keeper_deliberation = Masc_mcp.Keeper_deliberation
+module Prometheus = Masc_mcp.Prometheus
 
 (* New modules may not be visible via Masc_mcp wrapper in large libraries
    due to dune's incremental wrapper compilation. Use internal names. *)
@@ -20,15 +20,6 @@ let contains_s haystack needle =
       if not !found && String.sub haystack i nl = needle then found := true
     done;
     !found
-
-(* ── Phase 1: Protocol Liberation ─────────────────────────────── *)
-
-let test_lifecycle_no_strict () =
-  let suffix = String.lowercase_ascii Spawn.masc_lifecycle_suffix in
-  Alcotest.(check bool) "no 'strictly'" false (contains_s suffix "strictly");
-  Alcotest.(check bool) "no 'you must'" false (contains_s suffix "you must");
-  Alcotest.(check bool) "contains 'capabilities'" true
-    (contains_s suffix "capabilities")
 
 (* ── Phase 2: Tool Discovery ──────────────────────────────────── *)
 
@@ -90,6 +81,75 @@ let test_team_context_prompt_section () =
   Alcotest.(check bool) "contains workers" true
     (contains_s section "worker-1")
 
+let rec rm_rf path =
+  if Sys.file_exists path then
+    if Sys.is_directory path then begin
+      Sys.readdir path
+      |> Array.iter (fun name -> rm_rf (Filename.concat path name));
+      Unix.rmdir path
+    end else
+      Sys.remove path
+
+let temp_base_path prefix =
+  Filename.concat (Filename.get_temp_dir_name ())
+    (Printf.sprintf "%s-%d-%d" prefix (Unix.getpid ()) (Random.bits ()))
+
+let write_file path content =
+  let rec mkdir_p dir =
+    if dir = "" || dir = "." || dir = "/" then ()
+    else if Sys.file_exists dir then ()
+    else begin
+      mkdir_p (Filename.dirname dir);
+      Unix.mkdir dir 0o755
+    end
+  in
+  mkdir_p (Filename.dirname path);
+  let oc = open_out path in
+  Fun.protect
+    ~finally:(fun () -> close_out_noerr oc)
+    (fun () -> output_string oc content)
+
+let team_context_drop_value reason =
+  Prometheus.metric_value_or_zero Prometheus.metric_persistence_read_drops
+    ~labels:[("surface", "team_context_findings"); ("reason", reason)]
+    ()
+
+let test_team_context_load_findings_records_drop_metrics () =
+  let base_path = temp_base_path "test-team-context-drops" in
+  Fun.protect
+    ~finally:(fun () -> rm_rf base_path)
+    (fun () ->
+      let path =
+        Filename.concat
+          (Filename.concat base_path Common.masc_dirname)
+          "shared_findings.jsonl"
+      in
+      let entry_error = Safe_ops.persistence_read_drop_reason_entry_load_error in
+      let invalid_payload = Safe_ops.persistence_read_drop_reason_invalid_payload in
+      let before_entry_error = team_context_drop_value entry_error in
+      let before_invalid_payload = team_context_drop_value invalid_payload in
+      write_file path
+        (String.concat "\n"
+           [
+             Yojson.Safe.to_string
+               (`Assoc
+                 [
+                   ("worker", `String "w1");
+                   ("finding", `String "valid finding");
+                 ]);
+             "{not-json";
+             Yojson.Safe.to_string (`Assoc [("worker", `String "w2")]);
+           ]
+        ^ "\n");
+      let findings = Team_context.load_findings ~base_path in
+      Alcotest.(check int) "valid finding survives" 1 (List.length findings);
+      Alcotest.(check bool) "valid finding content" true
+        (List.exists (fun f -> contains_s f "valid finding") findings);
+      Alcotest.(check (float 0.001)) "malformed json increments entry error"
+        1.0 (team_context_drop_value entry_error -. before_entry_error);
+      Alcotest.(check (float 0.001)) "missing finding increments invalid payload"
+        1.0 (team_context_drop_value invalid_payload -. before_invalid_payload))
+
 (* ── Phase 4: Prompt Composer ─────────────────────────────────── *)
 
 let test_compose_identity () =
@@ -124,31 +184,6 @@ let test_compose_available_tools () =
   in
   Alcotest.(check bool) "has tool_a" true (contains_s result "tool_a");
   Alcotest.(check bool) "has tool_b" true (contains_s result "tool_b")
-
-(* ── Phase 5: Autonomous Collaboration ────────────────────────── *)
-
-let test_start_discussion_action () =
-  let action =
-    Keeper_deliberation.StartDiscussion
-      { topic = "architecture"; context = "reviewing module X" }
-  in
-  let s = Keeper_deliberation.deliberation_action_to_string action in
-  Alcotest.(check bool) "contains topic" true (contains_s s "architecture");
-  let policy_label = Keeper_deliberation.deliberation_action_to_policy_label action in
-  Alcotest.(check string) "policy label" "start_discussion" policy_label
-
-let test_share_finding_action () =
-  let action =
-    Keeper_deliberation.ShareFinding
-      { finding = "module Y has a race condition"; source = "code review" }
-  in
-  let json = Keeper_deliberation.deliberation_action_to_json action in
-  let open Yojson.Safe.Util in
-  let typ = json |> member "type" |> to_string in
-  Alcotest.(check string) "json type" "share_finding" typ;
-  let finding_val = json |> member "finding" |> to_string in
-  Alcotest.(check bool) "json finding" true
-    (contains_s finding_val "race condition")
 
 (* ── Phase 2 Integration: End-to-End Wiring ─────────────────── *)
 
@@ -249,11 +284,6 @@ let test_scope_default_unchanged () =
 let () =
   Alcotest.run "Autonomy Liberation"
     [
-      ( "phase1_protocol",
-        [
-          Alcotest.test_case "lifecycle no strict/MUST" `Quick
-            test_lifecycle_no_strict;
-        ] );
       ( "phase2_tool_discovery",
         [
           Alcotest.test_case "worker catalog" `Quick
@@ -268,6 +298,8 @@ let () =
           Alcotest.test_case "empty context" `Quick test_team_context_empty;
           Alcotest.test_case "prompt section" `Quick
             test_team_context_prompt_section;
+          Alcotest.test_case "load findings drop metrics" `Quick
+            test_team_context_load_findings_records_drop_metrics;
         ] );
       ( "phase4_prompt_composer",
         [
@@ -277,12 +309,6 @@ let () =
             test_compose_empty_sections_omitted;
           Alcotest.test_case "available tools" `Quick
             test_compose_available_tools;
-        ] );
-      ( "phase5_collaboration",
-        [
-          Alcotest.test_case "start discussion" `Quick
-            test_start_discussion_action;
-          Alcotest.test_case "share finding" `Quick test_share_finding_action;
         ] );
       ( "phase2_integration",
         [

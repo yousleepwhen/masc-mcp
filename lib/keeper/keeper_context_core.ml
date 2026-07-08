@@ -1,863 +1,12 @@
-(** Keeper_context_core — shared keeper context utilities: working context,
-    checkpoint management, serialization, and OAS checkpoint operations.
+(** Keeper_context_core — shared keeper context utilities.
 
-    Working context types live in {!Keeper_types}.
-    Pure context operations (previously in Keeper_working_context)
-    are inlined below.
-
-    Extracted from Keeper_exec_context as part of #4955 god-file split. *)
+    Accessors, JSON codecs, save/load extracted to
+    [Keeper_context_core_accessors] (godfile decomp). *)
 
 open Printf
 open Keeper_types
 
-module StringSet = Set.Make (String)
-
-(* ================================================================ *)
-(* Constants                                                         *)
-(* ================================================================ *)
-
-(** Default maximum messages to retain in checkpoints (load and save).
-    Caps both load-time deserialization and save-time persistence to prevent
-    unbounded memory growth.  The context_reducer (keep_last 30) trims
-    further during Agent.run, so 120 gives the reducer room to operate.
-    Per-keeper override via [compaction_policy.max_checkpoint_messages]. *)
-let default_max_checkpoint_messages = 120
-
-(** Hard caps for checkpoint payload hygiene.
-    Message-count capping alone is insufficient when a single message
-    accumulates hundreds of text blocks or multi-MB synthetic context. *)
-let default_max_checkpoint_text_blocks_per_message = 32
-let default_max_checkpoint_text_chars_per_message = 16 * 1024
-let checkpoint_text_cap_marker = "\n[capped]"
-
-(** ToolResult block caps — analogous to text block caps above.
-    Without these, a single message with hundreds of ToolResult blocks
-    (e.g. 280 blocks × 7K chars = 1.95M chars) passes through the
-    sanitizer untouched, causing context window overflow on next load.
-    Values aligned with Claude Code: 200K aggregate, per-result 8K. *)
-let default_max_checkpoint_tool_result_chars = 8_000
-let default_max_checkpoint_tool_results_per_message = 20
-let default_max_checkpoint_tool_result_total_chars = 200_000
-
-(* ================================================================ *)
-(* Working Context Types (re-exported from Keeper_types)             *)
-(* ================================================================ *)
-
-type working_context = Keeper_types.working_context
-
-type checkpoint = Keeper_types.checkpoint
-
-type session_context = Keeper_types.session_context
-
-(* ================================================================ *)
-(* Working Context Operations (inlined from Keeper_working_context)  *)
-(* ================================================================ *)
-
-let text_of_message = Agent_sdk.Types.text_of_message
-
-let ensure_dir path =
-  ignore (Keeper_fs.ensure_dir path)
-
-(** {1 Token Estimation Facade}
-
-    All OAS Context_reducer estimation calls in MASC pass through this
-    module.  Other keeper modules must NOT call
-    [Agent_sdk.Context_reducer.estimate_*] directly for decision-making.
-
-    @boundary-contract
-    - MASC owns: observation (context_ratio for logging, compaction strategy
-      selection, dashboard display). Token estimates are read-only signals.
-    - OAS owns: authoritative token estimation (CJK-aware, ceil-based),
-      context budget enforcement during Agent.run, compaction execution.
-    - Neither may: MASC must not add safety buffers on top of OAS estimates
-      (removed in #5053); OAS estimates must not be used as exact counts
-      for billing or hard limits. *)
-
-(** Estimate token count for a raw string (CJK-aware). *)
-let estimate_char_tokens (s : string) : int =
-  Agent_sdk.Context_reducer.estimate_char_tokens s
-
-(** CJK-aware token estimate delegated to OAS Context_reducer.
-    OAS estimator is already conservative (CJK-aware, ceil-based).
-    Prior 15% buffer (#5053) removed — it caused premature compaction
-    and masked the OAS estimator's actual accuracy. *)
-let msg_tokens (m : Agent_sdk.Types.message) : int =
-  Agent_sdk.Context_reducer.estimate_message_tokens m
-
-let count_tokens (system_prompt : string) (msgs : Agent_sdk.Types.message list) =
-  let sys_tokens = Agent_sdk.Context_reducer.estimate_char_tokens system_prompt in
-  List.fold_left (fun acc m -> acc + msg_tokens m) sys_tokens msgs
-
-let checkpoint_of_context (ctx : working_context) = ctx.checkpoint
-
-let oas_context_of_context (ctx : working_context) = ctx.checkpoint.context
-
-let max_tokens_of_context (ctx : working_context) =
-  ctx.max_tokens
-
-let with_max_tokens (ctx : working_context) max_tokens =
-  let checkpoint =
-    { ctx.checkpoint with max_total_tokens = Some max_tokens }
-  in
-  { max_tokens; checkpoint }
-
-let system_prompt_of_context (ctx : working_context) =
-  Option.value ~default:"" ctx.checkpoint.system_prompt
-
-let messages_of_context (ctx : working_context) =
-  ctx.checkpoint.messages
-
-let empty_runtime_checkpoint ~system_prompt ~messages ~max_tokens
-    ~(context : Agent_sdk.Context.t) : Agent_sdk.Checkpoint.t =
-  {
-    Agent_sdk.Checkpoint.version = Agent_sdk.Checkpoint.checkpoint_version;
-    session_id = "";
-    agent_name = "";
-    model = "";
-    system_prompt = Some system_prompt;
-    messages;
-    usage = Agent_sdk.Types.empty_usage;
-    turn_count = 0;
-    created_at = Time_compat.now ();
-    tools = [];
-    tool_choice = None;
-    disable_parallel_tool_use = false;
-    temperature = None;
-    top_p = None;
-    top_k = None;
-    min_p = None;
-    enable_thinking = None;
-    response_format = Agent_sdk.Types.Off;
-    thinking_budget = None;
-    cache_system_prompt = false;
-    max_input_tokens = None;
-    max_total_tokens = Some max_tokens;
-    context;
-    mcp_sessions = [];
-    working_context = None;
-  }
-
-let token_count (ctx : working_context) =
-  count_tokens (system_prompt_of_context ctx) (messages_of_context ctx)
-
-let message_count (ctx : working_context) =
-  List.length (messages_of_context ctx)
-
-let context_ratio (ctx : working_context) : float =
-  let max_tokens = max_tokens_of_context ctx in
-  if max_tokens = 0 then 0.0
-  else float_of_int (token_count ctx) /. float_of_int max_tokens
-
-let create ~system_prompt ~max_tokens =
-  let context = Agent_sdk.Context.create () in
-  let checkpoint =
-    empty_runtime_checkpoint ~system_prompt ~messages:[] ~max_tokens ~context
-  in
-  { checkpoint; max_tokens }
-
-let set_system_prompt (ctx : working_context) ~system_prompt =
-  let messages =
-    List.map
-      (fun (m : Agent_sdk.Types.message) ->
-        if m.role = Agent_sdk.Types.System
-        then { m with role = Agent_sdk.Types.Assistant }
-        else m)
-      (messages_of_context ctx)
-  in
-  let checkpoint =
-    { ctx.checkpoint with system_prompt = Some system_prompt; messages }
-  in
-  { ctx with checkpoint }
-
-let append ctx (msg : Agent_sdk.Types.message) =
-  let checkpoint =
-    { ctx.checkpoint with messages = messages_of_context ctx @ [ msg ] }
-  in
-  { ctx with checkpoint }
-
-let append_many ctx msgs =
-  List.fold_left append ctx msgs
-
-let sync_oas_context (ctx : working_context) : working_context =
-  let context = oas_context_of_context ctx in
-  let message_count = message_count ctx in
-  let token_count = token_count ctx in
-  let context_ratio =
-    let max_tokens = max_tokens_of_context ctx in
-    if max_tokens = 0 then 0.0
-    else float_of_int token_count /. float_of_int max_tokens
-  in
-  Agent_sdk.Context.set_scoped context Agent_sdk.Context.Session
-    "message_count" (`Int message_count);
-  Agent_sdk.Context.set_scoped context Agent_sdk.Context.Session
-    "token_count" (`Int token_count);
-  Agent_sdk.Context.set_scoped context Agent_sdk.Context.Session
-    "context_ratio" (`Float context_ratio);
-  ctx
-
-let generate_checkpoint_id () =
-  let ts = int_of_float (Time_compat.now () *. 1000.0) in
-  sprintf "ckpt-%d" ts
-
-let role_to_string (r : Agent_sdk.Types.role) = match r with
-  | System -> "system" | User -> "user"
-  | Assistant -> "assistant" | Tool -> "tool"
-
-(* Issue #8623: returns [Some] only for the 4 wire-format names.
-   Callers must handle [None] explicitly — the previous Variant
-   shape silently routed unknowns to [User], which misattributes
-   checkpoint messages: a "system" / "assistant" / "tool" decoded as
-   "user" causes the LLM to treat tool output as user instructions,
-   echo prior assistant replies as user input, or downgrade system
-   prompt privileges. Same anti-pattern class as #8605/#8615. *)
-let role_of_string_opt = function
-  | "system" -> Some Agent_sdk.Types.System
-  | "user" -> Some Agent_sdk.Types.User
-  | "assistant" -> Some Agent_sdk.Types.Assistant
-  | "tool" -> Some Agent_sdk.Types.Tool
-  | _ -> None
-
-(* Backwards-compatible wrapper. [Tool] is the safest fallback for an
-   unrecognised role: tool messages are interpretive context, not
-   instructions, so misclassifying System/Assistant/User as Tool hides
-   the message rather than letting the LLM act on it. The warn log
-   preserves operator visibility. *)
-let role_of_string s =
-  match role_of_string_opt s with
-  | Some role -> role
-  | None ->
-    Log.Misc.warn
-      "keeper_context_core: unknown role %S, defaulting to Tool (#8623)" s;
-    Agent_sdk.Types.Tool
-
-let content_blocks_to_json
-    (blocks : Agent_sdk.Types.content_block list) : Yojson.Safe.t =
-  `List (List.map Agent_sdk.Api.content_block_to_json blocks)
-
-let content_blocks_of_json
-    (json : Yojson.Safe.t) : Agent_sdk.Types.content_block list option =
-  let open Yojson.Safe.Util in
-  let parse_block_list = function
-    | `List blocks ->
-        let parsed =
-          List.filter_map Agent_sdk.Api.content_block_of_json blocks
-        in
-        if List.length parsed = List.length blocks then Some parsed else None
-    | _ -> None
-  in
-  match parse_block_list (json |> member "content_blocks") with
-  | Some _ as blocks -> blocks
-  | None ->
-      (* Some OAS/OpenAI-style checkpoints use a structured [content] array
-         instead of MASC's [content_blocks] field. Treat that as the same
-         block source rather than forcing the legacy flat-string path. *)
-      parse_block_list (json |> member "content")
-
-let legacy_content_text_of_json (json : Yojson.Safe.t) : string =
-  let open Yojson.Safe.Util in
-  match json |> member "content" with
-  | `String value -> Inference_utils.sanitize_text_utf8 value
-  | `Null -> ""
-  | `List blocks ->
-      let parsed =
-        List.filter_map Agent_sdk.Api.content_block_of_json blocks
-      in
-      let msg : Agent_sdk.Types.message =
-        {
-          Agent_sdk.Types.role = Agent_sdk.Types.User;
-          content = parsed;
-          name = None;
-          tool_call_id = None;
-          metadata = [];
-        }
-      in
-      Inference_utils.sanitize_text_utf8 (text_of_message msg)
-  | _ -> ""
-
-let string_field_opt key value =
-  match value with
-  | Some text -> [ (key, `String text) ]
-  | None -> []
-
-let metadata_of_json (json : Yojson.Safe.t) : (string * Yojson.Safe.t) list =
-  match Yojson.Safe.Util.member "metadata" json with
-  | `Assoc fields -> fields
-  | _ -> []
-
-let message_to_json (m : Agent_sdk.Types.message) : Yojson.Safe.t =
-  let m = Inference_utils.sanitize_message_utf8 m in
-  let tool_call_id =
-    match m.tool_call_id with
-    | Some _ as explicit -> explicit
-    | None ->
-        (match m.role with
-         | Agent_sdk.Types.Tool ->
-             List.find_map
-               (function
-                 | Agent_sdk.Types.ToolResult { tool_use_id; _ } -> Some tool_use_id
-                 | _ -> None)
-               m.content
-         | _ -> None)
-  in
-  (* SSOT: structured [content_blocks] only. The previous flat [content]
-     field was a duplicate of [text_of_message m] used by legacy
-     checkpoint readers; new readers reconstruct text from
-     [content_blocks] via [text_of_history_jsonl_line] (see below).
-     Old checkpoints written with both fields still load fine because
-     [message_of_json] keeps the legacy [content] fallback. *)
-  let base = [
-    ("role", `String (role_to_string m.role));
-    ("content_blocks", content_blocks_to_json m.content);
-  ] in
-  `Assoc
-    (base
-     @ string_field_opt "name" m.name
-     @ string_field_opt "tool_call_id" tool_call_id
-     @ if m.metadata = [] then [] else [ ("metadata", `Assoc m.metadata) ])
-
-let message_of_json (json : Yojson.Safe.t) : Agent_sdk.Types.message =
-  let open Yojson.Safe.Util in
-  let role = json |> member "role" |> to_string |> role_of_string in
-  let text = legacy_content_text_of_json json in
-  let content =
-    match content_blocks_of_json json with
-    | Some blocks ->
-        if blocks <> [] then blocks else
-        (* Legacy checkpoints stored only flattened text + role. For Tool
-           messages that means the original assistant ToolUse block is gone,
-           so rebuilding a structured ToolResult here creates an invalid
-           orphaned pair on the next Anthropic request. Fall back to plain
-           text so old checkpoints remain readable without breaking turns. *)
-        [ Agent_sdk.Types.Text text ]
-    | None ->
-        [ Agent_sdk.Types.Text text ]
-  in
-  Inference_utils.sanitize_message_utf8
-    {
-      Agent_sdk.Types.role;
-      content;
-      name =
-        (json |> member "name" |> to_string_option
-         |> Option.map Inference_utils.sanitize_text_utf8);
-      tool_call_id =
-        (json |> member "tool_call_id" |> to_string_option
-         |> Option.map Inference_utils.sanitize_text_utf8);
-      metadata = [];
-    }
-
-(** Extract human-readable text from a single history.jsonl line that was
-    produced by [message_to_json].  Reads structured [content_blocks]
-    first (current SSOT), falls back to the legacy flat [content] field
-    for lines written before that field was retired.  Returns [""] when
-    neither shape is parseable. *)
-let text_of_history_jsonl_json (json : Yojson.Safe.t) : string =
-  let open Yojson.Safe.Util in
-  match content_blocks_of_json json with
-  | Some blocks when blocks <> [] ->
-      let msg : Agent_sdk.Types.message =
-        {
-          Agent_sdk.Types.role = Agent_sdk.Types.User;
-          content = blocks;
-          name = None;
-          tool_call_id = None;
-          metadata = [];
-        }
-      in
-      Inference_utils.sanitize_text_utf8 (text_of_message msg)
-  | _ ->
-      legacy_content_text_of_json json
-
-let tool_use_ids_of_message (msg : Agent_sdk.Types.message) : string list =
-  List.filter_map
-    (function
-      | Agent_sdk.Types.ToolUse { id; _ } -> Some id
-      | _ -> None)
-    msg.content
-
-let tool_result_ids_of_message (msg : Agent_sdk.Types.message) : string list =
-  List.filter_map
-    (function
-      | Agent_sdk.Types.ToolResult { tool_use_id; _ } -> Some tool_use_id
-      | _ -> None)
-    msg.content
-
-let has_tool_result_block (msg : Agent_sdk.Types.message) : bool =
-  List.exists
-    (function
-      | Agent_sdk.Types.ToolResult _ -> true
-      | _ -> false)
-    msg.content
-
-(** Trim messages to at most [max_count] while preserving ToolUse/ToolResult
-    pairing.  Drops from the front.  If the drop point lands on a
-    ToolResult whose ToolUse would be the last dropped message, advance
-    the drop by 1 so the orphan ToolResult is also removed (pair stays
-    together on the dropped side).  This may yield fewer than [max_count]
-    messages but never creates orphans.
-
-    Root cause of recurring "unexpected tool_use_id" errors: the previous
-    implementation used [List.filteri (fun i _ -> i >= drop)] which splits
-    on message index, breaking mid-pair boundaries. *)
-let trim_messages_preserving_pairs
-    (messages : Agent_sdk.Types.message list) ~(max_count : int)
-    : Agent_sdk.Types.message list =
-  let n = List.length messages in
-  if n <= max_count then messages
-  else
-    let drop = n - max_count in
-    (* If the first kept message would be an orphan ToolResult,
-       drop it too so the pair stays together on the removed side. *)
-    let effective_drop =
-      match List.nth_opt messages drop with
-      | Some msg when has_tool_result_block msg ->
-        (* Advance drop to skip the orphan ToolResult *)
-        drop + 1
-      | _ -> drop
-    in
-    List.filteri (fun i _ -> i >= effective_drop) messages
-
-let tool_result_text_of_block
-    ~(tool_use_id : string)
-    ~(content : string)
-    ~(json : Yojson.Safe.t option) : string =
-  let content = Inference_utils.sanitize_text_utf8 (String.trim content) in
-  if content <> "" then content
-  else
-    match json with
-    | Some value ->
-        (* Stringify json only when it fits the per-result cap. Larger
-           payloads collapse to a stub so a single orphan-repair pass
-           cannot inflate one Text block to multi-MB and trigger the same
-           escape-depth blow-up that motivated the artifact-store work
-           (see [tool_blob_store] and the tool-output-washing series). *)
-        let serialized = Yojson.Safe.to_string value in
-        let len = String.length serialized in
-        if len <= default_max_checkpoint_tool_result_chars then serialized
-        else
-          Printf.sprintf "[tool:json id:%s bytes:%d elided]" tool_use_id len
-    | None -> Printf.sprintf "[tool result %s]" tool_use_id
-
-let tool_use_text_of_block
-    ~(tool_use_id : string)
-    ~(tool_name : string)
-    ~(input : Yojson.Safe.t) : string =
-  let tool_name = Inference_utils.sanitize_text_utf8 (String.trim tool_name) in
-  let tool_use_id = Inference_utils.sanitize_text_utf8 (String.trim tool_use_id) in
-  let tool_name =
-    if tool_name = "" then "unknown_tool" else tool_name
-  in
-  let input_json = Yojson.Safe.to_string input |> Inference_utils.sanitize_text_utf8 in
-  Printf.sprintf "[tool use %s %s input=%s]" tool_name tool_use_id input_json
-
-let repair_dangling_tool_use_messages
-    (messages : Agent_sdk.Types.message list) : Agent_sdk.Types.message list =
-  let repair_with_next
-      (current : Agent_sdk.Types.message)
-      (next_opt : Agent_sdk.Types.message option) =
-    let next_tool_result_ids =
-      match next_opt with
-      | Some next -> tool_result_ids_of_message next
-      | None -> []
-    in
-    let has_dangling =
-      List.exists
-        (function
-          | Agent_sdk.Types.ToolUse { id; _ } ->
-              not (List.mem id next_tool_result_ids)
-          | _ -> false)
-        current.content
-    in
-    if not has_dangling then current
-    else
-      let content =
-        List.map
-          (function
-            | Agent_sdk.Types.ToolUse { id; name; input }
-              when not (List.mem id next_tool_result_ids) ->
-                Agent_sdk.Types.Text
-                  (tool_use_text_of_block
-                     ~tool_use_id:id ~tool_name:name ~input)
-            | other -> other)
-          current.content
-      in
-      { current with content }
-  in
-  let rec loop acc = function
-    | [] -> List.rev acc
-    | [ current ] ->
-        List.rev (repair_with_next current None :: acc)
-    | current :: ((next :: _) as rest) ->
-        let repaired = repair_with_next current (Some next) in
-        loop (repaired :: acc) rest
-  in
-  loop [] messages
-
-let repair_orphan_tool_result_messages
-    (messages : Agent_sdk.Types.message list) : Agent_sdk.Types.message list =
-  let rec loop prev acc = function
-    | [] -> List.rev acc
-    | msg :: rest ->
-        let repaired =
-          if not (has_tool_result_block msg) then msg
-          else
-            let prev_tool_use_ids =
-              match prev with
-              | Some previous -> tool_use_ids_of_message previous
-              | None -> []
-            in
-            (* Anthropic validates ToolResult blocks against ToolUse blocks
-               in the immediately previous message. If checkpoint capping
-               drops that predecessor, the resumed history becomes invalid.
-               Downgrade only the orphaned structured result blocks to
-               plain text so the semantic output survives without replaying
-               provider-specific tool metadata. *)
-            let has_orphan =
-              List.exists
-                (function
-                  | Agent_sdk.Types.ToolResult { tool_use_id; _ } ->
-                      not (List.mem tool_use_id prev_tool_use_ids)
-                  | _ -> false)
-                msg.content
-            in
-            if not has_orphan then msg
-            else
-              let content =
-                List.map
-                  (function
-                    | Agent_sdk.Types.ToolResult { tool_use_id; content; json; _ } ->
-                        Agent_sdk.Types.Text
-                          (tool_result_text_of_block ~tool_use_id ~content ~json)
-                    | other -> other)
-                  msg.content
-              in
-              { msg with content }
-        in
-        loop (Some repaired) (repaired :: acc) rest
-  in
-  loop None [] messages
-
-let repair_broken_tool_call_pairs
-    (messages : Agent_sdk.Types.message list) : Agent_sdk.Types.message list =
-  messages
-  |> repair_dangling_tool_use_messages
-  |> repair_orphan_tool_result_messages
-
-let serialize_context (ctx : working_context) : string =
-  let json = `Assoc [
-    ( "system_prompt",
-      `String
-        (Inference_utils.sanitize_text_utf8 (system_prompt_of_context ctx)) );
-    ("messages", `List (List.map message_to_json (messages_of_context ctx)));
-    ("token_count", `Int (token_count ctx));
-    ("max_tokens", `Int (max_tokens_of_context ctx));
-  ] in
-  Yojson.Safe.to_string json
-
-let deserialize_context (s : string) ~max_tokens : working_context =
-  let json = Yojson.Safe.from_string s in
-  let open Yojson.Safe.Util in
-  let system_prompt = json |> member "system_prompt" |> to_string in
-  let messages =
-    json |> member "messages" |> to_list |> List.map message_of_json
-    |> repair_broken_tool_call_pairs
-  in
-  let _legacy_token_count = json |> member "token_count" |> to_int_option in
-  let context = Agent_sdk.Context.create () in
-  let checkpoint =
-    empty_runtime_checkpoint ~system_prompt ~messages ~max_tokens ~context
-  in
-  sync_oas_context
-    { checkpoint; max_tokens }
-
-let context_to_json (ctx : working_context) : Yojson.Safe.t =
-  `Assoc [
-    ( "system_prompt",
-      `String
-        (Inference_utils.sanitize_text_utf8 (system_prompt_of_context ctx)) );
-    ("messages", `List (List.map message_to_json (messages_of_context ctx)));
-    ("token_count", `Int (token_count ctx));
-    ("max_tokens", `Int (max_tokens_of_context ctx));
-  ]
-
-let create_checkpoint ctx ~generation =
-  {
-    checkpoint_id = generate_checkpoint_id ();
-    timestamp = Time_compat.now ();
-    generation;
-    message_count = message_count ctx;
-    token_count = token_count ctx;
-    serialized = serialize_context ctx;
-  }
-
-let restore_checkpoint ckpt ~max_tokens =
-  deserialize_context ckpt.serialized ~max_tokens
-
-let create_session ~session_id ~base_dir =
-  let session_dir = Filename.concat base_dir session_id in
-  ensure_dir session_dir;
-  { session_id; session_dir; checkpoints = [] }
-
-type history_migration_stats = {
-  moved_lines : int;
-  dropped_lines : int;
-  kept_lines : int;
-  malformed_lines : int;
-}
-
-let empty_history_migration_stats =
-  { moved_lines = 0; dropped_lines = 0; kept_lines = 0; malformed_lines = 0 }
-
-let split_jsonl_lines (content : string) : string list =
-  content
-  |> String.split_on_char '\n'
-  |> List.filter (fun line -> String.trim line <> "")
-
-let normalize_system_context_prefix (text : string) : string =
-  let trimmed = String.trim text in
-  let prefix = "[system context]" in
-  if String.starts_with ~prefix trimmed then
-    let prefix_len = String.length prefix in
-    let rest_len = String.length trimmed - prefix_len in
-    if rest_len <= 0 then ""
-    else String.trim (String.sub trimmed prefix_len rest_len)
-  else trimmed
-
-let has_world_state_signature (text : string) : bool =
-  let trimmed = normalize_system_context_prefix text in
-  String_util.contains_substring_ci trimmed "## Current World State"
-  &&
-  (String_util.contains_substring_ci trimmed "### Namespace State"
-   || String_util.contains_substring_ci trimmed "### Available Tools"
-   || String_util.contains_substring_ci trimmed "### Continuity")
-
-type history_line_action =
-  | Keep_main
-  | Move_internal
-  | Drop_line
-
-let classify_history_entry ~(source : string) ~(content : string) :
-    history_line_action =
-  (* World-state headings can appear in user-authored long-term memory.
-     Only explicit prompt/internal sources control history routing. *)
-  ignore content;
-  if Keeper_types.is_prompt_history_source source then Drop_line
-  else if Keeper_types.is_internal_history_source source then
-    Move_internal
-  else Keep_main
-
-let classify_history_jsonl_line (line : string) : history_line_action option =
-  try
-    let json = Yojson.Safe.from_string line in
-    let source =
-      Yojson.Safe.Util.(json |> member "source" |> to_string_option)
-      |> Option.value ~default:""
-      |> String.trim
-    in
-    let content = String.trim (text_of_history_jsonl_json json) in
-    Some (classify_history_entry ~source ~content)
-  with
-  | Yojson.Json_error _ | Yojson.Safe.Util.Type_error _ -> None
-
-let render_jsonl_lines (lines : string list) : string =
-  match lines with
-  | [] -> ""
-  | _ -> String.concat "\n" lines ^ "\n"
-
-let dedupe_preserve_order (lines : string list) : string list =
-  let rec go seen acc = function
-    | [] -> List.rev acc
-    | line :: rest ->
-      if StringSet.mem line seen
-      then go seen acc rest
-      else go (StringSet.add line seen) (line :: acc) rest
-  in
-  go StringSet.empty [] lines
-
-let migrate_session_history_logs
-    ~(session_dir : string) : history_migration_stats =
-  let main_path = Filename.concat session_dir "history.jsonl" in
-  let internal_path = Filename.concat session_dir "history.internal.jsonl" in
-  if not (Fs_compat.file_exists main_path) && not (Fs_compat.file_exists internal_path) then
-    empty_history_migration_stats
-  else
-    let main_lines =
-      if Fs_compat.file_exists main_path then
-        split_jsonl_lines (Fs_compat.load_file main_path)
-      else []
-    in
-    let existing_internal =
-      if Fs_compat.file_exists internal_path then
-        split_jsonl_lines (Fs_compat.load_file internal_path)
-      else []
-    in
-    let kept_rev, moved_rev, dropped_main, malformed_main =
-      List.fold_left
-        (fun (kept_rev, moved_rev, dropped_lines, malformed_lines) line ->
-           match classify_history_jsonl_line line with
-           | Some Keep_main ->
-               (line :: kept_rev, moved_rev, dropped_lines, malformed_lines)
-           | Some Move_internal ->
-               (kept_rev, line :: moved_rev, dropped_lines, malformed_lines)
-           | Some Drop_line ->
-               (kept_rev, moved_rev, dropped_lines + 1, malformed_lines)
-           | None ->
-               (line :: kept_rev, moved_rev, dropped_lines, malformed_lines + 1))
-        ([], [], 0, 0)
-        main_lines
-    in
-    let kept_lines = List.rev kept_rev in
-    let moved_lines = List.rev moved_rev in
-    let internal_kept_rev, dropped_internal, malformed_internal =
-      List.fold_left
-        (fun (kept_rev, dropped_lines, malformed_lines) line ->
-           match classify_history_jsonl_line line with
-           | Some Drop_line -> (kept_rev, dropped_lines + 1, malformed_lines)
-           | Some _ -> (line :: kept_rev, dropped_lines, malformed_lines)
-           | None -> (line :: kept_rev, dropped_lines, malformed_lines + 1))
-        ([], 0, 0)
-        existing_internal
-    in
-    let sanitized_internal = List.rev internal_kept_rev in
-    let total_dropped = dropped_main + dropped_internal in
-    let malformed_lines = malformed_main + malformed_internal in
-    if moved_lines = [] && total_dropped = 0 then
-      {
-        moved_lines = 0;
-        dropped_lines = 0;
-        kept_lines = List.length kept_lines;
-        malformed_lines;
-      }
-    else
-      let merged_internal =
-        dedupe_preserve_order (sanitized_internal @ moved_lines)
-      in
-      (match Fs_compat.save_file_atomic main_path (render_jsonl_lines kept_lines) with
-       | Ok () -> ()
-       | Error detail ->
-           Prometheus.inc_counter
-             Prometheus.metric_keeper_checkpoint_failures
-             ~labels:[("operation", "migrate_main_history")]
-             ();
-           Log.Keeper.error "migrate_session_history_logs: save main history failed for %s: %s"
-             main_path detail);
-      (match
-         Fs_compat.save_file_atomic internal_path
-           (render_jsonl_lines merged_internal)
-       with
-       | Ok () -> ()
-       | Error detail ->
-           Prometheus.inc_counter
-             Prometheus.metric_keeper_checkpoint_failures
-             ~labels:[("operation", "migrate_internal_history")]
-             ();
-           Log.Keeper.error "migrate_session_history_logs: save internal history failed for %s: %s"
-             internal_path detail);
-      {
-        moved_lines = List.length moved_lines;
-        dropped_lines = total_dropped;
-        kept_lines = List.length kept_lines;
-        malformed_lines;
-      }
-
-let history_path_for_source
-    ~(session_dir : string)
-    ~(source : string option) : string =
-  match source with
-  | Some source when Keeper_types.is_internal_history_source source ->
-      Filename.concat session_dir "history.internal.jsonl"
-  | _ ->
-      Filename.concat session_dir "history.jsonl"
-
-let persist_message ?source session msg =
-  let msg = Inference_utils.sanitize_message_utf8 msg in
-  let source_text =
-    source |> Option.value ~default:"" |> String.trim
-  in
-  let content_text =
-    msg.content
-    |> List.filter_map (function
-         | Agent_sdk.Types.Text text -> Some text
-         | _ -> None)
-    |> String.concat "\n"
-  in
-  if classify_history_entry ~source:source_text ~content:content_text = Drop_line then
-    ()
-  else
-    let path = history_path_for_source ~session_dir:session.session_dir ~source in
-    let now_ts = Time_compat.now () in
-    let payload =
-      match message_to_json msg with
-      | `Assoc fields ->
-        let fields =
-          match source with
-          | Some source when String.trim source <> "" ->
-              ("source", `String source) :: fields
-          | _ -> fields
-        in
-        `Assoc
-          (("timestamp", `Float now_ts) :: ("ts_unix", `Float now_ts) :: fields)
-      | j -> j
-    in
-    let line = Yojson.Safe.to_string payload ^ "\n" in
-    Fs_compat.append_file path line
-
-(* ================================================================ *)
-(* End of inlined Keeper_working_context operations                  *)
-(* ================================================================ *)
-
-let timed = Inference_utils.timed
-let zero_usage = Inference_utils.zero_usage
-let usage_of_response = Inference_utils.usage_of_response
-let total_tokens = Inference_utils.total_tokens
-
-(* ================================================================ *)
-(* Checkpoint Store Delegation                                        *)
-(* ================================================================ *)
-
-let save_session_checkpoint (session : session_context) ckpt =
-  session.checkpoints <- session.checkpoints @ [ckpt];
-  Keeper_checkpoint_store.save ~session_dir:session.session_dir ckpt
-
-let load_latest_checkpoint (session : session_context) =
-  Keeper_checkpoint_store.load_latest ~session_dir:session.session_dir
-
-(* ================================================================ *)
-(* Keeper Context Lifecycle                                          *)
-(* ================================================================ *)
-
-let log_keeper_exn ~label exn =
-  let tag = match exn with
-    | Sys_error _ | Failure _ | Not_found
-    | Yojson.Json_error _ | Yojson.Safe.Util.Type_error _ -> ""
-    | _ -> "[UNEXPECTED] "
-  in
-  Log.Keeper.info "%s%s: %s" tag label (Printexc.to_string exn)
-
-let checkpoint_generation_key = "keeper_generation"
-
-type checkpoint_sanitize_stats = {
-  dropped_messages : int;
-  dropped_blocks : int;
-  dropped_chars : int;
-  truncated_blocks : int;
-  truncated_chars : int;
-}
-
-let empty_checkpoint_sanitize_stats =
-  {
-    dropped_messages = 0;
-    dropped_blocks = 0;
-    dropped_chars = 0;
-    truncated_blocks = 0;
-    truncated_chars = 0;
-  }
-
-let checkpoint_sanitize_changed (stats : checkpoint_sanitize_stats) : bool =
-  stats.dropped_messages > 0
-  || stats.dropped_blocks > 0
-  || stats.dropped_chars > 0
-  || stats.truncated_blocks > 0
-  || stats.truncated_chars > 0
+include Keeper_context_core_accessors
 
 let add_checkpoint_sanitize_stats
     (a : checkpoint_sanitize_stats)
@@ -1063,8 +212,36 @@ let sanitize_checkpoint_message
                 || kept_tool_result_chars + tool_chars
                    > default_max_checkpoint_tool_result_total_chars
              then
-               (* Over count or aggregate budget: stub the result *)
-               let stub_content = "[tool result cleared]" in
+               (* Over count or aggregate byte budget: stub the result.
+                  The two triggers are split into separate [reason]
+                  labels (and named in [stub_content]) so operators
+                  reading the Prometheus rate or inspecting a stubbed
+                  checkpoint know which cap to revisit, and so an
+                  LLM that later reads the checkpoint can tell that a
+                  payload was removed (and why) rather than silently
+                  reasoning over the placeholder. *)
+               let stub_reason =
+                 if kept_tool_results
+                    >= default_max_checkpoint_tool_results_per_message
+                 then "over_count"
+                 else "over_aggregate_bytes"
+               in
+               let stub_content =
+                 Printf.sprintf
+                   "[tool result cleared: reason=%s tool_use_id=%s \
+                    original_bytes=%d; removed by \
+                    Keeper_context_core.sanitize_checkpoint_message \
+                    to fit checkpoint budget]"
+                   stub_reason
+                   tool_use_id
+                   tool_chars
+               in
+               let () =
+                 Prometheus.inc_counter
+                   Prometheus.metric_keeper_context_tool_result_compacted
+                   ~labels:[ "action", "stubbed"; "reason", stub_reason ]
+                   ()
+               in
                let stub =
                  Agent_sdk.Types.ToolResult
                    { tool_use_id;
@@ -1082,7 +259,17 @@ let sanitize_checkpoint_message
                      dropped_chars = tool_chars } )
              else if tool_chars > default_max_checkpoint_tool_result_chars
              then
-               (* Individual result too large: truncate *)
+               (* Individual result too large: truncate.  The cap
+                  marker already advertises truncation in the content
+                  itself; the counter increment is what surfaces the
+                  rate to operators without log scraping. *)
+               let () =
+                 Prometheus.inc_counter
+                   Prometheus.metric_keeper_context_tool_result_compacted
+                   ~labels:
+                     [ "action", "truncated"; "reason", "over_single_byte" ]
+                   ()
+               in
                let capped =
                  String.sub content 0
                    default_max_checkpoint_tool_result_chars
@@ -1125,23 +312,145 @@ let sanitize_checkpoint_message
         { empty_checkpoint_sanitize_stats with dropped_messages = 1 } )
   else (Some { msg with content = kept }, stats)
 
+let checkpoint_content_chars_of_block = function
+  | Agent_sdk.Types.Text text -> String.length text
+  | Agent_sdk.Types.Thinking { content; _ } -> String.length content
+  | Agent_sdk.Types.RedactedThinking text -> String.length text
+  | Agent_sdk.Types.ToolResult { content; _ } -> String.length content
+  | _ -> 0
+
+let checkpoint_content_chars_of_message (msg : Agent_sdk.Types.message) : int =
+  List.fold_left
+    (fun total block -> total + checkpoint_content_chars_of_block block)
+    0
+    msg.content
+
+let cap_checkpoint_message_to_remaining_content
+    ~(remaining : int)
+    (msg : Agent_sdk.Types.message)
+  : Agent_sdk.Types.message option * int * checkpoint_sanitize_stats =
+  let message_chars = checkpoint_content_chars_of_message msg in
+  if message_chars = 0 then (Some msg, 0, empty_checkpoint_sanitize_stats)
+  else if remaining <= 0 then
+    ( None,
+      0,
+      {
+        empty_checkpoint_sanitize_stats with
+        dropped_messages = 1;
+        dropped_chars = message_chars;
+      } )
+  else if message_chars <= remaining then
+    (Some msg, message_chars, empty_checkpoint_sanitize_stats)
+  else
+    let remaining_ref = ref remaining in
+    let used_ref = ref 0 in
+    let kept_rev, stats =
+      List.fold_left
+        (fun (kept_rev, stats) block ->
+           let cap_content rebuild content =
+             let len = String.length content in
+             if len = 0 then
+               (rebuild content :: kept_rev, stats)
+             else if !remaining_ref <= 0 then
+               ( kept_rev,
+                 add_checkpoint_sanitize_stats stats
+                   {
+                     empty_checkpoint_sanitize_stats with
+                     dropped_blocks = 1;
+                     dropped_chars = len;
+                   } )
+             else if len <= !remaining_ref then (
+               remaining_ref := !remaining_ref - len;
+               used_ref := !used_ref + len;
+               (rebuild content :: kept_rev, stats))
+             else
+               let capped, truncated_chars =
+                 truncate_checkpoint_text ~max_chars:!remaining_ref content
+               in
+               let capped_len = String.length capped in
+               remaining_ref := 0;
+               used_ref := !used_ref + capped_len;
+               ( rebuild capped :: kept_rev,
+                 add_checkpoint_sanitize_stats stats
+                   {
+                     empty_checkpoint_sanitize_stats with
+                     truncated_blocks = 1;
+                     truncated_chars;
+                   } )
+           in
+           match block with
+           | Agent_sdk.Types.Text text ->
+               cap_content (fun text -> Agent_sdk.Types.Text text) text
+           | Agent_sdk.Types.ToolResult { tool_use_id; content; is_error; _ } ->
+               cap_content
+                 (fun content ->
+                   Agent_sdk.Types.ToolResult
+                     { tool_use_id; content; is_error; json = None })
+                 content
+           | Agent_sdk.Types.Thinking { content; _ } ->
+               cap_content (fun text -> Agent_sdk.Types.Text text) content
+           | Agent_sdk.Types.RedactedThinking text ->
+               cap_content (fun text -> Agent_sdk.Types.Text text) text
+           | _ -> (block :: kept_rev, stats))
+        ([], empty_checkpoint_sanitize_stats)
+        msg.content
+    in
+    let kept = List.rev kept_rev in
+    if kept = [] then
+      ( None,
+        !used_ref,
+        add_checkpoint_sanitize_stats stats
+          { empty_checkpoint_sanitize_stats with dropped_messages = 1 } )
+    else (Some { msg with content = kept }, !used_ref, stats)
+
+let cap_checkpoint_messages_total_content
+    (messages : Agent_sdk.Types.message list)
+  : Agent_sdk.Types.message list * checkpoint_sanitize_stats =
+  let rec loop kept remaining stats = function
+    | [] -> (kept, stats)
+    | msg :: older ->
+        let sanitized, used, msg_stats =
+          cap_checkpoint_message_to_remaining_content ~remaining msg
+        in
+        let kept =
+          match sanitized with
+          | Some msg -> msg :: kept
+          | None -> kept
+        in
+        let remaining = max 0 (remaining - used) in
+        loop
+          kept
+          remaining
+          (add_checkpoint_sanitize_stats stats msg_stats)
+          older
+  in
+  loop
+    []
+    default_max_checkpoint_content_chars_total
+    empty_checkpoint_sanitize_stats
+    (List.rev messages)
+
 let sanitize_checkpoint_messages
     (messages : Agent_sdk.Types.message list)
   : Agent_sdk.Types.message list * checkpoint_sanitize_stats =
-  List.fold_right
-    (fun msg (acc, stats) ->
-       let sanitized_opt, msg_stats = sanitize_checkpoint_message msg in
-       let acc =
-         match sanitized_opt with
-         | Some sanitized -> sanitized :: acc
-         | None -> acc
-       in
-       let stats =
-         add_checkpoint_sanitize_stats stats msg_stats
-       in
-       (acc, stats))
-    messages
-    ([], empty_checkpoint_sanitize_stats)
+  let messages, stats =
+    List.fold_right
+      (fun msg (acc, stats) ->
+         let sanitized_opt, msg_stats = sanitize_checkpoint_message msg in
+         let acc =
+           match sanitized_opt with
+           | Some sanitized -> sanitized :: acc
+           | None -> acc
+         in
+         let stats =
+           add_checkpoint_sanitize_stats stats msg_stats
+         in
+         (acc, stats))
+      messages
+      ([], empty_checkpoint_sanitize_stats)
+  in
+  let messages, total_stats = cap_checkpoint_messages_total_content messages in
+  (messages, add_checkpoint_sanitize_stats stats total_stats)
 
 let sanitize_oas_checkpoint
     ?(repair_orphans = true)
@@ -1154,16 +463,51 @@ let sanitize_oas_checkpoint
   in
   ({ cp with messages }, stats)
 
+let capped_checkpoint_messages_of_context
+      ~(max_checkpoint_messages : int)
+      (ctx : working_context)
+  : Agent_sdk.Types.message list
+  =
+  (* Shared by checkpoint persistence and pre-dispatch resume: both paths
+     must honor the load-time message cap plus content-size guards. *)
+  let original_messages = messages_of_context ctx in
+  let capped_messages =
+    trim_messages_preserving_pairs original_messages
+      ~max_count:max_checkpoint_messages
+  in
+  let capped_messages_were_truncated =
+    List.length capped_messages < List.length original_messages
+  in
+  let capped_messages =
+    Agent_sdk.Context_reducer.reduce
+      (Agent_sdk.Context_reducer.stub_tool_results ~keep_recent:1)
+      capped_messages
+  in
+  let capped_messages, sanitize_stats =
+    sanitize_checkpoint_messages capped_messages
+  in
+  if capped_messages_were_truncated || checkpoint_sanitize_changed sanitize_stats
+  then repair_broken_tool_call_pairs capped_messages
+  else capped_messages
+
+let resume_checkpoint_of_context
+      ~(max_checkpoint_messages : int)
+      (ctx : working_context) : Agent_sdk.Checkpoint.t
+  =
+  let checkpoint_context = Agent_sdk.Context.copy (oas_context_of_context ctx) in
+  {
+    ctx.checkpoint with
+    version = Agent_sdk.Checkpoint.checkpoint_version;
+    system_prompt = Some (system_prompt_of_context ctx);
+    messages = capped_checkpoint_messages_of_context ~max_checkpoint_messages ctx;
+    max_total_tokens = Some (max_tokens_of_context ctx);
+    context = checkpoint_context;
+  }
+
 let checkpoint_max_tokens (cp : Agent_sdk.Checkpoint.t) ~(fallback : int) : int =
-  let open Yojson.Safe.Util in
   match cp.max_total_tokens with
   | Some value -> value
-  | None -> (
-      match cp.working_context with
-      | Some (`Assoc _ as sidecar) ->
-          sidecar |> member "max_tokens" |> to_int_option
-          |> Option.value ~default:fallback
-      | _ -> fallback)
+  | None -> fallback
 
 let context_of_oas_checkpoint
     ?(repair_orphans = true)
@@ -1190,18 +534,14 @@ let context_of_oas_checkpoint
   sync_oas_context
     { checkpoint; max_tokens }
 
-let context_of_legacy_checkpoint
-    (ckpt : checkpoint)
-    ~(primary_model_max_tokens : int) : working_context =
-  restore_checkpoint ckpt ~max_tokens:primary_model_max_tokens
-
 let checkpoint_model_of_meta (meta : keeper_meta) =
   let candidates =
     meta.runtime.usage.last_model_used
     :: Keeper_model_labels.configured_model_labels_of_meta meta
   in
-  List.find_opt (fun value -> String.trim value <> "") candidates
-  |> Option.value ~default:(Provider_adapter.default_local_fallback_label ())
+  match List.find_opt (fun value -> String.trim value <> "") candidates with
+  | Some value -> value
+  | None -> Cascade_runtime_candidate.default_local_runtime_label ()
 
 let save_oas_checkpoint
     ~(max_checkpoint_messages : int)
@@ -1214,32 +554,6 @@ let save_oas_checkpoint
   let checkpoint_context = Agent_sdk.Context.copy (oas_context_of_context ctx) in
   Agent_sdk.Context.set_scoped checkpoint_context Agent_sdk.Context.Session
     checkpoint_generation_key (`Int generation);
-  (* Truncate messages at save time to match the load-time cap.
-     Without this, checkpoints grow unbounded between compaction cycles,
-     causing multi-GB transient allocations when loaded by concurrent keepers. *)
-  let original_messages = messages_of_context ctx in
-  let capped_messages =
-    trim_messages_preserving_pairs original_messages
-      ~max_count:max_checkpoint_messages
-  in
-  let capped_messages_were_truncated =
-    List.length capped_messages < List.length original_messages
-  in
-  (* Stub old tool results at save time: keep only the most recent turn's
-     results in full. During Agent.run the reducer uses keep_recent:3, but
-     at checkpoint persistence we are more aggressive — older tool results
-     are unlikely to be useful on resume and bloat disk/memory. *)
-  let capped_messages =
-    Agent_sdk.Context_reducer.reduce
-      (Agent_sdk.Context_reducer.stub_tool_results ~keep_recent:1)
-      capped_messages
-  in
-  let capped_messages, _ = sanitize_checkpoint_messages capped_messages in
-  let capped_messages =
-    if capped_messages_were_truncated
-    then repair_broken_tool_call_pairs capped_messages
-    else capped_messages
-  in
   let checkpoint =
     {
       ctx.checkpoint with
@@ -1248,7 +562,7 @@ let save_oas_checkpoint
       agent_name;
       model;
       system_prompt = Some (system_prompt_of_context ctx);
-      messages = capped_messages;
+      messages = capped_checkpoint_messages_of_context ~max_checkpoint_messages ctx;
       created_at = Time_compat.now ();
       max_total_tokens = Some (max_tokens_of_context ctx);
       context = checkpoint_context;
@@ -1259,19 +573,13 @@ let save_oas_checkpoint
   | Error e -> Error e
 
 let checkpoint_generation (cp : Agent_sdk.Checkpoint.t) ~(fallback : int) : int =
-  let open Yojson.Safe.Util in
   match
     Agent_sdk.Context.get_scoped cp.context Agent_sdk.Context.Session
       checkpoint_generation_key
   with
   | Some (`Int value) -> value
   | Some (`Intlit raw) -> Option.value ~default:fallback (int_of_string_opt raw)
-  | _ -> (
-      match cp.working_context with
-      | Some (`Assoc _ as sidecar) ->
-          sidecar |> member "generation" |> to_int_option
-          |> Option.value ~default:fallback
-      | _ -> fallback)
+  | _ -> fallback
 
 (* ================================================================ *)
 (* Checkpoint Loading                                                *)
@@ -1283,68 +591,34 @@ let load_context_from_checkpoint ~max_checkpoint_messages ~trace_id ~primary_mod
     Keeper_checkpoint_store.load_oas ~session_dir:session.session_dir
       ~session_id:trace_id
   in
-  (* P2 silent-failure fix: previously `Error Not_found | Ok _ -> ()`
-     coalesced two semantically distinct outcomes — Not_found means
-     "no prior checkpoint, expected on first boot" while Ok means
-     "checkpoint loaded successfully."  Splitting the cases lets a
-     `debug` log mark when the legacy fallback path is being taken,
-     which is the signal an operator wants when investigating "why
-     did this restart use defaults instead of the OAS checkpoint?" *)
   (match oas_result with
    | Error (Parse_error detail) ->
        Prometheus.inc_counter
-         Prometheus.metric_keeper_checkpoint_failures
-         ~labels:[("operation", "oas_parse")]
+         Keeper_metrics.(to_string CheckpointFailures)
+         ~labels:[("operation", Keeper_checkpoint_failure_operation.(to_label Oas_parse))]
          ();
        Log.Keeper.error "keeper:%s OAS checkpoint parse error: %s" trace_id detail
    | Error (Store_error detail) ->
        Prometheus.inc_counter
-         Prometheus.metric_keeper_checkpoint_failures
-         ~labels:[("operation", "oas_store")]
+         Keeper_metrics.(to_string CheckpointFailures)
+         ~labels:[("operation", Keeper_checkpoint_failure_operation.(to_label Oas_store))]
          ();
        Log.Keeper.error "keeper:%s OAS checkpoint store error: %s" trace_id detail
    | Error (Io_error detail) ->
        Prometheus.inc_counter
-         Prometheus.metric_keeper_checkpoint_failures
-         ~labels:[("operation", "oas_io")]
+         Keeper_metrics.(to_string CheckpointFailures)
+         ~labels:[("operation", Keeper_checkpoint_failure_operation.(to_label Oas_io))]
          ();
        Log.Keeper.error "keeper:%s OAS checkpoint I/O error: %s" trace_id detail
    | Error (Sdk_other_error detail) ->
        Prometheus.inc_counter
-         Prometheus.metric_keeper_checkpoint_failures
-         ~labels:[("operation", "oas_sdk")]
+         Keeper_metrics.(to_string CheckpointFailures)
+         ~labels:[("operation", Keeper_checkpoint_failure_operation.(to_label Oas_sdk))]
          ();
        Log.Keeper.error "keeper:%s OAS checkpoint SDK error: %s" trace_id detail
    | Error Not_found ->
-       Log.Keeper.debug "keeper:%s OAS checkpoint not found, falling back to legacy loader" trace_id
+       Log.Keeper.debug "keeper:%s OAS checkpoint not found" trace_id
    | Ok _ -> ());
-  let oas_checkpoint = match oas_result with
-    | Ok v -> Some v
-    | Error Not_found -> None
-    | Error _ ->
-      Log.Keeper.warn "keeper:%s OAS checkpoint error discarded at to_option" trace_id;
-      None
-  in
-  let legacy_checkpoint =
-    try load_latest_checkpoint session
-    with ex ->
-      Prometheus.inc_counter
-        Prometheus.metric_keeper_checkpoint_failures
-        ~labels:[("operation", "load_legacy")]
-        ();
-      Log.Keeper.error "keeper:%s checkpoint load failed: %s" trace_id
-        (Printexc.to_string ex);
-      None
-  in
-  let prefer_legacy =
-    match oas_checkpoint, legacy_checkpoint with
-    | Some oas, Some legacy -> legacy.timestamp > oas.created_at
-    | _ -> false
-  in
-  if prefer_legacy then
-       Log.Keeper.info
-      "keeper:%s checkpoint migration fallback: legacy newer than OAS"
-      trace_id;
   let oas_checkpoint =
     (match oas_result with
      | Ok v -> Some v
@@ -1355,16 +629,8 @@ let load_context_from_checkpoint ~max_checkpoint_messages ~trace_id ~primary_mod
     |> Option.map (fun checkpoint ->
       let sanitized, stats = sanitize_oas_checkpoint checkpoint in
       if checkpoint_sanitize_changed stats then begin
-        let has_data_loss =
-          stats.dropped_blocks > 0
-          || stats.dropped_messages > 0
-          || stats.dropped_chars > 0
-        in
-        (if has_data_loss then
-           Log.Keeper.warn
-         else
-           Log.Keeper.debug)
-          "keeper:%s checkpoint migration sanitized messages: dropped_blocks=%d dropped_messages=%d dropped_chars=%d truncated_blocks=%d truncated_chars=%d"
+        Log.Keeper.info
+          "keeper:%s OAS checkpoint sanitized messages: dropped_blocks=%d dropped_messages=%d dropped_chars=%d truncated_blocks=%d truncated_chars=%d"
           trace_id
           stats.dropped_blocks
           stats.dropped_messages
@@ -1375,17 +641,17 @@ let load_context_from_checkpoint ~max_checkpoint_messages ~trace_id ~primary_mod
          | Ok () -> ()
          | Error detail ->
              Prometheus.inc_counter
-               Prometheus.metric_keeper_checkpoint_failures
-               ~labels:[("operation", "migration_save")]
+               Keeper_metrics.(to_string CheckpointFailures)
+               ~labels:[("operation", Keeper_checkpoint_failure_operation.(to_label Oas_sanitize_save))]
                ();
              Log.Keeper.error
-               "keeper:%s checkpoint migration save failed: %s"
+               "keeper:%s OAS checkpoint sanitize save failed: %s"
                trace_id detail)
       end;
       sanitized)
   in
-  match (prefer_legacy, oas_checkpoint, legacy_checkpoint) with
-  | (false, Some checkpoint, _) ->
+  match oas_checkpoint with
+  | Some checkpoint ->
       let ctx =
         context_of_oas_checkpoint ~max_checkpoint_messages checkpoint ~primary_model_max_tokens
       in
@@ -1394,30 +660,15 @@ let load_context_from_checkpoint ~max_checkpoint_messages ~trace_id ~primary_mod
         else sync_oas_context { ctx with max_tokens = primary_model_max_tokens }
       in
       (session, Some ctx)
-  | (_, _, Some ckpt) ->
-      (try
-         let ctx =
-           context_of_legacy_checkpoint ckpt ~primary_model_max_tokens
-         in
-         (session, Some ctx)
-       with ex ->
-         Prometheus.inc_counter
-           Prometheus.metric_keeper_checkpoint_failures
-           ~labels:[("operation", "restore_legacy")]
-           ();
-         Log.Keeper.error "keeper:%s checkpoint restore failed: %s"
-           trace_id (Printexc.to_string ex);
-         (session, None))
-  | _ ->
-      (* Both OAS and legacy checkpoints unavailable.
-         Non-trivial OAS errors were already logged above at error level. *)
+  | None ->
+      (* No canonical OAS checkpoint is available. Non-trivial OAS errors
+         were already logged above at error level. *)
       (session, None)
 
 (** Patch an OAS checkpoint: unify session_id and replace the last
     assistant message's text content with [response_text] and attach the
     structured replay snapshot in message metadata. New writes keep the
-    checkpoint [working_context] empty; readers fall back to legacy
-    [working_context]/[STATE] paths for older checkpoints. *)
+    checkpoint [working_context] empty. *)
 let patch_checkpoint_last_assistant
     ?snapshot
     (cp : Agent_sdk.Checkpoint.t) ~session_id ~response_text
@@ -1465,8 +716,3 @@ let patch_checkpoint_last_assistant
   { cp with Agent_sdk.Checkpoint.session_id;
             messages = sanitized_messages;
             working_context = None }
-
-let save_checkpoint session (ctx : working_context) ~generation =
-  let ckpt = create_checkpoint ctx ~generation in
-  save_session_checkpoint session ckpt;
-  ckpt

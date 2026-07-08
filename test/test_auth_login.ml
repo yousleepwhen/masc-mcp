@@ -33,11 +33,16 @@ let contains_substring ~needle s =
     in
     loop 0
 
-let test_login_enables_bearer_auth_and_prints_codex_exports () =
+(* With_expiry path: caller passes the default env var name, mint
+   honors it verbatim. Agent_name is just a free string — the server
+   no longer derives env names from it. *)
+let test_login_with_expiry_uses_caller_env_var () =
   with_temp_dir "auth-login" @@ fun base_path ->
   match
     Auth_login.mint ~base_path ~host:"127.0.0.1" ~port:8935
-      ~agent_name:"codex-mcp-client" ~role:Masc_domain.Worker ()
+      ~agent_name:"test-agent" ~role:Masc_domain.Worker
+      ~token_env_var:"MASC_MCP_TOKEN"
+      ~token_lifetime:Auth_login.With_expiry ()
   with
   | Error err ->
       failf "login mint failed: %s" (Masc_domain.masc_error_to_string err)
@@ -45,15 +50,11 @@ let test_login_enables_bearer_auth_and_prints_codex_exports () =
       let cfg = Auth.load_auth_config base_path in
       check bool "auth enabled" true cfg.enabled;
       check bool "require token" true cfg.require_token;
-      check string "agent" "codex-mcp-client" report.agent_name;
+      check string "agent" "test-agent" report.agent_name;
       check string "role" "worker"
         (Masc_domain.agent_role_to_string report.role);
-      check string "codex env" "MASC_MCP_TOKEN"
-        report.codex_token_env_var;
-      check string "client env" "MASC_MCP_TOKEN"
+      check string "client env passthrough" "MASC_MCP_TOKEN"
         report.mcp_token_env_var;
-      check bool "codex login unsupported" false
-        report.codex_login_supported;
       check bool "raw token file exists" true
         (Sys.file_exists report.raw_token_file);
       (match
@@ -61,59 +62,54 @@ let test_login_enables_bearer_auth_and_prints_codex_exports () =
            ~token:report.bearer_token
        with
        | Ok cred ->
-           check string "token owner" "codex-mcp-client"
-             cred.agent_name;
-           check (option string) "mcp token does not expire" None
-             cred.expires_at
+           check string "token owner" "test-agent" cred.agent_name
        | Error err ->
            failf "minted token did not verify: %s"
              (Masc_domain.masc_error_to_string err));
       let shell = Auth_login.render_shell report in
-      check bool "shell exports mcp token" true
+      check bool "shell exports caller-named env var" true
         (contains_substring ~needle:"export MASC_MCP_TOKEN="
            shell);
-      let text = Auth_login.render_text report in
-      check bool "text explains codex login" true
-        (contains_substring
-           ~needle:"`codex mcp login` is OAuth-only"
-           text);
       let json = Auth_login.to_yojson report in
       check string "json status" "ok"
         (Yojson.Safe.Util.member "status" json
         |> Yojson.Safe.Util.to_string)
 
-let test_login_prints_claude_client_env () =
-  with_temp_dir "auth-login-claude" @@ fun base_path ->
+(* Long_lived path: caller passes an arbitrary env var name and
+   asks for a no-expiry credential. The server passes the name
+   through verbatim and stores a credential with expires_at=None.
+   The choice is the caller's — there is no agent-name match. *)
+let test_login_long_lived_passes_env_var_through () =
+  with_temp_dir "auth-login-long-lived" @@ fun base_path ->
   match
     Auth_login.mint ~base_path ~host:"127.0.0.1" ~port:8935
-      ~agent_name:"claude" ~role:Masc_domain.Worker ()
+      ~agent_name:"long-lived-daemon" ~role:Masc_domain.Worker
+      ~token_env_var:"CUSTOM_MCP_TOKEN"
+      ~token_lifetime:Auth_login.Long_lived ()
   with
   | Error err ->
-      failf "login mint failed: %s" (Masc_domain.masc_error_to_string err)
+      failf "long-lived login mint failed: %s"
+        (Masc_domain.masc_error_to_string err)
   | Ok report ->
-      check string "agent" "claude" report.agent_name;
-      check string "client env" "MASC_CLAUDE_MCP_TOKEN"
+      check string "agent" "long-lived-daemon" report.agent_name;
+      check string "client env passthrough" "CUSTOM_MCP_TOKEN"
         report.mcp_token_env_var;
       (match
          Auth.find_credential_by_token base_path
            ~token:report.bearer_token
        with
        | Ok cred ->
-           check (option string) "claude mcp token does not expire" None
-             cred.expires_at
+           check (option string) "long-lived token has no expires_at"
+             None cred.expires_at
        | Error err ->
-           failf "minted claude token did not verify: %s"
+           failf "minted long-lived token did not verify: %s"
              (Masc_domain.masc_error_to_string err));
-      check string "codex env remains pinned" "MASC_MCP_TOKEN"
-        report.codex_token_env_var;
       let shell = Auth_login.render_shell report in
-      check bool "shell exports claude token" true
-        (contains_substring ~needle:"export MASC_CLAUDE_MCP_TOKEN="
+      check bool "shell exports caller-named env var" true
+        (contains_substring ~needle:"export CUSTOM_MCP_TOKEN="
            shell);
-      check bool "shell does not export codex token for claude login" false
-        (contains_substring ~needle:"export MASC_MCP_TOKEN=" shell);
       let json = Auth_login.to_yojson report in
-      check string "json client env" "MASC_CLAUDE_MCP_TOKEN"
+      check string "json client env passthrough" "CUSTOM_MCP_TOKEN"
         (Yojson.Safe.Util.member "mcp_client" json
          |> Yojson.Safe.Util.member "token_env_var"
          |> Yojson.Safe.Util.to_string)
@@ -123,9 +119,9 @@ let () =
     [
       ( "login",
         [
-          test_case "enables bearer auth and prints Codex exports" `Quick
-            test_login_enables_bearer_auth_and_prints_codex_exports;
-          test_case "prints Claude client env" `Quick
-            test_login_prints_claude_client_env;
+          test_case "with-expiry honors caller env var" `Quick
+            test_login_with_expiry_uses_caller_env_var;
+          test_case "long-lived honors caller env var + no expires_at"
+            `Quick test_login_long_lived_passes_env_var_through;
         ] );
     ]

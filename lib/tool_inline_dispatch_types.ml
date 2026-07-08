@@ -20,7 +20,7 @@ module Float = Stdlib.Float
     Extracted to avoid circular dependencies between
     tool_inline_dispatch, tool_inline_dispatch_coord, and tool_inline_dispatch_comm. *)
 
-type tool_result = bool * string
+type tool_result = Tool_result.result
 
 (** Context record capturing all bindings from execute_tool_eio
     that the inline dispatch block needs. *)
@@ -33,8 +33,8 @@ type context = {
   clock : float Eio.Time.clock_ty Eio.Resource.t;
   arguments : Yojson.Safe.t;
   mcp_session_id : string option;
-  (** Write agent name to MCP session file for HTTP persistence *)
-  write_mcp_session_agent : string -> unit;
+  (** Record the resolved agent name for this MCP session. *)
+  record_mcp_session_agent : string -> unit;
   (** Wait for a message from a given agent *)
   wait_for_message :
     Session.registry ->
@@ -50,8 +50,7 @@ type context = {
     Coord.config -> Mcp_server_eio_governance.mcp_session_record list -> unit;
 }
 
-(** Helper: run subprocess — uses [Dispatch] caller (default 120s) *)
-let safe_exec args =
-  match Process_eio.run_argv_with_status ~timeout_sec:(Env_config_exec_timeout.timeout_sec ~caller:Dispatch ()) args with
-  | Unix.WEXITED 0, output -> (true, output)
-  | _, output -> (false, if String.equal output "" then "Command failed" else output)
+(** Helper: run subprocess — uses [Dispatch] caller (default 120s).
+    Dead code since 2026-05; removed during RFC-0062 Phase 4c-2
+    (tool_result migration from (bool * string) to Tool_result.result).
+    If needed again, add ~tool_name ~start_time and return Tool_result.result. *)

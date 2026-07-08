@@ -3,13 +3,6 @@
 
     @since 2.62.0 *)
 
-(** Issue #8480: hand-mirrored from
-    [Keeper_tool_pr_review.valid_pr_review_event_strings]. Direct
-    dependency would create a cycle (Tool_shard -> Keeper_tool_pr_review
-    -> Keeper_alerting -> Tool_shard). The sync regression test
-    [test_types.ml :: pr_review_event_ssot] catches drift. *)
-val pr_review_event_enum_strings : string list
-
 (** Issue #8513: hand-mirrored from
     [Board_dispatch.valid_sort_order_strings] (#8453 SSOT). Schema
     previously hand-listed 3 of 5 sort orders; sync regression test in
@@ -17,13 +10,12 @@ val pr_review_event_enum_strings : string list
 val sort_order_enum_strings : string list
 
 (** Issue #8524: hand-mirrored from
-    [Keeper_exec_shell.valid_shell_op_strings]. Schema previously
-    omitted git_worktree; sync regression test in
-    [test_types.ml :: keeper_shell_op_ssot] catches drift. *)
-val keeper_shell_op_enum_strings : string list
+    [Agent_tool_command_runtime.valid_shell_op_strings]. Sync regression test in
+    [test_types.ml :: tool_search_files_op_ssot] catches drift. *)
+val tool_search_files_op_enum_strings : string list
 
 (** Issue #8484: hand-mirrored from
-    [Keeper_exec_memory.valid_memory_search_source_strings]. Sync
+    [Agent_tool_memory_runtime.valid_memory_search_source_strings]. Sync
     regression test in [test_types.ml :: memory_search_source_ssot]
     catches drift. *)
 val memory_search_source_enum_strings : string list
@@ -34,7 +26,7 @@ val memory_search_source_enum_strings : string list
 val memory_kind_enum_strings : string list
 
 (** Issue #8490: hand-mirrored from
-    [Keeper_exec_fs.valid_fs_write_mode_strings]. Sync regression test
+    [Agent_tool_filesystem_runtime.valid_fs_write_mode_strings]. Sync regression test
     in [test_types.ml :: fs_write_mode_ssot] catches drift. *)
 val fs_write_mode_enum_strings : string list
 
@@ -67,8 +59,8 @@ val shard_board : shard
 val shard_filesystem : shard
 (** File I/O: read-only inspection. *)
 
-val shard_shell : shard
-(** Structured read-only shell access. *)
+val shard_search_files : shard
+(** SearchFiles structured repo inspection access. *)
 
 (** {1 Lookup} *)
 
@@ -78,8 +70,8 @@ val get_shard : string -> shard option
 (** {1 Tool Composition} *)
 
 val default_shard_names : string list
-(** Default shards for a new keeper: base, board, filesystem, shell,
-    library, taskboard, coding, autoresearch. *)
+(** Default shards for a new keeper: base, board, filesystem, search_files,
+    library, taskboard. *)
 
 val tools_of_shards : string list -> Masc_domain.tool_schema list
 (** Combine tools from multiple shard names. *)
@@ -138,39 +130,12 @@ val execute : string -> Yojson.Safe.t -> (bool * Yojson.Safe.t)
 (** Execute tool_shard MCP tools (grant, revoke, list).
     Agent shard state is tracked in-memory per agent. *)
 
-val autoresearch_keeper_tools : Masc_domain.tool_schema list
-(** Autoresearch tools for keeper use.
-    (Earlier revisions excluded now-removed orchestration front doors.) *)
-
-val shard_autoresearch : shard
-(** Autoresearch shard: start, cycle, status, inject, stop. *)
-
-val coding_tools : Masc_domain.tool_schema list
-(** Coding shard tools (keeper_bash + worktree/code inspection).
-    keeper_shell with op=gh provides GitHub CLI access.
-    Not in default shards. *)
-
-val keeper_preflight_tools : Masc_domain.tool_schema list
-(** Pre-flight validation tool schema. *)
-
-val keeper_github_pr_tools : Masc_domain.tool_schema list
-(** Dedicated GitHub PR workflow tools (list, status, draft create). *)
-
 val all_keeper_tool_schemas : Masc_domain.tool_schema list
 (** #10101: every keeper-facing tool schema exposed by this
-    module, built from [all_shards] (so new shard categories
-    flow through automatically) plus the non-shard lists
-    [keeper_preflight_tools], [keeper_github_pr_tools], and
-    [keeper_pr_review_tools].
+    module, built from [all_shards] plus unsharded default tools.
     Feeds [Config.raw_all_tool_schemas] so
     [Tool_help_registry.find_entry] can resolve every shard
     tool.  Duplicates are possible; dedupe at consumer. *)
 
-val keeper_pr_review_tools : Masc_domain.tool_schema list
-(** PR review tools (read, comment, reply) schemas. *)
-
-val shard_coding : shard
-(** Coding shard: github/shell bridge + worktree/code inspection. *)
-
 val keeper_model_tools : Masc_domain.tool_schema list
-(** Default tool set from default shards — excludes coding tools. *)
+(** Default tool set from default shards. *)

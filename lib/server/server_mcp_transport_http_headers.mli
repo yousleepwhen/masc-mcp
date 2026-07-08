@@ -33,11 +33,6 @@ val body_jsonrpc_method : string -> (string * bool) option
     non-object body).  [has_id] reports whether the [id] field is
     present (used to distinguish notifications from requests). *)
 
-val is_notification_method : string -> bool
-(** [is_notification_method m] tests whether [m] starts with the
-    literal prefix [["notifications/"]].  Notifications must have
-    [has_id = false] in the JSON-RPC envelope. *)
-
 val is_initialize_method : string -> bool
 (** [is_initialize_method m] tests whether [m] equals the literal
     [["initialize"]].  The initialize handshake must always go over
@@ -46,36 +41,16 @@ val is_initialize_method : string -> bool
 (** {1 Accept-header classification}
 
     The MCP spec mandates [Accept: application/json, text/event-stream]
-    for streamable transports.  Two opt-outs:
+    for streamable transports.  One opt-out remains:
 
-    - [allow_legacy_accept] env flag accepts the older single-type
-      Accept headers ([application/json] alone or [text/event-stream]
-      alone).
     - The [x-masc-force-json] request header overrides the Accept
       negotiation entirely. *)
-
-val allow_legacy_accept : bool
-(** Cached at module-init from the [MASC_ALLOW_LEGACY_ACCEPT]
-    environment flag.  Truthy values: [1] / [true] / [yes] / [on]
-    (case-insensitive, trimmed).  Anything else is [false]. *)
 
 val classify_mcp_accept :
   Httpun.Request.t ->
   Mcp_transport_protocol.Http_negotiation.accept_mode
 (** [classify_mcp_accept request] reads the [accept] header and
-    returns the negotiation classification, honouring
-    {!allow_legacy_accept}. *)
-
-val classify_mcp_accept_for_body :
-  Httpun.Request.t ->
-  string ->
-  Mcp_transport_protocol.Http_negotiation.accept_mode
-(** Same as {!classify_mcp_accept} but with one upgrade path: when
-    the Accept header alone classifies as [Rejected] AND the body
-    is a notification (method starts with [notifications/], no id),
-    promote the classification to [Legacy_accepted] so notifications
-    can land even from clients that omit the streamable Accept set.
-    Notification-only relaxation, never for request-id'd calls. *)
+    returns the negotiation classification. *)
 
 val should_use_sse_for_body :
   Httpun.Request.t ->
@@ -88,10 +63,6 @@ val should_use_sse_for_body :
     handshake (always JSON) OR [accept_mode <> Streamable] OR the
     Accept header does not include [text/event-stream]. *)
 
-val request_accepts_json : Httpun.Request.t -> bool
-(** [request_accepts_json request] returns [true] iff the Accept
-    header advertises [application/json] (or wildcard). *)
-
 val request_force_json_response : Httpun.Request.t -> bool
 (** [request_force_json_response request] returns [true] iff the
     [x-masc-force-json] header is set to a truthy value
@@ -101,8 +72,8 @@ val request_force_json_response : Httpun.Request.t -> bool
 val force_json_response : bool
 (** Module-init cache of [MASC_FORCE_JSON_RESPONSE] OR
     [MCP_FORCE_JSON_RESPONSE] env flags (truthy semantics matching
-    {!allow_legacy_accept}).  Either flag forces every response to
-    plain JSON regardless of Accept negotiation. *)
+    {!request_force_json_response}).  Either flag forces every
+    response to plain JSON regardless of Accept negotiation. *)
 
 (** {1 Header builders} *)
 
@@ -139,22 +110,6 @@ val json_headers :
     [content-type: application/json] + {!mcp_headers} pair +
     [deps.cors_headers origin].  The canonical "JSON response"
     builder used by every JSON-bodied response in the transport. *)
-
-val legacy_accept_warning_headers :
-  Mcp_transport_protocol.Http_negotiation.accept_mode ->
-  (string * string) list
-(** [legacy_accept_warning_headers classification] returns a
-    [warning: 299 - "..."] + [x-masc-legacy-accept: 1] pair when the
-    classification is [Legacy_accepted], empty list otherwise.
-    The warning code 299 is RFC 7234's "miscellaneous persistent
-    warning"; the literal text steers operators to upgrade the
-    client's Accept header. *)
-
-val legacy_transport_deprecation_headers : (string * string) list
-(** Static three-header set ([deprecation: true],
-    [warning: 299 - "..."], [link: </mcp>; rel="successor-version"])
-    for the legacy SSE endpoints ([/sse], [/messages]) which are
-    being phased out in favour of the unified [/mcp] path. *)
 
 (** {1 SSE constants} *)
 

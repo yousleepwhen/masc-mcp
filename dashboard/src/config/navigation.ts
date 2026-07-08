@@ -18,9 +18,11 @@ type SurfaceSectionId =
   | 'agents'
   | 'cognition'
   | 'runtime'
-  | 'goal-loop'
+  | 'cascade-config' // Dedicated entry for cascade.toml TOML editor (formerly buried inside runtime/cascade view)
   | 'fleet-health'   // Phase 1: absorbs telemetry + fleet + tool-quality + monitoring governance
-  | 'memory-subsystems'
+  | 'doctor'         // Dedicated entry for /api/v1/dashboard/doctor (formerly buried inside Command → Operations → Inspector → "진단" sub-tab)
+  | 'transport-health' // Dedicated entry for /api/v1/dashboard/transport-health (was 5-hop buried inside Command → Operations → Inspector → "서버 설정" → ServerConfig → TransportHealthPanel)
+  | 'feature-health' // Dedicated entry for /api/v1/dashboard/feature-health (was 4-hop buried inside Command → Operations → Inspector → "피처 플래그" sub-tab)
   // command
   | 'operations'     // Phase 1+6: absorbs intervene + governance + inspector (Phase 7: connectors split out)
   // connectors (Phase 7: top-level surface — sidecar-driven channel bridges)
@@ -31,17 +33,17 @@ type SurfaceSectionId =
   // workspace
   | 'board'
   | 'sub-boards'     // Phase 2: SubBoard named spaces within the board
+  | 'moderation'     // Board moderation queue and actions
   | 'planning'       // Phase 1: absorbs goals
   | 'repositories'   // Multi-repository cockpit and keeper access mapping
   | 'verification'   // CDAL follow-up (#7531): Mission detail verification table
   // lab
   | 'tools'
-  | 'autoresearch'
   | 'harness'
   // code (Stage 5 IDE plane — shell only in PR-1, 4-pane content in PR-2+)
   | 'ide-shell'
 
-type NonHomeTabId = Exclude<TabId, 'overview' | 'logs'>
+export type NonHomeTabId = Exclude<TabId, 'overview' | 'logs'>
 
 interface DashboardNavGroup {
   id: SurfaceId
@@ -60,9 +62,10 @@ interface DashboardNavItem {
   icon: DashboardSurfaceIcon
   description: string
   defaultParams?: Record<string, string>
+  hidden?: boolean
 }
 
-interface DashboardSectionNavItem {
+export interface DashboardSectionNavItem {
   id: SurfaceSectionId
   label: string
   description: string
@@ -78,6 +81,7 @@ export const DASHBOARD_SURFACES: DashboardNavGroup[] = [
     description: 'High-Fidelity MASC Cockpit',
     defaultTab: 'cockpit',
     tabs: ['cockpit'],
+    hidden: true,
   },
 
   {
@@ -92,9 +96,9 @@ export const DASHBOARD_SURFACES: DashboardNavGroup[] = [
     id: 'monitoring',
     label: 'Monitor',
     icon: 'monitoring',
-    description: 'Fleet storylines, agents, runtime, and telemetry',
+    description: 'Keeper operations, tools, cascade, and evidence',
     defaultTab: 'monitoring',
-    defaultParams: { section: 'journey' },
+    defaultParams: { section: 'agents' },
     tabs: ['monitoring'],
   },
   {
@@ -158,60 +162,89 @@ export const DASHBOARD_NAV_ITEMS: DashboardNavItem[] = DASHBOARD_SURFACES.map(su
   icon: surface.icon,
   description: surface.description,
   defaultParams: surface.defaultParams,
+  hidden: surface.hidden,
 }))
+
+export const VISIBLE_DASHBOARD_NAV_ITEMS: DashboardNavItem[] =
+  DASHBOARD_NAV_ITEMS.filter(item => item.hidden !== true)
 
 export const DASHBOARD_SECTION_ITEMS: Record<NonHomeTabId, DashboardSectionNavItem[]> = {
   cockpit: [],
   monitoring: [
     {
-      id: 'journey',
-      label: 'Journey Map',
-      description: 'Task, run, contract, keeper, thinking, memory, turn, life, and cascade in one flow.',
-      params: { section: 'journey' },
-    },
-    {
-      id: 'observatory',
-      label: 'Observatory',
-      description: 'Live collaboration and investigative timelines remain drill-down surfaces.',
-      params: { section: 'observatory' },
-      hidden: true,
-    },
-    {
       id: 'agents',
-      label: 'Agent Directory',
-      description: 'Live runtime-backed roster and process state.',
+      label: 'Keeper Fleet',
+      description: 'Live and configured keeper roster.',
       params: { section: 'agents' },
     },
     {
-      id: 'cognition',
-      label: 'Cognition',
-      description: 'Keeper BDI, token load, memory, decisions, and autoresearch loops.',
-      params: { section: 'cognition' },
-    },
-    {
-      id: 'runtime',
-      label: 'Cascade',
-      description: 'Provider health, capacity, routing, cost, latency, and inspector views.',
-      params: { section: 'runtime' },
-    },
-    {
-      id: 'goal-loop',
-      label: 'GOAL LOOP',
-      description: 'Observe, Orient, Decide, Act, and Verify runtime status.',
-      params: { section: 'goal-loop' },
-    },
-    {
       id: 'fleet-health',
-      label: 'Fleet Telemetry',
-      description: 'Event log, keeper comparison, tool quality, governance, and attribution signals.',
+      label: 'Tool Monitor',
+      description: 'Tool quality and governance signals.',
       params: { section: 'fleet-health' },
     },
     {
-      id: 'memory-subsystems',
-      label: 'Memory Subsystems',
-      description: 'Hebbian graph, episodes, and compaction state.',
-      params: { section: 'memory-subsystems' },
+      id: 'runtime',
+      label: 'Cascade & Runtime',
+      description: 'Cascade and provider health.',
+      params: { section: 'runtime' },
+    },
+    {
+      id: 'observatory',
+      label: 'Evidence Timeline',
+      description: 'Activity and runtime evidence.',
+      params: { section: 'observatory' },
+    },
+    {
+      id: 'cascade-config',
+      label: 'Cascade Config',
+      description: 'Cascade providers, models and rules.',
+      params: { section: 'cascade-config' },
       hidden: true,
+    },
+    {
+      id: 'doctor',
+      label: 'Doctor',
+      description: 'Sidecar and config doctor diagnostics.',
+      params: { section: 'doctor' },
+      hidden: true,
+    },
+    {
+      id: 'transport-health',
+      label: 'Transport Health',
+      description: 'SSE/gRPC/WebSocket/WebRTC transport state.',
+      params: { section: 'transport-health' },
+      hidden: true,
+    },
+    {
+      id: 'feature-health',
+      label: 'Feature Flags',
+      description: 'Feature flag rollout and health snapshot.',
+      params: { section: 'feature-health' },
+      hidden: true,
+    },
+    {
+      id: 'journey',
+      label: 'Journey Map',
+      description: 'Legacy execution-flow drill-down.',
+      params: { section: 'journey' },
+      hidden: true,
+    },
+    {
+      id: 'cognition',
+      // Distinguish from sibling labels in Monitor sidebar; the section id
+      // (used in URLs, deep links from KeeperCognitionInspector, and the
+      // backend nav-event allowlist) remains 'cognition'.
+      label: 'Keeper Cognition',
+      description: 'Keeper cognition drill-down.',
+      params: { section: 'cognition' },
+      hidden: true,
+      // Hidden 2026-05-20: FilterChips (overview, keeper, token-stats,
+      // decisions, memory, episodes) and KeeperCognitionInspector
+      // deep links remain functional, but the sidebar entry is intentionally
+      // suppressed pending the cognition→keeper-detail Cognition section
+      // absorption (tracked in the Monitor IA review). The earlier 2026-05-17
+      // promotion was reverted by #16977 (Improve dashboard monitor IA).
     },
   ],
   command: [
@@ -244,9 +277,15 @@ export const DASHBOARD_SECTION_ITEMS: Record<NonHomeTabId, DashboardSectionNavIt
       params: { section: 'sub-boards' },
     },
     {
+      id: 'moderation',
+      label: 'Moderation',
+      description: 'Flagged board posts and moderation actions.',
+      params: { section: 'moderation' },
+    },
+    {
       id: 'planning',
       label: 'Plans & Goals',
-      description: 'Task kanban with the higher-level goal tree.',
+      description: 'Goal loop, goal tree, and task kanban.',
       params: { section: 'planning' },
     },
     {
@@ -268,12 +307,6 @@ export const DASHBOARD_SECTION_ITEMS: Record<NonHomeTabId, DashboardSectionNavIt
       label: 'Tools',
       description: 'Registered MCP tools across servers.',
       params: { section: 'tools' },
-    },
-    {
-      id: 'autoresearch',
-      label: 'Autoresearch',
-      description: 'Autonomous experiment loop state and history.',
-      params: { section: 'autoresearch' },
     },
     {
       id: 'harness',
@@ -350,11 +383,11 @@ export const SECTION_REDIRECTS: Record<TabSectionKey, SectionRedirect> = {
   'monitoring:metrics':      { section: 'runtime' },
   'monitoring:cascade-inspector': { section: 'runtime', view: 'inspector' },
   'monitoring:cost': { section: 'runtime', view: 'cost' },
+  'monitoring:cascade': { section: 'cascade-config' },
 
   // Dashboard consolidation Phase 1+6: command surface
   'command:intervene':    { section: 'operations' },
   'command:governance':   { section: 'operations' },
-  'command:connectors':   { section: 'operations', view: 'connectors' },
   'command:inspector':    { section: 'operations', view: 'inspector' },
 
   // Dashboard consolidation Phase 1: workspace surface
@@ -405,9 +438,34 @@ export function normalizeRouteParams(tabId: TabId, params: Record<string, string
     next.section = defaultParamsForTab(tabId).section ?? ''
   }
 
-  delete next.surface
+  if (tabId === 'monitoring' && next.section === 'runtime' && next.view === 'cascade') {
+    next.section = 'cascade-config'
+    delete next.view
+  }
+
+  if (!(tabId === 'code' && next.section === 'ide-shell')) {
+    delete next.surface
+  }
   delete next.operation
   delete next.run_id
+
+  // Sections that use the `view` sub-param for internal navigation.
+  // For all other sections, `view` is meaningless and must not leak in from prior navigation.
+  // `repositories` / `operations` / `ide-shell` are redirect targets in
+  // `CROSS_SURFACE_SECTION_REDIRECTS` (router.ts) and `SECTION_REDIRECTS`
+  // (this file, line 332+) that carry `view` as part of the canonical destination
+  // (e.g. `monitoring:git-graph → workspace:repositories?view=graph`,
+  // cockpit IDE `?mode=Split → code:ide-shell?view=split-diff`).
+  // `planning` does not gain `view` via redirect (`workspace:goals → planning`
+  // drops view); instead, direct `replaceRoute` callers pass `view: 'default'`
+  // as the canonical planning entry point (see router.test.ts replaceRoute case).
+  const SECTIONS_WITH_VIEW = new Set([
+    'fleet-health', 'runtime', 'agents', 'cognition', 'observatory',
+    'repositories', 'operations', 'ide-shell', 'planning',
+  ])
+  if (!next.section || !SECTIONS_WITH_VIEW.has(next.section)) {
+    delete next.view
+  }
 
   return next
 }

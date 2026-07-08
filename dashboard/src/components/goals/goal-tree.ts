@@ -2,8 +2,13 @@
 
 import { html } from 'htm/preact'
 import { signal } from '@preact/signals'
-import { useEffect, useMemo } from 'preact/hooks'
+import { useCallback, useEffect, useMemo, useState } from 'preact/hooks'
+import { SECONDS_PER_HOUR } from '../../lib/format-time'
+import { clampPct } from '../../lib/format-number'
 import { fetchDashboardGoalDetail, fetchDashboardGoalsTree } from '../../api/dashboard'
+import { currentDashboardActor } from '../../api/core'
+import { callMcpTool } from '../../api/mcp'
+import { route } from '../../router'
 import {
   goalTreeData as treeData,
   goalTreeError as treeError,
@@ -15,7 +20,11 @@ import { EmptyState, ErrorState, LoadingState } from '../common/feedback-state'
 import { ActionButton } from '../common/button'
 import { FilterChips } from '../common/filter-chips'
 import { StatusBadge } from '../common/status-badge'
+import { executionOutcomeLabel } from '../fsm-hub-types'
+import { operatorDispositionReasonLabel } from '../fsm-hub-types'
+import { cascadeOutcomeLabel } from '../fsm-hub-types'
 import { ringFocusClasses } from '../common/ring'
+import { trustDispositionLabel } from '../fsm-hub-types'
 import { TimeAgo } from '../common/time-ago'
 import { TaskCreateForm } from '../task-manage/task-create-form'
 import type {
@@ -44,13 +53,25 @@ import {
   phaseFilterLabel,
   TaskProgressBar,
 } from './goal-helpers'
+import { trustHasPendingFirstEvidence } from './trust-summary-evidence'
+import {
+  goalTaskCompletionLabel,
+  goalTaskLinkageLabel,
+  goalTaskSummaryForNode,
+} from './goal-task-summary'
+import {
+  goalCompletionGateLabel,
+  goalCompletionLabel,
+  goalCompletionSummaryForNode,
+  goalCompletionTone,
+} from './goal-completion-summary'
+import { DECK_CHIP, DECK_LABEL, DECK_META } from './deck-classes'
+import { errorToString } from '../../lib/format-string'
 
 type GoalDetailTab = 'summary' | 'tasks' | 'evidence'
+type GoalTransitionAction = 'request_complete' | 'approve_completion' | 'reject_completion'
 
 const CARD_BOX = 'rounded-[var(--r-0)] border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3'
-const DECK_LABEL = 'font-mono text-3xs font-semibold uppercase tracking-[var(--track-caps)] text-[var(--color-fg-muted)]'
-const DECK_META = 'font-mono text-3xs text-[var(--color-fg-disabled)]'
-const DECK_CHIP = 'rounded-[var(--r-0)] border border-[var(--color-border-strong)] bg-[var(--color-bg-elevated)] px-1.5 py-0.5 font-mono text-3xs'
 const GOAL_PANEL = 'rounded-[var(--r-1)] border border-[var(--color-border-default)] bg-[var(--color-bg-panel-alt)] p-5'
 const TREE_NODE_CARD_BASE = 'group flex items-start gap-3 rounded-[var(--r-1)] border p-3 transition-colors w-full text-left'
 const TREE_NODE_CARD_ACTIVE = `${TREE_NODE_CARD_BASE} border-[var(--color-state-active-border)] bg-[var(--color-state-active-bg)] shadow-[0_0_0_1px_var(--color-brass-border)]`
@@ -190,11 +211,12 @@ function healthLabel(health: GoalTreeNode['health']): string {
   }
 }
 
-function trustDispositionLabel(disposition: string | null | undefined): string | null {
-  if (!disposition) return null
-  return ({ Alert: '경보', Pause: '정지', Pass: '통과' } as Record<string, string>)[
-    disposition
-  ] ?? disposition
+// `trustDispositionLabel` moved to `../fsm-hub-types` to deduplicate the
+// 4-entry inline label literal that also lived in
+// `keeper-detail-alert-strip.ts:201-205`. Same map, single SSOT.
+
+function compactTrustList(items: readonly string[] | null | undefined): string[] {
+  return (items ?? []).map(item => item.trim()).filter(Boolean)
 }
 
 function healthClass(health: GoalTreeNode['health']): string {
@@ -224,6 +246,7 @@ function blockerSourceLabel(source: GoalTreeNode['blocking_source']): string {
 function humanizeBlockingReason(reason: string): string {
   switch (reason) {
     case 'tool_required_unsatisfied': return '필요한 도구가 충족되지 않음'
+    case 'tool_route_recoverable_failure': return '도구 라우팅 복구 필요'
     case 'degraded_retry': return '재시도 중 (성능 저하)'
     case 'reaction_chain_break': return '반응 체인 단절'
     case 'awaiting_verification': return '검증 대기'
@@ -311,7 +334,7 @@ function keeperTrustDispositionClass(
 ): string {
   const disposition = trust?.disposition
   if (disposition === 'Alert') return 'border-bad/25 bg-bad/10 text-bad'
-  if (disposition === 'Pause' || trust?.needs_attention) {
+  if (disposition === 'Blocked' || disposition === 'Pause' || trust?.needs_attention) {
     return 'border-warn/25 bg-warn/10 text-warn'
   }
   if (disposition === 'Pass') return 'border-ok/25 bg-ok/10 text-ok'
@@ -473,6 +496,20 @@ function selectGoal(id: string) {
   selectedGoalId.value = id
 }
 
+function cleanRouteGoalId(value: string | undefined): string | null {
+  const trimmed = value?.trim()
+  return trimmed && trimmed.length > 0 ? trimmed : null
+}
+
+function goalExpansionPath(nodes: readonly GoalTreeNode[], goalId: string): string[] | null {
+  for (const node of nodes) {
+    if (node.id === goalId) return [node.id]
+    const childPath = goalExpansionPath(node.children, goalId)
+    if (childPath) return [node.id, ...childPath]
+  }
+  return null
+}
+
 function expandAll(nodes: GoalTreeNode[]) {
   const ids = new Set(expandedNodes.value)
   function walk(items: GoalTreeNode[]) {
@@ -495,7 +532,7 @@ async function refreshTree() {
   try {
     hydrateGoalTreeSnapshot(await fetchDashboardGoalsTree())
   } catch (err) {
-    treeError.value = err instanceof Error ? err.message : String(err)
+    treeError.value = errorToString(err)
   } finally {
     treeLoading.value = false
   }
@@ -514,14 +551,14 @@ async function refreshGoalDetail(goalId: string) {
     detailData.value = next
   } catch (err) {
     if (detailRequestSeq !== reqId) return
-    detailError.value = err instanceof Error ? err.message : String(err)
+    detailError.value = errorToString(err)
   } finally {
     if (detailRequestSeq === reqId) detailLoading.value = false
   }
 }
 
 function ConvergenceBar({ pct, size = 'md' }: { pct: number; size?: 'sm' | 'md' }) {
-  const clamped = Math.max(0, Math.min(100, pct))
+  const clamped = clampPct(pct)
   const barColor =
     clamped >= 80 ? 'var(--color-status-ok)'
     : clamped >= 50 ? 'var(--color-amber-bright)'
@@ -569,6 +606,15 @@ function GoalAttainmentChip({ attainment }: { attainment: GoalTreeNode['attainme
       ${attainmentLabel(attainment)}
     </span>
   `
+}
+
+function completionToneClass(tone: 'default' | 'ok' | 'warn' | 'bad'): string {
+  switch (tone) {
+    case 'ok': return 'border-ok/30 bg-ok/10 text-ok'
+    case 'warn': return 'border-warn/30 bg-warn/10 text-warn'
+    case 'bad': return 'border-bad/30 bg-bad/10 text-bad'
+    default: return 'border-card-border/60 bg-[var(--color-bg-elevated)] text-text-body'
+  }
 }
 
 function TreeSummary({
@@ -667,6 +713,238 @@ function TreeTask({ task }: { task: GoalTreeTask }) {
   `
 }
 
+function GoalCompletionStrip({
+  node,
+  compact = false,
+}: {
+  node: GoalTreeNode
+  compact?: boolean
+}) {
+  const summary = goalCompletionSummaryForNode(node)
+  const tone = goalCompletionTone(summary)
+  const label = goalCompletionLabel(summary)
+  const pctLabel = summary.pct == null ? 'unmeasured' : `${summary.pct}%`
+  const gateLabel = goalCompletionGateLabel(summary)
+
+  if (compact) {
+    return html`
+      <span
+        class="rounded-[var(--r-1)] border px-2 py-0.5 text-3xs font-semibold ${completionToneClass(tone)}"
+        title=${`Completion: ${label}; ${pctLabel}; ${gateLabel}`}
+      >
+        ${label}
+      </span>
+    `
+  }
+
+  return html`
+    <div class=${CARD_BOX} data-goal-completion-summary>
+      <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <div class="text-2xs font-semibold uppercase tracking-[var(--track-caps)] text-text-muted">완료 판정</div>
+          <div class="mt-1 text-sm text-text-body">${label} · ${pctLabel}</div>
+        </div>
+        <span class="rounded-[var(--r-1)] border px-2 py-0.5 text-3xs font-semibold ${completionToneClass(tone)}">
+          ${gateLabel}
+        </span>
+      </div>
+      <div class="grid grid-cols-[repeat(auto-fit,minmax(120px,1fr))] gap-2 text-xs">
+        <div class="rounded-[var(--r-1)] border border-card-border/50 bg-[var(--color-bg-surface)] p-2">
+          <div class="text-3xs uppercase text-text-muted">basis</div>
+          <div class="mt-1 font-semibold text-text-strong">${summary.pct_source}</div>
+        </div>
+        <div class="rounded-[var(--r-1)] border border-card-border/50 bg-[var(--color-bg-surface)] p-2">
+          <div class="text-3xs uppercase text-text-muted">task open</div>
+          <div class="mt-1 font-semibold text-text-strong">${summary.task_open}</div>
+        </div>
+        <div class="rounded-[var(--r-1)] border border-card-border/50 bg-[var(--color-bg-surface)] p-2">
+          <div class="text-3xs uppercase text-text-muted">verifier</div>
+          <div class="mt-1 font-semibold text-text-strong">${summary.requires_verifier ? 'required' : 'none'}</div>
+        </div>
+        <div class="rounded-[var(--r-1)] border border-card-border/50 bg-[var(--color-bg-surface)] p-2">
+          <div class="text-3xs uppercase text-text-muted">blocker</div>
+          <div class="mt-1 font-semibold text-text-strong">${summary.blocking_source}</div>
+        </div>
+      </div>
+    </div>
+  `
+}
+
+function GoalTaskRelationStrip({
+  node,
+  compact = false,
+}: {
+  node: GoalTreeNode
+  compact?: boolean
+}) {
+  const summary = goalTaskSummaryForNode(node)
+  if (compact) {
+    if (summary.total === 0) return null
+    return html`
+      <span
+        class="rounded-[var(--r-1)] border border-[var(--accent-20)] bg-[var(--accent-10)] px-2 py-0.5 text-3xs font-medium text-accent-fg"
+        title=${`Goal-Task links: ${goalTaskCompletionLabel(summary)}; ${goalTaskLinkageLabel(summary)}`}
+      >
+        Task ${summary.done}/${summary.total}
+      </span>
+    `
+  }
+
+  return html`
+    <div class=${CARD_BOX} data-goal-task-summary>
+      <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <div class="text-2xs font-semibold uppercase tracking-[var(--track-caps)] text-text-muted">Goal-Task 관계</div>
+          <div class="mt-1 text-sm text-text-body">${goalTaskCompletionLabel(summary)}</div>
+        </div>
+        <span class="rounded-[var(--r-1)] border border-[var(--accent-20)] bg-[var(--accent-10)] px-2 py-0.5 text-3xs font-medium text-accent-fg">
+          ${goalTaskLinkageLabel(summary)}
+        </span>
+      </div>
+      <div class="grid grid-cols-[repeat(auto-fit,minmax(110px,1fr))] gap-2 text-xs">
+        <div class="rounded-[var(--r-1)] border border-card-border/50 bg-[var(--color-bg-surface)] p-2">
+          <div class="text-3xs uppercase text-text-muted">open</div>
+          <div class="mt-1 font-semibold text-text-strong">${summary.open}</div>
+        </div>
+        <div class="rounded-[var(--r-1)] border border-card-border/50 bg-[var(--color-bg-surface)] p-2">
+          <div class="text-3xs uppercase text-text-muted">awaiting verify</div>
+          <div class="mt-1 font-semibold text-text-strong">${summary.awaiting_verification}</div>
+        </div>
+        <div class="rounded-[var(--r-1)] border border-card-border/50 bg-[var(--color-bg-surface)] p-2">
+          <div class="text-3xs uppercase text-text-muted">cancelled</div>
+          <div class="mt-1 font-semibold text-text-strong">${summary.cancelled}</div>
+        </div>
+        <div class="rounded-[var(--r-1)] border border-card-border/50 bg-[var(--color-bg-surface)] p-2">
+          <div class="text-3xs uppercase text-text-muted">unassigned</div>
+          <div class="mt-1 font-semibold text-text-strong">${summary.unassigned}</div>
+        </div>
+      </div>
+    </div>
+  `
+}
+
+function goalTransitionLabel(action: GoalTransitionAction): string {
+  switch (action) {
+    case 'request_complete': return 'Request completion'
+    case 'approve_completion': return 'Approve completion'
+    case 'reject_completion': return 'Reject completion'
+  }
+}
+
+function goalTransitionStatusLabel(action: GoalTransitionAction): string {
+  switch (action) {
+    case 'request_complete': return 'requested completion'
+    case 'approve_completion': return 'approved completion'
+    case 'reject_completion': return 'rejected completion'
+  }
+}
+
+function lifecycleActionsForGoal(node: GoalTreeNode): Array<{
+  action: GoalTransitionAction
+  variant: 'primary' | 'ok' | 'danger'
+}> {
+  const summary = goalCompletionSummaryForNode(node)
+  const actions: Array<{
+    action: GoalTransitionAction
+    variant: 'primary' | 'ok' | 'danger'
+  }> = []
+
+  if (summary.ready_to_request_completion) {
+    actions.push({ action: 'request_complete', variant: 'primary' })
+  }
+  if (node.phase === 'awaiting_approval') {
+    actions.push({ action: 'approve_completion', variant: 'ok' })
+    actions.push({ action: 'reject_completion', variant: 'danger' })
+  }
+  return actions
+}
+
+function GoalLifecycleActionPanel({ node }: { node: GoalTreeNode }) {
+  const actions = lifecycleActionsForGoal(node)
+  const [pendingAction, setPendingAction] = useState<GoalTransitionAction | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [lastAction, setLastAction] = useState<GoalTransitionAction | null>(null)
+
+  useEffect(() => {
+    setPendingAction(null)
+    setError(null)
+    setLastAction(null)
+  }, [node.id])
+
+  const runAction = useCallback((action: GoalTransitionAction) => {
+    const actorId = currentDashboardActor()
+    setPendingAction(action)
+    setError(null)
+    setLastAction(null)
+    void (async () => {
+      try {
+        await callMcpTool('masc_goal_transition', {
+          goal_id: node.id,
+          action,
+          actor: {
+            kind: 'operator',
+            id: actorId,
+            display_name: actorId,
+          },
+        })
+        setLastAction(action)
+        await Promise.all([
+          refreshTree(),
+          refreshGoalDetail(node.id),
+        ])
+      } catch (err) {
+        setError(errorToString(err))
+      } finally {
+        setPendingAction(null)
+      }
+    })()
+  }, [node.id])
+
+  if (actions.length === 0) return null
+
+  return html`
+    <div class=${CARD_BOX} data-goal-lifecycle-actions>
+      <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <div class="text-2xs font-semibold uppercase tracking-[var(--track-caps)] text-text-muted">Goal lifecycle</div>
+          <div class="mt-1 text-sm text-text-body">${goalCompletionLabel(goalCompletionSummaryForNode(node))}</div>
+        </div>
+        <span class="${DECK_CHIP} text-[var(--color-fg-secondary)]">${node.phase}</span>
+      </div>
+      <div class="flex flex-wrap gap-2">
+        ${actions.map(({ action, variant }) => {
+          const label = goalTransitionLabel(action)
+          const isPending = pendingAction === action
+          return html`
+            <${ActionButton}
+              key=${action}
+              variant=${variant}
+              size="sm"
+              disabled=${pendingAction !== null}
+              ariaBusy=${isPending}
+              ariaLabel=${label}
+              title=${label}
+              onClick=${() => runAction(action)}
+            >
+              ${isPending ? 'Working...' : label}
+            <//>
+          `
+        })}
+      </div>
+      ${lastAction ? html`
+        <div class="mt-3 rounded-[var(--r-1)] border border-[var(--ok-25)] bg-[var(--ok-10)] px-3 py-2 text-xs text-[var(--color-status-ok)]" data-testid="goal-lifecycle-action-status">
+          ${goalTransitionStatusLabel(lastAction)}
+        </div>
+      ` : null}
+      ${error ? html`
+        <div class="mt-3 rounded-[var(--r-1)] border border-[var(--err-25)] bg-[var(--err-10)] px-3 py-2 text-xs text-[var(--color-status-err)]" data-testid="goal-lifecycle-action-error">
+          ${error}
+        </div>
+      ` : null}
+    </div>
+  `
+}
+
 function TreeNode({ node, depth }: { node: GoalTreeNode; depth: number }) {
   const isExpanded = expandedNodes.value.has(node.id)
   const hasContent = node.children.length > 0 || node.tasks.length > 0
@@ -714,6 +992,8 @@ function TreeNode({ node, depth }: { node: GoalTreeNode; depth: number }) {
             <${HealthBadge} health=${node.health} />
             <${StatusBadge} status=${node.status} />
             ${node.task_count > 0 ? html`<div class="w-32"><${TaskProgressBar} done=${node.task_done_count} total=${node.task_count} size="sm" /></div>` : null}
+            <${GoalCompletionStrip} node=${node} compact />
+            <${GoalTaskRelationStrip} node=${node} compact />
             ${node.metric ? html`
               <span
                 class="rounded-[var(--r-0)] border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-1.5 py-0.5 font-mono text-3xs text-text-secondary"
@@ -870,19 +1150,62 @@ function DetailTabs({ active }: { active: GoalDetailTab }) {
 
 function KeeperCard({ keeper }: { keeper: GoalDetailKeeper }) {
   const trust = keeper.runtime_trust
+  const execution = trust?.execution_summary ?? null
   const latestEvent = keeper.latest_causal_event ?? trust?.latest_causal_event ?? null
   const trustSummary =
     trust?.attention_reason?.trim()
     || trust?.disposition_reason?.trim()
-    || trust?.execution_summary?.mutation_guard_summary?.trim()
-    || trust?.execution_summary?.sandbox_summary?.trim()
+    || execution?.mutation_guard_summary?.trim()
+    || execution?.sandbox_summary?.trim()
     || null
+  const runtimeProofStatus = execution?.runtime_proof_status?.trim() || null
+  const toolContractResult = execution?.tool_contract_result?.trim() || null
+  const requiredTools = compactTrustList(execution?.required_tools)
+  const missingRequiredTools = compactTrustList(execution?.missing_required_tools)
+  const requestedTools = compactTrustList(execution?.requested_tools)
+  const toolsUsed = compactTrustList(execution?.tools_used)
+  const unexpectedTools = compactTrustList(execution?.unexpected_tools)
+  const requestedToolCount = execution?.requested_tool_count
+  const toolsUsedCount = execution?.tools_used_count
+  const unexpectedToolCount = execution?.unexpected_tool_count
+  const providerAttempts = execution?.provider_attempt_count
+  const providerFallback = execution?.provider_fallback_applied
+  const providerSelectedModel = execution?.provider_selected_model?.trim() || null
+  const executionCascadeOutcome = execution?.cascade_outcome?.trim() || null
+  const sandboxRoot = execution?.sandbox_root?.trim() || null
   const latestTerminalCode = trust?.latest_terminal_reason?.code?.trim() || null
   const latestTerminalSummary = trust?.latest_terminal_reason?.summary?.trim() || null
   const latestNextAction = trust?.latest_next_action?.trim() || null
   const operatorDispositionReason = trust?.operator_disposition_reason?.trim() || null
+  const pendingApproval = trust?.approval_state?.pending_first ?? null
+  const pendingApprovalId = pendingApproval?.id?.trim() || null
+  const pendingApprovalTool = pendingApproval?.tool_name?.trim() || null
+  const pendingApprovalTask = pendingApproval?.task_id?.trim() || null
+  const pendingApprovalBlocker = pendingApproval?.blocker_class?.trim() || null
   const shouldShowOperatorDispositionReason =
     operatorDispositionReason !== null && operatorDispositionReason !== trustSummary
+  const shouldShowTrustSummary =
+    Boolean(trustSummary)
+    || Boolean(trust?.approval_state?.state)
+    || Boolean(trust?.next_human_action)
+    || Boolean(latestTerminalCode)
+    || Boolean(latestNextAction)
+    || Boolean(runtimeProofStatus)
+    || Boolean(toolContractResult)
+    || requiredTools.length > 0
+    || missingRequiredTools.length > 0
+    || requestedTools.length > 0
+    || toolsUsed.length > 0
+    || unexpectedTools.length > 0
+    || typeof requestedToolCount === 'number'
+    || typeof toolsUsedCount === 'number'
+    || typeof unexpectedToolCount === 'number'
+    || typeof providerAttempts === 'number'
+    || providerFallback === true
+    || Boolean(providerSelectedModel)
+    || Boolean(executionCascadeOutcome)
+    || Boolean(sandboxRoot)
+    || trustHasPendingFirstEvidence(trust?.approval_state ?? null)
 
   return html`
     <div class="rounded-[var(--r-1)] border border-card-border/60 bg-[var(--backdrop-deep)] p-3">
@@ -898,8 +1221,8 @@ function KeeperCard({ keeper }: { keeper: GoalDetailKeeper }) {
             </span>
           ` : null}
           ${keeper.latest_execution_outcome ? html`
-            <span class="rounded-[var(--r-1)] border border-card-border/60 bg-[var(--color-bg-elevated)] px-2 py-0.5 text-3xs font-semibold text-text-body">
-              ${keeper.latest_execution_outcome}
+            <span class="rounded-[var(--r-1)] border border-card-border/60 bg-[var(--color-bg-elevated)] px-2 py-0.5 text-3xs font-semibold text-text-body" title=${keeper.latest_execution_outcome}>
+              ${executionOutcomeLabel(keeper.latest_execution_outcome)}
             </span>
           ` : null}
         </div>
@@ -910,11 +1233,11 @@ function KeeperCard({ keeper }: { keeper: GoalDetailKeeper }) {
         <div>승인</div>
         <div class="text-right text-text-body">${trust?.approval_state?.summary ?? keeper.approval_profile ?? '-'}</div>
         <div>캐스케이드</div>
-        <div class="text-right text-text-body">${keeper.cascade_name}</div>
+        <div class="text-right text-text-body">${keeper.cascade_name ?? executionCascadeOutcome ?? '-'}</div>
         <div>결과</div>
-        <div class="text-right text-text-body">${keeper.cascade_outcome ?? '-'}</div>
+        <div class="text-right text-text-body" title=${keeper.cascade_outcome ?? executionCascadeOutcome ?? ''}>${cascadeOutcomeLabel(keeper.cascade_outcome ?? executionCascadeOutcome) ?? '-'}</div>
       </div>
-      ${trustSummary || trust?.approval_state?.state || trust?.next_human_action || latestTerminalCode || latestNextAction ? html`
+      ${shouldShowTrustSummary ? html`
         <div class="mt-3 rounded-[var(--r-1)] border border-card-border/50 bg-[var(--color-bg-surface)] p-3">
           <div class="text-3xs font-semibold uppercase tracking-[var(--track-caps)] text-text-muted">검증 요약</div>
           ${trustSummary ? html`
@@ -927,8 +1250,55 @@ function KeeperCard({ keeper }: { keeper: GoalDetailKeeper }) {
             ${trust?.approval_state?.state ? html`
               <span>승인 상태 ${trust.approval_state.state}</span>
             ` : null}
-            ${trust?.execution_summary?.tool_contract_result ? html`
-              <span>계약 ${trust.execution_summary.tool_contract_result}</span>
+            ${pendingApprovalId ? html`
+              <span>승인 ID ${pendingApprovalId}</span>
+            ` : null}
+            ${pendingApprovalTool ? html`
+              <span>승인 도구 ${pendingApprovalTool}</span>
+            ` : null}
+            ${pendingApprovalTask ? html`
+              <span>승인 작업 ${pendingApprovalTask}</span>
+            ` : null}
+            ${pendingApprovalBlocker ? html`
+              <span>승인 차단 ${pendingApprovalBlocker}</span>
+            ` : null}
+            ${runtimeProofStatus ? html`
+              <span>증명 ${runtimeProofStatus}</span>
+            ` : null}
+            ${toolContractResult ? html`
+              <span>계약 ${toolContractResult}</span>
+            ` : null}
+            ${missingRequiredTools.length > 0 ? html`
+              <span class="text-[var(--color-status-err)]" title=${missingRequiredTools.join(', ')}>누락 ${missingRequiredTools.join(', ')}</span>
+            ` : null}
+            ${requiredTools.length > 0 ? html`
+              <span title=${requiredTools.join(', ')}>필요 ${requiredTools.join(', ')}</span>
+            ` : null}
+            ${toolsUsed.length > 0 ? html`
+              <span title=${toolsUsed.join(', ')}>사용 ${toolsUsed.join(', ')}</span>
+            ` : null}
+            ${unexpectedTools.length > 0 ? html`
+              <span class="text-[var(--color-status-err)]" title=${unexpectedTools.join(', ')}>외부 ${unexpectedTools.join(', ')}</span>
+            ` : null}
+            ${requestedTools.length > 0 ? html`
+              <span title=${requestedTools.join(', ')}>요청 ${requestedTools.join(', ')}</span>
+            ` : null}
+            ${typeof toolsUsedCount === 'number' || typeof requestedToolCount === 'number' || typeof unexpectedToolCount === 'number' ? html`
+              <span>도구 카운트 ${toolsUsedCount ?? '-'}/${requestedToolCount ?? '-'}${typeof unexpectedToolCount === 'number' ? ` · 외부 ${unexpectedToolCount}` : ''}</span>
+            ` : null}
+            ${typeof providerAttempts === 'number' || providerFallback === true || providerSelectedModel ? html`
+              <span>
+                provider
+                ${typeof providerAttempts === 'number' ? ` ${providerAttempts}회` : ''}
+                ${providerFallback === true ? ' fallback' : ''}
+                ${providerSelectedModel ? ` ${providerSelectedModel}` : ''}
+              </span>
+            ` : null}
+            ${executionCascadeOutcome ? html`
+              <span>cascade ${executionCascadeOutcome}</span>
+            ` : null}
+            ${sandboxRoot ? html`
+              <span title=${sandboxRoot}>sandbox ${sandboxRoot}</span>
             ` : null}
             ${trust?.next_human_action ? html`
               <span>다음 ${trust.next_human_action}</span>
@@ -938,7 +1308,7 @@ function KeeperCard({ keeper }: { keeper: GoalDetailKeeper }) {
             ` : null}
             ${/* Show receipt-level operator cause when it adds detail beyond trustSummary. */
               shouldShowOperatorDispositionReason ? html`
-              <span>운영자 ${operatorDispositionReason}</span>
+              <span title=${operatorDispositionReason ?? ''}>운영자 ${operatorDispositionReasonLabel(operatorDispositionReason)}</span>
             ` : null}
           </div>
         </div>
@@ -1017,7 +1387,12 @@ function GoalDetailPanel({
   const verificationSummary = selectedNode.verification_summary ?? EMPTY_GOAL_VERIFICATION_SUMMARY
 
   return html`
-    <section class=${`${GOAL_PANEL} flex flex-col gap-4`} aria-label="목표 상세">
+    <section
+      class=${`${GOAL_PANEL} flex flex-col gap-4`}
+      aria-label="목표 상세"
+      data-testid="goal-detail-panel"
+      data-selected-goal-id=${selectedNode.id}
+    >
       <div class="flex flex-wrap items-start justify-between gap-3">
         <div class="max-w-150">
           <div class="text-2xs font-semibold uppercase tracking-[var(--track-label)] text-text-muted">목표 상세</div>
@@ -1060,6 +1435,10 @@ function GoalDetailPanel({
       <div class="rounded-[var(--r-1)] border border-card-border/60 bg-[var(--backdrop-deep)] px-3 py-2 text-sm text-text-body">
         ${selectedNode.status_reason}
       </div>
+
+      <${GoalCompletionStrip} node=${selectedNode} />
+      <${GoalTaskRelationStrip} node=${selectedNode} />
+      <${GoalLifecycleActionPanel} node=${selectedNode} />
 
       <${DetailTabs} active=${activeTab} />
 
@@ -1132,7 +1511,7 @@ function GoalDetailPanel({
           <${DetailMetric} label="목표 검증" value=${selectedNode.pending_verification_count} tone=${selectedNode.pending_verification_count > 0 ? 'warn' : 'default'} />
           <${DetailMetric} label="인프라 위험" value=${selectedNode.infra_risk_count} tone=${selectedNode.infra_risk_count > 0 ? 'bad' : 'default'} />
           <${DetailMetric} label="연결 출처" value=${selectedNode.linkage_source} tone=${selectedNode.linkage_warning_count > 0 ? 'warn' : 'default'} />
-          <${DetailMetric} label="최근 활동" value=${selectedNode.stagnation_seconds > 0 ? `${Math.floor(selectedNode.stagnation_seconds / 3600)}h idle` : 'now'} tone=${selectedNode.badges.includes('stalled') ? 'warn' : 'default'} />
+          <${DetailMetric} label="최근 활동" value=${selectedNode.stagnation_seconds > 0 ? `${Math.floor(selectedNode.stagnation_seconds / SECONDS_PER_HOUR)}h idle` : 'now'} tone=${selectedNode.badges.includes('stalled') ? 'warn' : 'default'} />
         </div>
 
         <${GoalVerificationEvidencePanel} summary=${verificationSummary} />
@@ -1194,8 +1573,8 @@ function GoalDetailPanel({
                       ${detail.approvals.map((approval, index) => html`
                         <div key=${String(approval.id ?? index)} class="rounded-[var(--r-1)] border border-warn/20 bg-warn/6 p-3 text-xs">
                           <div class="flex flex-wrap items-center justify-between gap-2">
-                            <strong class="text-text-strong">${String(approval.tool_name ?? 'tool')}</strong>
-                            <span class="text-text-dim">${String(approval.risk_level ?? 'risk')}</span>
+                            <strong class="text-text-strong">${String(approval.tool_name ?? '(unknown tool)')}</strong>
+                            <span class="text-text-dim">${String(approval.risk_level ?? '(unknown risk_level)')}</span>
                           </div>
                           <div class="mt-2 text-text-muted">${String(approval.input_preview ?? 'pending operator decision')}</div>
                         </div>
@@ -1228,6 +1607,7 @@ export function GoalTree() {
   const query = filterQuery.value
   const activePhaseFilter = treePhaseFilter.value
   const selectedId = selectedGoalId.value
+  const routeGoalId = cleanRouteGoalId(route.value.params.goal)
 
   const visibleTree = useMemo(
     () => {
@@ -1262,11 +1642,21 @@ export function GoalTree() {
       selectedGoalId.value = null
       return
     }
+    if (routeGoalId) {
+      const expansionPath = goalExpansionPath(data.tree, routeGoalId)
+      if (expansionPath && visibleNodes.some(node => node.id === routeGoalId)) {
+        if (selectedGoalId.value !== routeGoalId) selectedGoalId.value = routeGoalId
+        if (expansionPath.some(id => !expandedNodes.value.has(id))) {
+          expandedNodes.value = new Set([...expandedNodes.value, ...expansionPath])
+        }
+        return
+      }
+    }
     if (!selectedGoalId.value || !visibleNodes.some(node => node.id === selectedGoalId.value)) {
       selectedGoalId.value = visibleNodes[0]!.id
       expandedNodes.value = new Set([visibleNodes[0]!.id])
     }
-  }, [allNodes, data, visibleNodes])
+  }, [allNodes, data, routeGoalId, visibleNodes])
 
   useEffect(() => {
     if (!selectedId) {

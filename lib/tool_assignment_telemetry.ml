@@ -211,7 +211,12 @@ let get_or_create_store () : Dated_jsonl.t =
         | Some s -> s
         | None ->
             let base_path = Env_config.base_path () in
-            let dir = Filename.concat base_path "data/tool-events" in
+            (* RFC-0121: layout SSOT via [Config_dir_resolver.data_dir]. *)
+            let dir =
+              Filename.concat
+                (Config_dir_resolver.data_dir ~base_path)
+                "tool-events"
+            in
             Fs_compat.mkdir_p dir;
             let s = Dated_jsonl.create ~base_dir:dir () in
             store_ref := Some s;
@@ -341,18 +346,15 @@ let read_recent ~n : (tool_event list, string) Result.t =
 let warm_up () : unit =
   try
     let store = get_or_create_store () in
-    let jsons = Dated_jsonl.read_recent store 100_000 in
     let decode_failures = create_failure_acc () in
     Eio_guard.with_mutex index_mu (fun () ->
       Hashtbl.clear agent_index;
-      List.iter
-        (fun json ->
-          match event_of_json json with
-          | Ok (Assigned { assignment_id; agent_id; _ }) ->
-              Hashtbl.replace agent_index agent_id assignment_id
-          | Error msg -> add_decode_failure decode_failures msg
-          | _ -> ())
-        jsons);
+      Dated_jsonl.iter_all store (fun json ->
+        match event_of_json json with
+        | Ok (Assigned { assignment_id; agent_id; _ }) ->
+          Hashtbl.replace agent_index agent_id assignment_id
+        | Error msg -> add_decode_failure decode_failures msg
+        | _ -> ()));
     observe_decode_failures ~site:"warm_up_decode" decode_failures
   with
   | Eio.Cancel.Cancelled _ as e -> raise e

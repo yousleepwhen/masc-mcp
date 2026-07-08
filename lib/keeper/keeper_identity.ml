@@ -1,9 +1,11 @@
 (** Keeper_identity — centralized keeper identity helpers. *)
 
-let generate_trace_id () : string =
-  let ts = int_of_float (Time_compat.now () *. 1000.0) in
-  let hash = Hashtbl.hash (Unix.gettimeofday ()) land 0xFFFFF in
-  Printf.sprintf "trace-%d-%05x" ts hash
+let trace_counter = Atomic.make 0
+
+let generate_trace_id ?(now = Time_compat.now ()) () : string =
+  let ts = int_of_float (now *. 1000.0) in
+  let seq = Atomic.fetch_and_add trace_counter 1 land 0xFFFFF in
+  Printf.sprintf "trace-%d-%05x" ts seq
 
 let sanitize_name (name : string) : string =
   String.map
@@ -126,6 +128,14 @@ let strip_keeper_prefix (s : string) : string option =
   if slen > plen && String.starts_with s ~prefix then
     Some (String.sub s plen (slen - plen))
   else None
+
+let keeper_agent_name name =
+  let stable =
+    match strip_keeper_prefix name with
+    | Some stripped -> stripped
+    | None -> name
+  in
+  Printf.sprintf "keeper-%s-agent" stable
 
 let canonical_keeper_name raw_name =
   let trimmed = String.trim raw_name in

@@ -7,9 +7,9 @@
      EmitMatchesEvidence        -> test_dequeue_only_consumes_enqueued
 
    Wire-up tests (heartbeat loop integration) live in a follow-up
-   patch alongside [Heartbeat_smart] / [Keeper_keepalive] changes. *)
+   patch alongside [Keeper_heartbeat_smart] / [Keeper_keepalive] changes. *)
 
-open Masc_mcp.Keeper_event_queue
+open Keeper_event_queue
 
 let make_stim ?(urgency = Normal) ?(arrived_at = 0.0) post_id payload =
   { post_id; urgency; arrived_at; payload }
@@ -121,6 +121,15 @@ let test_classify_alive_but_stuck_recovery () =
   | Alive_but_stuck_recovery -> ()
   | _ -> assert false
 
+let test_classify_stay_silent_recovery () =
+  let s =
+    make_stim "stay-silent-loop:k"
+      "{\"source\":\"stay_silent_recovery\",\"keeper\":\"k\",\"streak\":10}"
+  in
+  match classify s with
+  | Stay_silent_recovery -> ()
+  | _ -> assert false
+
 let () =
   test_empty ();
   test_enqueue_dequeue_fifo ();
@@ -132,4 +141,5 @@ let () =
   test_queue_overrides_policy ();
   test_dequeue_only_consumes_enqueued ();
   test_classify_alive_but_stuck_recovery ();
+  test_classify_stay_silent_recovery ();
   print_endline "Keeper_event_queue: all tests passed"

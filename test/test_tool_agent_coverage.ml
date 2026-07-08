@@ -1,11 +1,11 @@
 (** Coverage tests for Tool_agent — Agent management, fitness, and meta-cognition
 
     Tests dispatch routing, handler execution, helper functions for:
-    masc_agents, masc_register_capabilities, masc_agent_update,
-    masc_get_metrics, masc_agent_fitness, masc_collaboration_graph,
-    masc_agent_card
+    masc_agents, masc_agent_update, masc_get_metrics, masc_agent_fitness,
+    retired masc_collaboration_graph absence, masc_agent_card
 *)
-module Tool_args = Masc_mcp.Tool_args
+module Tool_args = Tool_args
+module Tool_result = Tool_result
 module Meta_cognition = Masc_mcp.Meta_cognition
 
 module Tool_agent = Masc_mcp.Tool_agent
@@ -127,10 +127,16 @@ let test_dispatch_agents () =
   Alcotest.(check bool) "agents dispatches" true (result <> None);
   )
 
-let test_dispatch_register_capabilities () =
+let test_dispatch_register_capabilities_removed () =
   with_ctx (fun ctx ->
   let result = Tool_agent.dispatch ctx ~name:"masc_register_capabilities" ~args:(`Assoc []) in
-  Alcotest.(check bool) "register_capabilities dispatches" true (result <> None);
+  Alcotest.(check bool) "register_capabilities removed" true (result = None);
+  )
+
+let test_dispatch_collaboration_graph_removed () =
+  with_ctx (fun ctx ->
+  let result = Tool_agent.dispatch ctx ~name:"masc_collaboration_graph" ~args:(`Assoc []) in
+  Alcotest.(check bool) "collaboration graph removed" true (result = None);
   )
 
 let test_dispatch_agent_update () =
@@ -152,16 +158,16 @@ let test_dispatch_agent_card () =
 
 let test_handle_agents () =
   with_ctx (fun ctx ->
-  let (ok, msg) = Tool_agent.handle_agents ctx (`Assoc []) in
-  Alcotest.(check bool) "agents succeeds" true ok;
-  Alcotest.(check bool) "has response" true (String.length msg > 0);
+  let result = Tool_agent.handle_agents ctx (`Assoc []) in
+  Alcotest.(check bool) "agents succeeds" true (Tool_result.is_success result);
+  Alcotest.(check bool) "has response" true (String.length (Tool_result.message result) > 0);
   )
 
 let test_handle_agent_card () =
   with_ctx (fun ctx ->
-  let (ok, msg) = Tool_agent.handle_agent_card ctx (`Assoc []) in
-  Alcotest.(check bool) "agent card succeeds" true ok;
-  let json = Yojson.Safe.from_string msg in
+  let result = Tool_agent.handle_agent_card ctx (`Assoc []) in
+  Alcotest.(check bool) "agent card succeeds" true (Tool_result.is_success result);
+  let json = Yojson.Safe.from_string (Tool_result.message result) in
   let open Yojson.Safe.Util in
   Alcotest.(check string) "card name" "MASC-MCP"
     (json |> member "name" |> to_string);
@@ -171,23 +177,12 @@ let test_handle_agent_card () =
 
 let test_handle_agent_card_rejects_unknown_action () =
   with_ctx (fun ctx ->
-  let (ok, msg) =
+  let result =
     Tool_agent.handle_agent_card ctx (`Assoc [("action", `String "bogus")])
   in
-  Alcotest.(check bool) "agent card rejects" false ok;
+  Alcotest.(check bool) "agent card rejects" false (Tool_result.is_success result);
   Alcotest.(check bool) "mentions invalid action" true
-    (String.contains msg 'b');
-  )
-
-(* ============================================================
-   Handler tests — register_capabilities
-   ============================================================ *)
-
-let test_register_capabilities () =
-  with_ctx (fun ctx ->
-  let args = `Assoc [("capabilities", `List [`String "test"; `String "code"])] in
-  let (ok, _msg) = Tool_agent.handle_register_capabilities ctx args in
-  Alcotest.(check bool) "registers capabilities" true ok;
+    (String.contains (Tool_result.message result) 'b');
   )
 
 (* ============================================================
@@ -197,15 +192,15 @@ let test_register_capabilities () =
 let test_agent_update_status () =
   with_ctx (fun ctx ->
   let args = `Assoc [("status", `String "busy")] in
-  let (_ok, msg) = Tool_agent.handle_agent_update ctx args in
-  Alcotest.(check bool) "has response" true (String.length msg > 0);
+  let result = Tool_agent.handle_agent_update ctx args in
+  Alcotest.(check bool) "has response" true (String.length (Tool_result.message result) > 0);
   )
 
 let test_agent_update_capabilities () =
   with_ctx (fun ctx ->
   let args = `Assoc [("capabilities", `List [`String "review"; `String "refactor"])] in
-  let (_ok, msg) = Tool_agent.handle_agent_update ctx args in
-  Alcotest.(check bool) "has response" true (String.length msg > 0);
+  let result = Tool_agent.handle_agent_update ctx args in
+  Alcotest.(check bool) "has response" true (String.length (Tool_result.message result) > 0);
   )
 
 (* ============================================================
@@ -215,10 +210,10 @@ let test_agent_update_capabilities () =
 let test_get_metrics_no_data () =
   with_ctx (fun ctx ->
   let args = `Assoc [("agent_name", `String "nonexistent"); ("days", `Int 7)] in
-  let (ok, msg) = dispatch_exn ctx ~name:"masc_get_metrics" ~args in
-  Alcotest.(check bool) "no data fails" false ok;
+  let result = dispatch_exn ctx ~name:"masc_get_metrics" ~args in
+  Alcotest.(check bool) "no data fails" false (Tool_result.is_success result);
   let open Yojson.Safe.Util in
-  let json = Yojson.Safe.from_string msg in
+  let json = Yojson.Safe.from_string (Tool_result.message result) in
   Alcotest.(check string) "error_code" "not_found"
     (json |> member "error_code" |> to_string);
   Alcotest.(check string) "message" "no metrics found for agent: nonexistent"
@@ -227,10 +222,10 @@ let test_get_metrics_no_data () =
 
 let test_get_metrics_missing_agent_name () =
   with_ctx (fun ctx ->
-  let (ok, msg) = dispatch_exn ctx ~name:"masc_get_metrics" ~args:(`Assoc []) in
-  Alcotest.(check bool) "missing agent_name fails" false ok;
+  let result = dispatch_exn ctx ~name:"masc_get_metrics" ~args:(`Assoc []) in
+  Alcotest.(check bool) "missing agent_name fails" false (Tool_result.is_success result);
   let open Yojson.Safe.Util in
-  let json = Yojson.Safe.from_string msg in
+  let json = Yojson.Safe.from_string (Tool_result.message result) in
   Alcotest.(check string) "status" "error"
     (json |> member "status" |> to_string);
   Alcotest.(check string) "message" "agent_name is required"
@@ -243,17 +238,17 @@ let test_get_metrics_missing_agent_name () =
 
 let test_agent_fitness_no_agents () =
   with_ctx (fun ctx ->
-  let (ok, msg) = Tool_agent.handle_agent_fitness ctx (`Assoc []) in
-  Alcotest.(check bool) "fitness succeeds" true ok;
-  Alcotest.(check bool) "has response" true (String.length msg > 0);
+  let result = Tool_agent.handle_agent_fitness ctx (`Assoc []) in
+  Alcotest.(check bool) "fitness succeeds" true (Tool_result.is_success result);
+  Alcotest.(check bool) "has response" true (String.length (Tool_result.message result) > 0);
   )
 
 let test_agent_fitness_specific () =
   with_ctx (fun ctx ->
   let args = `Assoc [("agent_name", `String "test-agent"); ("days", `Int 7)] in
-  let (ok, msg) = Tool_agent.handle_agent_fitness ctx args in
-  Alcotest.(check bool) "fitness with agent" true ok;
-  Alcotest.(check bool) "has response" true (String.length msg > 0);
+  let result = Tool_agent.handle_agent_fitness ctx args in
+  Alcotest.(check bool) "fitness with agent" true (Tool_result.is_success result);
+  Alcotest.(check bool) "has response" true (String.length (Tool_result.message result) > 0);
   )
 
 (* ============================================================
@@ -411,7 +406,10 @@ let () =
     ("dispatch", [
       Alcotest.test_case "unknown returns None" `Quick test_dispatch_unknown;
       Alcotest.test_case "agents dispatches" `Quick test_dispatch_agents;
-      Alcotest.test_case "register_capabilities dispatches" `Quick test_dispatch_register_capabilities;
+      Alcotest.test_case "register_capabilities removed" `Quick
+        test_dispatch_register_capabilities_removed;
+      Alcotest.test_case "collaboration_graph removed" `Quick
+        test_dispatch_collaboration_graph_removed;
       Alcotest.test_case "agent_update dispatches" `Quick test_dispatch_agent_update;
       Alcotest.test_case "agent_card dispatches" `Quick test_dispatch_agent_card;
     ]);
@@ -421,13 +419,15 @@ let () =
       Alcotest.test_case "handle_agent_card rejects unknown action" `Quick
         test_handle_agent_card_rejects_unknown_action;
     ]);
-    ("register_capabilities", [
-      Alcotest.test_case "with capabilities" `Quick test_register_capabilities;
-    ]);
     ("agent_update", [
       Alcotest.test_case "status update" `Quick test_agent_update_status;
+      Alcotest.test_case "capabilities update" `Quick test_agent_update_capabilities;
       Alcotest.test_case "no agents" `Quick test_agent_fitness_no_agents;
       Alcotest.test_case "specific agent" `Quick test_agent_fitness_specific;
+    ]);
+    ("get_metrics", [
+      Alcotest.test_case "no data returns not_found" `Quick test_get_metrics_no_data;
+      Alcotest.test_case "missing agent_name fails" `Quick test_get_metrics_missing_agent_name;
     ]);
     ("meta_cognition_snapshot", [
       Alcotest.test_case "detects beliefs tensions desires and edges" `Quick

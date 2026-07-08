@@ -19,7 +19,6 @@ val strip_prefix : prefix:string -> string -> string
 val strip_suffix : suffix:string -> string -> string
 (** Remove [suffix] from [s] when present, else return [s] unchanged. *)
 
-val trim_nonempty : string -> string option
 (** [Some trimmed] when non-empty, else [None]. *)
 
 val split_csv_nonempty : string -> string list
@@ -110,6 +109,23 @@ val sanitize_dashboard_actor_name : string -> string
 (** Strip non-printable characters and clamp length so the actor name
     is safe to log / render. *)
 
+val record_dashboard_actor_fallback :
+  Auth_error_kind.dashboard_actor_fallback -> unit
+(** Emit the [silent:dashboard_actor_fallback] warn log + increment
+    [metric_silent_dashboard_actor_fallback] for a typed fallback event.
+
+    Consolidates the two prior inline warn sites (Ok None / Error err
+    arms in [dashboard_actor_for_request]) onto a single helper. The
+    rendered log message is byte-equivalent to the prior format strings
+    — prometheus log alerts keyed on the literal
+    [silent:dashboard_actor_fallback] prefix continue to fire.
+
+    WORKAROUND-CARRYOVER: the fallback path itself remains (the
+    dashboard cannot go dark on token churn), but downstream reducers
+    now have a typed handle on *why* the fallback fired. Reference:
+    Reverse Engineering Design Map §개선 #2 (request identity state
+    machine). *)
+
 val dashboard_actor_for_request :
   base_path:string -> Httpun.Request.t -> string option
 (** Resolve the dashboard actor name from the request. *)
@@ -165,8 +181,19 @@ val ensure_same_origin_browser_request :
 
 val http_status_of_auth_error :
   Masc_domain.masc_error ->
-  [> `Forbidden | `Internal_server_error | `Unauthorized ]
-(** HTTP status to return for a given auth-domain error. *)
+  [> `Bad_request
+  | `Forbidden
+  | `Internal_server_error
+  | `Not_found
+  | `Too_many_requests
+  | `Unauthorized
+  ]
+(** HTTP status to return for a given [Masc_domain.masc_error].
+    PR #16690 made the .ml exhaustive (mirroring [Masc_error.code]),
+    expanding the return set from 3 tags to 6.  The signature stays
+    row-polymorphic so callers can narrow to [Httpun.Status.t] or
+    [H2.Status.t] at the use site — both protocols include this
+    six-tag subset. *)
 
 val server_state : Mcp_server.server_state option ref
 (** Process-wide server state handle used by auth helpers when no
@@ -193,6 +220,11 @@ val respond_json_with_cors :
   Httpun.Request.t -> Httpun.Reqd.t -> string -> unit
 (** Send a JSON body with CORS headers attached. *)
 
+val respond_json_value_with_cors :
+  ?status:Httpun.Status.t ->
+  Httpun.Request.t -> Httpun.Reqd.t -> Yojson.Safe.t -> unit
+(** Send a structured JSON body with CORS headers attached. *)
+
 val public_read_cors_headers :
   Httpun.Request.t -> (string * Httpun.Headers.value) list
 (** Header set for public-read responses (looser than the protected
@@ -202,6 +234,11 @@ val respond_public_read_json :
   ?status:Httpun.Status.t ->
   Httpun.Request.t -> Httpun.Reqd.t -> string -> unit
 (** Public-read JSON responder. *)
+
+val respond_public_read_json_value :
+  ?status:Httpun.Status.t ->
+  Httpun.Request.t -> Httpun.Reqd.t -> Yojson.Safe.t -> unit
+(** Structured public-read JSON responder. *)
 
 val auth_error_json : Masc_domain.masc_error -> string
 (** Render an auth error as the standard JSON envelope. *)

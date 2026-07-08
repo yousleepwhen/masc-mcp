@@ -11,6 +11,7 @@ type config = {
   port: int;
   host: string;
   max_connections: int;
+  listen_backlog: int;
 }
 
 let default_config = {
@@ -19,7 +20,8 @@ let default_config = {
     Env_config_core.get_string
       ~default:Masc_network_defaults.masc_http_default_host
       "MASC_HTTP_HOST";
-  max_connections = Env_config_core.get_int ~default:128 "MASC_HTTP_MAX_CONNECTIONS";
+  max_connections = Env_config_core.get_int ~default:512 "MASC_HTTP_MAX_CONNECTIONS";
+  listen_backlog = Env_config_core.get_int ~default:128 "MASC_TCP_LISTEN_BACKLOG";
 }
 
 (** HTTP request handler type *)
@@ -42,25 +44,13 @@ type request_handler =
 module Compression = struct
   (** Check if client accepts zstd encoding *)
   let accepts_zstd (request : Httpun.Request.t) : bool =
-    match Httpun.Headers.get request.headers "accept-encoding" with
-    | Some accept_encoding ->
-        String.lowercase_ascii accept_encoding
-        |> fun s -> String.split_on_char ',' s
-        |> List.exists (fun enc ->
-             String.trim enc |> String.lowercase_ascii |> fun e ->
-             e = "zstd" || String.sub e 0 (min 4 (String.length e)) = "zstd")
-    | None -> false
+    Http_response_payload.accepts_zstd_header
+      (Httpun.Headers.get request.headers "accept-encoding")
 
   (** Check if client accepts dictionary-enhanced zstd *)
   let accepts_zstd_dict (request : Httpun.Request.t) : bool =
-    match Httpun.Headers.get request.headers "accept-encoding" with
-    | Some accept_encoding ->
-        String.lowercase_ascii accept_encoding
-        |> String.split_on_char ','
-        |> List.exists (fun enc ->
-             let e = String.trim enc in
-             e = "zstd-dict" || e = "zstd;dict=masc")
-    | None -> false
+    Http_response_payload.accepts_zstd_dict_header
+      (Httpun.Headers.get request.headers "accept-encoding")
 
   (** Compress with dictionary if beneficial
       @return (compressed_data, encoding_name option) *)
@@ -137,10 +127,19 @@ let safe_respond_with_string reqd response body =
   | exn -> (
       match Late_response.classify_write_failure exn with
       | Some msg ->
-          Log.Http.warn
+          (* Recognised late-response race (httpun "invalid state" / closed
+             writer).  Aligned with [Server_ws_standalone] heartbeat /
+             send_pong / handler sites which already log this at debug —
+             closes the #13082 review N-of-M leftover: the SSOT classifier
+             was unified but this site kept emitting WARN, drowning the
+             [None] branch's genuinely-unexpected signal in routine
+             disconnect noise.  Comment above ("Genuinely unexpected
+             exceptions still log at WARN") only holds once this branch
+             stops warning too. *)
+          Log.Http.debug
             "[http-eio] respond_with_string skipped (reqd already in \
-             error-handling state; classifier match — 2026-05-05 OAS \
-             cancellation race): %s" msg
+             error-handling state; classifier match — \
+             2026-05-05 OAS cancellation race): %s" msg
       | None ->
           Log.Http.warn
             "[http-eio] respond_with_string unexpected exception: %s"
@@ -150,35 +149,58 @@ let safe_respond_with_string reqd response body =
 module Response = struct
   let html_cache_control = "no-store, max-age=0, must-revalidate"
 
+  let text_plain_content_type = "text/plain; charset=utf-8"
+  let html_content_type = "text/html; charset=utf-8"
+  let json_content_type = "application/json; charset=utf-8"
+
+  let content_headers ?(before_headers = []) ?(after_headers = [])
+      ?(tail_headers = []) ~content_type body =
+    let content_length = string_of_int (String.length body) in
+    let base_headers_rev = [
+      ("content-length", content_length);
+      ("content-type", content_type);
+    ] in
+    match before_headers, after_headers, tail_headers with
+    | [], [], [] -> Httpun.Headers.of_rev_list base_headers_rev
+    | _ ->
+        let rev_headers = List.rev before_headers in
+        let rev_headers =
+          List.rev_append
+            [("content-type", content_type); ("content-length", content_length)]
+            rev_headers
+        in
+        let rev_headers = List.rev_append after_headers rev_headers in
+        Httpun.Headers.of_rev_list (List.rev_append tail_headers rev_headers)
+
+  let response ?before_headers ?after_headers ?tail_headers ~content_type status body =
+    Httpun.Response.create
+      ~headers:(content_headers ?before_headers ?after_headers ?tail_headers ~content_type body)
+      status
+
+  let static_response ~content_type status body =
+    response ~content_type status body, body
+
+  let not_found_response =
+    static_response ~content_type:text_plain_content_type `Not_found "404 Not Found"
+
+  let method_not_allowed_response =
+    static_response ~content_type:text_plain_content_type `Method_not_allowed
+      "405 Method Not Allowed"
+
   let text ?(status = `OK) body reqd =
-    let headers = Httpun.Headers.of_list ([
-      ("content-type", "text/plain; charset=utf-8");
-      ("content-length", string_of_int (String.length body));
-    ]) in
-    let response = Httpun.Response.create ~headers status in
-    safe_respond_with_string reqd response body
+    safe_respond_with_string reqd
+      (response ~content_type:text_plain_content_type status body)
+      body
 
   let html ?(status = `OK) ?(headers = []) body reqd =
-    let base_headers = [
-      ("content-type", "text/html; charset=utf-8");
-      ("content-length", string_of_int (String.length body));
-    ] in
-    let response = Httpun.Response.create
-      ~headers:(Httpun.Headers.of_list (base_headers @ headers))
-      status
-    in
-    safe_respond_with_string reqd response body
+    safe_respond_with_string reqd
+      (response ~after_headers:headers ~content_type:html_content_type status body)
+      body
 
   let bytes ?(status = `OK) ?(headers = []) ~content_type body reqd =
-    let base_headers = [
-      ("content-type", content_type);
-      ("content-length", string_of_int (String.length body));
-    ] in
-    let response = Httpun.Response.create
-      ~headers:(Httpun.Headers.of_list (base_headers @ headers))
-      status
-    in
-    safe_respond_with_string reqd response body
+    safe_respond_with_string reqd
+      (response ~after_headers:headers ~content_type status body)
+      body
 
   (** JSON response with optional zstd compression (dictionary-enhanced)
 
@@ -188,31 +210,24 @@ module Response = struct
       @param compress Enable compression if client accepts (default: true)
       @param request Optional request to check Accept-Encoding header *)
   let json ?(status = `OK) ?(compress = true) ?(extra_headers = []) ?request body reqd =
-    let should_compress =
-      compress &&
+    let request =
       match request with
-      | Some req -> Compression.accepts_zstd req
-      | None -> false
+      | Some req -> req
+      | None -> Httpun.Reqd.request reqd
     in
-    let final_body, encoding =
-      if should_compress then
-        (* Use dictionary-based compression for better small message handling *)
-        Compression.compress body
-      else
-        (body, None)
+    let final_body, compression_headers =
+      Http_response_payload.compress_body
+        ~compress
+        ~accept_encoding:(Httpun.Headers.get request.headers "accept-encoding")
+        body
     in
-    let base_headers = [
-      ("content-type", "application/json; charset=utf-8");
-      ("content-length", string_of_int (String.length final_body));
-      ("vary", "Accept-Encoding");
-    ] in
-    let headers = match encoding with
-      | Some enc -> ("content-encoding", enc) :: base_headers
-      | None -> base_headers
-    in
-    let headers = extra_headers @ headers in
-    let response = Httpun.Response.create ~headers:(Httpun.Headers.of_list headers) status in
-    safe_respond_with_string reqd response final_body
+    safe_respond_with_string reqd
+      (response ~before_headers:extra_headers ~tail_headers:compression_headers
+         ~content_type:json_content_type status final_body)
+      final_body
+
+  let json_value ?status ?compress ?extra_headers ?request value reqd =
+    json ?status ?compress ?extra_headers ?request (Yojson.Safe.to_string value) reqd
 
   (** Sunset headers for deprecated endpoints per RFC 8594.
       [date] must be an HTTP-date (RFC 7231 S7.1.1.1), e.g. ["Sat, 01 Jun 2026 00:00:00 GMT"].
@@ -228,12 +243,9 @@ module Response = struct
 
   (** Legacy JSON response without compression check (backwards compatible) *)
   let json_raw ?(status = `OK) body reqd =
-    let headers = Httpun.Headers.of_list ([
-      ("content-type", "application/json; charset=utf-8");
-      ("content-length", string_of_int (String.length body));
-    ]) in
-    let response = Httpun.Response.create ~headers status in
-    safe_respond_with_string reqd response body
+    safe_respond_with_string reqd
+      (response ~content_type:json_content_type status body)
+      body
 
   (** HTML response with ETag and conditional 304 support.
       For static HTML that only changes on rebuild (e.g. dashboard).
@@ -246,40 +258,37 @@ module Response = struct
     let if_none_match = Httpun.Headers.get request.Httpun.Request.headers "if-none-match" in
     match if_none_match with
     | Some inm when String.equal inm etag_value ->
-        let headers = Httpun.Headers.of_list [
-          ("etag", etag_value);
-          ("cache-control", html_cache_control);
-        ] in
+        let headers =
+          Httpun.Headers.of_rev_list [
+            ("cache-control", html_cache_control);
+            ("etag", etag_value);
+          ]
+        in
         let response = Httpun.Response.create ~headers `Not_modified in
         safe_respond_with_string reqd response ""
     | _ ->
         (* Serve full response, with compression if possible *)
-        let accepts_zstd = Compression.accepts_zstd request in
-        let final_body, encoding =
-          if accepts_zstd then
-            let (compressed, did_compress) = Compression.compress_zstd ~level:3 body in
-            if did_compress then (compressed, Some "zstd") else (body, None)
-          else (body, None)
+        let final_body, compression_headers =
+          Http_response_payload.compress_body
+            ~accept_encoding:(Httpun.Headers.get request.Httpun.Request.headers "accept-encoding")
+            body
         in
-        let base_headers = [
-          ("content-type", "text/html; charset=utf-8");
-          ("content-length", string_of_int (String.length final_body));
+        let extra_headers = [
           ("etag", etag_value);
           ("cache-control", html_cache_control);
-          ("vary", "Accept-Encoding");
         ] in
-        let headers = match encoding with
-          | Some enc -> ("content-encoding", enc) :: base_headers
-          | None -> base_headers
-        in
-        let response = Httpun.Response.create ~headers:(Httpun.Headers.of_list headers) status in
-        safe_respond_with_string reqd response final_body
+        safe_respond_with_string reqd
+          (response ~after_headers:extra_headers ~tail_headers:compression_headers
+             ~content_type:html_content_type status final_body)
+          final_body
 
   let not_found reqd =
-    text ~status:`Not_found "404 Not Found" reqd
+    let response, body = not_found_response in
+    safe_respond_with_string reqd response body
 
   let method_not_allowed reqd =
-    text ~status:`Method_not_allowed "405 Method Not Allowed" reqd
+    let response, body = method_not_allowed_response in
+    safe_respond_with_string reqd response body
 
   let internal_error msg reqd =
     text ~status:`Internal_server_error ("500 Internal Server Error: " ^ msg) reqd
@@ -309,11 +318,10 @@ module Request = struct
          | None -> default_max_body_bytes)
 
   let respond_error reqd status body =
-    let headers = Httpun.Headers.of_list [
-      ("content-type", "text/plain; charset=utf-8");
-      ("content-length", string_of_int (String.length body));
-      ("connection", "close");
-    ] in
+    let headers =
+      Response.content_headers ~tail_headers:[("connection", "close")]
+        ~content_type:Response.text_plain_content_type body
+    in
     let response = Httpun.Response.create ~headers status in
     safe_respond_with_string reqd response body
 
@@ -357,12 +365,11 @@ module Request = struct
            | Some len when len > 0 && len < max_body_bytes -> len
            | _ -> 1024
          in
-         let buf = Buffer.create initial_capacity in
-         let seen_bytes = ref 0 in
+         let buf = Http_body_buffer.create initial_capacity in
          let rec read_loop () =
            Httpun.Body.Reader.schedule_read body
              ~on_eof:(fun () ->
-               let body_str = Buffer.contents buf in
+               let body_str = Http_body_buffer.contents buf in
                try on_body body_str with
                  | Eio.Cancel.Cancelled _ as e -> raise e
                  | exn ->
@@ -370,14 +377,12 @@ module Request = struct
              ~on_read:(fun buffer ~off ~len ->
                if !stopped then ()
                else
-                 let next_bytes = !seen_bytes + len in
+                 let next_bytes = Http_body_buffer.length buf + len in
                  if next_bytes > max_body_bytes then begin
                    stop ();
                    on_error (`Too_large max_body_bytes)
                  end else begin
-                   seen_bytes := next_bytes;
-                   let chunk = Bigstringaf.substring buffer ~off ~len in
-                   Buffer.add_string buf chunk;
+                   Http_body_buffer.add_bigstring buf buffer ~off ~len;
                    read_loop ()
                  end)
          in
@@ -417,9 +422,9 @@ module Request = struct
 
   (** Get path from request target *)
   let path (request : Httpun.Request.t) =
-    match String.split_on_char '?' request.target with
-    | p :: _ -> p
-    | [] -> request.target (* split always returns non-empty, but type-safe *)
+    match String.index_opt request.target '?' with
+    | Some idx -> String.sub request.target 0 idx
+    | None -> request.target
 
   (** Get HTTP method *)
   let method_ (request : Httpun.Request.t) =
@@ -432,7 +437,10 @@ end
 
 (** Router for simple path-based routing *)
 module Router = struct
+  type route_kind = Exact | Prefix
+
   type route = {
+    kind: route_kind;
     path: string;
     methods: Httpun.Method.t list;
     handler: request_handler;
@@ -443,12 +451,125 @@ module Router = struct
     | `Method_not_allowed
     | `Not_found ]
 
-  type t = route list
+  type prefix_node = {
+    children: (char, prefix_node) Hashtbl.t;
+    mutable routes: route list;
+  }
 
-  let empty : t = []
+  type method_routes = {
+    exact_by_path: (string, route) Hashtbl.t;
+    mutable prefix_routes: route list;
+    prefix_root: prefix_node;
+  }
 
-  let add ~path ~methods ~handler routes =
-    { path; methods; handler } :: routes
+  type t = {
+    get: method_routes;
+    post: method_routes;
+    put: method_routes;
+    delete: method_routes;
+    options: method_routes;
+    exact_paths: (string, unit) Hashtbl.t;
+    mutable routes: route list;
+    mutable route_count: int;
+  }
+
+  let create_prefix_node () =
+    { children = Hashtbl.create 4; routes = [] }
+
+  let create_method_routes () =
+    {
+      exact_by_path = Hashtbl.create 128;
+      prefix_routes = [];
+      prefix_root = create_prefix_node ();
+    }
+
+  let create () =
+    {
+      get = create_method_routes ();
+      post = create_method_routes ();
+      put = create_method_routes ();
+      delete = create_method_routes ();
+      options = create_method_routes ();
+      exact_paths = Hashtbl.create 128;
+      routes = [];
+      route_count = 0;
+    }
+
+  let route_count router = router.route_count
+
+  let routes router = List.rev router.routes
+
+  let insert_prefix_route route routes =
+    let route_len = String.length route.path in
+    let rec loop acc = function
+      | [] -> List.rev (route :: acc)
+      | candidate :: rest
+        when route_len >= String.length candidate.path ->
+          List.rev_append acc (route :: candidate :: rest)
+      | candidate :: rest -> loop (candidate :: acc) rest
+    in
+    loop [] routes
+
+  let insert_prefix_trie (route : route) (root : prefix_node) =
+    let path = route.path in
+    let path_len = String.length path in
+    let rec loop (node : prefix_node) idx =
+      if idx = path_len then
+        node.routes <- insert_prefix_route route node.routes
+      else
+        let ch = path.[idx] in
+        let child =
+          match Hashtbl.find_opt node.children ch with
+          | Some child -> child
+          | None ->
+              let child = create_prefix_node () in
+              Hashtbl.add node.children ch child;
+              child
+        in
+        loop child (idx + 1)
+    in
+    loop root 0
+
+  let method_routes router = function
+    | `GET -> Some router.get
+    | `POST -> Some router.post
+    | `PUT -> Some router.put
+    | `DELETE -> Some router.delete
+    | `OPTIONS -> Some router.options
+    | _ -> None
+
+  let add_to_method_routes kind route method_routes =
+    match kind with
+    | Exact -> Hashtbl.replace method_routes.exact_by_path route.path route
+    | Prefix ->
+        method_routes.prefix_routes <-
+          insert_prefix_route route method_routes.prefix_routes;
+        insert_prefix_trie route method_routes.prefix_root
+
+  let add_kind kind ~path ~methods ~handler router =
+    let route = { kind; path; methods; handler } in
+    (match kind with
+     | Exact ->
+         Hashtbl.replace router.exact_paths path ();
+         List.iter
+           (fun method_ ->
+              match method_routes router method_ with
+              | Some routes -> add_to_method_routes Exact route routes
+              | None -> ())
+           methods
+     | Prefix ->
+         List.iter
+           (fun method_ ->
+              match method_routes router method_ with
+              | Some routes -> add_to_method_routes Prefix route routes
+              | None -> ())
+           methods);
+    router.routes <- route :: router.routes;
+    router.route_count <- router.route_count + 1;
+    router
+
+  let add ~path ~methods ~handler router =
+    add_kind Exact ~path ~methods ~handler router
 
   let get path handler routes =
     add ~path ~methods:[`GET] ~handler routes
@@ -462,349 +583,58 @@ module Router = struct
   (** Match by prefix: path field is treated as a prefix, not exact match.
       The suffix (path after the prefix) is available via [Request.path]. *)
   let prefix_get prefix handler routes =
-    add ~path:("PREFIX:" ^ prefix) ~methods:[`GET] ~handler routes
+    add_kind Prefix ~path:prefix ~methods:[`GET] ~handler routes
 
   let prefix_post prefix handler routes =
-    add ~path:("PREFIX:" ^ prefix) ~methods:[`POST] ~handler routes
+    add_kind Prefix ~path:prefix ~methods:[`POST] ~handler routes
 
-  let resolve routes request =
+  let prefix_delete prefix handler routes =
+    add_kind Prefix ~path:prefix ~methods:[`DELETE] ~handler routes
+
+  let prefix_put prefix handler routes =
+    add_kind Prefix ~path:prefix ~methods:[`PUT] ~handler routes
+
+  let resolve_prefix routes req_path =
+    let path_len = String.length req_path in
+    let rec loop (node : prefix_node) idx best =
+      let best =
+        match node.routes with
+        | route :: _ -> Some route
+        | [] -> best
+      in
+      if idx = path_len then
+        best
+      else
+        match Hashtbl.find_opt node.children req_path.[idx] with
+        | Some child -> loop child (idx + 1) best
+        | None -> best
+    in
+    loop routes.prefix_root 0 None
+
+  let resolve router request =
     let req_path = Request.path request in
     let req_method = Request.method_ request in
-    (* Try exact matches first *)
-    let path_matches =
-      List.filter (fun route ->
-        (not (String.length route.path > 7
-              && String.sub route.path 0 7 = "PREFIX:"))
-        && String.equal route.path req_path
-      ) routes
-    in
-    match List.find_opt (fun route -> List.mem req_method route.methods) path_matches with
-    | Some route -> `Matched route
+    match method_routes router req_method with
+    | Some routes -> (
+        match Hashtbl.find_opt routes.exact_by_path req_path with
+        | Some route -> `Matched route
+        | None -> (
+            match resolve_prefix routes req_path with
+            | Some route -> `Matched route
+            | None ->
+                if Hashtbl.mem router.exact_paths req_path then
+                  `Method_not_allowed
+                else
+                  `Not_found))
     | None ->
-        (* Try prefix matches *)
-        let prefix_matches =
-          List.filter (fun route ->
-            String.length route.path > 7
-            && String.sub route.path 0 7 = "PREFIX:"
-            && let prefix = String.sub route.path 7 (String.length route.path - 7) in
-               String.starts_with req_path ~prefix
-            && List.mem req_method route.methods
-          ) routes
-        in
-        let prefix_matches =
-          List.sort
-            (fun a b ->
-              let a_len = String.length a.path - 7 in
-              let b_len = String.length b.path - 7 in
-              compare b_len a_len)
-            prefix_matches
-        in
-        (match prefix_matches with
-         | route :: _ -> `Matched route
-         | [] ->
-             if path_matches = [] then
-               `Not_found
-             else
-               `Method_not_allowed)
+        if Hashtbl.mem router.exact_paths req_path then
+          `Method_not_allowed
+        else
+          `Not_found
 
-  let dispatch routes request reqd =
-    match resolve routes request with
+  let dispatch router request reqd =
+    match resolve router request with
     | `Matched route -> route.handler request reqd
     | `Not_found -> Response.not_found reqd
     | `Method_not_allowed -> Response.method_not_allowed reqd
 end
-
-(** Health check endpoint - JSON response *)
-let health_handler _request reqd =
-  let json = Yojson.Safe.to_string (`Assoc [("status", `String "ok"); ("server", `String "masc-mcp"); ("version", `String Version.version)]) in
-  Response.json json reqd
-
-(** Readiness probe - Kubernetes *)
-let ready_handler _request reqd =
-  let body = Yojson.Safe.to_string (Server_startup_state.to_yojson ()) in
-  let status =
-    if (!Server_startup_state.state).state_ready then `OK
-    else `Service_unavailable
-  in
-  Response.json ~status body reqd
-
-(** Prometheus metrics endpoint *)
-let metrics_handler _request reqd =
-  let body = Prometheus.to_prometheus_text () in
-  let headers = Httpun.Headers.of_list [
-    ("content-type", "text/plain; version=0.0.4; charset=utf-8");
-    ("content-length", string_of_int (String.length body));
-  ] in
-  let response = Httpun.Response.create ~headers `OK in
-  safe_respond_with_string reqd response body
-
-let mcp_post_handler
-    ?request_handler
-    (request : Httpun.Request.t)
-    (reqd : Httpun.Reqd.t) =
-  (* Read request body using sync wrapper *)
-  match Request.read_body_sync reqd with
-  | Error msg ->
-      Response.text ~status:`Bad_request (Printf.sprintf "Body read error: %s" msg) reqd
-  | Ok body ->
-      let session_id = Streamable_http.get_session_id request in
-      let (response_mode, session_opt) =
-        Streamable_http.handle_post
-          ?session_id
-          ~body
-          ?request_handler
-          ()
-      in
-      match response_mode with
-      | Streamable_http.Json_response json ->
-          let json_str = Yojson.Safe.to_string json in
-          let extra_headers = match session_opt with
-            | Some s -> Streamable_http.with_session_header s []
-            | None -> []
-          in
-          let headers = Httpun.Headers.of_list ([
-            ("content-type", "application/json");
-            ("content-length", string_of_int (String.length json_str));
-          ] @ extra_headers) in
-          let response = Httpun.Response.create ~headers `OK in
-          safe_respond_with_string reqd response json_str
-
-      | Streamable_http.Json_batch jsons ->
-          let json_str = Yojson.Safe.to_string (`List jsons) in
-          let extra_headers = match session_opt with
-            | Some s -> Streamable_http.with_session_header s []
-            | None -> []
-          in
-          let headers = Httpun.Headers.of_list ([
-            ("content-type", "application/json");
-            ("content-length", string_of_int (String.length json_str));
-          ] @ extra_headers) in
-          let response = Httpun.Response.create ~headers `OK in
-          safe_respond_with_string reqd response json_str
-
-      | Streamable_http.Sse_upgrade ->
-          Response.text ~status:`Not_implemented
-            "SSE upgrade is not supported on this transport" reqd
-
-      | Streamable_http.Error_response (code, message) ->
-          let status = match code with
-            | 400 -> `Bad_request
-            | 404 -> `Not_found
-            | 500 -> `Internal_server_error
-            | _ -> `Bad_request
-          in
-          Response.text ~status message reqd
-
-(** MCP Streamable HTTP handler (GET /mcp) - SSE stream *)
-let mcp_get_handler request reqd =
-  let session_id = Streamable_http.get_session_id request in
-  match Streamable_http.handle_get ?session_id () with
-  | Ok session ->
-      (* Return session info, actual SSE handled elsewhere *)
-      let json = Yojson.Safe.to_string (`Assoc [("session_id", `String session.id); ("transport", `String "streamable_http")]) in
-      Response.json json reqd
-  | Error msg ->
-      Response.text ~status:`Bad_request msg reqd
-
-(** Default routes for MCP server *)
-let default_routes =
-  Router.empty
-  |> Router.get "/health" health_handler
-  |> Router.get "/ready" ready_handler
-  |> Router.get "/metrics" metrics_handler
-  |> Router.post "/mcp" mcp_post_handler
-  |> Router.get "/mcp" mcp_get_handler
-  |> Router.get "/" (fun _req reqd ->
-      Response.text "MASC MCP Server" reqd)
-
-let with_streamable_mcp_request_handler ~request_handler routes =
-  let replace_post_mcp route =
-    if String.equal route.Router.path "/mcp" && List.mem `POST route.Router.methods then
-      {
-        route with
-        Router.handler =
-          (mcp_post_handler ~request_handler:request_handler);
-      }
-    else
-      route
-  in
-  let rewritten = List.map replace_post_mcp routes in
-  let has_post_mcp =
-    List.exists
-      (fun route ->
-        String.equal route.Router.path "/mcp" && List.mem `POST route.Router.methods)
-      rewritten
-  in
-  if has_post_mcp then rewritten
-  else
-    Router.post "/mcp" (mcp_post_handler ~request_handler:request_handler) rewritten
-
-(** Create httpun request handler from router
-    Note: httpun-eio wraps reqd in Gluten.Reqd.t, extract with .reqd field
-
-    W3C Trace Context: when MASC_OTEL_ENABLED=true and a valid [traceparent]
-    header is present, the request is dispatched inside an ambient scope
-    carrying the incoming trace_id. Downstream code (tool calls, broadcasts)
-    can read it via [Otel_trace_context.from_ambient()].
-    When disabled or absent, dispatch proceeds without overhead. *)
-let make_request_handler routes =
-  fun _client_addr gluten_reqd ->
-    let reqd = gluten_reqd.Gluten.Reqd.reqd in
-    let request = Httpun.Reqd.request reqd in
-    let dispatch () = Router.dispatch routes request reqd in
-    if Otel_config.enabled then
-      (* Use Headers.get for O(1) lookup instead of Headers.to_list which
-         allocates the full header list on every request. *)
-      match Httpun.Headers.get request.headers Otel_trace_context.header_name with
-      | Some value ->
-        (match Otel_trace_context.parse value with
-         | Some ctx ->
-           let scope =
-             Opentelemetry.Scope.make
-               ~trace_id:ctx.trace_id
-               ~span_id:ctx.parent_id
-               ()
-           in
-           Opentelemetry.Scope.with_ambient_scope scope dispatch
-         | None -> dispatch ())
-      | None -> dispatch ()
-    else
-      dispatch ()
-
-(** Create error handler *)
-let error_handler _client_addr ?request:_ error start_response =
-  let response_body = start_response Httpun.Headers.empty in
-  let msg = match error with
-    | `Exn exn -> Printexc.to_string exn
-    | `Bad_request -> "Bad Request"
-    | `Bad_gateway -> "Bad Gateway"
-    | `Internal_server_error -> "Internal Server Error"
-  in
-  Httpun.Body.Writer.write_string response_body msg;
-  Httpun.Body.Writer.close response_body
-
-(** Run the HTTP server with Eio *)
-let run ~sw ~net ~clock config routes =
-  Discovery_cache.set_env ~sw ~net;
-  let request_handler = make_request_handler routes in
-  let fallback_host = Masc_network_defaults.masc_http_default_host in
-  (* Parse IP address using Ipaddr library then convert to Eio format.
-     Issue #8725: log + report the effective bind host on parse failure
-     so a typo in [config.host] does not silently degrade to loopback
-     while the startup banner still claims the misconfigured value. *)
-  let ip, effective_host =
-    match Ipaddr.of_string config.host with
-    | Ok addr -> Eio.Net.Ipaddr.of_raw (Ipaddr.to_octets addr), config.host
-    | Error (`Msg msg) ->
-        Log.Http.warn
-          "http_server_eio: invalid host %S (%s) → loopback %s fallback (#8725)"
-          config.host msg fallback_host;
-        Eio.Net.Ipaddr.V4.loopback, fallback_host
-  in
-  let addr = `Tcp (ip, config.port) in
-  let socket = Eio.Net.listen net ~sw ~reuse_addr:true ~backlog:config.max_connections addr in
-  if String.equal effective_host config.host then
-    Printf.printf "MASC MCP Server listening on http://%s:%d\n"
-      effective_host config.port
-  else
-    Printf.printf
-      "MASC MCP Server listening on http://%s:%d (configured=%s, parse failed → loopback)\n"
-      effective_host config.port config.host;
-  Printf.printf "   Graceful shutdown: SIGTERM/SIGINT supported\n%!";
-
-  let initial_backoff_s = 0.05 in
-  let max_backoff_s = 1.0 in
-  let backoff_s = ref initial_backoff_s in
-  let reset_backoff () = backoff_s := initial_backoff_s in
-  let bump_backoff () = backoff_s := min max_backoff_s (!backoff_s *. 2.0) in
-  let is_cancelled exn =
-    match exn with
-    | Eio.Cancel.Cancelled _ -> true
-    | _ -> false
-  in
-  let rec accept_loop () =
-    try
-      (try
-         let flow, client_addr = Eio.Net.accept ~sw socket in
-         reset_backoff ();
-         Eio.Fiber.fork ~sw (fun () ->
-           (* Per-connection switch so the accepted [flow] is released
-              when the H1 handler exits, not when the long-lived server
-              [sw] closes. Without this each connection's TCP FD lingers
-              in [CLOSED] state until shutdown — same class of bug
-              addressed for the WS standalone accept loop in #10840 and
-              already adopted by [http_server_h2.ml] and three accept
-              points in [server_bootstrap_http.ml]. Currently latent
-              here because the MCP HTTP port has low connection churn. *)
-           Eio.Switch.run (fun conn_sw ->
-             Eio.Switch.on_release conn_sw (fun () ->
-               try Eio.Flow.close flow with
-               | Eio.Cancel.Cancelled _ as e -> raise e
-               | exn ->
-                 Log.Http.warn "[http-eio] flow close failed: %s"
-                   (Printexc.to_string exn));
-             try
-               Httpun_eio.Server.create_connection_handler
-                 ~sw:conn_sw
-                 ~request_handler
-                 ~error_handler
-                 client_addr
-                 flow
-             with
-             | Eio.Cancel.Cancelled _ as e -> raise e
-             | exn ->
-               Log.Http.error "Connection error: %s" (Printexc.to_string exn)))
-       with Eio.Cancel.Cancelled _ as e -> raise e | exn ->
-         if is_cancelled exn then raise exn;
-         let delay = !backoff_s in
-         Log.Http.error "Accept error: %s (backoff %.2fs)"
-           (Printexc.to_string exn) delay;
-         Eio.Time.sleep clock delay;
-         bump_backoff ());
-      accept_loop ()
-    with Eio.Cancel.Cancelled _ as e -> raise e | exn ->
-      if is_cancelled exn then ()
-      else
-        let delay = !backoff_s in
-        Log.Http.error "Accept loop error: %s (backoff %.2fs)"
-          (Printexc.to_string exn) delay;
-        Eio.Time.sleep clock delay;
-        bump_backoff ();
-        accept_loop ()
-  in
-  accept_loop ()
-
-(** Graceful shutdown exception *)
-exception Shutdown
-
-(** Convenience function to start server *)
-let start ?(config = default_config) ?(routes = default_routes) () =
-  Eio_main.run @@ fun env ->
-  Masc_runtime_events.start_listener ();
-  let net = Eio.Stdenv.net env in
-  let clock = Eio.Stdenv.clock env in
-
-  (* Graceful shutdown setup *)
-  let switch_ref = Atomic.make None in
-  let shutdown_initiated = Atomic.make false in
-  let initiate_shutdown signal_name =
-    if not (Atomic.get shutdown_initiated) then begin
-      Atomic.set shutdown_initiated true;
-      Log.Http.info "MASC MCP: Received %s, shutting down gracefully..." signal_name;
-      match Atomic.get switch_ref with
-      | Some sw -> Eio.Switch.fail sw Shutdown
-      | None -> ()
-    end
-  in
-  Sys.set_signal Sys.sigterm (Sys.Signal_handle (fun _ -> initiate_shutdown "SIGTERM"));
-  Sys.set_signal Sys.sigint (Sys.Signal_handle (fun _ -> initiate_shutdown "SIGINT"));
-
-  (try
-    Eio.Switch.run @@ fun sw ->
-    Atomic.set switch_ref (Some sw);
-    run ~sw ~net ~clock config routes
-  with
-  | Shutdown ->
-      Log.Http.info "MASC MCP: Shutdown complete."
-  | Eio.Cancel.Cancelled _ ->
-      Log.Http.info "MASC MCP: Shutdown complete.")

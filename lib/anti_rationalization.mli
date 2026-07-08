@@ -21,6 +21,7 @@ type review_request = {
   task_description : string;
   completion_notes : string;
   agent_name : string;
+  task_id : string;
 }
 
 (** Gate verdict. *)
@@ -75,22 +76,9 @@ val review :
   ?sw:Eio.Switch.t ->
   review_request -> review_result
 
-(** Backward-compatible wrapper returning only the verdict. *)
-val review_verdict :
-  ?evaluator_cascade:string ->
-  ?generator_cascade:string ->
-  ?completion_contract:string list ->
-  ?on_verdict:(review_result -> unit) ->
-  ?few_shot_block:string ->
-  ?sw:Eio.Switch.t ->
-  review_request -> verdict
-
 (** Check completion notes against a contract. Returns unmet items.
     Used internally by Gate 2.5; exposed for testing. *)
 val check_contract : notes:string -> contract:string list -> string list
-
-(** Serialize review result to JSON for logging/calibration. *)
-val review_result_to_json : review_result -> Yojson.Safe.t
 
 (** Load excuse patterns dynamically from config/excuse_patterns.json.
     Returns the default hardcoded list if the file is missing or invalid.
@@ -106,6 +94,12 @@ val parse_excuse_patterns_json : Yojson.Safe.t -> ((string * string) list, strin
     Returns [Ok ()] on success or [Error msg] on failure.
     Exposed for dashboard administration. *)
 val save_excuse_patterns : (string * string) list -> (unit, string) result
+
+(** Drop the in-memory pattern cache so the next [load_excuse_patterns]
+    re-reads the on-disk file.  Exposed for tests that swap
+    [MASC_CONFIG_DIR] between cases — the cache is otherwise process-
+    lifetime and would mask later loads. *)
+val reset_cache_for_tests : unit -> unit
 
 (** Check notes for known excuse patterns (local, no LLM).
     Returns [Some (pattern, reason)] if a match is found.

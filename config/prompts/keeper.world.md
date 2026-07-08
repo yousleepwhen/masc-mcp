@@ -1,7 +1,7 @@
 ---
 description: MASC world description (keeper system prompt <world> block)
 category: keeper
-template_variables: [allowed_orgs, denied_repos]
+template_variables: []
 ---
 
 ## Paths and Identity
@@ -15,8 +15,8 @@ local directory, Docker, a VM, or a cloud service, but tool paths stay the same:
 Repo worktrees live *inside* your sandbox clone at `repos/<REPO_NAME>/.worktrees/<branch-or-task>/` (typically `{your-name}-<task_id>`).
 - Directory name: `{your-name}-<task_id>` (e.g. `sangsu-fix-bug`)
 - Git branch: `{your-name}/<task_id>` (e.g. `sangsu/fix-bug`)
-- `masc_worktree_create` infers the repo from task repo/path evidence, or pass `repo_name=<clone>` to pick a specific one.
-- If multiple clones exist and the task has no clear repo evidence, worktree creation fails instead of guessing.
+- Use `repos/<REPO_NAME>/.worktrees/<branch-or-task>/` for isolated code work.
+- If multiple clones exist and the task has no clear repo evidence, ask for the target repo instead of guessing.
 - The returned path always starts with `repos/<REPO_NAME>/.worktrees/`.
 - Never use a server-root-relative worktree path — the harness rejects it as outside your sandbox.
 - Clone the target repo first if `repos/` is empty.
@@ -28,6 +28,8 @@ WRONG paths (these do not exist or cause doubling errors):
 - `/home/.../repos/...`
 - `.worktrees/...` (server-root relative — worktrees must live inside your sandbox clone at `repos/<REPO_NAME>/.worktrees/...`)
 - `.masc/playground/{your-name}/repos/...` as a tool path argument — this is a local backend storage detail, so just use `repos/...`
+- `.masc/backlog.json`, `.masc/state/backlog.json`, `repos/<REPO_NAME>/.masc/backlog.json`, `repos/<REPO_NAME>/.worktrees/<task>/.task.json`, `.task.json`, or repo-local `backlog.json` guesses — task state is not exposed as a shell file in your repo clone.
+- `http://localhost:.../api/tasks` or similar local task APIs — task state is exposed through MASC keeper tools, not localhost HTTP from your sandbox.
 - Any guessed absolute path outside the path returned by your tools
 
 ## Path Resolution Rule
@@ -41,6 +43,15 @@ When passing `path` or `cwd` to keeper tools:
 
 Including a host storage prefix causes path doubling errors. The tool maps your sandbox path for you.
 
+## Task State Rule
+
+Do not inspect task/backlog/current-task state by shell-reading guessed files like
+`.masc/backlog.json`, `repos/masc-mcp/.masc/backlog.json`, or
+`repos/masc-mcp/.worktrees/<task>/.task.json`. Do not query guessed local task
+APIs such as `http://localhost:8080/api/tasks`. Use `keeper_tasks_list` for
+task/backlog state and `keeper_context_status` for your current task, keeper
+name, sandbox root, and repo paths.
+
 ## Git commands
 
 `git` does not search across mount-point boundaries.  In your sandbox the
@@ -53,38 +64,16 @@ fatal: not a git repository (or any parent up to mount point /home/keeper/playgr
 Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).
 ```
 
-Always change directory first, or use `git -C` to scope a single command:
+Always set the tool `cwd` first. Do not encode `cd ... && ...` as shell text:
 
-- `cd repos/<REPO_NAME> && git status`
-- `git -C repos/<REPO_NAME> log --oneline -5`
-- `cd repos/<REPO_NAME>/.worktrees/{your-name}-<task_id> && git diff`
+- `Execute { executable: "git", argv: ["status", "--short"], cwd: "repos/<REPO_NAME>" }`
+- `Execute { executable: "git", argv: ["log", "--oneline", "-5"], cwd: "repos/<REPO_NAME>" }`
+- `Execute { executable: "git", argv: ["diff"], cwd: "repos/<REPO_NAME>/.worktrees/{your-name}-<task_id>" }`
 
-When invoking `keeper_bash`, supply `cwd: "repos/<REPO_NAME>"` (or the
+When invoking Execute, supply `cwd: "repos/<REPO_NAME>"` (or the
 worktree path) instead of relying on the sandbox-root default cwd.  This
 is the most common cause of `sandbox docker exec failed` events in the
 fleet log (#10424: 9x increase from 2 to 56 events/day across 04-24..26).
-
-## Project
-
-Clone targets are controlled by `config/tool_policy.toml` `[git_clone]`.
-Two lists combine as **ALLOWED minus DENIED** — read both carefully.
-
-GIT CLONE POLICY:
-- ALLOWED — you MAY clone any repository under these orgs: {{allowed_orgs}}
-- DENIED  — you MUST NOT clone these specific repositories: {{denied_repos}}
-
-Worked examples (assuming a single allowed org `jeong-sik` and a single denied repo `jeong-sik/me`):
-- `git clone https://github.com/jeong-sik/masc-mcp`   → ALLOWED (org in list, repo not denied)
-- `git clone https://github.com/jeong-sik/daw-mcp`    → ALLOWED (same reason)
-- `git clone https://github.com/jeong-sik/me`         → DENIED (repo explicitly denied)
-- `git clone https://github.com/anthropics/sdk`       → DENIED (org not in ALLOWED)
-
-Reading the policy:
-- `allowed_orgs` names the orgs you are *entitled to* clone from, not orgs you must ask permission for. If the task you claim names a repo under ALLOWED (and not in DENIED), clone it directly.
-- Only ask the board when the task does not name a repo and you cannot infer one from context. Do NOT post a "may I clone?" board question when the task already names a repo that passes the ALLOWED/DENIED check.
-- Never infer the GitHub owner from local workspace folders such as `workspace/<name>/...`; only trust the actual clone URL or a confirmed remote origin slug.
-
-Never invent an org or repo that is not in ALLOWED.
 
 ## Environment
 

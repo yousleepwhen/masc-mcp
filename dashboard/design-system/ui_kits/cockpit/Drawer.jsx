@@ -79,10 +79,10 @@ function OutputPanel() {
       { t: "01:38:32", lv: "info",  txt: "tick complete · 7.4ms" },
     ],
     "cascade-router": [
-      { t: "01:39:14", lv: "info", txt: "router.dispatch  prompt-id=p_8821a1  primary=anthropic/claude-3.5" },
-      { t: "01:39:14", lv: "info", txt: "  step 1  anthropic         200ms · 0.012$" },
-      { t: "01:39:14", lv: "warn", txt: "  step 1  anthropic         RATE_LIMIT (60s)" },
-      { t: "01:39:14", lv: "info", txt: "  step 2  moonshot          318ms · 0.004$" },
+      { t: "01:39:14", lv: "info", txt: "router.dispatch  prompt-id=p_8821a1  primary=provider-a/agent-llm-a-model-a" },
+      { t: "01:39:14", lv: "info", txt: "  step 1  provider-a         200ms · 0.012$" },
+      { t: "01:39:14", lv: "warn", txt: "  step 1  provider-a         RATE_LIMIT (60s)" },
+      { t: "01:39:14", lv: "info", txt: "  step 2  provider-b          318ms · 0.004$" },
       { t: "01:39:15", lv: "ok",   txt: "  → resolved at step=2 (cascade hit, 5/47 today)" },
     ],
     "keeper-shell": [
@@ -124,9 +124,11 @@ function OutputPanel() {
 }
 
 function CascadePanel() {
-  // Use MASC_P2.cascadeAudit (array of cascade runs with hops) rather than
-  // MASC_DATA.cascade which is a single object without the required array shape.
-  const cascades = ((window.MASC_P2 && window.MASC_P2.cascadeAudit) || []).slice(0, 6);
+  // Cascade run history lives in MASC_P2.cascadeAudit; MASC_DATA.cascade is a
+  // single-object summary used elsewhere and would always evaluate to "no
+  // cascades yet" here.  Match the schema used by cb-group-{f,k}.jsx.
+  const P2 = window.MASC_P2 || {};
+  const cascades = (Array.isArray(P2.cascadeAudit) ? P2.cascadeAudit : []).slice(0, 6);
   return (
     <div className="dr-cascade">
       <div className="dr-cascade-bar">
@@ -139,15 +141,15 @@ function CascadePanel() {
           <div key={i} className="dr-csc">
             <div className="dr-csc-h">
               <span className="id">{c.id || ("csc-" + i)}</span>
-              <span className="prompt">{[c.cascade || "(unknown)", c.trigger].filter(Boolean).join(" · ")}</span>
+              <span className="prompt">{c.trigger || c.prompt || c.cascade || "(no prompt)"}</span>
               <span className={"out " + (c.outcome === "ok" ? "ok" : "fail")}>{c.outcome || "—"}</span>
             </div>
             <div className="dr-csc-hops">
               {(c.hops || []).map((h, hi) => (
                 <span key={hi} className={"hop " + (h.status || "")}>
                   <span className="ix">{hi + 1}</span>
-                  <span className="prov">{h.model || h.provider || h.name}</span>
-                  <span className="ms">{h.ms || h.latency_ms || "—"}ms</span>
+                  <span className="prov">{h.model || h.provider || h.name || "—"}</span>
+                  <span className="ms">{h.latency_ms || h.ms || "—"}ms</span>
                 </span>
               ))}
             </div>
@@ -203,9 +205,9 @@ function AuditPanel() {
 function CostPanel() {
   // mock cost breakdown
   const providers = [
-    { name: "anthropic",  used: 0.812, share: 0.42, calls: 1428, lat: 198 },
-    { name: "moonshot",   used: 0.341, share: 0.18, calls: 612,  lat: 312 },
-    { name: "openai",     used: 0.602, share: 0.31, calls: 891,  lat: 224 },
+    { name: "provider-a",  used: 0.812, share: 0.42, calls: 1428, lat: 198 },
+    { name: "provider-b",   used: 0.341, share: 0.18, calls: 612,  lat: 312 },
+    { name: "provider-d",     used: 0.602, share: 0.31, calls: 891,  lat: 224 },
     { name: "openrouter", used: 0.171, share: 0.09, calls: 244,  lat: 401 },
   ];
   const total = providers.reduce((a, p) => a + p.used, 0);
@@ -229,7 +231,7 @@ function CostPanel() {
           ))}
         </div>
         <div className="dr-cost-foot">
-          <span className="tip">Tip: anthropic at 42% share — cascade fallback to moonshot saved ~$0.18/h vs primary-only.</span>
+          <span className="tip">Tip: provider-a at 42% share — cascade fallback to provider-b saved ~$0.18/h vs primary-only.</span>
         </div>
       </div>
     </div>
@@ -250,9 +252,7 @@ function Drawer() {
 
   // apply CSS var --h-drawer to document root so the grid can read it
   dUseEffect(() => {
-    // Keep the bar (26px) visible when closed so users can click tabs to open.
-    const CLOSED_H = 26; // matches .drawer.closed min-height in drawer.css
-    const h = drawer.open ? Math.max(120, Math.min(window.innerHeight * 0.8, drawer.height)) : CLOSED_H;
+    const h = drawer.open ? Math.max(120, Math.min(window.innerHeight * 0.8, drawer.height)) : 26;
     document.documentElement.style.setProperty("--h-drawer", h + "px");
     document.body.classList.toggle("drawer-open", drawer.open);
   }, [drawer.open, drawer.height]);
@@ -372,21 +372,28 @@ function Drawer() {
   if (window.__drawerHotkey) return;
   window.__drawerHotkey = true;
 
+  // ctrl/cmd + ` toggles open/closed.  Skip when the user is typing in an
+  // editable surface so the hotkey does not hijack backtick entry inside
+  // inputs/textareas/contenteditable nodes (e.g. Markdown code spans).
   const isEditableTarget = (target) => {
-    const tag = target && target.tagName;
-    return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" ||
-      (target && target.isContentEditable) ||
-      (target && target.closest && target.closest("[contenteditable]:not([contenteditable='false'])"));
+    if (!target || target.nodeType !== 1) return false;
+    if (target.isContentEditable) return true;
+    const tag = target.tagName;
+    return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
   };
-
-  const isDrawerHotkey = (e) => {
-    const altGraph = e.getModifierState && e.getModifierState("AltGraph");
-    return !altGraph && (e.ctrlKey || e.metaKey) && e.code === "Backquote";
-  };
-
-  // ctrl/cmd + physical Backquote toggles open/closed
   document.addEventListener("keydown", (e) => {
-    if (isDrawerHotkey(e)) {
+    // Match the physical backquote key, not the produced character. Layouts
+    // with dead keys (e.g. several European keyboards) emit e.key === "Dead"
+    // for the backquote key, which broke the advertised Ctrl/Cmd+` toggle.
+    // Skip when AltGraph is active: on Windows/Linux international layouts
+    // AltGr reports as Ctrl+Alt, so AltGr+Backquote is a legitimate
+    // locale-character entry sequence — hijacking it with preventDefault
+    // would regress text input.
+    if (
+      (e.ctrlKey || e.metaKey) &&
+      e.code === "Backquote" &&
+      !e.getModifierState("AltGraph")
+    ) {
       if (isEditableTarget(e.target)) return;
       e.preventDefault();
       window.dispatchEvent(new CustomEvent("masc-drawer-toggle"));
@@ -395,8 +402,7 @@ function Drawer() {
 
   // listen for programmatic events (from IDE's drawer hint button etc.)
   window.addEventListener("masc-drawer-toggle", () => {
-    if (!window.useCockpitState) return;
-    window.__drawerToggle?.();
+    if (window.__drawerToggle) window.__drawerToggle();
   });
   window.addEventListener("masc-drawer-set", (e) => {
     if (window.__drawerSet) window.__drawerSet(e.detail || {});

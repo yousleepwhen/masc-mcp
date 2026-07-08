@@ -103,7 +103,7 @@ interface TraceSlot {
 
 // ── Per-agent state map ────────────────────────────────
 
-const traceSlots = signal<Record<string, TraceSlot>>({})
+export const traceSlots = signal<Record<string, TraceSlot>>({})
 
 const EMPTY_SLOT: TraceSlot = { events: [], loading: false, error: null, filter: 'all', statusFilter: 'all', searchQuery: '', fetchToken: 0 }
 
@@ -314,8 +314,6 @@ export function getKindCounts(agent: string): Record<TraceEventKind | 'all', num
 // ── Trigger signal ─────────────────────────────────────
 // Components subscribe to this to know when traceSlots changed.
 // Reading traceSlots.value inside a component body tracks reactivity.
-export { traceSlots as _traceSlots }
-export { liveTraceFeeds as _liveTraceFeeds }
 
 // ── Filter action ──────────────────────────────────────
 
@@ -637,6 +635,7 @@ function timelineEventToTrace(evt: AgentTimelineEvent, index: number): UnifiedTr
     const toolName = stringField(detail.tool_name) ?? 'TOOL_CALL'
     const durationMs = numberField(detail.duration_ms)
     const toolArgsPreview = stringField(detail.tool_args_preview)
+    const toolOutputPreview = stringField(detail.tool_output_preview)
     const explicitSuccess = typeof detail.success === 'boolean' ? detail.success : undefined
     const errorText = stringField(detail.error)
     const success = explicitSuccess ?? (errorText == null)
@@ -652,8 +651,9 @@ function timelineEventToTrace(evt: AgentTimelineEvent, index: number): UnifiedTr
       operationId: stringField(detail.operation_id) ?? null,
       toolName,
       toolArgs: toolArgsPreview,
+      toolResult: success ? (toolOutputPreview ?? null) : null,
       duration_ms: durationMs,
-      error: success ? null : (errorText ?? 'tool call failed'),
+      error: success ? null : (errorText ?? toolOutputPreview ?? 'tool call failed'),
     }
   }
 
@@ -814,8 +814,6 @@ export async function loadSessionTrace(agentName: string, isKeeper: boolean): Pr
     })
   }
 }
-
-export { appendLiveOasEvent, appendLiveToolCall } from './session-trace-live-store'
 
 export function closeSessionTrace(agentName: string): void {
   const next = { ...traceSlots.value }

@@ -1,6 +1,6 @@
 (** Tool schema registry and visibility helpers. *)
 
-module StringSet = Set.Make (String)
+module StringSet = Set_util.StringSet
 
 let dedupe_schemas (schemas : Masc_domain.tool_schema list) =
   let unique, _ =
@@ -13,43 +13,29 @@ let dedupe_schemas (schemas : Masc_domain.tool_schema list) =
   in
   List.rev unique
 
-let retired_front_door_schema_names =
-  [
-  ]
-
-let filter_retired_front_door_schemas (schemas : Masc_domain.tool_schema list) =
-  List.filter
-    (fun (schema : Masc_domain.tool_schema) ->
-      not (List.mem schema.name retired_front_door_schema_names))
-    schemas
-
 let raw_all_tool_schemas : Masc_domain.tool_schema list =
-  filter_retired_front_door_schemas
-    (dedupe_schemas
-       (Tools.raw_schemas
-       @ Tool_schemas_control.schemas
-       @ Tool_schemas_misc.schemas
-       @ Tool_board.tools
-       @ Keeper_types.schemas
-       @ Tool_local_runtime.schemas
-       @ Tool_autoresearch.schemas
-       @ Tool_compact.schemas
-       @ Tool_agent_timeline.schemas
-       @ Tool_shard.schemas
-       (* #9912 / #10101: every keeper-facing shard tool must reach the
-          authoritative registry consumed by
-          [Tool_help_registry.find_entry], or keepers that request
-          help on the tool receive "unknown tool" despite the
-          dispatcher handling it correctly.  #9912 plugged only
-          [Tool_shard.base_tools] (5 always-present tools); #10101
-          observed 11 other shard categories still missing
-          (keeper_task_claim, keeper_fs_edit, keeper_board_*, ...).
-          [Tool_shard.all_keeper_tool_schemas] is the SSOT that
-          pulls from [all_shards] plus the non-shard
-          [keeper_preflight_tools] / [keeper_pr_review_tools]
-          lists, so future shard categories flow through without
-          another patch-local fix. *)
-       @ Tool_shard.all_keeper_tool_schemas))
+  dedupe_schemas
+    (Tools.raw_schemas
+     @ Tool_schemas_misc.schemas
+     @ Tool_board.tools
+     @ Keeper_types.schemas
+     @ Tool_local_runtime.schemas
+     @ Tool_agent_timeline.schemas
+     @ Tool_shard.schemas
+     (* #9912 / #10101: every keeper-facing shard tool must reach the
+        authoritative registry consumed by
+        [Tool_help_registry.find_entry], or keepers that request
+        help on the tool receive "unknown tool" despite the
+        dispatcher handling it correctly.  #9912 plugged only
+        [Tool_shard.base_tools] (5 always-present tools); #10101
+        observed 11 other shard categories still missing
+        (keeper_task_claim, tool_edit_file, keeper_board_*, ...).
+        [Tool_shard.all_keeper_tool_schemas] is the SSOT that
+        pulls from [all_shards] plus unsharded default schemas, so future
+        tool categories flow through without another patch-local fix. *)
+     @ Tool_shard.all_keeper_tool_schemas)
+
+let front_door_tool_schemas : Masc_domain.tool_schema list = raw_all_tool_schemas
 
 (** Validate tool schemas at module initialization time.
     Logs warnings for: duplicate names, empty names/descriptions,
@@ -92,7 +78,7 @@ let validate_schemas (schemas : Masc_domain.tool_schema list) =
 
 let all_tool_schemas : Masc_domain.tool_schema list =
   let schemas =
-    Capability_registry.public_tool_schemas_from raw_all_tool_schemas
+    Capability_registry.public_tool_schemas_from front_door_tool_schemas
   in
   validate_schemas schemas;
   schemas
@@ -103,7 +89,33 @@ let all_tool_names () : string list =
 let is_tool_visible tool_name =
   Tool_catalog.is_visible tool_name
 
-let visible_tool_schemas ?(include_hidden = false) ?(include_deprecated = false) () :
+(* O(1) membership lookup for "is this name in raw_all_tool_schemas?".
+   Hot path: [Mcp_server_eio_tool_profile.tool_allowed_in_profile Full]
+   previously rebuilt visible_tool_schemas (dedupe + canonicalize + filter)
+   then List.map .name then List.mem per dispatch — ~150 entries scanned
+   per MCP tool call.  Hashtbl built once at module init. *)
+let raw_tool_name_set : (string, unit) Hashtbl.t =
+  let tbl = Hashtbl.create (List.length raw_all_tool_schemas * 2) in
+  List.iter
+    (fun (schema : Masc_domain.tool_schema) ->
+      Hashtbl.replace tbl schema.name ())
+    raw_all_tool_schemas;
+  tbl
+
+let is_raw_tool_name name = Hashtbl.mem raw_tool_name_set name
+
+let visible_tool_schemas ?(include_hidden = false) () :
     Masc_domain.tool_schema list =
   Capability_registry.visible_public_tool_schemas_from ~include_hidden
-    ~include_deprecated raw_all_tool_schemas
+    front_door_tool_schemas
+
+let surface_tool_schemas ?(include_hidden = false) () :
+    Masc_domain.tool_schema list =
+  visible_tool_schemas ~include_hidden ()
+  |> List.filter (fun (s : Masc_domain.tool_schema) ->
+       Tool_scope.classify ~name:s.name = Tool_scope.Surface)
+
+let keeper_internal_tool_schemas () : Masc_domain.tool_schema list =
+  visible_tool_schemas ~include_hidden:true ()
+  |> List.filter (fun (s : Masc_domain.tool_schema) ->
+       Tool_scope.classify ~name:s.name = Tool_scope.Keeper_internal)

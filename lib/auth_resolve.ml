@@ -60,7 +60,11 @@ let first_nonempty_env keys =
     keys
 
 let internal_keeper_token_hash_file ~base_path =
-  Filename.concat base_path ".masc/auth/internal_keeper.token.hash"
+  (* RFC-0121: layout SSOT via [Config_dir_resolver.auth_dir]; only the
+     filename portion stays here. *)
+  Filename.concat
+    (Config_dir_resolver.auth_dir ~base_path)
+    "internal_keeper.token.hash"
 
 let resolve ~base_path ~keeper_id ~provider_kind
     ~policy_requires_runtime_mcp =
@@ -86,16 +90,21 @@ let resolve ~base_path ~keeper_id ~provider_kind
                 (Api_key_env_unset { var_name = "MASC_INTERNAL_MCP_TOKEN" })
         else Error (Token_hash_missing { path = hash_path })
   else
-    match Llm_provider.Provider_kind.default_api_key_env provider_kind with
-    | None -> (
-        match provider_kind with
-        | PK.Codex_cli ->
-            Error (Bound_actor_provider_mismatch { provider_kind })
-        | _ -> (
-            match first_nonempty_env [ "MASC_MCP_TOKEN" ] with
-            | Some (raw, _) -> Ok { raw; source = Mcp_bearer_env }
-            | None ->
-                Error (Api_key_env_unset { var_name = "MASC_MCP_TOKEN" })))
+    match Provider_kind_resolver.env_var_for_kind provider_kind with
+    | None ->
+        (* Providers requiring per-keeper bridging cannot accept the shared
+           [MASC_MCP_TOKEN] fallback: their bound-actor runtime MCP tools need
+           a per-keeper raw bearer. Dispatch by local tool-delivery policy,
+           not by provider name. RFC-0058 §2.4: capability, not match. *)
+        if
+          Provider_tool_support
+          .provider_kind_requires_per_keeper_bridging_for_bound_actor_tools
+            provider_kind
+        then Error (Bound_actor_provider_mismatch { provider_kind })
+        else (
+          match first_nonempty_env [ "MASC_MCP_TOKEN" ] with
+          | Some (raw, _) -> Ok { raw; source = Mcp_bearer_env }
+          | None -> Error (Api_key_env_unset { var_name = "MASC_MCP_TOKEN" }))
     | Some var_name -> (
         match first_nonempty_env [ var_name ] with
         | Some (raw, _) ->

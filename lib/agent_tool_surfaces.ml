@@ -25,9 +25,8 @@ module Random = Stdlib.Random
 
 open Masc_domain
 
-module SS = Set.Make (String)
+module SS = Set_util.StringSet
 
-let unique_preserve_order = Json_util.dedupe_keep_order
 
 let dedupe_schemas (schemas : Masc_domain.tool_schema list) =
   let unique, _ =
@@ -43,12 +42,20 @@ let dedupe_schemas (schemas : Masc_domain.tool_schema list) =
 let prefixed_tool_names names =
   names |> List.map (fun name -> "mcp__masc__" ^ name)
 
+(* Hashtbl materialisation helper for membership-only checks.  Used
+   below where we'd otherwise scan a name list per element of a
+   filter loop — replaces O(N x M) with O(N + M). *)
+let name_set names =
+  let tbl = Hashtbl.create (List.length names) in
+  List.iter (fun name -> Hashtbl.replace tbl name ()) names;
+  tbl
+
 let lookup_schemas_by_name_exn ~label all_schemas values =
   let requested =
     values
     |> List.map String.trim
     |> List.filter (fun value -> not (String.equal value ""))
-    |> unique_preserve_order
+    |> Json_util.dedupe_keep_order
   in
   let by_name = Hashtbl.create (List.length all_schemas) in
   List.iter
@@ -79,56 +86,27 @@ let local_worker_public_tool_names : string list =
 let local_worker_contract_schemas : Masc_domain.tool_schema list =
   Sdk_tool_contract.sdk_tool_schemas
 
-let local_worker_compat_passthrough_tool_names =
-  [
-    "masc_status";
-    "masc_tasks";
-    "masc_claim_next";
-    "masc_transition";
-    "masc_add_task";
-    "masc_broadcast";
-  ]
-
-let local_worker_compat_passthrough_schemas : Masc_domain.tool_schema list =
-  lookup_schemas_by_name_exn
-    ~label:"agent_tool_surfaces.local_worker_compat_passthrough_schemas"
-    (Tool_schemas_coord_core.schemas
-     @ Tool_task_schemas.schemas
-     @ Tool_schemas_inline_coord.schemas)
-    local_worker_compat_passthrough_tool_names
-
 let local_worker_internal_schemas : Masc_domain.tool_schema list =
   List.filter
     (fun (schema : Masc_domain.tool_schema) -> String.equal schema.name "masc_heartbeat")
     Tool_schemas_coord_core.schemas
 
-let local_worker_code_schemas : Masc_domain.tool_schema list =
-  Tool_schemas_code.schemas
-
-let local_worker_worktree_schemas : Masc_domain.tool_schema list =
-  Tool_schemas_worktree.schemas
-
 let local_worker_run_schemas : Masc_domain.tool_schema list =
   Tool_schemas_run.schemas
 
-let local_worker_spawn_schemas : Masc_domain.tool_schema list =
-  List.filter
-    (fun (schema : Masc_domain.tool_schema) -> String.equal schema.name "masc_spawn")
-    Tool_schemas_inline_infra.schemas
+(* RFC-0182: local_worker_spawn_schemas removed — masc_spawn is dead. *)
 
 let select_public_local_worker_schemas () =
-  let wanted = local_worker_public_tool_names in
+  let wanted_set = name_set local_worker_public_tool_names in
   dedupe_schemas
     (Tool_board.tools
     @ Tool_schemas_coord_core.schemas
     @ Tool_schemas_coord_extra.schemas
+    @ Tool_task_schemas.schemas
     @ Tool_schemas_agent.schemas
-    @ local_worker_code_schemas
-    @ local_worker_worktree_schemas
-    @ local_worker_run_schemas
-    @ local_worker_spawn_schemas)
+    @ local_worker_run_schemas)
   |> List.filter (fun (schema : Masc_domain.tool_schema) ->
-         List.mem schema.name wanted)
+         Hashtbl.mem wanted_set schema.name)
 
 let resolve_named_schemas all_schemas values :
     (Masc_domain.tool_schema list, string) Result.t =
@@ -136,21 +114,30 @@ let resolve_named_schemas all_schemas values :
     values
     |> List.map String.trim
     |> List.filter (fun value -> not (String.equal value ""))
-    |> unique_preserve_order
+    |> Json_util.dedupe_keep_order
   in
+  (* Materialise both directions of the membership relation once:
+     - [requested_set] for the first filter (per-schema lookup),
+     - [found_set] for the missing-name check (per-requested lookup).
+     Previous shape ran [List.mem] / [List.exists] per element in each
+     filter — O(S x R) and O(R x found) respectively. *)
+  let requested_set = name_set requested in
   let schemas =
     all_schemas
     |> List.filter (fun (schema : Masc_domain.tool_schema) ->
-           List.mem schema.name requested)
+           Hashtbl.mem requested_set schema.name)
+  in
+  let found_set =
+    let tbl = Hashtbl.create (List.length schemas) in
+    List.iter
+      (fun (schema : Masc_domain.tool_schema) ->
+        Hashtbl.replace tbl schema.name ())
+      schemas;
+    tbl
   in
   let missing =
     requested
-    |> List.filter (fun tool_name ->
-           not
-             (List.exists
-                (fun (schema : Masc_domain.tool_schema) ->
-                  String.equal schema.name tool_name)
-                schemas))
+    |> List.filter (fun tool_name -> not (Hashtbl.mem found_set tool_name))
   in
   match missing with [] ->
     Ok schemas
@@ -164,7 +151,6 @@ let local_worker_tool_schemas ?names () :
   let all_schemas =
     dedupe_schemas
       ( local_worker_internal_schemas
-      @ local_worker_compat_passthrough_schemas
       @ local_worker_contract_schemas
       @ select_public_local_worker_schemas () )
   in
@@ -193,7 +179,7 @@ let filter_catalog_to_available ~available names =
   let available = SS.of_list available in
   names
   |> List.filter (fun name -> SS.mem name available)
-  |> unique_preserve_order
+  |> Json_util.dedupe_keep_order
 
 (** Build a role-based tool catalog from the full registered tool set.
     [role] determines which subset of tools the agent sees:
@@ -204,7 +190,7 @@ let filter_catalog_to_available ~available names =
 let build_tool_catalog ~(role : string) () : string list =
   let all_names =
     spawned_agent_public_tool_names @ local_worker_public_tool_names
-    |> unique_preserve_order
+    |> Json_util.dedupe_keep_order
   in
   let filtered =
     match role with
@@ -213,12 +199,12 @@ let build_tool_catalog ~(role : string) () : string list =
     | "coordinator" | "fleet_leader" ->
         filter_catalog_to_available ~available:all_names coordination_tool_names
     | _ ->
-        (* autonomous: all except admin *)
-        List.filter
-          (fun name -> not (List.mem name admin_tool_names))
-          all_names
+        (* autonomous: all except admin.  Replace per-name [List.mem]
+           scan over [admin_tool_names] with O(1) Hashtbl lookup. *)
+        let admin_set = name_set admin_tool_names in
+        List.filter (fun name -> not (Hashtbl.mem admin_set name)) all_names
   in
-  unique_preserve_order filtered
+  Json_util.dedupe_keep_order filtered
 
 (** [local_worker_resolvable_tool_names ()] returns only the tool names
     that [local_worker_tool_schemas] can actually resolve.  Use this to

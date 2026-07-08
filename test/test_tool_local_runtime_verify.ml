@@ -1,15 +1,20 @@
 open Alcotest
 
-let test_provider_health_reachable_accepts_json_health () =
-  check bool "json health body counts as reachable" true
-    (Masc_mcp.Tool_local_runtime.provider_health_reachable ~status:(Some 200)
-       ~body:(Some {|{"status":"ok"}|}));
-  check bool "plain text health body counts as reachable" true
-    (Masc_mcp.Tool_local_runtime.provider_health_reachable ~status:(Some 200)
-       ~body:(Some "ok"));
+let test_provider_health_reachable_uses_status_only () =
+  check bool "200 counts as reachable" true
+    (Masc_mcp.Tool_local_runtime.provider_health_reachable ~status:(Some 200));
+  check bool "200 remains reachable without body input" true
+    (Masc_mcp.Tool_local_runtime.provider_health_reachable ~status:(Some 200));
   check bool "non-200 is unreachable" false
-    (Masc_mcp.Tool_local_runtime.provider_health_reachable ~status:(Some 503)
-       ~body:(Some {|{"status":"error"}|}))
+    (Masc_mcp.Tool_local_runtime.provider_health_reachable ~status:(Some 503))
+
+let test_split_ws_preserves_quoted_cmdline_values () =
+  check
+    (list string)
+    "quoted model path remains one argv"
+    [ "llama-server"; "-m"; "/models/Provider_h_wire 3.5.gguf"; "--port"; "8080" ]
+    (Masc_mcp.Tool_local_runtime_core.split_ws
+       {|/opt/bin/llama-server -m "/models/Provider_h_wire 3.5.gguf" --port 8080|})
 
 let test_classify_runtime_blocker_prefers_slot_count_when_health_ok () =
   let blocker, detail =
@@ -36,7 +41,7 @@ let make_endpoint ~url ~model_id ~ctx_size ~total_slots ~busy =
     models = [ { D.id = model_id; owned_by = "llamacpp" } ];
     props = Some { D.total_slots; ctx_size; model = ""; supports_tools = None };
     slots = Some { D.total = total_slots; busy; idle = total_slots - busy };
-    capabilities = Llm_provider.Capabilities.openai_chat_extended_capabilities;
+    capabilities = Llm_provider.Capabilities.provider_d_chat_extended_capabilities;
   }
 
 let test_runtime_verify_prefers_oas_discovery_cache () =
@@ -80,6 +85,32 @@ let test_runtime_verify_prefers_oas_discovery_cache () =
       check bool "passes expected contract" true
         (result |> member "pass" |> to_bool))
 
+let test_runtime_verify_fails_without_oas_discovery () =
+  let previous_endpoints = !(Masc_mcp.Discovery_cache.cached_endpoints) in
+  let previous_updated_at = Atomic.get Masc_mcp.Discovery_cache.cache_updated_at in
+  Fun.protect
+    ~finally:(fun () ->
+      Masc_mcp.Discovery_cache.cached_endpoints := previous_endpoints;
+      Atomic.set Masc_mcp.Discovery_cache.cache_updated_at previous_updated_at)
+    (fun () ->
+      Masc_mcp.Discovery_cache.cached_endpoints := [];
+      Atomic.set Masc_mcp.Discovery_cache.cache_updated_at (Time_compat.now ());
+      let result =
+        Masc_mcp.Tool_local_runtime.runtime_verify_json
+          ~runtime_pool:"missing-runtime-pool"
+          ~expected_slots:1
+          ~expected_ctx:131072
+          ~expected_model:"expected-model"
+          ()
+      in
+      let open Yojson.Safe.Util in
+      check string "source" "oas_discovery"
+        (result |> member "source" |> to_string);
+      check string "blocker" "oas_discovery_unavailable"
+        (result |> member "runtime_blocker" |> to_string);
+      check bool "fails closed" false (result |> member "pass" |> to_bool);
+      check int "no runtimes" 0 (result |> member "runtimes" |> to_list |> List.length))
+
 let test_classify_runtime_blocker_flags_chat_contract_mismatch () =
   let blocker, detail =
     Masc_mcp.Tool_local_runtime.classify_runtime_blocker ~provider_reachable:true
@@ -115,8 +146,10 @@ let () =
     [
       ( "provider_health_reachable",
         [
-          test_case "accepts json health payload" `Quick
-            test_provider_health_reachable_accepts_json_health;
+          test_case "uses health status only" `Quick
+            test_provider_health_reachable_uses_status_only;
+          test_case "split_ws preserves quoted cmdline values" `Quick
+            test_split_ws_preserves_quoted_cmdline_values;
         ] );
       ( "runtime_blocker",
         [
@@ -124,6 +157,8 @@ let () =
             test_classify_runtime_blocker_prefers_slot_count_when_health_ok;
           test_case "runtime verify prefers oas discovery cache" `Quick
             test_runtime_verify_prefers_oas_discovery_cache;
+          test_case "runtime verify fails without oas discovery" `Quick
+            test_runtime_verify_fails_without_oas_discovery;
           test_case "chat contract mismatch is reported" `Quick
             test_classify_runtime_blocker_flags_chat_contract_mismatch;
           test_case "unknown chat status is tolerated" `Quick

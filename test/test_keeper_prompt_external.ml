@@ -18,6 +18,12 @@ let contains_substring haystack needle =
     in
     loop 0
 
+let read_file path =
+  let ic = open_in path in
+  Fun.protect
+    ~finally:(fun () -> close_in_noerr ic)
+    (fun () -> In_channel.input_all ic)
+
 let with_repo_root_cwd f =
   let original_cwd = Sys.getcwd () in
   (* Test runs out of [_build/default/test]; walk up until we find the
@@ -44,7 +50,7 @@ let with_repo_root_cwd f =
       let config_dir = Filename.concat root "config" in
       Unix.putenv "MASC_CONFIG_DIR" config_dir;
       Sys.chdir root;
-      Lib.Config_dir_resolver.reset ();
+      Config_dir_resolver.reset ();
       Prompt_registry.clear ();
       Prompt_registry.set_markdown_dir (Filename.concat config_dir "prompts");
       Lib.Prompt_defaults.init ();
@@ -54,7 +60,7 @@ let with_repo_root_cwd f =
           (match prev_config_dir with
            | Some v -> Unix.putenv "MASC_CONFIG_DIR" v
            | None -> Unix.putenv "MASC_CONFIG_DIR" "");
-          Lib.Config_dir_resolver.reset ();
+          Config_dir_resolver.reset ();
           Prompt_registry.clear ())
         f
 
@@ -106,6 +112,28 @@ let test_system_prompt_includes_continuity_contract () =
         "constitution still present" true
         (contains_substring prompt "PR merge rules"))
 
+let test_system_prompt_includes_state_block_template_anchor () =
+  with_repo_root_cwd (fun () ->
+      Lib.Keeper_prompt_external.reset_cache ();
+      let prompt =
+        Lib.Keeper_prompt.build_keeper_system_prompt
+          ~goal:"verify prompt anchors"
+          ~short_goal:"keep state template anchored"
+          ~mid_goal:"avoid noisy recovery fallback"
+          ~long_goal:"keep continuity prompt stable"
+          ~will:"maintain coherent identity"
+          ~needs:"runtime truth"
+          ~desires:"observable progress"
+          ~instructions:""
+          ()
+      in
+      Alcotest.(check bool)
+        "state block template anchor present" true
+        (contains_substring prompt "State block template");
+      Alcotest.(check bool)
+        "normal prompt does not need recovery fallback" false
+        (contains_substring prompt "Recovery guard"))
+
 let test_missing_returns_none () =
   with_repo_root_cwd (fun () ->
       Lib.Keeper_prompt_external.reset_cache ();
@@ -116,7 +144,8 @@ let test_missing_returns_none () =
       | None -> ()
       | Some _ ->
           Alcotest.fail
-            "missing file should return None (caller handles fallback)")
+            "missing file should return None (caller renders config-drift \
+             marker)")
 
 let test_cache_is_used () =
   with_repo_root_cwd (fun () ->
@@ -125,6 +154,36 @@ let test_cache_is_used () =
       let second = Lib.Keeper_prompt_external.get "profile_policy" in
       Alcotest.(check (option string))
         "cache returns identical content" first second)
+
+let test_source_has_no_generic_behavior_fallbacks () =
+  with_repo_root_cwd (fun () ->
+      let src = read_file "lib/keeper/keeper_prompt.ml" in
+      Alcotest.(check bool)
+        "profile policy generic fallback removed" false
+        (contains_substring src
+           "Maintain high standard of reasoning, factual grounding, and clear communication.");
+      Alcotest.(check bool)
+        "continuity generic fallback removed" false
+        (contains_substring src
+           "Continuity and any end-of-reply STATE formatting requirements apply");
+      Alcotest.(check bool)
+        "missing behavior marker present" true
+        (contains_substring src "Behavior prompt config drift");
+      Alcotest.(check bool)
+        "will generic fallback removed" false
+        (contains_substring src
+           "Maintain coherent identity and goal continuity.");
+      Alcotest.(check bool)
+        "needs generic fallback removed" false
+        (contains_substring src
+           "Reliable context continuity, factual grounding, and explicit next steps.");
+      Alcotest.(check bool)
+        "desires generic fallback removed" false
+        (contains_substring src
+           "Make progress that is observable and useful to the user.");
+      Alcotest.(check bool)
+        "missing personality marker present" true
+        (contains_substring src "Personality config drift"))
 
 let () =
   Alcotest.run "Keeper_prompt_external"
@@ -137,9 +196,14 @@ let () =
             test_loads_continuity_contract;
           Alcotest.test_case "system prompt includes continuity_contract"
             `Quick test_system_prompt_includes_continuity_contract;
+          Alcotest.test_case
+            "system prompt includes state block template anchor" `Quick
+            test_system_prompt_includes_state_block_template_anchor;
           Alcotest.test_case "missing returns None" `Quick
             test_missing_returns_none;
           Alcotest.test_case "second lookup uses cache" `Quick
             test_cache_is_used;
+          Alcotest.test_case "source has no generic behavior fallbacks"
+            `Quick test_source_has_no_generic_behavior_fallbacks;
         ] );
     ]

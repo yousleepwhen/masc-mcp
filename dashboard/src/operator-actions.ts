@@ -9,9 +9,11 @@ import type {
   OperatorActionLogEntry,
   OperatorActionRequest,
   OperatorActionResult,
+  RefreshOptions,
 } from './types'
 import { registerOperatorRefresh } from './sse-store'
 import { UI_REFRESH_TTL_MS } from './config/constants'
+import { UNKNOWN_STATUS_LABEL } from './lib/format-string'
 import {
   operatorSnapshot,
   operatorRoomDigest,
@@ -27,10 +29,6 @@ import {
 import { normalizeOperatorSnapshot, normalizeOperatorDigest } from './operator-normalizers'
 
 let nextLogId = 1
-
-interface RefreshOptions {
-  force?: boolean
-}
 
 let snapshotRefreshInflight: Promise<void> | null = null
 let roomDigestRefreshInflight: Promise<void> | null = null
@@ -64,10 +62,9 @@ function appendLog(entry: Omit<OperatorActionLogEntry, 'id' | 'at'>): void {
 
 function logMessageFromResult(result: OperatorActionResult): string {
   if (result.confirm_required) {
-    return stringifyUnknown(result.preview) || '확인 필요'
+    return stringifyUnknown(result.preview) || UNKNOWN_STATUS_LABEL
   }
   return stringifyUnknown(result.result)
-    || stringifyUnknown(result.delegated_tool_result)
     || stringifyUnknown(result.executed_action)
     || result.status
 }

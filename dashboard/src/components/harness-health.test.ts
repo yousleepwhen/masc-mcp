@@ -8,7 +8,7 @@ import { KpiCell } from './kpi-cell'
 function sampleResponse() {
   return {
     generated_at: 1711440000,
-    scope_note: 'Autoresearch는 generator loop, Harness는 safety rail을 설명합니다.',
+    scope_note: 'Harness health explains safety rails and calibration loops.',
     overview: {
       evaluator_status: 'warning',
       pre_compact_status: 'healthy',
@@ -143,7 +143,8 @@ async function loadComponentWithApi(api: {
     `,
   }))
   const module = await import('./harness-health')
-  module.resetHarnessHealthState()
+  const { resetHarnessHealthState } = await import('./harness-health-state')
+  resetHarnessHealthState()
   return module
 }
 
@@ -160,7 +161,7 @@ describe('HarnessHealth', () => {
   })
 
   afterEach(async () => {
-    const { resetHarnessHealthState } = await import('./harness-health')
+    const { resetHarnessHealthState } = await import('./harness-health-state')
     resetHarnessHealthState()
     render(null, container)
     container.remove()
@@ -192,7 +193,6 @@ describe('HarnessHealth', () => {
     expect(container.textContent).toContain('평가 모델 건강도')
     expect(container.textContent).toContain('컨텍스트 압축 압력')
     expect(container.textContent).toContain('keeper 세대 교체')
-    expect(container.textContent).toContain('오토리서치 열기')
     expect(container.textContent).toContain('대체 처리율')
     expect(container.textContent).toContain('judge timeout')
     expect(mermaidSource(container)).toContain('flowchart LR')
@@ -231,7 +231,7 @@ describe('HarnessHealth', () => {
         timestamp: 1711440600,
         task_id: 'task-2',
         task_title: 'transition-done',
-        agent_name: 'codex',
+        agent_name: 'agent-code',
         gate: 'fallback',
         verdict: 'reject:vague notes',
         evaluator_cascade: 'cross_verifier',
@@ -289,7 +289,7 @@ describe('HarnessHealth', () => {
         trace_id: 'trace-b',
         generation: 8,
         next_generation: 9,
-        to_model: 'glm-5',
+        to_model: 'provider-k-5',
       },
     }
     await flushUi()

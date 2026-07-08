@@ -38,25 +38,23 @@ let config_source_text_of_body body_str =
 let add_routes router =
   router
   |> Http.Router.get "/api/v1/cascade/config" (fun request reqd ->
-       with_public_read (fun _state req reqd ->
-         let json = Dashboard_cascade.config_json () in
-         Http.Response.json ~compress:true ~request:req
-           (Yojson.Safe.to_string json) reqd
+       with_public_read (fun state req reqd ->
+         let base_path = state.Mcp_server.room_config.base_path in
+         let json = Dashboard_cascade.config_json ~base_path () in
+         Http.Response.json_value ~compress:true ~request:req json reqd
        ) request reqd)
   |> Http.Router.get "/api/v1/cascade/config/raw" (fun request reqd ->
        with_public_read (fun _state req reqd ->
          let json = Dashboard_cascade.raw_config_json () in
-         Http.Response.json ~compress:true ~request:req
-           (Yojson.Safe.to_string json) reqd
+         Http.Response.json_value ~compress:true ~request:req json reqd
        ) request reqd)
   |> Http.Router.post "/api/v1/cascade/config/raw" (fun request reqd ->
        with_token_permission_auth ~permission:Masc_domain.CanAdmin
          (fun _state _agent_name req reqd ->
            Http.Request.read_body_async reqd (fun body_str ->
              let response status message =
-               Http.Response.json ~status ~request:req
-                 (Yojson.Safe.to_string
-                    (`Assoc [ ("ok", `Bool false); ("error", `String message) ]))
+               Http.Response.json_value ~status ~request:req
+                 (`Assoc [ ("ok", `Bool false); ("error", `String message) ])
                  reqd
              in
              match config_source_text_of_body body_str with
@@ -67,8 +65,7 @@ let add_routes router =
              | Ok raw_json -> (
                  match Dashboard_cascade.save_raw_config_json raw_json with
                  | Ok json ->
-                     Http.Response.json ~request:req
-                       (Yojson.Safe.to_string json) reqd
+                     Http.Response.json_value ~request:req json reqd
                  | Error msg ->
                      response `Bad_request msg))
          ) request reqd)
@@ -78,14 +75,12 @@ let add_routes router =
          let json =
            Dashboard_cascade.health_json ~base_path ()
          in
-         Http.Response.json ~compress:true ~request:req
-           (Yojson.Safe.to_string json) reqd
+         Http.Response.json_value ~compress:true ~request:req json reqd
        ) request reqd)
   |> Http.Router.get "/api/v1/cascade/client_capacity" (fun request reqd ->
        with_public_read (fun _state req reqd ->
          let json = Dashboard_cascade.client_capacity_json () in
-         Http.Response.json ~compress:true ~request:req
-           (Yojson.Safe.to_string json) reqd
+         Http.Response.json_value ~compress:true ~request:req json reqd
        ) request reqd)
   |> Http.Router.get "/api/v1/cascade/client_capacity/history"
        (fun request reqd ->
@@ -99,8 +94,7 @@ let add_routes router =
              Dashboard_cascade.client_capacity_history_json
                ~limit ?kind ?since_ts ()
            in
-           Http.Response.json ~compress:true ~request:req
-             (Yojson.Safe.to_string json) reqd
+           Http.Response.json_value ~compress:true ~request:req json reqd
          ) request reqd)
   |> Http.Router.get "/api/v1/cascade/strategy_trace" (fun request reqd ->
        with_public_read (fun _state req reqd ->
@@ -111,8 +105,7 @@ let add_routes router =
          let json =
            Dashboard_cascade.strategy_trace_json ~limit ?cascade ()
          in
-         Http.Response.json ~compress:true ~request:req
-           (Yojson.Safe.to_string json) reqd
+         Http.Response.json_value ~compress:true ~request:req json reqd
        ) request reqd)
   |> Http.Router.get "/api/v1/cascade/audit_runs" (fun request reqd ->
        with_public_read (fun state req reqd ->
@@ -124,8 +117,7 @@ let add_routes router =
          let json =
            Dashboard_cascade.audit_runs_json ~base_path ~limit ?cascade ()
          in
-         Http.Response.json ~compress:true ~request:req
-           (Yojson.Safe.to_string json) reqd
+         Http.Response.json_value ~compress:true ~request:req json reqd
        ) request reqd)
   |> Http.Router.get "/api/v1/cascade/inspector" (fun request reqd ->
        with_public_read (fun state req reqd ->
@@ -135,14 +127,13 @@ let add_routes router =
          let cascade = query_param req "cascade" in
          let base_path = state.Mcp_server.room_config.base_path in
          let json =
-           Dashboard_cascade.audit_runs_json ~base_path ~limit ?cascade ()
+           Dashboard_cascade.audit_runs_json
+             ~dashboard_surface:"/api/v1/cascade/inspector" ~base_path ~limit ?cascade ()
          in
-         Http.Response.json ~compress:true ~request:req
-           (Yojson.Safe.to_string json) reqd
+         Http.Response.json_value ~compress:true ~request:req json reqd
        ) request reqd)
   |> Http.Router.get "/api/v1/cascade/slo" (fun request reqd ->
        with_public_read (fun _state req reqd ->
          let json = Dashboard_cascade.slo_json () in
-         Http.Response.json ~compress:true ~request:req
-           (Yojson.Safe.to_string json) reqd
+         Http.Response.json_value ~compress:true ~request:req json reqd
        ) request reqd)

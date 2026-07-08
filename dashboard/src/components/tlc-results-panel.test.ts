@@ -36,18 +36,15 @@ vi.mock('./btn', () => ({
 }))
 
 vi.mock('./common/card', () => ({
-  Card: ({ title, children }: any) => html`
-    <section data-testid="card"><h3>${title}</h3>${children}</section>
-  `,
-}))
-
-vi.mock('./common/empty-state', () => ({
-  EmptyState: ({ message, children }: any) => html`
-    <div data-testid="empty-state">${children ?? message}</div>
+  SectionCard: ({ label, children }: any) => html`
+    <section data-testid="card"><h3>${label}</h3>${children}</section>
   `,
 }))
 
 vi.mock('./common/feedback-state', () => ({
+  EmptyState: ({ message, children }: any) => html`
+    <div data-testid="empty-state">${children ?? message}</div>
+  `,
   ErrorState: ({ message }: any) => html`
     <div data-testid="error-state">${message}</div>
   `,
@@ -57,8 +54,8 @@ vi.mock('./common/feedback-state', () => ({
 }))
 
 vi.mock('./common/status-chip', () => ({
-  StatusChip: ({ tone, label, children }: any) => html`
-    <span data-testid="status-chip" data-tone=${tone}>${children ?? label}</span>
+  StatusChip: ({ tone, children }: any) => html`
+    <span data-testid="status-chip" data-tone=${tone}>${children}</span>
   `,
 }))
 

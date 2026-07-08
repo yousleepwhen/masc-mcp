@@ -1,11 +1,13 @@
 import importlib.util
 import json
+import os
 import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 
 SCRIPT_PATH = (
@@ -28,28 +30,41 @@ def load_audit_module():
 audit = load_audit_module()
 
 
+class AuditKeeperFleetReadinessPathDefaultsTest(unittest.TestCase):
+    def test_default_base_path_uses_explicit_masc_base_path_only(self):
+        with (
+            tempfile.TemporaryDirectory() as masc_base,
+            tempfile.TemporaryDirectory() as me_root,
+        ):
+            with patch.dict(
+                os.environ,
+                {"MASC_BASE_PATH": masc_base, "ME_ROOT": me_root},
+                clear=True,
+            ):
+                self.assertEqual(audit.default_base_path(), masc_base)
+            with patch.dict(os.environ, {"ME_ROOT": me_root}, clear=True):
+                self.assertIsNone(audit.default_base_path())
+            with patch.dict(os.environ, {}, clear=True):
+                self.assertIsNone(audit.default_base_path())
+
+
 def audit_args(base_path: Path, expected_keepers: int):
     return SimpleNamespace(
         base_path=str(base_path),
         expected_keepers=expected_keepers,
         max_silence_hours=2400.0,
         require_board_evidence=True,
+        require_web_search_evidence=False,
         require_product_evidence=False,
         require_design_evidence=False,
-        require_pr_surface_evidence=False,
-        require_pr_review_evidence=False,
-        require_pr_create_evidence=False,
         require_pr_created_evidence=False,
         require_pr_url_evidence=False,
-        require_git_push_evidence=False,
-        require_pr_approve_evidence=False,
-        require_pr_lifecycle_evidence=False,
-        require_docker_pr_create_evidence=False,
-        require_docker_git_push_evidence=False,
-        require_docker_pr_approve_evidence=False,
-        require_docker_pr_lifecycle_evidence=False,
-        evidence_run_id=None,
-        forbid_github_identity=[],
+        require_provider_turn_evidence=False,
+        require_checkpoint_evidence=False,
+        require_history_evidence=False,
+        require_tool_call_log_evidence=False,
+        require_persistent_work_evidence=False,
+        forbid_repo_cli_identity=[],
     )
 
 
@@ -57,16 +72,16 @@ def write_ready_keeper(
     root: Path,
     name: str,
     *,
-    github_identity: str = "anyang-keepers",
+    repo_cli_identity: str = "anyang-keepers",
     github_account_login: str | None = None,
 ) -> None:
     config_dir = root / ".masc" / "config" / "keepers"
     runtime_dir = root / ".masc" / "keepers"
-    credential_dir = root / ".masc" / "github-identities" / github_identity / "gh"
+    credential_dir = root / ".masc" / "repo-cli-identities" / repo_cli_identity / "gh"
     config_dir.mkdir(parents=True, exist_ok=True)
     runtime_dir.mkdir(parents=True, exist_ok=True)
     credential_dir.mkdir(parents=True, exist_ok=True)
-    account_login = github_account_login or github_identity
+    account_login = github_account_login or repo_cli_identity
     (credential_dir / "hosts.yml").write_text(
         "\n".join(
             [
@@ -84,9 +99,9 @@ def write_ready_keeper(
                 "[keeper]",
                 'sandbox_profile = "docker"',
                 'network_mode = "inherit"',
-                'tool_preset = "coding"',
-                f'github_identity = "{github_identity}"',
-                'git_identity_mode = "github_identity"',
+                'tool_preset = "delivery"',
+                f'repo_cli_identity = "{repo_cli_identity}"',
+                'git_identity_mode = "repo_cli_identity"',
                 "",
             ]
         ),
@@ -97,9 +112,9 @@ def write_ready_keeper(
             {
                 "sandbox_profile": "docker",
                 "network_mode": "inherit",
-                "tool_preset": "coding",
-                "github_identity": github_identity,
-                "git_identity_mode": "github_identity",
+                "tool_preset": "delivery",
+                "repo_cli_identity": repo_cli_identity,
+                "git_identity_mode": "repo_cli_identity",
                 "last_turn_ts": time.time(),
             }
         ),
@@ -147,7 +162,113 @@ def write_board_post(
         handle.write(json.dumps(row) + "\n")
 
 
+def append_decision(root: Path, keeper: str, row: dict) -> None:
+    decisions_path = root / ".masc" / "keepers" / f"{keeper}.decisions.jsonl"
+    decisions_path.parent.mkdir(parents=True, exist_ok=True)
+    with decisions_path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(row) + "\n")
+
+
+def write_persistent_work_evidence(
+    root: Path,
+    keeper: str,
+    *,
+    tool: str = "tool_execute",
+    top_level_generation: bool = True,
+) -> None:
+    trace = f"trace-{keeper}"
+    manifest_dir = root / ".masc" / "keepers" / keeper / "runtime-manifests"
+    checkpoint_path = (
+        root / ".masc" / "keepers" / keeper / "checkpoints" / "turn-1.json"
+    )
+    tool_log_path = root / ".masc" / "tool_calls" / "2026-05" / "15.jsonl"
+    history_path = root / ".masc" / "traces" / trace / "history.jsonl"
+    for path in (
+        manifest_dir,
+        checkpoint_path.parent,
+        tool_log_path.parent,
+        history_path.parent,
+    ):
+        path.mkdir(parents=True, exist_ok=True)
+
+    checkpoint_path.write_text('{"ok": true}\n', encoding="utf-8")
+    history_path.write_text(
+        json.dumps({"role": "assistant", "content": "persisted"}) + "\n",
+        encoding="utf-8",
+    )
+    tool_row = {
+        "keeper": keeper,
+        "trace_id": trace,
+        "keeper_turn_id": 1,
+        "tool": tool,
+        "success": True,
+        "runtime_contract": {
+            "keeper_name": keeper,
+            "trace_id": trace,
+            "generation": 1,
+            "keeper_turn_id": 1,
+        },
+    }
+    if top_level_generation:
+        tool_row["generation"] = 1
+    tool_log_path.write_text(
+        json.dumps(tool_row) + "\n",
+        encoding="utf-8",
+    )
+    rows = [
+        {
+            "ts": "2026-05-15T00:00:00Z",
+            "keeper_name": keeper,
+            "trace_id": trace,
+            "generation": 1,
+            "keeper_turn_id": 1,
+            "event": "provider_attempt_started",
+            "status": "started",
+            "links": {},
+        },
+        {
+            "ts": "2026-05-15T00:00:01Z",
+            "keeper_name": keeper,
+            "trace_id": trace,
+            "generation": 1,
+            "keeper_turn_id": 1,
+            "event": "provider_attempt_finished",
+            "status": "provider_returned",
+            "links": {},
+        },
+        {
+            "ts": "2026-05-15T00:00:02Z",
+            "keeper_name": keeper,
+            "trace_id": trace,
+            "generation": 1,
+            "keeper_turn_id": 1,
+            "event": "checkpoint_saved",
+            "status": "ok",
+            "links": {"checkpoint_path": str(checkpoint_path)},
+        },
+        {
+            "ts": "2026-05-15T00:00:03Z",
+            "keeper_name": keeper,
+            "trace_id": trace,
+            "generation": 1,
+            "keeper_turn_id": 1,
+            "event": "turn_finished",
+            "status": "success",
+            "links": {"tool_call_log_path": str(tool_log_path)},
+        },
+    ]
+    (manifest_dir / f"{trace}.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+
+
 class AuditKeeperFleetReadinessTest(unittest.TestCase):
+    def test_parse_args_defaults_to_18_keepers(self):
+        args = audit.parse_args([])
+
+        self.assertEqual(args.expected_keepers, 18)
+
     def test_iter_jsonl_streams_rows(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -178,11 +299,11 @@ class AuditKeeperFleetReadinessTest(unittest.TestCase):
         self.assertEqual(refs, set())
         self.assertEqual(sources, set())
 
-    def test_pr_creation_evidence_counts_successful_keeper_pr_create_output(self):
+    def test_pr_creation_evidence_counts_successful_tool_execute_output(self):
         refs, sources = audit.pr_evidence_from_row(
             {
                 "_source_path": "events.jsonl",
-                "tool": "keeper_pr_create",
+                "tool": "tool_execute",
                 "ok": True,
                 "output": {
                     "pr_url": "https://github.com/acme/repo/pull/123",
@@ -194,18 +315,17 @@ class AuditKeeperFleetReadinessTest(unittest.TestCase):
         self.assertEqual(
             refs,
             {
-                "keeper_pr_create",
                 "https://github.com/acme/repo/pull/123",
                 "PR#123",
             },
         )
         self.assertEqual(sources, {"events.jsonl"})
 
-    def test_pr_creation_evidence_rejects_failed_keeper_pr_create_output(self):
+    def test_pr_creation_evidence_rejects_failed_tool_execute_output(self):
         refs, sources = audit.pr_evidence_from_row(
             {
                 "_source_path": "events.jsonl",
-                "tool": "keeper_pr_create",
+                "tool": "tool_execute",
                 "ok": False,
                 "output": {"pr_url": "https://github.com/acme/repo/pull/123"},
             }
@@ -214,30 +334,39 @@ class AuditKeeperFleetReadinessTest(unittest.TestCase):
         self.assertEqual(refs, set())
         self.assertEqual(sources, set())
 
-    def test_pr_creation_evidence_uses_structured_shell_command_and_output(self):
+    def test_pr_creation_evidence_rejects_generic_tool_execute_success(self):
         refs, sources = audit.pr_evidence_from_row(
             {
                 "_source_path": "events.jsonl",
-                "tool": "keeper_shell",
+                "tool": "tool_execute",
                 "ok": True,
-                "args": {"command": "gh pr create --draft --title t --body b"},
+                "output": {"ok": True, "stdout": "hello"},
+            }
+        )
+
+        self.assertEqual(refs, set())
+        self.assertEqual(sources, set())
+
+    def test_pr_creation_evidence_reads_structured_pr_url(self):
+        refs, sources = audit.pr_evidence_from_row(
+            {
+                "_source_path": "events.jsonl",
+                "tool": "tool_execute",
+                "ok": True,
                 "output": {"url": "https://github.com/acme/repo/pull/124"},
             }
         )
 
-        self.assertEqual(
-            refs,
-            {"gh pr create", "https://github.com/acme/repo/pull/124"},
-        )
+        self.assertEqual(refs, {"https://github.com/acme/repo/pull/124"})
         self.assertEqual(sources, {"events.jsonl"})
 
-    def test_pr_creation_evidence_ignores_freeform_shell_mentions(self):
+    def test_pr_creation_evidence_ignores_freeform_pr_url_mentions(self):
         refs, sources = audit.pr_evidence_from_row(
             {
                 "_source_path": "events.jsonl",
-                "tool": "keeper_shell",
+                "tool": "tool_execute",
                 "ok": True,
-                "message": "gh pr create returned https://github.com/acme/repo/pull/124",
+                "message": "created https://github.com/acme/repo/pull/124",
             }
         )
 
@@ -252,7 +381,7 @@ class AuditKeeperFleetReadinessTest(unittest.TestCase):
             (keepers_dir / "alpha.decisions.jsonl").write_text(
                 json.dumps(
                     {
-                        "tool": "keeper_pr_create",
+                        "tool": "tool_execute",
                         "ok": True,
                         "output": {
                             "pr_url": "https://github.com/acme/repo/pull/125",
@@ -269,7 +398,6 @@ class AuditKeeperFleetReadinessTest(unittest.TestCase):
         self.assertEqual(
             evidence.refs,
             {
-                "keeper_pr_create",
                 "https://github.com/acme/repo/pull/125",
                 "PR#125",
             },
@@ -279,192 +407,21 @@ class AuditKeeperFleetReadinessTest(unittest.TestCase):
             {str(keepers_dir / "alpha.decisions.jsonl")},
         )
 
-    def test_pr_action_metric_paths_returns_newest_date_split_first(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            metrics_root = root / ".masc" / "keepers" / "alpha" / "pr-action-metrics"
-            for relative_path in (
-                "2026-04/30.jsonl",
-                "2026-05/05.jsonl",
-                "2026-05/06.jsonl",
-            ):
-                path = metrics_root / relative_path
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text("{}\n", encoding="utf-8")
-
-            paths = audit.pr_action_metric_paths(root, "alpha")
-
-        self.assertEqual(
-            [path.relative_to(metrics_root).as_posix() for path in paths],
-            ["2026-05/06.jsonl", "2026-05/05.jsonl", "2026-04/30.jsonl"],
-        )
-
-    def test_decision_lifecycle_evidence_ignores_git_push_markers(self):
+    def test_pr_creation_evidence_reads_route_evidence_pr_url(self):
         row = {
-            "event": "tool_exec",
-            "tool": "masc_code_git",
-            "ok": True,
-            "action": "push",
-            "via": "docker",
-        }
-
-        evidence, docker_evidence = audit.pr_lifecycle_evidence_from_decision(row)
-
-        self.assertEqual(evidence, set())
-        self.assertEqual(docker_evidence, set())
-
-    def test_decision_lifecycle_evidence_handles_non_string_tool(self):
-        row = {
-            "event": "tool_exec",
-            "tool": {"name": "keeper_shell"},
-            "ok": True,
-            "result_markers": ["gh pr create"],
-        }
-
-        evidence, docker_evidence = audit.pr_lifecycle_evidence_from_decision(row)
-
-        self.assertEqual(evidence, set())
-        self.assertEqual(docker_evidence, set())
-
-    def test_lifecycle_evidence_ignores_freeform_command_mentions(self):
-        row = {
-            "event": "tool_exec",
-            "tool": "keeper_shell",
-            "ok": True,
-            "cmd": "echo gh pr create && echo git push && echo via=docker",
-        }
-
-        evidence, docker_evidence = audit.pr_lifecycle_evidence_from_decision(row)
-
-        self.assertEqual(evidence, set())
-        self.assertEqual(docker_evidence, set())
-
-    def test_lifecycle_evidence_uses_structured_markers(self):
-        row = {
-            "event": "tool_exec",
-            "tool": "keeper_shell",
-            "ok": True,
-            "result_markers": ["gh pr create", "via=brokered"],
-        }
-
-        evidence, docker_evidence = audit.pr_lifecycle_evidence_from_decision(row)
-
-        self.assertEqual(evidence, {"pr_create:keeper_shell:gh_pr_create"})
-        self.assertEqual(docker_evidence, {"pr_create:keeper_shell:gh_pr_create"})
-
-    def test_lifecycle_evidence_does_not_treat_sandbox_as_docker_route(self):
-        row = {
-            "event": "tool_exec",
-            "tool": "keeper_pr_create",
-            "ok": True,
-            "sandbox_profile": "docker",
-        }
-
-        evidence, docker_evidence = audit.pr_lifecycle_evidence_from_decision(row)
-
-        self.assertEqual(evidence, {"pr_create:keeper_pr_create"})
-        self.assertEqual(docker_evidence, set())
-
-    def test_lifecycle_evidence_does_not_treat_plain_docker_marker_as_route(self):
-        row = {
-            "event": "tool_exec",
-            "tool": "keeper_pr_create",
-            "ok": True,
-            "result_markers": ["docker"],
-        }
-
-        evidence, docker_evidence = audit.pr_lifecycle_evidence_from_decision(row)
-
-        self.assertEqual(evidence, {"pr_create:keeper_pr_create"})
-        self.assertEqual(docker_evidence, set())
-
-    def test_action_metric_git_push_drives_lifecycle_evidence(self):
-        row = {
-            "ts_unix": 30.0,
-            "metric_event": "keeper_pr_work_action",
-            "tool_name": "masc_code_git",
-            "pr_work_action": "GIT_PUSH",
-            "pr_work_action_source": "masc_code_git",
-            "pr_work_action_success": True,
-            "route": {"via": "docker"},
-        }
-
-        evidence, docker_evidence = audit.pr_lifecycle_evidence_from_action_metric(row)
-
-        self.assertEqual(evidence, {"git_push:masc_code_git"})
-        self.assertEqual(docker_evidence, {"git_push:masc_code_git"})
-
-    def test_action_metric_brokered_route_counts_as_docker_backed(self):
-        row = {
-            "metric_event": "keeper_pr_work_action",
-            "tool_name": "keeper_pr_create",
-            "pr_work_action": "PR_CREATE",
-            "pr_work_action_source": "keeper_pr_create",
-            "pr_work_action_success": True,
-            "route_via": "brokered",
-        }
-
-        evidence, docker_evidence = audit.pr_lifecycle_evidence_from_action_metric(row)
-
-        self.assertEqual(evidence, {"pr_create:keeper_pr_create"})
-        self.assertEqual(docker_evidence, {"pr_create:keeper_pr_create"})
-
-    def test_action_metric_does_not_treat_sandbox_as_docker_route(self):
-        row = {
-            "metric_event": "keeper_pr_work_action",
-            "tool_name": "masc_code_git",
-            "pr_work_action": "GIT_PUSH",
-            "pr_work_action_source": "masc_code_git",
-            "pr_work_action_success": True,
-            "sandbox_profile": "docker",
-        }
-
-        evidence, docker_evidence = audit.pr_lifecycle_evidence_from_action_metric(row)
-
-        self.assertEqual(evidence, {"git_push:masc_code_git"})
-        self.assertEqual(docker_evidence, set())
-
-    def test_tool_call_log_drives_shell_lifecycle_evidence(self):
-        row = {
-            "ts": 50.0,
-            "keeper": "alpha",
-            "tool": "keeper_shell",
-            "input": {"op": "gh", "cmd": "pr create --draft --title t"},
-            "output": json.dumps(
-                {
-                    "ok": True,
-                    "command": "gh 'pr' 'create' '--draft' '--title' 't'",
-                    "via": "docker",
-                }
-            ),
+            "_source_path": "tool_calls.jsonl",
+            "tool": "tool_execute",
             "success": True,
+            "route_evidence": {
+                "pr_url": "https://github.com/acme/repo/pull/42\n",
+                "via": "docker",
+            },
         }
 
-        evidence, docker_evidence = audit.pr_lifecycle_evidence_from_tool_call(row)
+        refs, sources = audit.pr_evidence_from_row(row)
 
-        self.assertEqual(evidence, {"pr_create:keeper_shell"})
-        self.assertEqual(docker_evidence, {"pr_create:keeper_shell"})
-
-    def test_tool_call_log_does_not_count_failed_approve(self):
-        row = {
-            "ts": 55.0,
-            "keeper": "alpha",
-            "tool": "keeper_shell",
-            "input": {"op": "gh", "cmd": "pr review 123 --approve"},
-            "output": json.dumps(
-                {
-                    "ok": False,
-                    "command": "gh 'pr' 'review' '123' '--approve'",
-                    "via": "docker",
-                }
-            ),
-            "success": False,
-        }
-
-        evidence, docker_evidence = audit.pr_lifecycle_evidence_from_tool_call(row)
-
-        self.assertEqual(evidence, set())
-        self.assertEqual(docker_evidence, set())
+        self.assertEqual(refs, {"https://github.com/acme/repo/pull/42"})
+        self.assertEqual(sources, {"tool_calls.jsonl"})
 
     def test_scan_keeper_evidence_reads_rotated_decision_logs(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -474,13 +431,13 @@ class AuditKeeperFleetReadinessTest(unittest.TestCase):
             base_row = {
                 "ts_unix": 10.0,
                 "event": "tool_exec",
-                "tool": "keeper_pr_create",
+                "tool": "tool_execute",
                 "ok": True,
             }
             rotated_row = {
                 "ts_unix": 20.0,
                 "event": "tool_exec",
-                "tool": "keeper_pr_review_comment",
+                "tool": "tool_execute",
                 "ok": True,
                 "result_markers": ["event=APPROVE"],
             }
@@ -493,149 +450,10 @@ class AuditKeeperFleetReadinessTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            latest_ts, tools, evidence, docker_evidence = audit.scan_keeper_evidence(
-                root, "alpha"
-            )
+            latest_ts, tools = audit.scan_keeper_evidence(root, "alpha")
 
         self.assertEqual(latest_ts, 20.0)
-        self.assertEqual(tools, {"keeper_pr_create", "keeper_pr_review_comment"})
-        self.assertEqual(
-            evidence,
-            {"pr_create:keeper_pr_create", "pr_approve:keeper_pr_review_comment"},
-        )
-        self.assertEqual(docker_evidence, set())
-
-    def test_scan_keeper_evidence_reads_pr_action_metrics(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            metrics_dir = (
-                root / ".masc" / "keepers" / "alpha" / "pr-action-metrics" / "2026-05"
-            )
-            metrics_dir.mkdir(parents=True)
-            rows = [
-                {
-                    "ts_unix": 25.0,
-                    "metric_event": "keeper_pr_work_action",
-                    "tool_name": "keeper_shell",
-                    "pr_work_action": "PR_CREATE",
-                    "pr_work_action_source": "keeper_shell",
-                    "pr_work_action_success": True,
-                    "route_via": "brokered",
-                },
-                {
-                    "ts_unix": 30.0,
-                    "metric_event": "keeper_pr_work_action",
-                    "tool_name": "masc_code_git",
-                    "pr_work_action": "GIT_PUSH",
-                    "pr_work_action_source": "masc_code_git",
-                    "pr_work_action_success": True,
-                    "route": {"via": "docker"},
-                },
-                {
-                    "ts_unix": 35.0,
-                    "metric_event": "keeper_pr_review_action",
-                    "tool_name": "keeper_pr_review_comment",
-                    "pr_review_action": "APPROVE",
-                    "pr_review_action_success": True,
-                    "execution_via": "docker",
-                },
-                {
-                    "ts_unix": 40.0,
-                    "metric_event": "keeper_pr_work_action",
-                    "tool_name": "masc_code_git",
-                    "pr_work_action": "GIT_PUSH",
-                    "pr_work_action_source": "masc_code_git",
-                    "pr_work_action_success": False,
-                    "via": "docker",
-                },
-            ]
-            (metrics_dir / "06.jsonl").write_text(
-                "".join(json.dumps(row) + "\n" for row in rows),
-                encoding="utf-8",
-            )
-
-            latest_ts, tools, evidence, docker_evidence = audit.scan_keeper_evidence(
-                root, "alpha"
-            )
-
-        self.assertEqual(latest_ts, 40.0)
-        self.assertEqual(
-            tools, {"keeper_shell", "masc_code_git", "keeper_pr_review_comment"}
-        )
-        self.assertEqual(
-            evidence,
-            {
-                "pr_create:keeper_shell",
-                "git_push:masc_code_git",
-                "pr_approve:keeper_pr_review_comment",
-            },
-        )
-        self.assertEqual(docker_evidence, evidence)
-
-    def test_pr_action_metric_paths_are_newest_first_and_cutoff(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            metrics_dir = root / ".masc" / "keepers" / "alpha" / "pr-action-metrics"
-            old_path = metrics_dir / "2026-04" / "30.jsonl"
-            new_path = metrics_dir / "2026-05" / "06.jsonl"
-            mid_path = metrics_dir / "2026-05" / "05.jsonl"
-            for path in (old_path, new_path, mid_path):
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text("{}\n", encoding="utf-8")
-
-            paths = audit.pr_action_metric_paths(root, "alpha", min_day_key=20260501)
-
-        self.assertEqual(paths, [new_path, mid_path])
-
-    def test_scan_keeper_evidence_skips_old_pr_action_metric_rows(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            metrics_dir = root / ".masc" / "keepers" / "alpha" / "pr-action-metrics"
-            old_dir = metrics_dir / "2026-05"
-            old_dir.mkdir(parents=True)
-            now = 1_778_064_000.0
-            old_ts = now - (48 * 3600.0)
-            recent_ts = now - 60.0
-            (old_dir / "04.jsonl").write_text(
-                json.dumps(
-                    {
-                        "ts_unix": old_ts,
-                        "metric_event": "keeper_pr_work_action",
-                        "tool_name": "masc_code_git",
-                        "pr_work_action": "GIT_PUSH",
-                        "pr_work_action_source": "masc_code_git",
-                        "pr_work_action_success": True,
-                    }
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-            (old_dir / "06.jsonl").write_text(
-                json.dumps(
-                    {
-                        "ts_unix": recent_ts,
-                        "metric_event": "keeper_pr_work_action",
-                        "tool_name": "keeper_shell",
-                        "pr_work_action": "PR_CREATE",
-                        "pr_work_action_source": "keeper_shell",
-                        "pr_work_action_success": True,
-                    }
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-
-            latest_ts, tools, evidence, docker_evidence = audit.scan_keeper_evidence(
-                root,
-                "alpha",
-                max_silence_hours=24.0,
-                now=now,
-            )
-
-        self.assertEqual(latest_ts, recent_ts)
-        self.assertEqual(tools, {"keeper_shell"})
-        self.assertEqual(evidence, {"pr_create:keeper_shell"})
-        self.assertEqual(docker_evidence, set())
+        self.assertEqual(tools, {"tool_execute"})
 
     def test_product_and_design_evidence_use_explicit_board_domains(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -714,32 +532,148 @@ class AuditKeeperFleetReadinessTest(unittest.TestCase):
             report["fleet_failures"], ["minimum_2_configured_keepers_got_1"]
         )
 
-    def test_forbid_github_identity_fails_matching_keeper(self):
+    def test_require_persistent_work_evidence_fails_without_runtime_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            write_ready_keeper(root, "alpha", github_identity="operator")
+            write_ready_keeper(root, "alpha")
             args = audit_args(root, expected_keepers=1)
-            args.forbid_github_identity = ["operator"]
+            args.require_persistent_work_evidence = True
+
+            report = audit.build_report(args)
+
+        self.assertFalse(report["ok"])
+        keeper = report["keepers"][0]
+        self.assertFalse(keeper["provider_turn_evidence"])
+        self.assertFalse(keeper["checkpoint_evidence"])
+        self.assertFalse(keeper["history_evidence"])
+        self.assertFalse(keeper["tool_call_log_evidence"])
+        self.assertEqual(
+            keeper["failures"],
+            [
+                "provider_turn_evidence_missing",
+                "checkpoint_evidence_missing",
+                "history_evidence_missing",
+                "tool_call_log_evidence_missing",
+            ],
+        )
+
+    def test_require_persistent_work_evidence_passes_without_code_surface(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_ready_keeper(root, "alpha")
+            write_persistent_work_evidence(root, "alpha", tool="keeper_board_get")
+            args = audit_args(root, expected_keepers=1)
+            args.require_persistent_work_evidence = True
+
+            report = audit.build_report(args)
+
+        self.assertTrue(report["ok"])
+        keeper = report["keepers"][0]
+        self.assertTrue(keeper["provider_turn_evidence"])
+        self.assertTrue(keeper["checkpoint_evidence"])
+        self.assertTrue(keeper["history_evidence"])
+        self.assertTrue(keeper["tool_call_log_evidence"])
+        self.assertEqual(keeper["failures"], [])
+
+    def test_require_persistent_work_evidence_rejects_uncorrelated_tool_log_row(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_ready_keeper(root, "alpha")
+            write_persistent_work_evidence(root, "alpha")
+            tool_log_path = root / ".masc" / "tool_calls" / "2026-05" / "15.jsonl"
+            tool_log_path.write_text(
+                json.dumps(
+                    {
+                        "keeper": "alpha",
+                        "tool": "tool_execute",
+                        "success": True,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            args = audit_args(root, expected_keepers=1)
+            args.require_persistent_work_evidence = True
+
+            report = audit.build_report(args)
+
+        self.assertFalse(report["ok"])
+        keeper = report["keepers"][0]
+        self.assertTrue(keeper["provider_turn_evidence"])
+        self.assertTrue(keeper["checkpoint_evidence"])
+        self.assertTrue(keeper["history_evidence"])
+        self.assertFalse(keeper["tool_call_log_evidence"])
+        self.assertEqual(keeper["failures"], ["tool_call_log_evidence_missing"])
+
+    def test_require_persistent_work_evidence_accepts_runtime_contract_generation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_ready_keeper(root, "alpha")
+            write_persistent_work_evidence(
+                root,
+                "alpha",
+                top_level_generation=False,
+            )
+            args = audit_args(root, expected_keepers=1)
+            args.require_persistent_work_evidence = True
+
+            report = audit.build_report(args)
+
+        self.assertTrue(report["ok"])
+        keeper = report["keepers"][0]
+        self.assertTrue(keeper["tool_call_log_evidence"])
+        self.assertEqual(len(keeper["tool_call_log_evidence_refs"]), 1)
+
+    def test_require_persistent_work_evidence_passes_with_manifest_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_ready_keeper(root, "alpha")
+            write_persistent_work_evidence(root, "alpha")
+            args = audit_args(root, expected_keepers=1)
+            args.require_persistent_work_evidence = True
+
+            report = audit.build_report(args)
+
+        self.assertTrue(report["ok"])
+        keeper = report["keepers"][0]
+        self.assertTrue(keeper["provider_turn_evidence"])
+        self.assertTrue(keeper["checkpoint_evidence"])
+        self.assertTrue(keeper["history_evidence"])
+        self.assertTrue(keeper["tool_call_log_evidence"])
+        self.assertEqual(
+            keeper["provider_turn_evidence_refs"],
+            ["provider_turn:trace=trace-alpha:generation=1:turn=1"],
+        )
+        self.assertEqual(len(keeper["checkpoint_evidence_refs"]), 1)
+        self.assertEqual(len(keeper["history_evidence_refs"]), 1)
+        self.assertEqual(len(keeper["tool_call_log_evidence_refs"]), 1)
+
+    def test_forbid_repo_cli_identity_fails_matching_keeper(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_ready_keeper(root, "alpha", repo_cli_identity="operator")
+            args = audit_args(root, expected_keepers=1)
+            args.forbid_repo_cli_identity = ["operator"]
 
             report = audit.build_report(args)
 
         self.assertFalse(report["ok"])
         self.assertEqual(
             report["keepers"][0]["failures"],
-            ["github_identity_forbidden_operator"],
+            ["repo_cli_identity_forbidden_operator"],
         )
 
-    def test_forbid_github_identity_fails_matching_account_login(self):
+    def test_forbid_repo_cli_identity_fails_matching_account_login(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_ready_keeper(
                 root,
                 "alpha",
-                github_identity="reviewer-keepers",
+                repo_cli_identity="reviewer-keepers",
                 github_account_login="operator",
             )
             args = audit_args(root, expected_keepers=1)
-            args.forbid_github_identity = ["operator"]
+            args.forbid_repo_cli_identity = ["operator"]
 
             report = audit.build_report(args)
 
@@ -747,86 +681,6 @@ class AuditKeeperFleetReadinessTest(unittest.TestCase):
         self.assertEqual(
             report["keepers"][0]["failures"],
             ["github_account_forbidden_operator"],
-        )
-
-    def test_docker_pr_approve_requirement_fails_with_single_identity_pool(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            write_ready_keeper(root, "alpha")
-            write_ready_keeper(root, "bravo")
-            args = audit_args(root, expected_keepers=2)
-            args.require_docker_pr_lifecycle_evidence = True
-
-            report = audit.build_report(args)
-
-        self.assertFalse(report["ok"])
-        self.assertEqual(report["github_identity_counts"], {"anyang-keepers": 2})
-        self.assertEqual(report["github_account_counts"], {"anyang-keepers": 2})
-        self.assertIn(
-            "docker_pr_approve_identity_pool_insufficient_unique_github_identities_1",
-            report["fleet_failures"],
-        )
-        self.assertIn(
-            "docker_pr_approve_account_pool_insufficient_unique_accounts_1",
-            report["fleet_failures"],
-        )
-
-    def test_docker_pr_approve_requirement_fails_aliases_to_same_account(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            write_ready_keeper(
-                root,
-                "alpha",
-                github_identity="anyang-keepers",
-                github_account_login="anyang-keepers",
-            )
-            write_ready_keeper(
-                root,
-                "bravo",
-                github_identity="reviewer-keepers",
-                github_account_login="anyang-keepers",
-            )
-            args = audit_args(root, expected_keepers=2)
-            args.require_docker_pr_approve_evidence = True
-
-            report = audit.build_report(args)
-
-        self.assertFalse(report["ok"])
-        self.assertEqual(
-            report["github_identity_counts"],
-            {"anyang-keepers": 1, "reviewer-keepers": 1},
-        )
-        self.assertEqual(report["github_account_counts"], {"anyang-keepers": 2})
-        self.assertIn(
-            "docker_pr_approve_account_pool_insufficient_unique_accounts_1",
-            report["fleet_failures"],
-        )
-
-    def test_docker_pr_approve_requirement_accepts_multiple_identity_pool(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            write_ready_keeper(root, "alpha", github_identity="anyang-keepers")
-            write_ready_keeper(root, "bravo", github_identity="reviewer-keepers")
-            args = audit_args(root, expected_keepers=2)
-            args.require_docker_pr_approve_evidence = True
-
-            report = audit.build_report(args)
-
-        self.assertEqual(
-            report["github_identity_counts"],
-            {"anyang-keepers": 1, "reviewer-keepers": 1},
-        )
-        self.assertEqual(
-            report["github_account_counts"],
-            {"anyang-keepers": 1, "reviewer-keepers": 1},
-        )
-        self.assertNotIn(
-            "docker_pr_approve_identity_pool_insufficient_unique_github_identities_1",
-            report["fleet_failures"],
-        )
-        self.assertNotIn(
-            "docker_pr_approve_account_pool_insufficient_unique_accounts_1",
-            report["fleet_failures"],
         )
 
     def test_scan_keeper_evidence_reads_tool_calls(self):
@@ -838,20 +692,23 @@ class AuditKeeperFleetReadinessTest(unittest.TestCase):
                 {
                     "ts": 50.0,
                     "keeper": "alpha",
-                    "tool": "keeper_bash",
-                    "input": {"cmd": "git push -u origin keeper/proof"},
+                    "tool": "tool_execute",
+                    "input": {
+                        "executable": "git",
+                        "argv": ["push", "-u", "origin", "keeper/proof"],
+                    },
                     "output": json.dumps({"ok": True, "via": "docker"}),
                     "success": True,
                 },
                 {
                     "ts": 60.0,
                     "keeper": "alpha",
-                    "tool": "keeper_shell",
-                    "input": {"op": "gh", "cmd": "pr review 123 --approve"},
+                    "tool": "tool_execute",
+                    "input": {"pr_number": 123, "event": "APPROVE"},
                     "output": json.dumps(
                         {
                             "ok": True,
-                            "command": "gh 'pr' 'review' '123' '--approve'",
+                            "event": "APPROVE",
                             "via": "docker",
                         }
                     ),
@@ -860,8 +717,8 @@ class AuditKeeperFleetReadinessTest(unittest.TestCase):
                 {
                     "ts": 70.0,
                     "keeper": "beta",
-                    "tool": "keeper_shell",
-                    "input": {"op": "gh", "cmd": "pr create --draft"},
+                    "tool": "tool_execute",
+                    "input": {"title": "wrong keeper"},
                     "output": json.dumps({"ok": True, "via": "docker"}),
                     "success": True,
                 },
@@ -871,92 +728,10 @@ class AuditKeeperFleetReadinessTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            latest_ts, tools, evidence, docker_evidence = audit.scan_keeper_evidence(
-                root, "alpha"
-            )
+            latest_ts, tools = audit.scan_keeper_evidence(root, "alpha")
 
         self.assertEqual(latest_ts, 60.0)
-        self.assertEqual(tools, {"keeper_bash", "keeper_shell"})
-        self.assertEqual(
-            evidence,
-            {"git_push:keeper_bash", "pr_approve:keeper_shell"},
-        )
-        self.assertEqual(docker_evidence, evidence)
-
-    def test_scan_keeper_evidence_filters_pr_lifecycle_by_run_id(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            calls_dir = root / ".masc" / "tool_calls" / "2026-05"
-            calls_dir.mkdir(parents=True)
-            metrics_dir = (
-                root / ".masc" / "keepers" / "alpha" / "pr-action-metrics" / "2026-05"
-            )
-            metrics_dir.mkdir(parents=True)
-            rows = [
-                {
-                    "ts": 50.0,
-                    "keeper": "alpha",
-                    "tool": "keeper_bash",
-                    "input": {"cmd": "git push -u origin keeper/old-run"},
-                    "output": json.dumps({"ok": True, "via": "docker"}),
-                    "success": True,
-                },
-                {
-                    "ts": 60.0,
-                    "keeper": "alpha",
-                    "tool": "keeper_bash",
-                    "input": {
-                        "cmd": (
-                            "git push -u origin "
-                            "keeper/alpha-docker-pr-proof-current-run"
-                        )
-                    },
-                    "output": json.dumps({"ok": True, "via": "docker"}),
-                    "success": True,
-                },
-            ]
-            (calls_dir / "06.jsonl").write_text(
-                "".join(json.dumps(row) + "\n" for row in rows),
-                encoding="utf-8",
-            )
-            metric_rows = [
-                {
-                    "ts_unix": 55.0,
-                    "metric_event": "keeper_pr_work_action",
-                    "tool_name": "keeper_pr_create",
-                    "pr_work_action": "PR_CREATE",
-                    "pr_work_action_source": "keeper_pr_create",
-                    "pr_work_action_success": True,
-                    "pr_work_ref": "keeper/alpha-docker-pr-proof-old-run",
-                    "route_via": "docker",
-                },
-                {
-                    "ts_unix": 65.0,
-                    "metric_event": "keeper_pr_work_action",
-                    "tool_name": "keeper_pr_create",
-                    "pr_work_action": "PR_CREATE",
-                    "pr_work_action_source": "keeper_pr_create",
-                    "pr_work_action_success": True,
-                    "pr_work_ref": "keeper/alpha-docker-pr-proof-current-run",
-                    "pr_url": "https://github.com/acme/repo/pull/42",
-                    "route_via": "docker",
-                },
-            ]
-            (metrics_dir / "06.jsonl").write_text(
-                "".join(json.dumps(row) + "\n" for row in metric_rows),
-                encoding="utf-8",
-            )
-
-            latest_ts, tools, evidence, docker_evidence = audit.scan_keeper_evidence(
-                root, "alpha", evidence_run_id="current-run"
-            )
-
-        self.assertEqual(latest_ts, 65.0)
-        self.assertEqual(tools, {"keeper_bash", "keeper_pr_create"})
-        self.assertEqual(
-            evidence, {"git_push:keeper_bash", "pr_create:keeper_pr_create"}
-        )
-        self.assertEqual(docker_evidence, evidence)
+        self.assertEqual(tools, {"tool_execute"})
 
     def test_scan_keeper_evidence_reads_newest_tool_calls_first(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -970,31 +745,17 @@ class AuditKeeperFleetReadinessTest(unittest.TestCase):
                 {
                     "ts": 10.0,
                     "keeper": "alpha",
-                    "tool": "keeper_bash",
-                    "input": {"cmd": "git push -u origin keeper/old"},
+                    "tool": "tool_execute",
+                    "input": {"label": "old"},
                     "output": json.dumps({"ok": True, "via": "docker"}),
                     "success": True,
                 },
                 {
                     "ts": 20.0,
                     "keeper": "alpha",
-                    "tool": "keeper_shell",
-                    "input": {"op": "gh", "cmd": "pr create --draft"},
+                    "tool": "tool_search_files",
+                    "input": {"query": "old"},
                     "output": json.dumps({"ok": True, "via": "docker"}),
-                    "success": True,
-                },
-                {
-                    "ts": 30.0,
-                    "keeper": "alpha",
-                    "tool": "keeper_shell",
-                    "input": {"op": "gh", "cmd": "pr review 1 --approve"},
-                    "output": json.dumps(
-                        {
-                            "ok": True,
-                            "command": "gh pr review 1 --approve",
-                            "via": "docker",
-                        }
-                    ),
                     "success": True,
                 },
             ]
@@ -1002,28 +763,34 @@ class AuditKeeperFleetReadinessTest(unittest.TestCase):
                 {
                     "ts": 70.0,
                     "keeper": "alpha",
-                    "tool": "keeper_bash",
-                    "input": {"cmd": "git push -u origin keeper/new"},
+                    "tool": "tool_execute",
+                    "input": {"label": "new"},
                     "output": json.dumps({"ok": True, "via": "docker"}),
                     "success": True,
                 },
                 {
                     "ts": 80.0,
                     "keeper": "alpha",
-                    "tool": "keeper_shell",
-                    "input": {"op": "gh", "cmd": "pr create --draft"},
-                    "output": json.dumps({"ok": True, "via": "docker"}),
+                    "tool": "tool_execute",
+                    "input": {"title": "new"},
+                    "output": json.dumps(
+                        {
+                            "ok": True,
+                            "pr_url": "https://github.com/acme/repo/pull/2",
+                            "via": "docker",
+                        }
+                    ),
                     "success": True,
                 },
                 {
                     "ts": 90.0,
                     "keeper": "alpha",
-                    "tool": "keeper_shell",
-                    "input": {"op": "gh", "cmd": "pr review 2 --approve"},
+                    "tool": "tool_execute",
+                    "input": {"pr_number": 2, "event": "APPROVE"},
                     "output": json.dumps(
                         {
                             "ok": True,
-                            "command": "gh pr review 2 --approve",
+                            "event": "APPROVE",
                             "via": "docker",
                         }
                     ),
@@ -1039,20 +806,158 @@ class AuditKeeperFleetReadinessTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            latest_ts, _tools, evidence, docker_evidence = audit.scan_keeper_evidence(
-                root, "alpha"
+            latest_ts, tools = audit.scan_keeper_evidence(root, "alpha")
+
+        self.assertEqual(latest_ts, 90.0)
+        self.assertEqual(tools, {"tool_execute", "tool_search_files"})
+
+    def test_web_search_evidence_counts_successful_decision_tool(self):
+        row = {
+            "ts_unix": 100.0,
+            "event": "tool_exec",
+            "tool": "masc_web_search",
+            "ok": True,
+            "args": {"query": "MASC keeper web search proof"},
+        }
+
+        evidence = audit.web_search_evidence_from_decision(row, "alpha.decisions.jsonl")
+
+        self.assertEqual(
+            evidence,
+            {
+                "web_search:masc_web_search:"
+                "query=MASC keeper web search proof:"
+                "ts=100:"
+                "source=alpha.decisions.jsonl"
+            },
+        )
+
+    def test_web_search_evidence_rejects_failed_decision_tool(self):
+        row = {
+            "ts_unix": 100.0,
+            "event": "tool_exec",
+            "tool": "masc_web_search",
+            "ok": False,
+            "args": {"query": "MASC keeper web search proof"},
+        }
+
+        evidence = audit.web_search_evidence_from_decision(row, "alpha.decisions.jsonl")
+
+        self.assertEqual(evidence, set())
+
+    def test_web_search_evidence_counts_successful_global_tool_call(self):
+        row = {
+            "ts": 110.0,
+            "keeper": "alpha",
+            "tool": "SearchWeb",
+            "input": {"query": "latest MASC MCP keeper proof"},
+            "output": json.dumps({"ok": True}),
+            "success": True,
+        }
+
+        evidence = audit.web_search_evidence_from_tool_call(row, "06.jsonl")
+
+        self.assertEqual(
+            evidence,
+            {
+                "web_search:SearchWeb:"
+                "query=latest MASC MCP keeper proof:"
+                "ts=110:"
+                "source=06.jsonl"
+            },
+        )
+
+    def test_scan_keeper_web_search_evidence_filters_keeper_not_run_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            calls_dir = root / ".masc" / "tool_calls" / "2026-05"
+            calls_dir.mkdir(parents=True)
+            rows = [
+                {
+                    "ts": 80.0,
+                    "keeper": "alpha",
+                    "tool": "masc_web_search",
+                    "input": {"query": "keeper proof old-run"},
+                    "output": json.dumps({"ok": True}),
+                    "success": True,
+                },
+                {
+                    "ts": 90.0,
+                    "keeper": "alpha",
+                    "tool": "masc_web_search",
+                    "input": {"query": "keeper proof current-run"},
+                    "output": json.dumps({"ok": True}),
+                    "success": True,
+                },
+                {
+                    "ts": 95.0,
+                    "keeper": "beta",
+                    "tool": "masc_web_search",
+                    "input": {"query": "keeper proof current-run"},
+                    "output": json.dumps({"ok": True}),
+                    "success": True,
+                },
+            ]
+            (calls_dir / "06.jsonl").write_text(
+                "".join(json.dumps(row) + "\n" for row in rows),
+                encoding="utf-8",
             )
+
+            latest_ts, evidence = audit.scan_keeper_web_search_evidence(root, "alpha")
 
         self.assertEqual(latest_ts, 90.0)
         self.assertEqual(
             evidence,
             {
-                "git_push:keeper_bash",
-                "pr_create:keeper_shell",
-                "pr_approve:keeper_shell",
+                "web_search:masc_web_search:"
+                "query=keeper proof old-run:"
+                "ts=80:"
+                "source=06.jsonl",
+                "web_search:masc_web_search:"
+                "query=keeper proof current-run:"
+                "ts=90:"
+                "source=06.jsonl",
             },
         )
-        self.assertEqual(docker_evidence, evidence)
+
+    def test_require_web_search_evidence_fails_without_success(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_ready_keeper(root, "alpha")
+            args = audit_args(root, expected_keepers=1)
+            args.require_web_search_evidence = True
+
+            report = audit.build_report(args)
+
+        self.assertFalse(report["ok"])
+        keeper = report["keepers"][0]
+        self.assertFalse(keeper["web_search_action"])
+        self.assertIn("web_search_evidence_missing", keeper["failures"])
+
+    def test_require_web_search_evidence_passes_with_success(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_ready_keeper(root, "alpha")
+            append_decision(
+                root,
+                "alpha",
+                {
+                    "ts_unix": time.time(),
+                    "event": "tool_exec",
+                    "tool": "masc_web_search",
+                    "ok": True,
+                    "args": {"query": "MASC keeper web search proof"},
+                },
+            )
+            args = audit_args(root, expected_keepers=1)
+            args.require_web_search_evidence = True
+
+            report = audit.build_report(args)
+
+        self.assertTrue(report["ok"])
+        keeper = report["keepers"][0]
+        self.assertTrue(keeper["web_search_action"])
+        self.assertEqual(len(keeper["web_search_evidence"]), 1)
 
 
 if __name__ == "__main__":

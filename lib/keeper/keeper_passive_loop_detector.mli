@@ -14,10 +14,13 @@
 
     @since #12799 *)
 
-val progress_class_of_terminal_reason_code : string -> string option
-(** Map typed terminal-reason codes into detector progress classes. Returns
-    [Some _] only for required-tool failures that should count toward an
-    inter-turn no-progress loop. *)
+val progress_class_of_disposition :
+  Keeper_turn_disposition.t -> string option
+(** Map a typed [Keeper_turn_disposition.t] into a detector progress class.
+    Returns [Some _] only for required-tool failure dispositions
+    ([Required_tool_use_no_tool_call] and [Required_tool_use_unsatisfied])
+    that should count toward an inter-turn no-progress loop; every other
+    disposition variant returns [None]. *)
 
 val record_turn :
   keeper_name:string ->
@@ -27,7 +30,7 @@ val record_turn :
     streak for [keeper_name].
 
     [progress_class] is the string representation of the
-    [Keeper_tool_disclosure.tool_progress_class] for the turn's dominant
+    [Keeper_tool_progress.tool_progress_class] for the turn's dominant
     tool usage:
     - ["passive_status"] or ["claim_context"] increments the streak.
     - ["required_tool_no_call"] or ["required_tool_unsatisfied"] increments
@@ -40,6 +43,21 @@ val record_turn :
     incremented and a structured WARN log is emitted.  The counter is
     latched per episode — it will not fire again until the streak resets
     and a new episode begins. *)
+
+val record_turn_effect :
+  keeper_name:string ->
+  Keeper_tool_progress.turn_effect ->
+  unit
+(** [record_turn_effect ~keeper_name turn_effect] is the typed variant of
+    [record_turn].  It consumes a [Keeper_tool_progress.turn_effect]
+    directly, avoiding the lossy string round-trip.
+
+    - [Streak_increment] increments the passive streak.
+    - [Streak_reset] resets the streak and records a productive turn.
+    - [Streak_reset_and_empty_queue_sleep] resets the streak (empty queue
+      is not a passive loop) and logs the reason for operators.
+
+    @since task-555 *)
 
 val current_streak : keeper_name:string -> int
 (** Return the current passive-only streak for [keeper_name].

@@ -3,6 +3,7 @@ import {
   COALESCE_WINDOW_MS,
   RETENTION_MS,
   clearTraces,
+  filterTraceEventsByReplay,
   keeperTraceState,
   pushTrace,
   tracesByKeeper,
@@ -20,6 +21,30 @@ afterEach(() => {
 describe('keeper-trace-store', () => {
   it('starts empty', () => {
     expect(keeperTraceState.value.events).toHaveLength(0)
+  })
+
+  it('filters trace events at the replay cursor', () => {
+    pushTrace({
+      id: 'old',
+      tsMs: 1000,
+      keeperName: 'scholar',
+      source: 'anchored-thread',
+      threadId: 'old-thread',
+      line: 12,
+    })
+    pushTrace({
+      id: 'new',
+      tsMs: 2000,
+      keeperName: 'scholar',
+      source: 'anchored-thread',
+      threadId: 'new-thread',
+      line: 13,
+    })
+
+    expect(filterTraceEventsByReplay(keeperTraceState.value.events, null).map(e => e.id))
+      .toEqual(['old', 'new'])
+    expect(filterTraceEventsByReplay(keeperTraceState.value.events, 1500).map(e => e.id))
+      .toEqual(['old'])
   })
 
   it('appends a single event with count=1', () => {
@@ -48,7 +73,7 @@ describe('keeper-trace-store', () => {
       keeperName: 'scholar',
       source: 'cascade-hop',
       hopId: 'h-1',
-      provider: 'glm',
+      provider: 'provider-k',
     })
     pushTrace({
       id: 'a-2',
@@ -56,7 +81,7 @@ describe('keeper-trace-store', () => {
       keeperName: 'scholar',
       source: 'cascade-hop',
       hopId: 'h-2',
-      provider: 'glm',
+      provider: 'provider-k',
     })
     expect(keeperTraceState.value.events).toHaveLength(1)
     const merged = keeperTraceState.value.events[0]!
@@ -73,7 +98,7 @@ describe('keeper-trace-store', () => {
       keeperName: 'scholar',
       source: 'cascade-hop',
       hopId: 'h-1',
-      provider: 'glm',
+      provider: 'provider-k',
     })
     pushTrace({
       id: 'a-2',
@@ -81,7 +106,7 @@ describe('keeper-trace-store', () => {
       keeperName: 'scholar',
       source: 'cascade-hop',
       hopId: 'h-2',
-      provider: 'glm',
+      provider: 'provider-k',
     })
     expect(keeperTraceState.value.events).toHaveLength(2)
     expect(keeperTraceState.value.events.map(e => e.count)).toEqual([1, 1])
@@ -94,7 +119,7 @@ describe('keeper-trace-store', () => {
       keeperName: 'scholar',
       source: 'cascade-hop',
       hopId: 'h-1',
-      provider: 'glm',
+      provider: 'provider-k',
     })
     pushTrace({
       id: 'a-2',
@@ -114,7 +139,7 @@ describe('keeper-trace-store', () => {
       keeperName: 'scholar',
       source: 'cascade-hop',
       hopId: 'h-1',
-      provider: 'glm',
+      provider: 'provider-k',
     })
     pushTrace({
       id: 'a-2',
@@ -122,10 +147,122 @@ describe('keeper-trace-store', () => {
       keeperName: 'moth',
       source: 'cascade-hop',
       hopId: 'h-2',
-      provider: 'glm',
+      provider: 'provider-k',
     })
     expect(keeperTraceState.value.events).toHaveLength(2)
     expect(keeperTraceState.value.events.map(e => e.keeperName)).toEqual(['scholar', 'moth'])
+  })
+
+  it('does NOT coalesce anchored-thread events for different file lines within the window', () => {
+    pushTrace({
+      id: 'a-1',
+      tsMs: 1000,
+      keeperName: 'scholar',
+      source: 'anchored-thread',
+      threadId: 'th-1',
+      filePath: 'runtime.ts',
+      line: 12,
+    })
+    pushTrace({
+      id: 'a-2',
+      tsMs: 1010,
+      keeperName: 'scholar',
+      source: 'anchored-thread',
+      threadId: 'th-2',
+      filePath: 'worker.ts',
+      line: 12,
+    })
+    pushTrace({
+      id: 'a-3',
+      tsMs: 1020,
+      keeperName: 'scholar',
+      source: 'anchored-thread',
+      threadId: 'th-3',
+      filePath: 'runtime.ts',
+      line: 20,
+    })
+
+    expect(keeperTraceState.value.events.map(e => e.id)).toEqual(['a-1', 'a-2', 'a-3'])
+    expect(keeperTraceState.value.events.map(e => e.count)).toEqual([1, 1, 1])
+  })
+
+  it('does NOT coalesce activity events for different file lines within the window', () => {
+    pushTrace({
+      id: 'activity-1',
+      tsMs: 1000,
+      keeperName: 'scholar',
+      source: 'activity-event',
+      eventId: 'evt-1',
+      filePath: 'runtime.ts',
+      line: 12,
+      surface: 'Goal',
+    })
+    pushTrace({
+      id: 'activity-2',
+      tsMs: 1010,
+      keeperName: 'scholar',
+      source: 'activity-event',
+      eventId: 'evt-2',
+      filePath: 'worker.ts',
+      line: 12,
+      surface: 'Task',
+    })
+    pushTrace({
+      id: 'activity-3',
+      tsMs: 1020,
+      keeperName: 'scholar',
+      source: 'activity-event',
+      eventId: 'evt-3',
+      filePath: 'runtime.ts',
+      line: 20,
+      surface: 'Log',
+    })
+
+    expect(keeperTraceState.value.events.map(e => e.id)).toEqual(['activity-1', 'activity-2', 'activity-3'])
+    expect(keeperTraceState.value.events.map(e => e.count)).toEqual([1, 1, 1])
+  })
+
+  it('does NOT coalesce record events with different optional trace contexts', () => {
+    pushTrace({
+      id: 'decision-1',
+      tsMs: 1000,
+      keeperName: 'scholar',
+      source: 'decision-log',
+      decisionId: 'd-1',
+      semanticOutcome: 'success',
+      filePath: 'runtime.ts',
+      line: 12,
+      goalId: 'goal-runtime',
+    })
+    pushTrace({
+      id: 'decision-2',
+      tsMs: 1010,
+      keeperName: 'scholar',
+      source: 'decision-log',
+      decisionId: 'd-2',
+      semanticOutcome: 'success',
+      filePath: 'runtime.ts',
+      line: 13,
+      goalId: 'goal-runtime',
+    })
+    pushTrace({
+      id: 'decision-3',
+      tsMs: 1020,
+      keeperName: 'scholar',
+      source: 'decision-log',
+      decisionId: 'd-3',
+      semanticOutcome: 'success',
+      filePath: 'runtime.ts',
+      line: 12,
+      goalId: 'goal-other',
+    })
+
+    expect(keeperTraceState.value.events.map(e => e.id)).toEqual([
+      'decision-1',
+      'decision-2',
+      'decision-3',
+    ])
+    expect(keeperTraceState.value.events.map(e => e.count)).toEqual([1, 1, 1])
   })
 
   it('inserts out-of-order events into ascending tsMs position', () => {
@@ -203,7 +340,7 @@ describe('keeper-trace-store', () => {
       keeperName: 'moth',
       source: 'cascade-hop',
       hopId: 'h-old',
-      provider: 'glm',
+      provider: 'provider-k',
     })
     // Push event at RETENTION_MS + 500 → cutoff = 500, both prior events
     // (tsMs 0 + 200) fall outside the window.
@@ -224,7 +361,7 @@ describe('keeper-trace-store', () => {
       keeperName: 'scholar',
       source: 'cascade-hop',
       hopId: 'h-1',
-      provider: 'glm',
+      provider: 'provider-k',
     })
     // Push event at RETENTION_MS + 10 → cutoff = 10, survivor@5000 stays
     // because 5000 >= 10.
@@ -253,7 +390,7 @@ describe('keeper-trace-store', () => {
       keeperName: 'moth',
       source: 'cascade-hop',
       hopId: 'h-1',
-      provider: 'glm',
+      provider: 'provider-k',
     })
     // Latest tsMs = RETENTION_MS, cutoff = 0 → boundary at tsMs=0 is kept (>= cutoff).
     expect(keeperTraceState.value.events.map(e => e.id)).toEqual(['boundary', 'fresh'])
@@ -266,7 +403,7 @@ describe('keeper-trace-store', () => {
       keeperName: 'scholar',
       source: 'cascade-hop',
       hopId: 'h-1',
-      provider: 'glm',
+      provider: 'provider-k',
     })
     clearTraces()
     expect(keeperTraceState.value.events).toHaveLength(0)
@@ -285,7 +422,7 @@ describe('keeper-trace-store', () => {
       keeperName: 'scholar',
       source: 'cascade-hop',
       hopId: 'h-1',
-      provider: 'glm',
+      provider: 'provider-k',
     })
     pushTrace({
       id: 'a-2',
@@ -293,7 +430,7 @@ describe('keeper-trace-store', () => {
       keeperName: 'moth',
       source: 'cascade-hop',
       hopId: 'h-2',
-      provider: 'glm',
+      provider: 'provider-k',
     })
     expect(tracesByKeeper('scholar').map(e => e.id)).toEqual(['a-1'])
     expect(tracesByKeeper('moth').map(e => e.id)).toEqual(['a-2'])
@@ -307,7 +444,7 @@ describe('keeper-trace-store', () => {
       keeperName: 'scholar',
       source: 'cascade-hop',
       hopId: 'h-1',
-      provider: 'glm',
+      provider: 'provider-k',
     })
     pushTrace({
       id: 'a-2',
@@ -343,7 +480,7 @@ describe('keeper-trace-store', () => {
       keeperName: 'scholar',
       source: 'cascade-hop',
       hopId: 'h-1',
-      provider: 'glm',
+      provider: 'provider-k',
     })
     pushTrace({
       id: 'c-1',
@@ -360,6 +497,16 @@ describe('keeper-trace-store', () => {
       decisionId: 'dec-1',
       semanticOutcome: 'success',
     })
+    pushTrace({
+      id: 'e-1',
+      tsMs: 1400,
+      keeperName: 'scholar',
+      source: 'activity-event',
+      eventId: 'evt-1',
+      filePath: 'runtime.ts',
+      line: 9,
+      surface: 'Goal',
+    })
 
     for (const event of keeperTraceState.value.events) {
       // Compile-time exhaustive narrowing.
@@ -370,7 +517,7 @@ describe('keeper-trace-store', () => {
           break
         case 'cascade-hop':
           expect(event.hopId).toBe('h-1')
-          expect(event.provider).toBe('glm')
+          expect(event.provider).toBe('provider-k')
           break
         case 'bdi-snapshot':
           expect(event.intention).toBe('inspect')
@@ -378,6 +525,12 @@ describe('keeper-trace-store', () => {
         case 'decision-log':
           expect(event.decisionId).toBe('dec-1')
           expect(event.semanticOutcome).toBe('success')
+          break
+        case 'activity-event':
+          expect(event.eventId).toBe('evt-1')
+          expect(event.filePath).toBe('runtime.ts')
+          expect(event.line).toBe(9)
+          expect(event.surface).toBe('Goal')
           break
       }
     }

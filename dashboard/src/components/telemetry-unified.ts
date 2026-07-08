@@ -7,8 +7,11 @@ import {
   fetchDashboardShell,
   fetchDashboardTools,
   fetchDashboardNamespaceTruth,
+  fetchDashboardCacheStats,
   fetchTelemetry,
+  type DashboardCacheStatsResponse,
   type TelemetryEntry,
+  type TelemetryResponse,
   type TelemetrySource,
   type TelemetrySourceSummary,
 } from '../api/dashboard'
@@ -17,17 +20,21 @@ import {
   sharedTelemetrySummary,
   sharedTelemetrySummaryError,
 } from './fleet-data-core'
-import { route } from '../router'
+import { replaceRoute, route } from '../router'
 import { TELEMETRY_AUTO_REFRESH_MS } from '../config/constants'
 import { TELEMETRY_SOURCE_META, telemetrySourceMeta } from '../config/telemetry-sources'
-import { formatTimeAgo } from '../lib/format-time'
+import { formatElapsedCompact, unixSecondsToDate } from '../lib/format-time'
 import { formatAutoRefreshLabel, setupVisibleAutoRefresh } from '../lib/auto-refresh'
 import { isAbortError } from '../lib/async-state'
+import { errorToString } from '../lib/format-string'
 import { Btn } from './btn'
 import { OasHealthChip } from './oas-health-chip'
 import { CopyIdButton } from './common/copy-id-button'
 import { ringFocusClasses } from './common/ring'
 import { StatTile } from './common/stat-tile'
+import { coverageGapDisplay } from './common/source-health'
+import { TimeAgo } from './common/time-ago'
+import { asNullableString, asRecord, asStringArray } from './common/normalize'
 
 interface StoreSnapshot {
   keepers: number
@@ -52,16 +59,26 @@ const EMPTY_STORE: StoreSnapshot = {
 }
 interface TelemetryState {
   entries: TelemetryEntry[]
+  telemetry: TelemetryResponse | null
   summary: TelemetrySourceSummary[]
   totalEntries: number
   store: StoreSnapshot
+  cacheStats: DashboardCacheStatsResponse | null
+  cacheStatsError: string | null
   loading: boolean
   error: string | null
 }
 
 const sourceMeta = telemetrySourceMeta
 
-type TelemetryCondensedCategory = 'heartbeat' | 'polling'
+type TelemetryCondensedCategory = 'heartbeat' | 'polling' | 'turn'
+
+interface TelemetryRouteFocus {
+  readonly sessionId: string | null
+  readonly operationId: string | null
+  readonly workerRunId: string | null
+  readonly query: string | null
+}
 
 export type TelemetryDisplayItem =
   | {
@@ -97,6 +114,11 @@ const CONDENSED_CATEGORY_META: Record<TelemetryCondensedCategory, {
     icon: 'P',
     color: 'text-[var(--color-accent-fg)]',
   },
+  turn: {
+    label: '턴',
+    icon: 'T',
+    color: 'text-[var(--color-accent-fg)]',
+  },
 }
 
 const NOISY_TOOL_NAMES = new Set([
@@ -121,23 +143,11 @@ function entryTimestamp(e: TelemetryEntry): number {
 
 function formatTs(ts: number): string {
   if (ts === 0) return '-'
-  const d = new Date(ts * 1000)
+  const d = unixSecondsToDate(ts)
   return d.toLocaleString('ko-KR', {
     month: '2-digit', day: '2-digit',
     hour: '2-digit', minute: '2-digit', second: '2-digit',
   })
-}
-
-function timeAgoSafe(ts: number): string {
-  return ts === 0 ? '' : formatTimeAgo(ts)
-}
-
-function normalizeText(value: unknown): string | null {
-  return typeof value === 'string' && value.trim() !== '' ? value.trim() : null
-}
-
-function normalizeStringArray(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && item.trim() !== '') : []
 }
 
 function recordField(value: unknown, key: string): unknown {
@@ -145,11 +155,30 @@ function recordField(value: unknown, key: string): unknown {
   return (value as Record<string, unknown>)[key]
 }
 
+function normalizeNumber(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+  return null
+}
+
+function telemetrySourceFromRouteParam(value: unknown): TelemetrySource | '' {
+  const source = asNullableString(value)
+  return source && source in TELEMETRY_SOURCE_META ? (source as TelemetrySource) : ''
+}
+
+function telemetryLimitFromRouteParam(value: unknown): number {
+  const parsed = normalizeNumber(value)
+  return parsed != null && [50, 100, 200, 500].includes(parsed) ? parsed : 100
+}
+
 function uniqueStrings(values: Array<string | null | undefined>): string[] {
   const seen = new Set<string>()
   const result: string[] = []
   for (const value of values) {
-    const normalized = normalizeText(value)
+    const normalized = asNullableString(value)
     if (!normalized || seen.has(normalized)) continue
     seen.add(normalized)
     result.push(normalized)
@@ -164,21 +193,57 @@ function compactId(value: string | null | undefined, prefix: string): string | n
 
 function telemetryScopeBadges(entry: TelemetryEntry): string[] {
   return [
-    compactId(normalizeText(entry.session_id), 'S'),
-    compactId(normalizeText(entry.operation_id), 'OP'),
-    compactId(normalizeText(entry.worker_run_id), 'WR'),
+    compactId(asNullableString(entry.session_id), 'S'),
+    compactId(asNullableString(entry.operation_id), 'OP'),
+    compactId(asNullableString(entry.worker_run_id), 'WR'),
   ].filter((value): value is string => Boolean(value))
 }
 
+function telemetryRouteFocusFromParams(
+  params: Record<string, string | undefined>,
+): TelemetryRouteFocus | null {
+  const focus = {
+    sessionId: asNullableString(params.session_id),
+    operationId: asNullableString(params.operation_id),
+    workerRunId: asNullableString(params.worker_run_id),
+    query: asNullableString(params.q),
+  }
+  return focus.sessionId || focus.operationId || focus.workerRunId || focus.query
+    ? focus
+    : null
+}
+
+function clearTelemetryRouteFocus(): void {
+  const params: Record<string, string> = {
+    ...route.value.params,
+    section: 'fleet-health',
+    view: 'event-log',
+  }
+  delete params.session_id
+  delete params.operation_id
+  delete params.worker_run_id
+  delete params.q
+  replaceRoute('monitoring', params)
+}
+
+function telemetryRouteFocusBadges(focus: TelemetryRouteFocus): ReadonlyArray<{ readonly label: string; readonly value: string }> {
+  return [
+    focus.sessionId ? { label: 'SESSION', value: focus.sessionId } : null,
+    focus.operationId ? { label: 'OPERATION', value: focus.operationId } : null,
+    focus.workerRunId ? { label: 'WORKER', value: focus.workerRunId } : null,
+    focus.query ? { label: 'QUERY', value: focus.query } : null,
+  ].filter((value): value is { readonly label: string; readonly value: string } => value !== null)
+}
+
 function telemetryToolName(entry: TelemetryEntry): string | null {
-  if (entry.source === 'tool_call_io') return normalizeText(entry.tool)
+  if (entry.source === 'tool_call_io') return asNullableString(entry.tool)
   if (entry.source === 'tool_usage' || entry.source === 'tool_metric' || entry.source === 'trajectory_tool_call') {
-    return normalizeText(entry.tool_name)
-      ?? normalizeText(recordField(entry.action_radius, 'tool_name'))
+    return asNullableString(entry.tool_name)
+      ?? asNullableString(recordField(entry.action_radius, 'tool_name'))
   }
   if (entry.source === 'execution_receipt') {
-    return normalizeStringArray(entry.canonical_tools)[0]
-      ?? normalizeText(recordField(entry.action_radius, 'tool_name'))
+    return asStringArray(entry.canonical_tools)[0]
+      ?? asNullableString(recordField(entry.action_radius, 'tool_name'))
   }
   return null
 }
@@ -191,9 +256,108 @@ function canonicalToolName(value: string | null): string | null {
     const segments = value.split('__')
     // segments: ['mcp', '<server>', '<tool>'] — take the last non-empty segment
     const tool = segments.length >= 3 ? segments[segments.length - 1] : value
-    return normalizeText(tool ?? value)
+    return asNullableString(tool ?? value)
   }
-  return normalizeText(value)
+  return asNullableString(value)
+}
+
+function telemetryPayloadRecord(entry: TelemetryEntry): Record<string, unknown> | null {
+  const direct = asRecord(entry.payload)
+  if (direct) return direct
+  if (Array.isArray(entry.payload)) {
+    return asRecord(entry.payload[1])
+  }
+  return null
+}
+
+function telemetryPayloadKind(entry: TelemetryEntry): string | null {
+  if (Array.isArray(entry.payload)) return asNullableString(entry.payload[0])
+  return asNullableString(recordField(entry.payload, 'kind'))
+    ?? asNullableString(recordField(entry.payload, 'event_type'))
+}
+
+function telemetryPayloadProviderParts(entry: TelemetryEntry): string[] {
+  const payload = telemetryPayloadRecord(entry)
+  if (!payload) return []
+  return uniqueStrings([
+    asNullableString(recordField(payload, 'provider_kind')),
+    asNullableString(recordField(payload, 'provider')),
+    asNullableString(recordField(payload, 'model_id')),
+    asNullableString(recordField(payload, 'provider_model_id')),
+    asNullableString(recordField(payload, 'model')),
+    asNullableString(recordField(payload, 'base_url')),
+    asNullableString(recordField(payload, 'endpoint')),
+  ])
+}
+
+function compactTelemetryPayloadSearch(entry: TelemetryEntry): string {
+  const payload = entry.payload
+  if (payload == null) return ''
+  try {
+    return JSON.stringify(payload).slice(0, 4096)
+  } catch {
+    return ''
+  }
+}
+
+function telemetryTurn(entry: TelemetryEntry): number | null {
+  return normalizeNumber(entry.turn)
+    ?? normalizeNumber(recordField(telemetryPayloadRecord(entry), 'turn'))
+    ?? normalizeNumber(recordField(entry.runtime_contract, 'turn'))
+}
+
+function telemetryTurnActor(entry: TelemetryEntry): string | null {
+  const payload = telemetryPayloadRecord(entry)
+  return asNullableString(entry.agent_name)
+    ?? asNullableString(recordField(payload, 'agent_name'))
+    ?? asNullableString(recordField(entry.runtime_contract, 'agent_name'))
+    ?? asNullableString(entry.keeper_name)
+    ?? asNullableString(recordField(entry.runtime_contract, 'keeper_name'))
+    ?? asNullableString(entry.keeper)
+    ?? asNullableString(entry.name)
+    ?? asNullableString(entry.caller)
+    ?? asNullableString(entry.agent)
+}
+
+function telemetryRunScope(entry: TelemetryEntry): string | null {
+  const payload = telemetryPayloadRecord(entry)
+  const session =
+    asNullableString(entry.session_id)
+    ?? asNullableString(recordField(payload, 'session_id'))
+    ?? asNullableString(recordField(entry.runtime_contract, 'session_id'))
+  if (session) return `S:${session}`
+  const operation =
+    asNullableString(entry.operation_id)
+    ?? asNullableString(recordField(payload, 'operation_id'))
+    ?? asNullableString(recordField(entry.runtime_contract, 'operation_id'))
+  if (operation) return `OP:${operation}`
+  const workerRun =
+    asNullableString(entry.worker_run_id)
+    ?? asNullableString(recordField(payload, 'worker_run_id'))
+    ?? asNullableString(recordField(entry.runtime_contract, 'worker_run_id'))
+  if (workerRun) return `WR:${workerRun}`
+  return null
+}
+
+function entryTurnGroupingDescriptor(entry: TelemetryEntry): {
+  key: string
+  category: TelemetryCondensedCategory
+  label: string
+} | null {
+  const turn = telemetryTurn(entry)
+  const actor = telemetryTurnActor(entry)
+  // turn=0 is a "turn not tracked" sentinel in keeper telemetry (e.g.,
+  // trajectory tool-call records); collapsing on it would merge unrelated
+  // events into a fake `actor · turn 0` group. Only group on real turn ids
+  // (positive integers).
+  if (turn == null || turn <= 0 || !actor) return null
+  const runScope = telemetryRunScope(entry)
+  const scopedKey = runScope ? `turn:${runScope}:${actor}:${turn}` : `turn:${actor}:${turn}`
+  return {
+    key: scopedKey,
+    category: 'turn',
+    label: `${actor} · turn ${turn}`,
+  }
 }
 
 /** Per-keeper polling artifacts that fill the 100-entry window with no
@@ -211,11 +375,11 @@ const FLEET_POLLING_OAS_EVENT_TYPES = new Set([
 ])
 
 function isFleetPollingEntry(entry: TelemetryEntry): boolean {
-  if (entry.source === 'keeper_metric' && normalizeText(entry.channel) === 'heartbeat') {
+  if (entry.source === 'keeper_metric' && asNullableString(entry.channel) === 'heartbeat') {
     return true
   }
   if (entry.source === 'oas_event') {
-    const eventType = normalizeText(entry.event_type) ?? normalizeText(entry.type)
+    const eventType = asNullableString(entry.event_type) ?? asNullableString(entry.type)
     if (eventType != null && FLEET_POLLING_OAS_EVENT_TYPES.has(eventType)) return true
   }
   return false
@@ -237,18 +401,21 @@ function entryGroupingDescriptor(entry: TelemetryEntry): {
     }
   }
 
+  const turnDescriptor = entryTurnGroupingDescriptor(entry)
+  if (turnDescriptor) return turnDescriptor
+
   const tool = canonicalToolName(telemetryToolName(entry))
   if (!tool || !NOISY_TOOL_NAMES.has(tool)) return null
 
   const scope =
-    normalizeText(entry.session_id)
-    ?? normalizeText(entry.operation_id)
-    ?? normalizeText(entry.worker_run_id)
-    ?? normalizeText(entry.keeper)
-    ?? normalizeText(entry.keeper_name)
-    ?? normalizeText(entry.name)
-    ?? normalizeText(entry.caller)
-    ?? normalizeText(entry.agent_name)
+    asNullableString(entry.session_id)
+    ?? asNullableString(entry.operation_id)
+    ?? asNullableString(entry.worker_run_id)
+    ?? asNullableString(entry.keeper)
+    ?? asNullableString(entry.keeper_name)
+    ?? asNullableString(entry.name)
+    ?? asNullableString(entry.caller)
+    ?? asNullableString(entry.agent_name)
     ?? 'global'
 
   return {
@@ -261,14 +428,11 @@ function entryGroupingDescriptor(entry: TelemetryEntry): {
 function entryPreview(e: TelemetryEntry): string {
   switch (e.source) {
     case 'keeper_metric': {
-      const name = normalizeText(e.name) ?? '-'
-      const channel = normalizeText(e.channel) ?? '-'
-      const rawModel = normalizeText(e.model_used)
-      const isStatusTag = rawModel != null && /^(turn-exhausted|unknown|none|-)$/i.test(rawModel)
-      const model = rawModel == null ? '-' : isStatusTag ? `(${rawModel})` : rawModel
-      const tools = normalizeStringArray(e.tools_used)
+      const name = asNullableString(e.name) ?? '-'
+      const channel = asNullableString(e.channel) ?? '-'
+      const tools = asStringArray(e.tools_used)
       const toolCount = typeof e.tool_call_count === 'number' ? e.tool_call_count : tools.length
-      return `${name} [${channel}] model=${model} tools=${toolCount}`
+      return `${name} [${channel}] tools=${toolCount}`
     }
     case 'agent_event': {
       const event = e.event
@@ -277,8 +441,8 @@ function entryPreview(e: TelemetryEntry): string {
         const detail = event[1] as Record<string, unknown> | undefined
         if (detail) {
           const parts = [
-            normalizeText(detail.agent_id as string),
-            normalizeText(detail.tool_name as string),
+            asNullableString(detail.agent_id as string),
+            asNullableString(detail.tool_name as string),
           ].filter(Boolean)
           return parts.length > 0 ? `${tag}: ${parts.join(' -> ')}` : tag
         }
@@ -287,51 +451,54 @@ function entryPreview(e: TelemetryEntry): string {
       return String(event ?? '')
     }
     case 'tool_call_io': {
-      const tool = normalizeText(e.tool) ?? ''
-      const keeper = normalizeText(e.keeper) ?? ''
+      const tool = asNullableString(e.tool) ?? ''
+      const keeper = asNullableString(e.keeper) ?? ''
       return `${keeper} -> ${tool}`
     }
     case 'trajectory_tool_call': {
-      const tool = telemetryToolName(e) ?? 'tool'
+      const tool = telemetryToolName(e) ?? '(unknown tool)'
       const keeper =
-        normalizeText(e.keeper_name)
-        ?? normalizeText(recordField(e.runtime_contract, 'keeper_name'))
-        ?? normalizeText(e.keeper)
-        ?? 'unknown'
+        asNullableString(e.keeper_name)
+        ?? asNullableString(recordField(e.runtime_contract, 'keeper_name'))
+        ?? asNullableString(e.keeper)
+        ?? '(unknown keeper)'
       return `${keeper} -> ${tool}`
     }
     case 'tool_usage': {
-      const tool = normalizeText(e.tool_name) ?? ''
-      const caller = normalizeText(e.caller) ?? ''
+      const tool = asNullableString(e.tool_name) ?? ''
+      const caller = asNullableString(e.caller) ?? ''
       return `${caller || 'unknown'} -> ${tool}`
     }
     case 'oas_event': {
-      const eventType = normalizeText(e.event_type) ?? normalizeText(e.type) ?? 'oas'
-      const agentName = normalizeText(e.agent_name)
-      const toolName = normalizeText(e.tool_name)
-      const turn = typeof e.turn === 'number' ? e.turn : null
-      const taskId = normalizeText(e.task_id)
+      const eventType = asNullableString(e.event_type) ?? asNullableString(e.type) ?? '(unknown event_type)'
+      const payloadKind = telemetryPayloadKind(e)
+      const agentName = telemetryTurnActor(e)
+      const toolName = asNullableString(e.tool_name) ?? asNullableString(recordField(telemetryPayloadRecord(e), 'tool_name'))
+      const turn = telemetryTurn(e)
+      const taskId = asNullableString(e.task_id)
       const parts = [
+        payloadKind,
         agentName,
         toolName,
         turn != null ? `turn ${turn}` : null,
         taskId,
+        ...telemetryPayloadProviderParts(e),
       ].filter(Boolean)
       return parts.length > 0 ? `${eventType}: ${parts.join(' · ')}` : eventType
     }
     case 'execution_receipt': {
-      const keeper = normalizeText(e.keeper_name) ?? normalizeText(e.agent_name) ?? 'unknown'
-      const outcome = normalizeText(e.outcome) ?? normalizeText(e.operator_disposition) ?? 'recorded'
-      const reason = normalizeText(e.terminal_reason_code)
+      const keeper = asNullableString(e.keeper_name) ?? asNullableString(e.agent_name) ?? '(unknown keeper)'
+      const outcome = asNullableString(e.outcome) ?? asNullableString(e.operator_disposition) ?? '(no outcome)'
+      const reason = asNullableString(e.terminal_reason_code)
       return reason ? `${keeper} receipt ${outcome} (${reason})` : `${keeper} receipt ${outcome}`
     }
     case 'goal_event': {
-      const goal = normalizeText(e.goal_id) ?? 'unknown-goal'
-      const eventType = normalizeText(e.event_type) ?? 'goal_event'
+      const goal = asNullableString(e.goal_id) ?? '(unknown goal)'
+      const eventType = asNullableString(e.event_type) ?? '(unknown event_type)'
       return `${goal} ${eventType}`
     }
     case 'tool_metric': {
-      const tool = normalizeText(e.tool_name) ?? ''
+      const tool = asNullableString(e.tool_name) ?? ''
       const dur = typeof e.duration_ms === 'number' ? e.duration_ms : null
       return `${tool} ${dur != null ? dur.toFixed(0) + 'ms' : ''}`
     }
@@ -361,19 +528,36 @@ export function filterTelemetryDisplayItems(
   if (trimmed === '') return items
   const needle = trimmed.toLowerCase()
 
-  const haystackForItem = (item: TelemetryDisplayItem): string => {
-    if (item.kind === 'entry') {
-      const source = typeof item.entry.source === 'string' ? item.entry.source : ''
-      const preview = entryPreview(item.entry)
-      const badges = telemetryScopeBadges(item.entry).join(' ')
-      return `${source} ${preview} ${badges}`
-    }
-    const sources = item.sourceKeys.join(' ')
-    const badges = item.scopeBadges.join(' ')
-    return `${sources} ${item.label} ${badges}`
-  }
+  return items.filter(item => telemetryDisplayItemHaystack(item).toLowerCase().includes(needle))
+}
 
-  return items.filter(item => haystackForItem(item).toLowerCase().includes(needle))
+function telemetryEntryHaystack(entry: TelemetryEntry): string {
+  const source = typeof entry.source === 'string' ? entry.source : ''
+  const preview = entryPreview(entry)
+  const badges = telemetryScopeBadges(entry).join(' ')
+  const payload = entry.source === 'oas_event' ? compactTelemetryPayloadSearch(entry) : ''
+  return `${source} ${preview} ${badges} ${payload}`
+}
+
+function telemetryDisplayItemHaystack(item: TelemetryDisplayItem): string {
+  if (item.kind === 'entry') return telemetryEntryHaystack(item.entry)
+  const sources = item.sourceKeys.join(' ')
+  const badges = item.scopeBadges.join(' ')
+  const previews = item.entries.map(entry => entryPreview(entry)).join(' ')
+  return `${sources} ${item.label} ${badges} ${previews}`
+}
+
+function telemetryEntryMatchesRouteFocus(entry: TelemetryEntry, focus: TelemetryRouteFocus): boolean {
+  if (focus.sessionId && asNullableString(entry.session_id) !== focus.sessionId) return false
+  if (focus.operationId && asNullableString(entry.operation_id) !== focus.operationId) return false
+  if (focus.workerRunId && asNullableString(entry.worker_run_id) !== focus.workerRunId) return false
+  if (focus.query && !telemetryEntryHaystack(entry).toLowerCase().includes(focus.query.toLowerCase())) return false
+  return true
+}
+
+function telemetryDisplayItemMatchesRouteFocus(item: TelemetryDisplayItem, focus: TelemetryRouteFocus): boolean {
+  if (item.kind === 'entry') return telemetryEntryMatchesRouteFocus(item.entry, focus)
+  return item.entries.some(entry => telemetryEntryMatchesRouteFocus(entry, focus))
 }
 
 export function buildTelemetryDisplayItems(entries: TelemetryEntry[]): TelemetryDisplayItem[] {
@@ -389,22 +573,10 @@ export function buildTelemetryDisplayItems(entries: TelemetryEntry[]): Telemetry
     oldestTs: number
     sourceKeys: Set<TelemetrySource>
     scopeBadges: string[]
-    /** Position in [items] where this group's row will eventually be
-     *  inserted via [flushGroup]. Used by the fleet-heartbeat group so it
-     *  stays at the position of its first entry even when intervening
-     *  rows of other categories have already been pushed past it. */
-    insertIndex: number
   }
 
   let activeGroup: ActiveGroup | null = null
-
-  /** A persistent group for the fleet polling/heartbeat category. Heartbeat
-   *  entries arrive interleaved with real activity, so we accumulate ALL
-   *  of them here regardless of position and only emit the merged row at
-   *  the end. The row is then spliced into [items] at the position of the
-   *  first heartbeat we saw — preserving rough chronology while collapsing
-   *  the noise. */
-  let fleetHeartbeat: ActiveGroup | null = null
+  const persistentGroups = new Map<string, ActiveGroup>()
 
   const renderGroup = (g: ActiveGroup): TelemetryDisplayItem => {
     if (g.entries.length === 1) {
@@ -452,29 +624,43 @@ export function buildTelemetryDisplayItems(entries: TelemetryEntry[]): Telemetry
     ])
   }
 
+  // Heartbeat and turn groups are causal groups, not just adjacent noisy rows.
+  // Build them up front so interleaved rows still collapse at first occurrence.
+  for (const entry of entries) {
+    const descriptor = entryGroupingDescriptor(entry)
+    if (!descriptor || (descriptor.key !== 'heartbeat:fleet' && descriptor.category !== 'turn')) {
+      continue
+    }
+    const ts = entryTimestamp(entry)
+    const existing = persistentGroups.get(descriptor.key)
+    if (existing) {
+      accumulate(existing, entry, ts)
+    } else {
+      persistentGroups.set(descriptor.key, {
+        key: descriptor.key,
+        category: descriptor.category,
+        label: descriptor.label,
+        entries: [entry],
+        latestTs: ts,
+        oldestTs: ts,
+        sourceKeys: new Set([entry.source]),
+        scopeBadges: telemetryScopeBadges(entry),
+      })
+    }
+  }
+
+  const emittedPersistentGroups = new Set<string>()
+
   for (const entry of entries) {
     const descriptor = entryGroupingDescriptor(entry)
     const ts = entryTimestamp(entry)
 
-    // Special path: fleet-wide polling/heartbeat artifacts always merge
-    // into a single group regardless of position. Without this, 14
-    // keepers heartbeating every 60s produce 14 separate single-entry
-    // rows that drown out real activity (#13002).
-    if (descriptor && descriptor.key === 'heartbeat:fleet') {
-      if (!fleetHeartbeat) {
-        fleetHeartbeat = {
-          key: descriptor.key,
-          category: descriptor.category,
-          label: descriptor.label,
-          entries: [entry],
-          latestTs: ts,
-          oldestTs: ts,
-          sourceKeys: new Set([entry.source]),
-          scopeBadges: telemetryScopeBadges(entry),
-          insertIndex: items.length + (activeGroup ? 1 : 0),
-        }
-      } else {
-        accumulate(fleetHeartbeat, entry, ts)
+    if (descriptor && persistentGroups.has(descriptor.key)) {
+      flushGroup()
+      if (!emittedPersistentGroups.has(descriptor.key)) {
+        const group = persistentGroups.get(descriptor.key) as ActiveGroup
+        items.push(renderGroup(group))
+        emittedPersistentGroups.add(descriptor.key)
       }
       continue
     }
@@ -505,16 +691,10 @@ export function buildTelemetryDisplayItems(entries: TelemetryEntry[]): Telemetry
       oldestTs: ts,
       sourceKeys: new Set([entry.source]),
       scopeBadges: telemetryScopeBadges(entry),
-      insertIndex: items.length,
     }
   }
 
   flushGroup()
-
-  if (fleetHeartbeat) {
-    const idx = Math.max(0, Math.min(fleetHeartbeat.insertIndex, items.length))
-    items.splice(idx, 0, renderGroup(fleetHeartbeat))
-  }
 
   return items
 }
@@ -522,21 +702,165 @@ export function buildTelemetryDisplayItems(entries: TelemetryEntry[]): Telemetry
 function condensedStats(items: readonly TelemetryDisplayItem[]) {
   let groups = 0
   let groupedEntries = 0
-  let collapsedEntries = 0
   const byCategory = new Map<TelemetryCondensedCategory, number>()
   for (const item of items) {
     if (item.kind !== 'group') continue
     groups += 1
     groupedEntries += item.count
-    collapsedEntries += Math.max(0, item.count - 1)
     byCategory.set(item.category, (byCategory.get(item.category) ?? 0) + item.count)
   }
-  return { groups, groupedEntries, collapsedEntries, byCategory }
+  return { groups, groupedEntries, byCategory }
+}
+
+function telemetrySourceStatusParts(src: TelemetrySourceSummary): string[] {
+  const parts: string[] = []
+  const coverageGap = coverageGapDisplay(src)
+  if (src.health) {
+    parts.push(src.stale_reason ? `${src.health}: ${src.stale_reason}` : src.health)
+  } else if (src.stale_reason) {
+    parts.push(src.stale_reason)
+  }
+  if (coverageGap) {
+    parts.push(coverageGap.summary)
+  }
+  if (typeof src.latest_age_s === 'number' && Number.isFinite(src.latest_age_s)) {
+    parts.push(`age ${formatElapsedCompact(src.latest_age_s)}`)
+  }
+  if (typeof src.freshness_slo_s === 'number' && Number.isFinite(src.freshness_slo_s)) {
+    parts.push(`SLO ${formatElapsedCompact(src.freshness_slo_s)}`)
+  }
+  return parts
+}
+
+function telemetrySourceProvenanceRows(src: TelemetrySourceSummary): Array<{ label: string; value: string }> {
+  const rows: Array<{ label: string; value: string }> = []
+  if (src.producer) rows.push({ label: 'producer', value: src.producer })
+  if (src.durable_store) rows.push({ label: 'store', value: src.durable_store })
+  if (src.dashboard_surface) rows.push({ label: 'surface', value: src.dashboard_surface })
+  const coverageGap = coverageGapDisplay(src)
+  for (const detail of coverageGap?.details ?? []) {
+    const separator = detail.indexOf(' ')
+    if (separator <= 0) {
+      rows.push({ label: 'gap', value: detail })
+    } else {
+      rows.push({
+        label: `gap ${detail.slice(0, separator)}`,
+        value: detail.slice(separator + 1),
+      })
+    }
+  }
+  return rows
+}
+
+function formatMilliseconds(value: number | undefined): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '-'
+  const abs = Math.abs(value)
+  if (abs >= 1000) return `${(value / 1000).toFixed(1)}s`
+  return `${value}ms`
+}
+
+function shortCacheKey(key: string): string {
+  const withoutPrefix = key.startsWith('telemetry:') ? key.slice('telemetry:'.length) : key
+  return withoutPrefix.length > 90 ? `...${withoutPrefix.slice(-87)}` : withoutPrefix
+}
+
+function TelemetryCachePanel({
+  telemetry,
+  summary,
+  cacheStats,
+  cacheStatsError,
+}: {
+  telemetry: TelemetryResponse | null
+  summary: TelemetrySourceSummary[]
+  cacheStats: DashboardCacheStatsResponse | null
+  cacheStatsError: string | null
+}) {
+  const telemetryCacheEntries = (cacheStats?.entry_details ?? []).filter(entry => entry.key.startsWith('telemetry:'))
+  const cacheKindCounts = telemetryCacheEntries.reduce<Record<string, number>>((acc, entry) => {
+    acc[entry.kind] = (acc[entry.kind] ?? 0) + 1
+    return acc
+  }, {})
+  const unhealthySources = summary.filter(src => {
+    const health = src.health ?? ''
+    return health !== '' && health !== 'ok' && health !== 'healthy' && health !== 'fresh'
+  })
+  const activeQuery = telemetry?.query
+  const queryParts = [
+    activeQuery?.source ? `source=${String(activeQuery.source)}` : null,
+    activeQuery?.keeper ? `keeper=${String(activeQuery.keeper)}` : null,
+    activeQuery?.session_id ? `session=${String(activeQuery.session_id)}` : null,
+    activeQuery?.operation_id ? `operation=${String(activeQuery.operation_id)}` : null,
+    activeQuery?.worker_run_id ? `worker=${String(activeQuery.worker_run_id)}` : null,
+    activeQuery?.n ? `n=${String(activeQuery.n)}` : null,
+  ].filter((part): part is string => Boolean(part))
+  const cacheRows = telemetryCacheEntries.slice(0, 3)
+  return html`
+    <section class="rounded-[var(--r-1)] border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3" aria-label="Telemetry cache freshness">
+      <div class="flex flex-wrap items-start justify-between gap-3">
+        <div class="min-w-0">
+          <div class="text-xs font-semibold uppercase tracking-wider text-[var(--color-fg-muted)]">Query cache</div>
+          <div class="mt-1 text-2xs text-[var(--color-fg-disabled)]">
+            ${telemetry?.generated_at_iso ?? telemetry?.generated_at ?? '-'}
+            ${telemetry?.dashboard_surface ? html`<span class="mx-1">·</span><span class="font-mono">${telemetry.dashboard_surface}</span>` : null}
+          </div>
+        </div>
+        <div class="flex flex-wrap gap-2 text-2xs">
+          <span class="rounded-[var(--r-1)] bg-[var(--color-bg-elevated)] px-2 py-1 text-[var(--color-fg-muted)]">
+            telemetry keys <span class="font-mono text-[var(--color-fg-primary)]">${telemetryCacheEntries.length}</span>
+          </span>
+          <span class="rounded-[var(--r-1)] bg-[var(--color-bg-elevated)] px-2 py-1 text-[var(--color-fg-muted)]">
+            hit <span class="font-mono text-[var(--color-fg-primary)]">${(((cacheStats?.hit_ratio ?? 0) * 100).toFixed(0))}%</span>
+          </span>
+          <span class="rounded-[var(--r-1)] bg-[var(--color-bg-elevated)] px-2 py-1 text-[var(--color-fg-muted)]">
+            source issues <span class=${`font-mono ${unhealthySources.length > 0 ? 'text-[var(--bad-light)]' : 'text-[var(--color-status-ok)]'}`}>${unhealthySources.length}</span>
+          </span>
+        </div>
+      </div>
+      <div class="mt-3 grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]">
+        <div class="grid gap-2 text-2xs text-[var(--color-fg-muted)]">
+          <div class="flex flex-wrap gap-2">
+            ${Object.entries(cacheKindCounts).length > 0
+              ? Object.entries(cacheKindCounts).map(([kind, count]) => html`
+                <span class="rounded-[var(--r-1)] border border-[var(--color-border-default)] px-2 py-1 font-mono">${kind}:${count}</span>
+              `)
+              : html`<span class="rounded-[var(--r-1)] border border-[var(--color-border-default)] px-2 py-1">no telemetry cache rows</span>`}
+          </div>
+          ${cacheStatsError ? html`
+            <div class="rounded-[var(--r-1)] border border-[var(--bad-muted)] bg-[var(--bad-soft)] px-2 py-1 text-[var(--bad-light)]">
+              cache stats unavailable: ${cacheStatsError}
+            </div>
+          ` : null}
+          ${queryParts.length > 0 ? html`
+            <div class="min-w-0 break-all font-mono text-3xs text-[var(--color-fg-disabled)]">${queryParts.join(' · ')}</div>
+          ` : null}
+        </div>
+        <div class="grid gap-1">
+          ${cacheRows.length > 0 ? cacheRows.map(entry => html`
+            <div class="grid grid-cols-[5.5rem_minmax(0,1fr)_7rem] items-center gap-2 rounded-[var(--r-1)] bg-[var(--color-bg-elevated)] px-2 py-1 text-3xs">
+              <span class="font-mono text-[var(--color-fg-muted)]">${entry.kind}</span>
+              <span class="min-w-0 truncate font-mono text-[var(--color-fg-primary)]" title=${entry.key}>${shortCacheKey(entry.key)}</span>
+              <span class="text-right font-mono text-[var(--color-fg-disabled)]">
+                ${entry.kind === 'computing'
+                  ? formatMilliseconds(entry.computing_for_ms)
+                  : formatMilliseconds(entry.ttl_remaining_ms)}
+              </span>
+            </div>
+          `) : html`
+            <div class="rounded-[var(--r-1)] bg-[var(--color-bg-elevated)] px-2 py-1 text-3xs text-[var(--color-fg-disabled)]">
+              cache detail sample does not include telemetry rows
+            </div>
+          `}
+        </div>
+      </div>
+    </section>
+  `
 }
 
 function SummaryCard({ src }: { src: TelemetrySourceSummary }) {
   const meta = sourceMeta(src.source)
   const hasData = src.entry_count > 0
+  const statusParts = telemetrySourceStatusParts(src)
+  const provenanceRows = telemetrySourceProvenanceRows(src)
 
   return html`
     <div class="rounded-[var(--r-1)] border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3 min-w-35">
@@ -554,21 +878,38 @@ function SummaryCard({ src }: { src: TelemetrySourceSummary }) {
       ${src.exists === false ? html`
         <div class="text-xs text-[var(--color-fg-muted)] italic">store not found</div>
       ` : null}
+      ${statusParts.length > 0 ? html`
+        <div class="mt-2 text-3xs font-mono text-[var(--color-fg-muted)]">${statusParts.join(' · ')}</div>
+      ` : null}
+      ${provenanceRows.length > 0 ? html`
+        <div class="mt-2 grid gap-1 text-3xs text-[var(--color-fg-disabled)]">
+          ${provenanceRows.map(row => html`
+            <div class="flex min-w-0 gap-1">
+              <span class="shrink-0">${row.label}:</span>
+              <span class="min-w-0 break-all font-mono">${row.value}</span>
+            </div>
+          `)}
+        </div>
+      ` : null}
     </div>
   `
 }
 
-function EntryRow({ entry }: { entry: TelemetryEntry }) {
+function EntryRow({ entry, routeFocused = false }: { entry: TelemetryEntry; routeFocused?: boolean }) {
   const expanded = useSignal(false)
   const meta = sourceMeta(entry.source)
   const ts = entryTimestamp(entry)
   const success = entry.success as boolean | undefined
   const scopeBadges = telemetryScopeBadges(entry)
   const rawJson = JSON.stringify(entry, null, 2)
+  const focusedClasses = routeFocused
+    ? 'border-l-2 border-l-[var(--color-brass-1)] bg-[var(--color-brass-soft)]'
+    : ''
 
   return html`
     <div
-      class="border-b border-[var(--color-border-default)] hover:bg-[var(--color-bg-hover)] transition-colors"
+      class=${`border-b border-[var(--color-border-default)] hover:bg-[var(--color-bg-hover)] transition-colors ${focusedClasses}`}
+      data-route-focused-telemetry=${routeFocused ? 'true' : undefined}
       style="content-visibility:auto;contain-intrinsic-size:36px"
     >
       <div class="flex items-center gap-1">
@@ -579,8 +920,10 @@ function EntryRow({ entry }: { entry: TelemetryEntry }) {
           aria-expanded=${expanded.value}
         >
           <span class="font-mono font-bold ${meta.color} w-4 text-center flex-shrink-0">${meta.icon}</span>
-          <span class="font-mono text-[var(--color-fg-muted)] w-28 flex-shrink-0" title=${formatTs(ts)}>
-            ${timeAgoSafe(ts)}
+          <span class="w-56 flex-shrink-0">
+            ${ts === 0
+              ? html`<span class="font-mono text-[var(--color-fg-muted)]">-</span>`
+              : html`<${TimeAgo} timestamp=${ts} mode="both" class="font-mono text-[var(--color-fg-muted)]"/>`}
           </span>
           ${success != null ? html`
             <span class="flex-shrink-0 w-4 ${success ? 'text-[var(--color-status-ok)]' : 'text-[var(--bad-light)]'}">
@@ -632,17 +975,21 @@ ${rawJson}</pre>
   `
 }
 
-function GroupRow({ item }: { item: Extract<TelemetryDisplayItem, { kind: 'group' }> }) {
+function GroupRow({ item, routeFocused = false }: { item: Extract<TelemetryDisplayItem, { kind: 'group' }>; routeFocused?: boolean }) {
   const expanded = useSignal(false)
   const meta = CONDENSED_CATEGORY_META[item.category]
   const latestPreview = entryPreview(item.entries[0] as TelemetryEntry)
   const sourceIcons = uniqueStrings(item.sourceKeys.map(source => sourceMeta(source).icon))
   const contentId = `telemetry-group-${item.key.replace(/[^a-zA-Z0-9_-]/g, '-')}`
   const rawJson = JSON.stringify(item.entries, null, 2)
+  const focusedClasses = routeFocused
+    ? 'border-l-2 border-l-[var(--color-brass-1)] bg-[var(--color-brass-soft)]'
+    : 'bg-[var(--color-bg-panel-alt)]'
 
   return html`
     <div
-      class="border-b border-[var(--color-border-default)] bg-[var(--color-bg-panel-alt)] hover:bg-[var(--color-bg-hover)] transition-colors"
+      class=${`border-b border-[var(--color-border-default)] hover:bg-[var(--color-bg-hover)] transition-colors ${focusedClasses}`}
+      data-route-focused-telemetry=${routeFocused ? 'true' : undefined}
       style="content-visibility:auto;contain-intrinsic-size:36px"
     >
       <div class="flex items-center gap-1">
@@ -654,8 +1001,10 @@ function GroupRow({ item }: { item: Extract<TelemetryDisplayItem, { kind: 'group
           onClick=${() => { expanded.value = !expanded.value }}
         >
           <span class="font-mono font-bold ${meta.color} w-4 text-center flex-shrink-0">${meta.icon}</span>
-          <span class="font-mono text-[var(--color-fg-muted)] w-28 flex-shrink-0" title=${`${formatTs(item.oldestTs)} → ${formatTs(item.latestTs)}`}>
-            ${timeAgoSafe(item.latestTs)}
+          <span class="w-56 flex-shrink-0" title=${`${formatTs(item.oldestTs)} → ${formatTs(item.latestTs)}`}>
+            ${item.latestTs === 0
+              ? html`<span class="font-mono text-[var(--color-fg-muted)]">-</span>`
+              : html`<${TimeAgo} timestamp=${item.latestTs} mode="both" class="font-mono text-[var(--color-fg-muted)]"/>`}
           </span>
           <span class="flex-shrink-0 w-4 text-[var(--color-fg-disabled)]">~</span>
           <span class="font-mono text-[var(--color-fg-primary)] truncate flex-1" title=${`${meta.label} · ${item.label} · ${item.count} events`}>
@@ -693,7 +1042,11 @@ function GroupRow({ item }: { item: Extract<TelemetryDisplayItem, { kind: 'group
             return html`
               <div class="flex items-center gap-2 rounded-[var(--r-1)] bg-[var(--black-20)] px-2 py-1.5 text-3xs" key=${`${item.key}:${index}`}>
                 <span class="font-mono font-bold ${entryMeta.color} w-4 text-center flex-shrink-0">${entryMeta.icon}</span>
-                <span class="font-mono text-[var(--color-fg-disabled)] w-24 flex-shrink-0" title=${formatTs(ts)}>${timeAgoSafe(ts)}</span>
+                <span class="w-48 flex-shrink-0">
+                  ${ts === 0
+                    ? html`<span class="font-mono text-[var(--color-fg-disabled)]">-</span>`
+                    : html`<${TimeAgo} timestamp=${ts} mode="both" class="font-mono text-[var(--color-fg-disabled)]"/>`}
+                </span>
                 <span class="font-mono text-[var(--color-fg-primary)] truncate flex-1" title=${entryPreview(entry)}>${entryPreview(entry)}</span>
               </div>
             `
@@ -719,6 +1072,49 @@ ${rawJson}</pre>
   `
 }
 
+function TelemetryRouteFocusPanel({
+  focus,
+  matchCount,
+}: {
+  focus: TelemetryRouteFocus | null
+  matchCount: number
+}) {
+  if (!focus) return null
+  const badges = telemetryRouteFocusBadges(focus)
+  return html`
+    <section
+      class="rounded-[var(--r-1)] border border-[var(--color-brass-border)] bg-[var(--color-brass-soft)] px-3 py-2"
+      data-testid="telemetry-route-focus"
+      aria-label="Telemetry route focus"
+    >
+      <div class="flex flex-wrap items-start justify-between gap-3">
+        <div class="min-w-0">
+          <div class="font-mono text-3xs font-semibold uppercase tracking-[var(--track-section)] text-[var(--color-accent-fg)]">
+            ROUTE FOCUS
+          </div>
+          <div class="mt-1 flex min-w-0 flex-wrap items-center gap-2 text-xs text-[var(--color-fg-secondary)]">
+            ${badges.map(badge => html`
+              <span class="rounded-[var(--r-0)] border border-[var(--color-brass-border)] bg-[var(--color-bg-page)] px-2 py-1 font-mono text-3xs text-[var(--color-accent-fg)]">
+                ${badge.label} ${badge.value}
+              </span>
+            `)}
+            <span class="font-mono text-3xs text-[var(--color-fg-muted)]">
+              ${matchCount.toLocaleString()} focused item${matchCount === 1 ? '' : 's'}
+            </span>
+          </div>
+        </div>
+        <button
+          type="button"
+          class="rounded-[var(--r-1)] border border-[var(--color-border-default)] bg-[var(--color-bg-page)] px-2 py-1 font-mono text-3xs text-[var(--color-fg-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-fg-primary)]"
+          onClick=${clearTelemetryRouteFocus}
+        >
+          CLEAR
+        </button>
+      </div>
+    </section>
+  `
+}
+
 export function TelemetryUnified() {
   const params = route.value.params
   const latestRequestId = useRef(0)
@@ -727,28 +1123,38 @@ export function TelemetryUnified() {
   const autoRefreshLoadRef = useRef<() => Promise<void>>(async () => undefined)
   const state = useSignal<TelemetryState>({
     entries: [],
+    telemetry: null,
     summary: [],
     totalEntries: 0,
     store: EMPTY_STORE,
+    cacheStats: null,
+    cacheStatsError: null,
     loading: true,
     error: null,
   })
-  const sourceFilter = useSignal<TelemetrySource | ''>('')
+  const sourceFilter = useSignal<TelemetrySource | ''>(telemetrySourceFromRouteParam(params.source))
   const keeperFilter = useSignal('')
   const sessionFilter = useSignal(params.session_id ?? '')
   const operationFilter = useSignal(params.operation_id ?? '')
   const workerRunFilter = useSignal(params.worker_run_id ?? '')
-  const limit = useSignal(100)
-  const entrySearch = useSignal('')
+  const limit = useSignal(telemetryLimitFromRouteParam(params.n ?? params.limit))
+  const entrySearch = useSignal(params.q ?? '')
 
   useEffect(() => {
+    sourceFilter.value = telemetrySourceFromRouteParam(route.value.params.source)
     sessionFilter.value = route.value.params.session_id ?? ''
     operationFilter.value = route.value.params.operation_id ?? ''
     workerRunFilter.value = route.value.params.worker_run_id ?? ''
+    limit.value = telemetryLimitFromRouteParam(route.value.params.n ?? route.value.params.limit)
+    entrySearch.value = route.value.params.q ?? ''
   }, [
+    route.value.params.source,
     route.value.params.session_id,
     route.value.params.operation_id,
     route.value.params.worker_run_id,
+    route.value.params.n,
+    route.value.params.limit,
+    route.value.params.q,
   ])
 
   async function load() {
@@ -788,7 +1194,16 @@ export function TelemetryUnified() {
           uptime: shell?.status?.build?.uptime_seconds ?? null,
         } satisfies StoreSnapshot
       })
-      const [telemetry, , store] = await Promise.all([
+      const cacheStatsPromise = fetchDashboardCacheStats({ signal: controller.signal })
+        .then(cacheStats => ({ cacheStats, cacheStatsError: null as string | null }))
+        .catch(error => {
+          if (isAbortError(error)) throw error
+          return {
+            cacheStats: null,
+            cacheStatsError: errorToString(error),
+          }
+        })
+      const [telemetry, , store, cacheStatsResult] = await Promise.all([
         fetchTelemetry({
           source: sourceFilter.value || undefined,
           keeper: keeperFilter.value || undefined,
@@ -802,6 +1217,7 @@ export function TelemetryUnified() {
         // does not duplicate this fetch across panels.
         refreshSharedTelemetrySummary({ signal: controller.signal }),
         storePromise,
+        cacheStatsPromise,
       ])
       if (requestId !== latestRequestId.current) return
       // refreshSharedTelemetrySummary records failures on the shared error
@@ -816,9 +1232,12 @@ export function TelemetryUnified() {
       const summary = sharedTelemetrySummary.value ?? { sources: [], total_entries: 0, generated_at: '' }
       state.value = {
         entries: telemetry.entries,
+        telemetry,
         summary: summary.sources,
         totalEntries: summary.total_entries,
         store,
+        cacheStats: cacheStatsResult.cacheStats,
+        cacheStatsError: cacheStatsResult.cacheStatsError,
         loading: false,
         error: null,
       }
@@ -868,12 +1287,28 @@ export function TelemetryUnified() {
   }, [])
 
   const { entries, summary, totalEntries, store, loading, error } = state.value
+  const { telemetry, cacheStats, cacheStatsError } = state.value
   const entrySearchQuery = entrySearch.value
   const allDisplayItems = useMemo(() => buildTelemetryDisplayItems(entries), [entries])
   const displayItems = useMemo(
     () => filterTelemetryDisplayItems(allDisplayItems, entrySearchQuery),
     [allDisplayItems, entrySearchQuery],
   )
+  const routeFocus = useMemo(
+    () => telemetryRouteFocusFromParams(route.value.params as Record<string, string | undefined>),
+    [
+      route.value.params.session_id,
+      route.value.params.operation_id,
+      route.value.params.worker_run_id,
+      route.value.params.q,
+    ],
+  )
+  const routeFocusedItemKeys = useMemo(() => {
+    if (!routeFocus) return new Set<string>()
+    return new Set(displayItems
+      .filter(item => telemetryDisplayItemMatchesRouteFocus(item, routeFocus))
+      .map(item => item.key))
+  }, [displayItems, routeFocus])
   const isFilteringEntries = entrySearchQuery.trim() !== ''
   const condensed = useMemo(() => condensedStats(displayItems), [displayItems])
 
@@ -881,18 +1316,27 @@ export function TelemetryUnified() {
     <div class="flex flex-col gap-4">
       <div class="rounded-[var(--r-1)] border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-4">
         <div class="text-xs font-semibold uppercase tracking-wider text-[var(--color-fg-muted)]">런타임 진단</div>
-        <div class="mt-1 text-base leading-relaxed text-[var(--color-fg-secondary)]">
-          MASC telemetry store (keeper/tool/agent) 진단 뷰.
-        </div>
-        <div class="mt-3 flex flex-wrap gap-2">
+        <div class="mt-2 flex flex-wrap gap-2">
           <span class="rounded-[var(--r-1)] bg-[var(--color-bg-elevated)] px-2 py-1 text-2xs text-[var(--color-fg-disabled)]">MASC: keeper/tool/agent store</span>
           ${sessionFilter.value ? html`<span class="rounded-[var(--r-1)] bg-[var(--color-bg-elevated)] px-2 py-1 text-2xs font-mono text-[var(--color-fg-disabled)]">session ${sessionFilter.value}</span>` : null}
           ${operationFilter.value ? html`<span class="rounded-[var(--r-1)] bg-[var(--color-bg-elevated)] px-2 py-1 text-2xs font-mono text-[var(--color-fg-disabled)]">operation ${operationFilter.value}</span>` : null}
           ${workerRunFilter.value ? html`<span class="rounded-[var(--r-1)] bg-[var(--color-bg-elevated)] px-2 py-1 text-2xs font-mono text-[var(--color-fg-disabled)]">worker_run ${workerRunFilter.value}</span>` : null}
+          ${sourceFilter.value ? html`<span class="rounded-[var(--r-1)] bg-[var(--color-bg-elevated)] px-2 py-1 text-2xs font-mono text-[var(--color-fg-disabled)]">source ${telemetrySourceMeta(sourceFilter.value).label}</span>` : null}
+          ${limit.value !== 100 ? html`<span class="rounded-[var(--r-1)] bg-[var(--color-bg-elevated)] px-2 py-1 text-2xs font-mono text-[var(--color-fg-disabled)]">limit ${limit.value}</span>` : null}
+          ${route.value.params.q ? html`<span class="rounded-[var(--r-1)] border border-[var(--color-accent-muted)] bg-[var(--color-bg-elevated)] px-2 py-1 text-2xs font-mono text-[var(--color-accent-fg)]">focus ${route.value.params.q}</span>` : null}
         </div>
       </div>
 
       <${OasHealthChip} />
+
+      <${TelemetryCachePanel}
+        telemetry=${telemetry}
+        summary=${summary}
+        cacheStats=${cacheStats}
+        cacheStatsError=${cacheStatsError}
+      />
+
+      <${TelemetryRouteFocusPanel} focus=${routeFocus} matchCount=${routeFocusedItemKeys.size} />
 
       <div class="flex flex-wrap gap-3">
         ${summary.map(src => html`<${SummaryCard} src=${src} />`)}
@@ -1010,7 +1454,7 @@ export function TelemetryUnified() {
             ? ` · 검색 매치 ${displayItems.length.toLocaleString()}건`
             : ''}
           ${condensed.groups > 0
-            ? ` · 반복 그룹 ${condensed.groups.toLocaleString()}개 · 원본 ${condensed.groupedEntries.toLocaleString()}건`
+            ? ` · 접힌 그룹 ${condensed.groups.toLocaleString()}개 · 원본 ${condensed.groupedEntries.toLocaleString()}건`
             : ''}
         </div>
         ${condensed.groups > 0 ? html`
@@ -1030,8 +1474,8 @@ export function TelemetryUnified() {
         <div class="max-h-150 overflow-y-auto">
           ${displayItems.length > 0
             ? displayItems.map(item => item.kind === 'group'
-              ? html`<${GroupRow} key=${item.key} item=${item} />`
-              : html`<${EntryRow} key=${item.key} entry=${item.entry} />`)
+              ? html`<${GroupRow} key=${item.key} item=${item} routeFocused=${routeFocusedItemKeys.has(item.key)} />`
+              : html`<${EntryRow} key=${item.key} entry=${item.entry} routeFocused=${routeFocusedItemKeys.has(item.key)} />`)
             : isFilteringEntries && allDisplayItems.length > 0
               ? html`<div class="px-4 py-6 text-sm text-[var(--color-fg-muted)]">필터 결과 없음 (${allDisplayItems.length} items)</div>`
               : html`<div class="px-4 py-6 text-sm text-[var(--color-fg-muted)]">선택한 scope에 해당하는 MASC telemetry entry가 없습니다.</div>`}

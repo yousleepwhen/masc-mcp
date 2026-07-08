@@ -3,6 +3,7 @@ import {
   extractLaneValue,
   displayState,
   fmtDuration,
+  failureReasonLabel,
   STATE_DISPLAY_NAMES,
   LANE_LABELS,
   INVARIANT_LABELS,
@@ -31,7 +32,10 @@ function snapshot(overrides: Partial<KeeperCompositeSnapshot> = {}): KeeperCompo
       no_cascade_before_measurement: true,
       compaction_atomicity: true,
       event_priority_monotone: true,
+      phase_derivation_agreement: true,
     },
+    fsm_guard_violations: 0,
+    fsm_guard_violation_breakdown: [],
     is_live: false,
     last_outcome: null,
     recommended_actions: [],
@@ -73,7 +77,7 @@ describe('extractLaneValue', () => {
 
   it('handles all valid turn values', () => {
     const turns: KeeperCompositeSnapshot['turn_phase'][] = [
-      'idle', 'prompting', 'executing', 'compacting', 'finalizing',
+      'idle', 'prompting', 'routing', 'executing', 'compacting', 'finalizing', 'exhausted',
     ]
     for (const turn of turns) {
       expect(extractLaneValue(snapshot({ turn_phase: turn }), 'turn')).toBe(turn)
@@ -86,8 +90,8 @@ describe('displayState', () => {
     expect(displayState('idle')).toBe('대기')
     expect(displayState('executing')).toBe('실행 중')
     expect(displayState('Crashed')).toBe('비정상 종료')
-    expect(displayState('Paused')).toBe('일시 중지')
-    expect(displayState('paused')).toBe('일시 중지')
+    expect(displayState('Paused')).toBe('일시정지')
+    expect(displayState('paused')).toBe('일시정지')
     expect(displayState('crashed')).toBe('비정상 종료')
   })
 
@@ -143,11 +147,12 @@ describe('constants', () => {
     expect(keys).toEqual(['phase', 'turn', 'decision', 'cascade', 'compaction', 'breaker'])
   })
 
-  it('INVARIANT_LABELS has all 4 invariants', () => {
+  it('INVARIANT_LABELS has all 5 invariants', () => {
     const keys = Object.keys(INVARIANT_LABELS)
-    expect(keys).toHaveLength(4)
+    expect(keys).toHaveLength(5)
     expect(keys).toContain('phase_turn_alignment')
     expect(keys).toContain('compaction_atomicity')
+    expect(keys).toContain('phase_derivation_agreement')
   })
 
   it('MAX_OBSERVATIONS and MAX_TRANSITION_HISTORY are positive', () => {
@@ -156,12 +161,34 @@ describe('constants', () => {
   })
 })
 
+describe('failureReasonLabel', () => {
+  it('maps known bases to Korean', () => {
+    expect(failureReasonLabel('heartbeat_consecutive_failures')).toBe('하트비트 연속 실패')
+    expect(failureReasonLabel('exception')).toBe('런타임 예외')
+  })
+
+  it('preserves parametric detail after the base', () => {
+    expect(failureReasonLabel('heartbeat_consecutive_failures(3)')).toBe('하트비트 연속 실패(3)')
+    expect(failureReasonLabel('tool_required_unsatisfied(code:detail)')).toBe('필수 도구 미충족(code:detail)')
+  })
+
+  it('falls back to raw string for unknown bases', () => {
+    expect(failureReasonLabel('mystery_failure')).toBe('mystery_failure')
+    expect(failureReasonLabel('unknown(42)')).toBe('unknown(42)')
+  })
+
+  it('returns null for empty / null / undefined inputs', () => {
+    expect(failureReasonLabel(null)).toBeNull()
+    expect(failureReasonLabel(undefined)).toBeNull()
+    expect(failureReasonLabel('')).toBeNull()
+    expect(failureReasonLabel('   ')).toBeNull()
+  })
+})
+
 describe('initialHubState', () => {
   it('has correct initial values', () => {
     expect(initialHubState.keeperName).toBeNull()
-    expect(initialHubState.snapshot).toBeNull()
-    expect(initialHubState.loading).toBe(false)
-    expect(initialHubState.error).toBeNull()
+    expect(initialHubState.status.kind).toBe('idle')
     expect(initialHubState.observations).toEqual([])
     expect(initialHubState.invariantSampleCount).toBe(0)
   })

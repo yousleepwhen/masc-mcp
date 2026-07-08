@@ -70,7 +70,7 @@ val force_cancel_task_r :
 
 val link_task_execution_artifacts_r :
   config -> task_id:string ->
-  ?session_id:string -> ?operation_id:string -> ?autoresearch_loop_id:string ->
+  ?session_id:string -> ?operation_id:string ->
   unit -> string Masc_domain.masc_result
 
 (** {1 Re-exported type (backward compatibility)} *)
@@ -84,5 +84,15 @@ type claim_next_result = Masc_domain.claim_next_result =
       message : string;
     }
   | Claim_next_no_unclaimed
-  | Claim_next_no_eligible of { excluded_count : int }
+  | Claim_next_no_eligible of
+      { excluded_count : int
+      ; blocked_count : int
+      ; verification_blocked_count : int
+      ; scope_excluded_count : int
+      ; required_tool_excluded_count : int
+      ; explicit_excluded_count : int
+      ; claim_pool_candidate_count : int
+      ; receipt_required_tool_blocked : bool
+      ; agent_tool_names_known : bool
+      }
   | Claim_next_error of string

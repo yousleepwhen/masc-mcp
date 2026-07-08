@@ -23,12 +23,17 @@ val supervise_keepalive :
 (** {1 Watchdog} *)
 
 val fork_stale_watchdog :
-  'a context -> keeper_meta -> Keeper_registry.registry_entry -> unit
+     'a context
+  -> keeper_meta
+  -> ?startup_warmup_sec:int
+  -> Keeper_registry.registry_entry
+  -> unit
 (** Fork a stale-turn watchdog fiber for the given keeper.  This is a
     re-export of {!Keeper_stale_watchdog.fork_stale_watchdog}; see
     that module's docstring for the authoritative description of the
-    three detection modes ([Idle_turn] / [In_turn_hung] /
-    [Noop_failure_loop]) and per-class Prometheus counter. *)
+    four detection modes ([Idle_turn] / [In_turn_hung] /
+    [Mid_turn_no_progress] / [Noop_failure_loop]) and per-class
+    Prometheus counter. *)
 
 (** {1 Sweep and Recovery} *)
 
@@ -47,49 +52,31 @@ val backoff_delay : int -> float
 val keep_last_n : int -> 'a -> 'a list -> 'a list
 (** [keep_last_n n item lst] prepends [item] and keeps at most [n] entries. *)
 
-val supervision_cohort_size : int
-(** Target keeper count per supervisor cohort.  The first 2-level
-    supervision slice groups the 64-keeper fleet as 8 cohorts of 8. *)
+val persona_name_for_drift_check : keeper_meta -> string
+(** Resolve the persona handle used by supervisor persona-drift checks.
+    Honors keeper TOML [persona_name] overlays before falling back to
+    the keeper name. *)
 
-type supervision_cohort = {
-  cohort_id : int;
-  keepers : Keeper_registry.registry_entry list;
-}
-(** Deterministic keeper cohort used by the supervisor sweep. *)
+val persona_profile_path_for_drift_check :
+  base_path:string -> string -> string
+(** Return the concrete persona [profile.json] path reported by supervisor
+    drift diagnostics. *)
 
-val supervision_cohorts :
-  ?cohort_size:int ->
-  Keeper_registry.registry_entry list ->
-  supervision_cohort list
-(** Sort and chunk registry entries into deterministic supervisor cohorts.
-    [cohort_size <= 0] is coerced to 1. *)
+(** supervision_cohort type + cohort/persona helpers live in
+    Keeper_supervisor_types (intra-library file split, 2026-05-16).
+    Re-exported here so existing callers keep using
+    [Keeper_supervisor.supervision_cohort] etc. unchanged. *)
+include module type of Keeper_supervisor_types
 
-val fresh_supervision_cohort_keepers :
-  base_path:string ->
-  supervision_cohort ->
-  Keeper_registry.registry_entry list
-(** Re-read a cohort's keeper entries from the registry by name. Entries that
-    disappeared since the original sweep snapshot are omitted. *)
-
-val iter_supervision_cohorts :
-  ?yield_between:(unit -> unit) ->
-  supervision_cohort list ->
-  f:(supervision_cohort -> unit) ->
-  unit
-(** Iterate cohorts in order and yield only between cohort boundaries. *)
-
-val next_auto_resume_after_sec :
-  initial_sec:float -> max_sec:float -> float option -> float option
-(** Compute the next auto-resume backoff delay after an auto-pause.  [None]
-    means this is the first auto-pause; [Some sec] means the previous
-    backoff should double up to [max_sec].  [initial_sec <= 0] disables
-    auto-resume. *)
-
-val should_cleanup_dead : now:float -> dead_ttl_sec:float -> Keeper_registry.registry_entry -> bool
-(** True when a dead tombstone has exceeded the configured TTL. *)
 
 val cohort_key_of_reason : Keeper_registry.failure_reason option -> string
 (** Map a structured failure_reason to a cohort key for self-preservation grouping. *)
+
+val failure_reason_policy_decision_for_test :
+  Keeper_registry.failure_reason option -> Keeper_failure_policy.decision option
+(** Pure supervisor-side bridge from registry failure reasons into the
+    keeper failure policy matrix. Exposed for regression tests so pause-vs-restart
+    lifecycle ownership remains pinned to [Keeper_failure_policy]. *)
 
 val apply_self_preservation :
   keepers_dir:string ->
@@ -150,30 +137,11 @@ val credential_recovery_before_restart_for_test :
 (** Test hook for the credential self-heal step used before liveness recovery
     relaunches a [credential_archived] keeper. *)
 
-val liveness_recovery_backoff : int -> float
-(** Compute the exponential backoff delay for liveness recovery attempt [n]. *)
-
-val should_attempt_liveness_recovery :
-  now:float -> Keeper_registry.registry_entry -> bool
-(** Pure predicate: true when a Dead keeper passes the eligibility gate for
-    a liveness recovery attempt.  Exposed for tests. *)
 
 (** {1 Alive-but-stuck detector (#12838)} *)
 
-val detect_alive_but_stuck :
-  now:float ->
-  stall_multiplier:int ->
-  stall_floor_sec:float ->
-  Keeper_registry.registry_entry ->
-  float option
-(** Pure detection: returns [Some elapsed_sec] when a non-Dead, non-paused
-    keeper has gone longer than
-    [max(stall_floor_sec, stall_multiplier * proactive.cooldown_sec)]
-    without a proactive turn while autonomous turns kept advancing.
-    Reference timestamp is the newer of [proactive_rt.last_ts] and
-    [entry.started_at] if proactive has fired, else [entry.started_at]
-    (covers the never-started case).  Returns [None] otherwise.  Exposed
-    for tests. *)
+(** detect_alive_but_stuck moved to Keeper_supervisor_types (intra-library
+    file split, 2026-05-16). Re-exported via include above. *)
 
 val alive_but_stuck_scan : 'a context -> unit
 (** Scan all keepers in [Keeper_registry].  For each keeper detected as

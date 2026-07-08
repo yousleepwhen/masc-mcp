@@ -1,25 +1,23 @@
 // MASC Dashboard — Operations Panel (Phase 5+6+7)
-// FilterChips toggle for ops/governance/safety/inspector sub-views.
-// Phase 7: connectors split out as a top-level surface (#command?view=connectors → #connectors).
+// FilterChips toggle for ops/governance/surfaces/inspector sub-views.
 
 import { html } from 'htm/preact'
-import { useEffect } from 'preact/hooks'
 import { FilterChips } from './common/filter-chips'
 import { Ops } from './ops'
 import { Governance } from './governance'
 import { LabInspector } from './lab-inspector'
-import { SafeAutonomyPanel } from './safe-autonomy'
+import { SurfaceReadinessPanel } from './surface-readiness-panel'
 import { replaceRoute, route } from '../router'
 
-type OpsView = 'default' | 'ops' | 'governance' | 'safety' | 'inspector'
+type OpsView = 'default' | 'ops' | 'governance' | 'surfaces' | 'inspector'
 
-const VALID_VIEWS: OpsView[] = ['default', 'ops', 'governance', 'safety', 'inspector']
+const VALID_VIEWS: OpsView[] = ['default', 'ops', 'governance', 'surfaces', 'inspector']
 
 const VIEW_CHIPS: { key: OpsView; label: string }[] = [
   { key: 'default', label: 'All' },
   { key: 'ops', label: 'Intervene' },
   { key: 'governance', label: 'Governance' },
-  { key: 'safety', label: 'Safety' },
+  { key: 'surfaces', label: 'Surfaces' },
   { key: 'inspector', label: 'Inspector' },
 ]
 
@@ -38,22 +36,7 @@ function updateViewParam(next: OpsView): void {
   )
 }
 
-// Legacy URL migration (Phase 7):
-// #command?section=operations&view=connectors → #connectors?section=connector-status
-function redirectLegacyConnectorsView(): void {
-  replaceRoute('connectors', { section: 'connector-status' })
-}
-
 export function OperationsPanel() {
-  const rawView = route.value.params.view
-  const isLegacyConnectors = rawView === 'connectors'
-
-  useEffect(() => {
-    if (isLegacyConnectors) redirectLegacyConnectorsView()
-  }, [isLegacyConnectors])
-
-  if (isLegacyConnectors) return null
-
   const view = currentView()
 
   return html`
@@ -70,8 +53,8 @@ export function OperationsPanel() {
         ? html`<${Ops} />`
       : view === 'governance'
         ? html`<${Governance} />`
-      : view === 'safety'
-        ? html`<${SafeAutonomyPanel} />`
+      : view === 'surfaces'
+        ? html`<${SurfaceReadinessPanel} />`
       : view === 'inspector'
         ? html`<${LabInspector} />`
       : html`
@@ -80,7 +63,7 @@ export function OperationsPanel() {
               <${Governance} />
             </div>
             <div class="mt-4">
-              <${SafeAutonomyPanel} />
+              <${SurfaceReadinessPanel} />
             </div>
           `}
     </div>

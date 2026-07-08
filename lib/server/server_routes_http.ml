@@ -16,7 +16,7 @@ let make_routes ~port ~host ~sw ~clock =
      the callback. *)
   Server_routes_http_routes_multimodal.bind_workspace_getter
     Multimodal.Workspace_holder.get;
-  Http.Router.empty
+  Http.Router.create ()
   |> Server_routes_http_routes_frontend.add_routes ~port ~host
   |> Server_routes_http_routes_room.add_routes
   |> Server_routes_http_routes_dashboard.add_routes ~sw ~clock
@@ -26,14 +26,14 @@ let make_routes ~port ~host ~sw ~clock =
   |> Server_routes_http_routes_attribution.add_routes
   |> Server_routes_http_routes_activity.add_routes ~sw ~clock
   |> Server_routes_http_routes_artifacts.add_routes
-  |> Server_routes_http_routes_git_graph.add_routes
   |> Server_routes_http_routes_multimodal.add_routes
   |> Server_routes_http_routes_autonomous.add_routes
   |> Server_routes_http_routes_resilience.add_routes
-  |> Server_routes_http_routes_legendary_bash.add_routes ~sw ~clock
   |> Server_routes_http_routes_channel_gate.add_routes ~sw ~clock
   |> Server_routes_http_routes_sidecar.add_routes ~sw ~clock
   |> Server_routes_http_routes_repositories.add_routes
   |> Server_routes_http_routes_workspace.add_routes
+  |> Server_ide_http.add_routes
+  |> Server_ide_lsp_proxy.add_routes ~sw ~clock
   |> Server_routes_http_routes_credentials.add_routes
   |> Server_routes_http_routes_keeper_repos.add_routes

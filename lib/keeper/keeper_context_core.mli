@@ -8,7 +8,6 @@
     repair helpers stay private. *)
 
 type working_context = Keeper_types.working_context
-type checkpoint = Keeper_types.checkpoint
 type session_context = Keeper_types.session_context
 
 (** Default cap on checkpoint messages persisted at save-time. *)
@@ -53,6 +52,12 @@ val sync_oas_context : working_context -> working_context
 (** {1 Working-context projections} *)
 
 val checkpoint_of_context : working_context -> Agent_sdk.Checkpoint.t
+val resume_checkpoint_of_context :
+  max_checkpoint_messages:int -> working_context -> Agent_sdk.Checkpoint.t
+(** Project [working_context] to the checkpoint passed to OAS resume,
+    applying the same message count, old-tool-result, per-block, and
+    total-content caps used by {!save_oas_checkpoint}. *)
+
 val oas_context_of_context : working_context -> Agent_sdk.Context.t
 val system_prompt_of_context : working_context -> string
 val messages_of_context : working_context -> Agent_sdk.Types.message list
@@ -64,10 +69,6 @@ val role_to_string : Agent_sdk.Types.role -> string
 (** [Some] only for the four wire-format names; callers must
     handle [None] explicitly (#8623). *)
 val role_of_string_opt : string -> Agent_sdk.Types.role option
-
-(** Backwards-compatible wrapper that defaults unknown roles to
-    [Tool] with a warn log (#8623). *)
-val role_of_string : string -> Agent_sdk.Types.role
 
 val message_to_json : Agent_sdk.Types.message -> Yojson.Safe.t
 val message_of_json : Yojson.Safe.t -> Agent_sdk.Types.message
@@ -83,15 +84,28 @@ val text_of_history_jsonl_json : Yojson.Safe.t -> string
 val repair_broken_tool_call_pairs :
   Agent_sdk.Types.message list -> Agent_sdk.Types.message list
 
+type tool_pair_repair_stats =
+  { downgraded_tool_uses : int
+  ; downgraded_tool_results : int
+  }
+
+val tool_pair_repair_stats_changed : tool_pair_repair_stats -> bool
+
+val pair_repair_metadata_key : string
+(** Message metadata key carrying bounded provenance for tool-pair repair
+    fabrications. Repaired messages also carry [was_fabricated=true]. *)
+
+(** Same repair as {!repair_broken_tool_call_pairs}, plus counters for
+    ToolUse/ToolResult blocks downgraded to plain text. This keeps the
+    repair path observable without changing the legacy return type. *)
+val repair_broken_tool_call_pairs_with_stats :
+  Agent_sdk.Types.message list -> Agent_sdk.Types.message list * tool_pair_repair_stats
+
 (** {1 Context (de)serialization} *)
 
 val serialize_context : working_context -> string
 val deserialize_context : string -> max_tokens:int -> working_context
 val context_to_json : working_context -> Yojson.Safe.t
-
-(** {1 Checkpoint creation / restoration} *)
-
-val create_checkpoint : working_context -> generation:int -> checkpoint
 
 (** {1 Session lifecycle} *)
 
@@ -130,12 +144,8 @@ val persist_message :
 val timed : (unit -> 'a) -> 'a * int
 val zero_usage : Agent_sdk.Types.api_usage
 val usage_of_response :
-  Oas_response.api_response -> Agent_sdk.Types.api_usage
+  Agent_sdk_response.api_response -> Agent_sdk.Types.api_usage
 val total_tokens : Agent_sdk.Types.api_usage -> int
-
-(** {1 Checkpoint store delegation} *)
-
-val save_session_checkpoint : session_context -> checkpoint -> unit
 
 (** Save the current working context as a generation-tagged OAS
     checkpoint (truncated, sanitized, repaired). *)
@@ -148,12 +158,6 @@ val save_oas_checkpoint :
   generation:int ->
   (Agent_sdk.Checkpoint.t, string) result
 
-(** Wrap [create_checkpoint] + [save_session_checkpoint] for the
-    legacy on-disk checkpoint store; returns the persisted
-    checkpoint so callers can use it without re-reading from disk. *)
-val save_checkpoint :
-  session_context -> working_context -> generation:int -> checkpoint
-
 (** {1 OAS checkpoint inspection} *)
 
 val checkpoint_generation : Agent_sdk.Checkpoint.t -> fallback:int -> int
@@ -161,7 +165,7 @@ val checkpoint_max_tokens : Agent_sdk.Checkpoint.t -> fallback:int -> int
 
 (** Drop orphan [tool_result] blocks (those without a matching
     preceding [tool_use]) so a checkpoint payload satisfies the
-    Anthropic API invariant that every tool_result references a known
+    Provider_a API invariant that every tool_result references a known
     tool_use. Public so [Keeper_rollover] / [Keeper_post_turn] can
     reuse it before persisting a checkpoint. *)
 val repair_orphan_tool_result_messages :
@@ -188,21 +192,16 @@ val sanitize_oas_checkpoint :
 val checkpoint_sanitize_changed : checkpoint_sanitize_stats -> bool
 (** [true] iff any of the counters in [stats] is non-zero. *)
 
-(** Load the newest legacy checkpoint persisted under
-    [session.session_dir]; returns [None] when nothing has been
-    persisted yet. *)
-val load_latest_checkpoint : session_context -> checkpoint option
-
-(** Recover a [working_context] from the legacy on-disk checkpoint
-    shape, capping by [primary_model_max_tokens]. *)
-val context_of_legacy_checkpoint :
-  checkpoint -> primary_model_max_tokens:int -> working_context
-
 val default_max_checkpoint_tool_result_chars : int
 (** Per-tool-result text cap (in chars) applied when projecting
-    Anthropic [tool_result] blocks into a checkpoint. Beyond this
+    Provider_a [tool_result] blocks into a checkpoint. Beyond this
     threshold the payload collapses to a stub so a single
     orphan-repair pass cannot inflate one block to multi-MB. *)
+
+val default_max_checkpoint_content_chars_total : int
+(** Total persisted Text/tool_result content budget across the retained
+    checkpoint message list. The newest messages are kept first; older
+    messages are truncated or dropped once this budget is exhausted. *)
 
 val tool_result_text_of_block :
   tool_use_id:string ->
@@ -242,7 +241,7 @@ val context_of_oas_checkpoint :
   primary_model_max_tokens:int ->
   working_context
 
-(** Load the latest OAS / legacy checkpoint for a given
+(** Load the canonical OAS checkpoint for a given
     [trace_id]. Returns the session plus the recovered
     working_context (or [None] when nothing was found). *)
 val load_context_from_checkpoint :

@@ -1,9 +1,10 @@
 ---
 status: reference
-last_verified: 2026-04-17
+last_verified: 2026-05-15
 code_refs:
   - lib/verifier_oas.ml
   - lib/memory_oas_bridge.ml
+  - lib/keeper/keeper_agent_error.ml
   - lib/worker_oas.ml
 ---
 
@@ -174,11 +175,11 @@ type run_result = {
 
 `run_named`가 cascade 이름 기반 MODEL 호출을 제공한다:
 
-1. `cascade.json`에서 `{name}_models` 목록 조회 (hot-reloadable)
-2. `Cascade_config.parse_model_strings`로 `Provider_config.t list` 생성
-3. MASC가 `Cascade_fsm.decide`로 cascade FSM을 직접 구동
-4. 각 provider에 대해 OAS single-provider `Agent.run` 호출
-5. `accept` 콜백으로 응답 유효성 검증
+1. `cascade.toml`의 `[routes.*]` 대상 또는 호출자가 지정한 프로필 이름을 RFC-0058 declarative catalog에서 해석한다.
+2. 대상은 `[tier.<name>]` / `[tier-group.<name>]` / binding alias로 resolve되고, `Cascade_catalog_runtime`이 ordered weighted entries를 `Provider_config.t list`로 변환한다.
+3. MASC가 `Cascade_fsm.decide`로 cascade FSM을 직접 구동한다.
+4. 각 provider에 대해 OAS single-provider `Agent.run`을 호출한다.
+5. `accept` 콜백으로 응답 유효성을 검증한다.
 
 관측 경계:
 - MASC는 configured labels, resolved candidate models, 최종 selected model은 관측 가능
@@ -186,14 +187,38 @@ type run_result = {
 - `raw_trace`에는 아직 provider attempt record가 없으므로 raw-trace만으로는 opaque 하다
 - 따라서 attempt details source는 `oas_metrics_callbacks` 또는 `no_oas_observation`처럼 경계를 명시한다
 
-Hardcoded fallback (cascade.json 없을 때):
+Runtime failsafe fallback (cascade.toml 없을 때):
 - `llama:{MASC_DEFAULT_MODEL}` (로컬)
-- `glm:auto` (ZAI_API_KEY 존재 시)
+- `provider-k:auto` (ZAI_API_KEY 존재 시)
 
-이 fallback은 runtime failsafe다. 저장소에 커밋되는 `config/cascade.json`
+이 fallback은 runtime failsafe다. 저장소에 커밋되는 `config/cascade.toml`
 기본값과 동일시하지 않는다.
 
-### 4.6 MASC Tool Bridge
+### 4.6 Termination Semantics
+
+OAS와 MASC는 "turn"과 "timeout"을 같은 layer에서 쓰지 않는다. OAS
+`Agent.run`의 `MaxTurnsExceeded`는 OAS SDK turn budget이고, keeper
+wall-clock timeout이나 provider timeout과 동일한 개념이 아니다.
+
+`lib/keeper/keeper_agent_error.ml`의 `sdk_termination_semantics`가 OAS
+error를 keeper receipt로 접기 전 layer-aware 의미를 먼저 고정한다:
+
+| OAS / SDK signal | MASC semantic | Receipt outcome |
+|------------------|---------------|-----------------|
+| `Retry.Timeout` | `provider_wall_clock_timeout` | `cancelled` |
+| `MaxTurnsExceeded` | `oas_turn_budget_exhausted` | `cancelled` |
+| `IdleDetected` | `oas_idle_budget_exhausted` | `cancelled` |
+| `ExitConditionMet` | `oas_exit_condition_reached` | `cancelled` |
+| `TokenBudgetExceeded` | `oas_token_budget_exhausted` | `error` |
+| `CostBudgetExceeded` | `oas_cost_budget_exhausted` | `error` |
+| other SDK/API failure | `sdk_error_failure` or specific OAS failure semantic | `error` |
+
+Invariant: new OAS terminal variants must first be assigned a stable
+`sdk_termination_semantics` value, then mapped to keeper receipt outcome.
+Tests in `test/test_keeper_terminal_reason.ml` pin the semantic layer and the
+collapsed receipt outcome separately.
+
+### 4.7 MASC Tool Bridge
 
 `run_with_masc_tools`와 `run_named_with_masc_tools`가 MASC 도구 스키마를 OAS `Tool.t`로 변환한다.
 
@@ -230,23 +255,32 @@ MASC Types.tool_schema
 
 ### 6.1 Cascade Name Resolution
 
-MASC는 직접 model_spec을 관리하지 않는다. `cascade_name`을 OAS에 넘기고, OAS `Cascade_config`가 실제 provider 선택을 수행한다.
+MASC owns cascade name resolution. The keeper path resolves `cascade_name`
+through the active MASC catalog and then calls OAS as a single-provider runtime
+for each selected attempt. OAS provider catalog and capability manifests are
+generic execution contracts; they are not the MASC cascade plane.
 
 ```
 cascade_name (e.g. "keeper", "verifier", "context_router")
-  -> config/cascade.json 에서 "{name}_models" 목록 조회
-  -> OAS Cascade_config.resolve_model_strings
-  -> OAS Cascade_config.parse_model_strings
-  -> Provider_config.t list (ordered by priority)
+  -> config/cascade.toml [routes] / profile lookup
+  -> MASC catalog model labels
+  -> MASC/OAS adapter resolves labels against OAS Provider_registry/catalog
+  -> Provider_config.t list (ordered by MASC policy)
+  -> OAS Agent.run single provider per attempt
 ```
+
+Provider/model-free here means MASC policy code does not branch on vendor or
+model literals. Provider/model ids remain operator-authored config data and may
+come from an OAS provider catalog for cloud APIs, local Provider-D-compatible
+servers, or non-interactive subscription CLI runtimes.
 
 ### 6.2 Cascade Inference Parameters
 
-`cascade_inference.ml`이 cascade.json에서 per-cascade 추론 파라미터를 읽는다:
+`cascade_inference.ml`이 cascade.toml에서 per-cascade 추론 파라미터를 읽는다:
 
 ```json
 {
-  "keeper_models": ["llama:qwen3.5", "glm:glm-5.1"],
+  "keeper_models": ["llama:qwen3.5", "provider-k:provider-k-5.1"],
   "keeper_temperature": 0.7,
   "keeper_max_tokens": 4096,
   "default_temperature": 0.5,
@@ -285,7 +319,7 @@ val tool_result : ?is_error:bool -> tool_use_id:string -> content:string
   -> unit -> Agent_sdk.Types.message
 ```
 
-### 7.2 Oas_response
+### 7.2 Agent_sdk_response
 
 `oas_response.ml`은 OAS 응답 읽기 헬퍼:
 
@@ -315,13 +349,8 @@ MASC 조율 이벤트를 OAS `Event_bus`에 `Custom("masc:<type>", json)` 형식
 | `masc:board_post` | board post 생성 |
 | `masc:task_transition` | task 상태 변경 |
 | `masc:heartbeat_recovered` | timeout 복구 |
-| `masc:autonomy:agent_selected` | Thompson Sampling 선택 |
-| `masc:autonomy:agent_decision` | MODEL 행동 결정 |
-| `masc:autonomy:agent_action_executed` | 행동 실행 완료 |
 | `masc:keeper:snapshot` | keeper 상태 스냅샷 |
 | `masc:keeper:lifecycle` | keeper 시작/중단/충돌/재시작 |
-| `masc:trust_updated` | 신뢰 점수 갱신 |
-| `masc:reputation_changed` | 평판 변경 |
 | `masc:institution_episode` | institution 에피소드 기록 |
 
 ### 8.2 SSE Relay (oas_event_bridge.ml)
@@ -368,7 +397,7 @@ SSOT rules:
 PreToolUse event
   -> should_skip? (read-only 패턴 매칭)
     -> Yes: Pass (MODEL 호출 없음)
-    -> No: build_prompt -> Oas_worker.run_named(cascade="verifier")
+    -> No: build_prompt -> Keeper_turn_driver.run_named(cascade="verifier")
       -> parse_verdict (PASS/WARN/FAIL)
 ```
 
@@ -414,8 +443,9 @@ Static pre-filtering은 OAS Guardrails가, stateful per-call checks는 Eval_gate
 `memory_oas_bridge.ml`은 MASC 메모리를 OAS `Memory.t` 5-tier에 연결한다. 상세는 12-memory-systems.md 9절 참조.
 
 핵심 API:
-- `create_memory_full`: 5-tier 전체를 seed하는 팩토리
-- `flush_all`: Agent.run 완료 후 episodic + procedural flush
+- `create_memory`: filesystem-first JSONL long_term backend가 연결된 OAS `Memory.t` 생성
+- `load_episodes_text` / `load_procedures_text` / `load_world_text`: hook-first prompt injection용 read path
+- `flush_incremental`: Agent.run 완료 후 episodic + procedural flush
 - `make_backend`: filesystem-first JSONL long_term_backend 선택
 
 ---
@@ -429,10 +459,10 @@ Static pre-filtering은 OAS Guardrails가, stateful per-call checks는 Eval_gate
 | Event_bus bridge | Complete | OAS native/custom events are relayed to SSE and persisted under `.masc/oas-events/` |
 | Dashboard OAS runtime health | Complete | dashboard health uses `durable replay + live tail`, not live-only counters |
 | Dashboard runtime counts | Complete | dashboard `counts` carries active runtimes and `configured_keepers` carries inventory |
-| Checkpoint | Partial | shared worker/runtime paths는 OAS Checkpoint를 사용한다. Public `Oas_worker` surface의 extra checkpoint JSON은 neutral `checkpoint_sidecar` 이름을 쓰지만 keeper 경로는 여전히 `lib/keeper/keeper_exec_context.ml`의 wrapper + serialized context를 유지 |
+| Checkpoint | Partial | shared worker/runtime paths는 OAS Checkpoint를 사용한다. Public `Oas_worker` surface의 extra checkpoint JSON은 neutral `checkpoint_sidecar` 이름을 쓰지만 keeper 경로는 여전히 `lib/keeper/keeper_context_runtime.ml`의 wrapper + serialized context를 유지 |
 | Memory bridge | Partial | Long_term + Episodic + Procedural bridged. Working/Scratchpad는 OAS 내부. 전체 통합은 미완 |
 | Team-session swarm | Partial | OAS Swarm runner 활성, bridge fidelity 불완전 |
-| Cascade config | Complete | cascade_name -> OAS Provider_registry -> Provider_config.t |
+| Cascade config | Complete | cascade_name -> MASC catalog/profile -> OAS Provider_registry/catalog -> Provider_config.t |
 | Verifier | Complete | PreToolUse hook + Guardrails adapter |
 | Model resolution | Complete | oas_model_resolve.ml이 Provider_Registry SSOT 사용 |
 | Tool bridge | Complete | MASC tool_schema -> OAS Tool.t 변환 |
@@ -445,7 +475,7 @@ Static pre-filtering은 OAS Guardrails가, stateful per-call checks는 Eval_gate
 | keeper `working_context` wrapper | Open | keeper runtime still wraps OAS context/checkpoint state |
 | keeper checkpoint nativeization | Open | keeper path still serializes MASC-owned context |
 | message marker leakage | Open | `[STATE]`, `[GOAL]`, memory-summary markers still carry domain semantics in raw text |
-| memory bridge hooks/callbacks | Open | seeding/flushing remains imperative in `memory_oas_bridge.ml` |
+| memory bridge hooks/callbacks | Complete for current bridge | imperative seeding was removed; read-side hook-first injection plus post-turn `flush_incremental` is the active contract |
 | team-session bridge fidelity | Open | healthcheck still calls out projection/resource-health gaps |
 
 Checkpoint truth / replay semantics for the first three ledger items are
@@ -458,13 +488,13 @@ Phase ordering follows `docs/design/checkpoint-truth-and-replay-rfc.md`.
 | Phase | Scope | Primary modules | Expected output |
 |------|-------|-----------------|-----------------|
 | A | truth surface cleanup | `keeper_checkpoint_store`, `keeper_agent_run`, `keeper_post_turn` | native OAS checkpoint is documented and treated as runtime truth |
-| B | replay semantics + side-effect boundary | `keeper_agent_run`, `keeper_post_turn`, `keeper_exec_shell`, `tool_code_write` | typed replay target facts and mutation-boundary rules |
-| C | wrapper reduction | `keeper_exec_context`, `keeper_agent_run`, `keeper_post_turn`, `context_compact_oas` | `working_context` dependency inventory and marker-leakage backlog |
+| B | replay semantics + side-effect boundary | `keeper_agent_run`, `keeper_post_turn`, `agent_tool_command_runtime`, `retired_file_write_tool` | typed replay target facts and mutation-boundary rules |
+| C | wrapper reduction | `keeper_context_runtime`, `keeper_agent_run`, `keeper_post_turn`, `context_compact_oas` | `working_context` dependency inventory and marker-leakage backlog |
 | D | optional delta path | `keeper_checkpoint_store`, `delta-checkpoint-read-path` | delta restore remains subordinate to full checkpoint truth |
 
 ### 12.1.2 Active Tasks
 
-- **A1** native OAS checkpoint truth wording and fallback ordering
+- **A1** native OAS checkpoint truth wording and legacy fallback removal
 - **A2** canonical vs derived continuity read-surface labeling
 - **B1** mutation-boundary typed fact inventory
 - **B2** side-effect class mapping against current write-gate behavior
@@ -481,7 +511,7 @@ Detailed implementation checklist lives in
 |---------|----------------|-------|
 | `oas_worker` / `worker_oas` / `verifier_oas` | Correct | MASC consumes OAS runtime/build/hook contracts without teaching OAS about room/task semantics |
 | `context_compact_oas` | Acceptable but lossy | OAS reducer is authoritative, but MASC marker heuristics still influence scoring |
-| `memory_oas_bridge` | Acceptable but lossy | consumer adapter is correct; lifecycle is still seed/flush driven rather than hook-first |
+| `memory_oas_bridge` | Acceptable | consumer adapter is correct; lifecycle is hook-first read injection plus post-turn flush |
 | keeper context/checkpoint continuity path | Boundary violation | duplicate runtime ownership + raw text continuity markers remain |
 
 ### 12.3 Priority Order
@@ -498,7 +528,7 @@ Detailed implementation checklist lives in
 1. **의존 방향은 단방향이다**: MASC -> OAS. OAS 코드에 MASC import가 존재하면 설계 위반이다.
 2. **MASC는 OAS Agent.run을 사용한다**: 에이전트 생명주기를 자체 재구현하지 않는다. `Cascade.call` 직접 사용은 금지.
 3. **Message 타입은 공유한다**: `Agent_sdk.Types.message`가 MASC와 OAS 모두의 메시지 타입이다. 변환 레이어 없음.
-4. **Cascade name이 model을 추상화한다**: MASC 코드에 구체적 모델 이름이 하드코딩되지 않는다. cascade_name -> cascade.json -> Provider_Registry 체인.
+4. **Cascade name이 model을 추상화한다**: MASC policy code에 구체적 provider/model 이름이 하드코딩되지 않는다. cascade_name -> cascade.toml/catalog -> Provider_registry/catalog 체인.
 5. **Event_bus prefix는 `masc:`이다**: MASC 이벤트는 반드시 이 prefix를 사용한다. SSE bridge가 이 prefix로 필터링한다.
 6. **Verifier는 read-only를 건너뛴다**: read/grep/search/status 류 도구는 MODEL 호출 없이 Pass를 반환한다.
 7. **Checkpoint는 session_id로 네임스페이스된다**: 동일 agent의 다른 세션 checkpoint와 충돌하지 않는다.
@@ -514,9 +544,9 @@ Detailed implementation checklist lives in
 | `MASC_CONTEXT_BUDGET_MAX` | 100,000 | Context budget 상한 |
 | `MASC_CONTEXT_ROUTER_MODE` | heuristic | Intent classification 모드 |
 | `MASC_MEMORY_OAS_DEFAULT_IMPORTANCE` | 5 | OAS Memory store 기본 importance |
-| `ZAI_API_KEY` | (없음) | GLM Cloud cascade fallback 활성화 |
+| `ZAI_API_KEY` | (없음) | Provider-K Cloud cascade fallback 활성화 |
 
-cascade.json 기반 변수는 환경변수가 아니라 config 파일에서 관리된다.
+cascade.toml 기반 변수는 환경변수가 아니라 config 파일에서 관리된다.
 
 ---
 

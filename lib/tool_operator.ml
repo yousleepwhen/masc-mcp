@@ -18,6 +18,8 @@ module Float = Stdlib.Float
 open Masc_domain
 open Tool_args
 
+type tool_result = Tool_result.result
+
 type 'a context = {
   config : Coord.config;
   agent_name : string;
@@ -28,7 +30,42 @@ type 'a context = {
   mcp_session_id : string option;
 }
 
-type tool_result = bool * string
+(* RFC-0189 PR-1b.11 — typed result.
+
+   [result_of_json] projects [Operator_control.*_json :
+   ... -> (Yojson.Safe.t, string) result] into the typed surface.
+
+   Success: [json] is the operator response envelope as
+   [Yojson.Safe.t]; passing it as [~data:json] keeps the structured
+   payload first-class.
+
+   Failure: wrapped through [Tool_args.error_response] (the legacy
+   JSON envelope shape). Class is [Workflow_rejection] — the
+   operator control plane rejects caller-side input (unknown
+   action, target not found, schema violation). When
+   [Operator_control] later distinguishes runtime / transient
+   failures via a typed Error variant, the construction site here
+   gets the appropriate class at that time. *)
+
+let envelope_data envelope : Yojson.Safe.t =
+  match Tool_result.structured_payload_of_message envelope with
+  | Some json -> json
+  | None -> `String envelope
+
+let result_of_json ~tool_name ~start_time = function
+  | Ok json ->
+      Tool_result.make_ok ~tool_name ~start_time ~data:json ()
+  | Error message ->
+      let envelope = Tool_args.error_response message in
+      Tool_result.make_err
+        ~tool_name
+        ~class_:Tool_result.Workflow_rejection
+        ~start_time
+        ~data:(envelope_data envelope)
+        envelope
+
+let json_ok ~tool_name ~start_time (json : Yojson.Safe.t) : Tool_result.result =
+  Tool_result.make_ok ~tool_name ~start_time ~data:json ()
 
 let schema_properties entries = `Assoc entries
 
@@ -38,28 +75,11 @@ let strict_action_enums =
     `String "namespace_pause";
     `String "namespace_resume";
     `String "social_sweep";
-    (* Issue #8417: [task_inject] has a real handler in
-       [Operator_control.dispatch] (line 119) and is advertised by
-       [Operator_pending_confirm.available_actions] (line 253).  It
-       was previously grouped with the legacy aliases, so the remote
-       operator MCP surface and the LLM judge never saw it and
-       couldn't discover the capability. The remaining entries in
-       [legacy_action_alias_enums] are genuine aliases
-       ([keeper_msg]→[keeper_message], [room_pause]→[namespace_pause],
-       [room_resume]→[namespace_resume], [autonomy_tick]→[social_sweep]). *)
     `String "task_inject";
-    `String "github_identity_login_prepare";
-    `String "github_identity_status";
     `String "keeper_message";
     `String "keeper_probe";
     `String "keeper_recover";
-    `String "keeper_github_identity_login_prepare";
-    `String "keeper_github_identity_status";
   ]
-
-let legacy_action_alias_enums =
-  [ `String "keeper_msg"; `String "room_pause"; `String "room_resume";
-    `String "autonomy_tick" ]
 
 let target_type_enums =
   [
@@ -96,7 +116,7 @@ let snapshot_schema ~remote =
         ];
   }
 
-let digest_target_type_enums = [ `String "root"; `String "namespace" ]
+let digest_target_type_enums = [ `String "root" ]
 let judgment_surface_enums =
   [
     `String "command.namespace";
@@ -150,9 +170,6 @@ let surface_audit_schema ~remote =
   }
 
 let action_schema ~remote =
-  let enum_values =
-    if remote then strict_action_enums else strict_action_enums @ legacy_action_alias_enums
-  in
   {
     name = "masc_operator_action";
     description =
@@ -172,7 +189,7 @@ let action_schema ~remote =
                   `Assoc
                     [
                       ("type", `String "string");
-                      ("enum", `List enum_values);
+                      ("enum", `List strict_action_enums);
                     ] );
                 ( "target_type",
                   `Assoc
@@ -257,11 +274,8 @@ let judgment_write_schema =
         ];
   }
 
-let json_string_of_result = function
-  | Ok json -> (true, Yojson.Safe.to_string json)
-  | Error message -> (false, Yojson.Safe.to_string (`Assoc [ ("status", `String "error"); ("message", `String message) ]))
-
-let dispatch (ctx : 'a context) ~name ~args : tool_result option =
+let dispatch (ctx : 'a context) ~name ~args : Tool_result.result option =
+  let start = Time_compat.now () in
   let control_ctx : 'a Operator_control.context =
     {
       config = ctx.config;
@@ -280,29 +294,37 @@ let dispatch (ctx : 'a context) ~name ~args : tool_result option =
       let include_messages = get_bool args "include_messages" true in
       let include_keepers = get_bool args "include_keepers" true in
       Some
-        ( true,
-          Yojson.Safe.to_string
-            (Operator_control.snapshot_json ?actor ?view ~include_messages
-               ~include_keepers control_ctx) )
+        (json_ok ~tool_name:name ~start_time:start
+           (Operator_control.snapshot_json ?actor ?view ~include_messages
+              ~include_keepers control_ctx))
   | "masc_operator_digest" ->
       let actor = get_string_opt args "actor" in
       let target_type = get_string_opt args "target_type" in
       let target_id = get_string_opt args "target_id" in
       let include_workers = get_bool args "include_workers" true in
       Some
-        (json_string_of_result
+        (result_of_json ~tool_name:name ~start_time:start
            (Operator_control.digest_json ?actor ?target_type ?target_id
               ~include_workers control_ctx))
   | "masc_operator_action" ->
-      Some (json_string_of_result (Operator_control.action_json control_ctx args))
+      Some
+        (result_of_json ~tool_name:name ~start_time:start
+           (Operator_control.action_json control_ctx args))
   | "masc_operator_confirm" ->
-      Some (json_string_of_result (Operator_control.confirm_json control_ctx args))
+      Some
+        (result_of_json ~tool_name:name ~start_time:start
+           (Operator_control.confirm_json control_ctx args))
   | "masc_surface_audit" ->
       let surface_id = get_string_opt args "surface_id" in
-      Some (true, Yojson.Safe.to_string (Dashboard_surface_readiness.json ?surface_id ()))
+      Some
+        (json_ok
+           ~tool_name:name
+           ~start_time:start
+           (Dashboard_surface_readiness.json ?surface_id ()))
   | "masc_operator_judgment_write" ->
       Some
-        (json_string_of_result (Operator_control.judgment_write_json control_ctx args))
+        (result_of_json ~tool_name:name ~start_time:start
+           (Operator_control.judgment_write_json control_ctx args))
   | _ -> None
 
 let schemas : tool_schema list =
@@ -331,12 +353,12 @@ let remote_tool_names : string list =
 (* Tool_spec registration                                           *)
 (* ================================================================ *)
 
-let _tool_spec_read_only = [ "masc_operator_snapshot"; "masc_operator_digest"; "masc_surface_audit" ]
-let _tool_spec_requires_join = [ "masc_operator_action"; "masc_operator_confirm" ]
+let tool_spec_read_only = [ "masc_operator_snapshot"; "masc_operator_digest"; "masc_surface_audit" ]
+let tool_spec_requires_join = [ "masc_operator_action"; "masc_operator_confirm" ]
 
 (* Tools with explicit catalog metadata that must be preserved. *)
-let _tool_spec_hidden = [ "masc_operator_judgment_write"; "masc_surface_audit" ]
-let _tool_spec_hidden_destructive = [ "masc_operator_action" ]
+let tool_spec_hidden = [ "masc_operator_judgment_write"; "masc_surface_audit" ]
+let tool_spec_hidden_destructive = [ "masc_operator_action" ]
 
 let tool_required_permission = function
   | "masc_operator_snapshot" | "masc_operator_digest" | "masc_surface_audit" ->
@@ -349,8 +371,8 @@ let tool_required_permission = function
 let () =
   List.iter
     (fun (s : tool_schema) ->
-      let is_destructive = List.mem s.name _tool_spec_hidden_destructive in
-      let is_hidden = List.mem s.name _tool_spec_hidden || is_destructive in
+      let is_destructive = List.mem s.name tool_spec_hidden_destructive in
+      let is_hidden = List.mem s.name tool_spec_hidden || is_destructive in
       let existing = Tool_catalog.metadata s.name in
       Tool_spec.register
         (Tool_spec.create
@@ -359,9 +381,9 @@ let () =
            ~module_tag:Tool_dispatch.Mod_operator
            ~input_schema:s.input_schema
            ~handler_binding:Tag_dispatch
-           ~is_read_only:(List.mem s.name _tool_spec_read_only)
-           ~is_idempotent:(List.mem s.name _tool_spec_read_only)
-           ~requires_join:(List.mem s.name _tool_spec_requires_join)
+           ~is_read_only:(List.mem s.name tool_spec_read_only)
+           ~is_idempotent:(List.mem s.name tool_spec_read_only)
+           ~requires_join:(List.mem s.name tool_spec_requires_join)
            ~visibility:(if is_hidden then Tool_catalog.Hidden else Tool_catalog.Default)
            ~is_destructive
            ~allow_direct_call_when_hidden:is_hidden

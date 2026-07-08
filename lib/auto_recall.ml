@@ -19,7 +19,6 @@ let file_name_match_bonus = 0.3
 
 (** {1 String Helpers} *)
 
-let string_contains = Dashboard_utils.string_contains
 
 
 (** {1 Types} *)
@@ -209,8 +208,8 @@ let fetch_from_file_context (room_config : Coord_utils.config) ~query =
     let name_lower = String.lowercase_ascii (Filename.basename path) in
     let content_lower = String.lowercase_ascii content in
     let name_match = if query <> "" && String.length query > 2 &&
-                        (string_contains ~needle:query_lower name_lower ||
-                         string_contains ~needle:query_lower content_lower)
+                        (Dashboard_utils.string_contains ~needle:query_lower name_lower ||
+                         Dashboard_utils.string_contains ~needle:query_lower content_lower)
                      then file_name_match_bonus else 0.0 in
     let recency = 1.0 -. (float_of_int i /. float_of_int (max 1 (List.length files))) in
     min 1.0 (file_base_relevance +. (recency *. file_recency_weight) +. name_match)
@@ -404,9 +403,8 @@ let extract_query_hints query =
 
 (* Byte-wise substring search (haystack already lowered, needle lowered
    inline).  Replaces a per-hint [Re.compile] that ran inside a
-   [List.exists]: with K hints and N items in [fetch_context_smart],
-   the old form built K × N regex DFAs even though each pattern was a
-   plain literal. *)
+   [List.exists]: with K hints and N items, the old form built K × N
+   regex DFAs even though each pattern was a plain literal. *)
 let contains_lowered_substring ~haystack_lower needle =
   let nlen = String.length needle in
   let hlen = String.length haystack_lower in
@@ -439,21 +437,3 @@ let content_matches_query content query =
       && contains_lowered_substring ~haystack_lower:content_lower hint
     ) hints
 
-(** Fetch context with query-based relevance boosting *)
-let fetch_context_smart
-    (room_config : Coord_utils.config)
-    ~(config : recall_config)
-    ~(query : string)
-    ()
-    : recall_result =
-  let result = fetch_context room_config ~config ~query () in
-  (* Boost relevance for items matching query *)
-  let boosted_items = List.map (fun item ->
-    if content_matches_query item.content query then
-      { item with relevance = min 1.0 (item.relevance +. 0.3) }
-    else
-      item
-  ) result.items in
-  (* Re-sort after boosting *)
-  let sorted = List.sort (fun a b -> compare b.relevance a.relevance) boosted_items in
-  { result with items = sorted }

@@ -5,8 +5,6 @@
     verdicts, friction projections, and memory-bank writes. *)
 
 (** Convert a list of strings to a JSON list of strings. *)
-val string_list_json : string list -> Yojson.Safe.t
-
 (** Artifact names for completeness gaps that block the verdict
     (sorted, deduplicated). *)
 val blocking_gap_artifacts :
@@ -32,7 +30,7 @@ val friction_activity_payload :
 
 (** Log a CDAL proof at debug (Completed) or warn level. *)
 val log_keeper_proof :
-  keeper_name:string -> Agent_sdk.Cdal_proof.t -> unit
+  keeper_name:string -> Masc_mcp_cdal_runtime.Cdal_proof.t -> unit
 
 (** Log a contract verdict at debug (Satisfied) or warn (Violated,
     Inconclusive) level. *)

@@ -4,11 +4,12 @@ import { useMemo } from 'preact/hooks'
 import type { KeeperCompositeSnapshot } from '../api/keeper'
 import { CytoscapeFsm } from './common/cytoscape-fsm'
 import { StatusChip, type StatusChipTone } from './common/status-chip'
+import { displayState, toolContractLabel } from './fsm-hub-types'
 import {
   buildTurnFsmSpec,
   normalizeTurnFsmState,
-  turnFsmTlaSymbol,
 } from './keeper-fsm-specs'
+import { normalizeStopCause } from '../lib/stop-cause'
 
 type TurnChipTone = 'accent' | 'neutral' | 'warn' | 'err' | 'ok'
 
@@ -28,24 +29,29 @@ export function turnFsmChipTone(tone: TurnChipTone): StatusChipTone {
   }
 }
 
+// `execution.outcome` wire format on the composite snapshot is the
+// TLA-prefix form emitted by `outcome_kind_to_tla_receipt`
+// (lib/keeper/keeper_execution_receipt.ml:24-29):
+//   `Ok        -> "receipt_done"
+//   `Skipped   -> "receipt_skipped"
+//   `Error     -> "receipt_failed"
+//   `Cancelled -> "receipt_cancelled"
+// The TLA ReceiptIsAuthoritative invariant fixes this canonical form
+// (keeper_execution_receipt.ml:54-58). The prior branches used short
+// forms the backend never emits on this field, so every receipt tone
+// fell through to 'neutral' regardless of actual outcome.
 export function terminalTone(outcome: string | null | undefined): 'neutral' | 'ok' | 'warn' | 'err' {
   switch (outcome) {
-    case 'done':
-    case 'skipped':
+    case 'receipt_done':
+    case 'receipt_skipped':
       return 'ok'
-    case 'cancelled':
+    case 'receipt_cancelled':
       return 'warn'
-    case 'failed':
-    case 'error':
+    case 'receipt_failed':
       return 'err'
     default:
       return 'neutral'
   }
-}
-
-export function isExactTurnProjection(rawTurnPhase: string, projected: string | null): boolean {
-  const normalized = rawTurnPhase.trim().toLowerCase()
-  return normalized === projected || (normalized === 'awaiting_tool' && projected === 'awaiting_tool_result')
 }
 
 export function TurnFsmDetailPanel({ snapshot }: { snapshot: KeeperCompositeSnapshot }) {
@@ -54,14 +60,14 @@ export function TurnFsmDetailPanel({ snapshot }: { snapshot: KeeperCompositeSnap
     [snapshot.turn_phase],
   )
   const projectedState = normalizeTurnFsmState(snapshot.turn_phase)
-  const tlaSymbol = projectedState ? turnFsmTlaSymbol(projectedState) : null
-  const isCoarse = projectedState ? !isExactTurnProjection(snapshot.turn_phase, projectedState) : false
   const execution = snapshot.execution
-  const terminalReason =
-    execution?.terminal_reason_code
-    ?? execution?.stop_reason
-    ?? execution?.error?.kind
-    ?? null
+  const stopCause = execution
+    ? normalizeStopCause({
+        terminal_reason_code: execution.terminal_reason_code,
+        stop_reason: execution.stop_reason,
+        error_kind: execution.error?.kind,
+      })
+    : null
 
   return html`
     <section
@@ -79,14 +85,7 @@ export function TurnFsmDetailPanel({ snapshot }: { snapshot: KeeperCompositeSnap
           </div>
         </div>
         <div class="flex flex-wrap items-center gap-1.5 text-3xs">
-          <${StatusChip} tone=${turnFsmChipTone(projectedState ? 'accent' : 'warn')} uppercase=${false} class="font-mono">${projectedState ?? 'unmapped'}</${StatusChip}>
-          <${StatusChip} tone="neutral" uppercase=${false} class="font-mono">KTC ${snapshot.turn_phase}</${StatusChip}>
-          ${isCoarse ? html`
-            <${StatusChip} tone="warn" uppercase=${false}>coarse legacy map</${StatusChip}>
-          ` : null}
-          ${tlaSymbol ? html`
-            <${StatusChip} tone="neutral" uppercase=${false} class="font-mono">TLA ${tlaSymbol}</${StatusChip}>
-          ` : null}
+          <${StatusChip} tone=${turnFsmChipTone(projectedState ? 'accent' : 'warn')} uppercase=${false} class="font-mono">${projectedState ? displayState(projectedState) : 'unmapped'}</${StatusChip}>
         </div>
       </div>
 
@@ -95,14 +94,11 @@ export function TurnFsmDetailPanel({ snapshot }: { snapshot: KeeperCompositeSnap
       ${execution ? html`
         <div class="flex flex-wrap items-center gap-1.5 text-3xs" aria-label="latest turn receipt summary">
           <${StatusChip} tone=${turnFsmChipTone(terminalTone(execution.outcome))} uppercase=${false}>receipt ${execution.outcome ?? 'unknown'}</${StatusChip}>
-          ${terminalReason ? html`
-            <${StatusChip} tone=${turnFsmChipTone(terminalTone(execution.outcome))} uppercase=${false} class="font-mono">reason ${terminalReason}</${StatusChip}>
+          ${stopCause ? html`
+            <${StatusChip} tone=${turnFsmChipTone(terminalTone(execution.outcome))} uppercase=${false} class="font-mono" title=${stopCause.source}>reason ${stopCause.code}</${StatusChip}>
           ` : null}
           ${execution.tool_contract_result ? html`
-            <${StatusChip} tone=${turnFsmChipTone(execution.tool_contract_result === 'violated' ? 'err' : 'neutral')} uppercase=${false} class="font-mono">tool ${execution.tool_contract_result}</${StatusChip}>
-          ` : null}
-          ${execution.model_used ? html`
-            <${StatusChip} tone="neutral" uppercase=${false} class="font-mono">model ${execution.model_used}</${StatusChip}>
+            <${StatusChip} tone=${turnFsmChipTone((execution.tool_contract_result === 'violated' || execution.tool_contract_result === 'missing_required_tool_use') ? 'err' : 'neutral')} uppercase=${false} class="font-mono" title=${execution.tool_contract_result}>tool ${toolContractLabel(execution.tool_contract_result)}</${StatusChip}>
           ` : null}
         </div>
       ` : null}

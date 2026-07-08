@@ -13,22 +13,26 @@
 (** {1 Provider outcome — result of attempting one provider} *)
 
 type provider_outcome =
-  | Call_ok of Llm_provider.Types.api_response
-  | Call_err of Llm_provider.Http_client.http_error
+  | Call_ok of Llm_provider.Types.api_response [@tla.symbol "call_ok"]
+  | Call_err of Llm_provider.Http_client.http_error [@tla.symbol "call_err"]
   | Accept_rejected of { response : Llm_provider.Types.api_response; reason : string }
-  | Slot_full
+      [@tla.symbol "accept_rejected"]
+[@@deriving tla]
 
 (** {1 Cascade decision — what to do next} *)
 
 type decision =
-  | Accept of Llm_provider.Types.api_response
+  | Accept of Llm_provider.Types.api_response [@tla.symbol "accept"]
       (** Provider succeeded and accept predicate passed. Done. *)
   | Accept_on_exhaustion of { response : Llm_provider.Types.api_response; reason : string }
+      [@tla.symbol "accept_on_exhaustion"]
       (** All providers rejected by accept, but [accept_on_exhaustion] is true.
           Return the last valid response as graceful degradation. *)
   | Try_next of { last_err : Llm_provider.Http_client.http_error option }
+      [@tla.symbol "try_next"]
       (** Current provider failed or was rejected. Try the next one. *)
   | Exhausted of { last_err : Llm_provider.Http_client.http_error option }
+      [@tla.symbol "exhausted"]
       (** All providers exhausted. Final failure. *)
 
 (** {1 Decision function} *)
@@ -46,8 +50,17 @@ val decide :
     - [Accept_rejected _] on last + not exhaustion → [Exhausted]
     - [Accept_rejected _] on non-last → [Try_next]
     - [Call_err _] on cascadeable error → [Try_next]
-    - [Call_err _] on non-cascadeable error → [Exhausted]
-    - [Slot_full] → [Try_next] *)
+    - [Call_err _] on non-cascadeable error → [Exhausted] *)
+
+val decide_and_record :
+  cascade_name:string ->
+  accept_on_exhaustion:bool ->
+  is_last:bool ->
+  provider_outcome ->
+  decision
+(** Observable wrapper around [decide]. Emits Prometheus counters for
+    cascade decisions, fallbacks, and exhaustion events before returning
+    the pure decision. *)
 
 (** {1 Error formatting} *)
 
@@ -67,7 +80,7 @@ val format_exhausted_error :
 
 val provider_outcome_to_string : provider_outcome -> string
 (** Short label for a provider outcome: ["call-ok"], ["call-err"],
-    ["accept-rejected"], ["slot-full"]. *)
+    ["accept-rejected"]. *)
 
 val provider_outcome_option_to_string : provider_outcome option -> string
 (** Same as [provider_outcome_to_string] wrapped with ["some-"] or ["none"].

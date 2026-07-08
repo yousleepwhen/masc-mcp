@@ -1,78 +1,8 @@
-(** Masc_http_client — cohttp-eio wrapper with explicit socket close.
+(** Masc_http_client — typed pool front-end for outbound HTTP.
 
-    cohttp-eio 6.1.1 does not reliably close the underlying TCP socket fd
-    when the Eio.Switch exits (observed on macOS). This module intercepts
-    the connection factory via [make_generic] to capture the raw socket and
-    close it explicitly on switch release.
-
-    All MASC code that makes outbound HTTP requests should use this module
-    instead of [Cohttp_eio.Client.make] directly.
-
-    @see <https://github.com/jeong-sik/masc-mcp/issues/3221> *)
-
-let make_closing_client ~sw ~net ~https =
-  let net = (net :> [ `Generic ] Eio.Net.ty Eio.Resource.t) in
-  let tracked_flows :
-    [ `Close | `Flow | `R | `Shutdown | `W ] Eio.Resource.t list ref =
-    ref []
-  in
-  let clone_resource resource =
-    let Eio.Resource.T (value, ops) = resource in
-    Eio.Resource.T (value, ops)
-  in
-  let register_flow flow =
-    tracked_flows := clone_resource flow :: !tracked_flows;
-    flow
-  in
-  let close_flow flow =
-    try Eio.Resource.close flow
-    with Eio.Cancel.Cancelled _ as e -> raise e | exn -> Printf.eprintf "[masc_http_client] close flow failed: %s\n%!" (Printexc.to_string exn)
-  in
-  let connect ~sw:conn_sw uri =
-    let service =
-      match Uri.port uri with
-      | Some port -> Int.to_string port
-      | _ -> Uri.scheme uri |> Option.value ~default:"http"
-    in
-    let addr =
-      match
-        Eio.Net.getaddrinfo_stream ~service net
-          (Uri.host_with_default ~default:"localhost" uri)
-      with
-      | ip :: _ -> ip
-      | [] -> raise (Invalid_argument "masc_http_client: failed to resolve hostname")
-    in
-    let sock = Eio.Net.connect ~sw:conn_sw net addr in
-    (* Return type must include `Close for cohttp-eio make_generic. *)
-    match Uri.scheme uri with
-    | Some "https" -> (
-        match https with
-        | Some wrap -> (
-            let wrapped =
-              try
-                wrap uri sock
-              with exn ->
-                close_flow
-                  (clone_resource
-                     (sock :> [ `Close | `Flow | `R | `Shutdown | `W ] Eio.Resource.t));
-                raise exn
-            in
-            tracked_flows :=
-              (clone_resource wrapped
-                :> [ `Close | `Flow | `R | `Shutdown | `W ] Eio.Resource.t)
-              :: !tracked_flows;
-            (wrapped :> [ `Close | `Flow | `R | `Shutdown | `W ] Eio.Resource.t))
-        | None -> raise (Invalid_argument "masc_http_client: HTTPS requested but not enabled"))
-    | _ ->
-        register_flow
-          (sock :> [ `Close | `Flow | `R | `Shutdown | `W ] Eio.Resource.t)
-  in
-  let client = Cohttp_eio.Client.make_generic connect in
-  Eio.Switch.on_release sw (fun () ->
-    let flows = !tracked_flows in
-    tracked_flows := [];
-    List.iter close_flow flows);
-  client
+    All callers go through the per-process [Pool.t] singleton via
+    [post_sync] / [get_sync] / [get_response_sync]; the pool owns the
+    underlying piaf transport, keep-alive, and TLS context cache. *)
 
 (** POST with structured error handling.
     DNS resolution, TLS, and I/O errors return Error instead of crashing the fiber. *)
@@ -104,87 +34,60 @@ let with_optional_timeout ?clock ?timeout_sec f =
           Error (Printf.sprintf "timeout after %.1fs" timeout_sec))
   | _ -> f ()
 
-let post_sync ?clock ?timeout_sec ~net ?(https = None) ~url ~headers ~body () =
+(* Per-process Pool singleton, lazily initialised on first use by
+   reading [sw] and [env] from [Eio_context]. *)
+let pool_ref : Pool.t option ref = ref None
+let pool_mu = Eio.Mutex.create ()
+
+let pool_init_error () =
+  Error
+    "masc_http_client: Eio_context.set_env not called — \
+     RFC-0107 Phase D pool cannot be initialized.  This indicates a \
+     bootstrap-order bug (Pool.request from before \
+     Server_runtime_bootstrap.create_server_state)."
+
+let with_pool f =
+  match !pool_ref with
+  | Some p -> f p
+  | None ->
+    Eio.Mutex.use_rw ~protect:false pool_mu (fun () ->
+      match !pool_ref with
+      | Some p -> f p
+      | None ->
+        (match Eio_context.get_switch_opt (), Eio_context.get_env_opt () with
+         | Some sw, Some env ->
+           let p = Pool.create ~sw ~env () in
+           pool_ref := Some p;
+           f p
+         | _ -> pool_init_error ()))
+
+let post_sync ?clock ?timeout_sec ~url ~headers ~body () =
   with_optional_timeout ?clock ?timeout_sec @@ fun () ->
-  try
-    Eio.Switch.run @@ fun sw ->
-    let client = make_closing_client ~sw ~net ~https in
-    let uri = Uri.of_string url in
-    let hdr =
-      Cohttp.Header.of_list (("connection", "close") :: headers)
-    in
-    let body_content = Eio.Flow.string_source body in
-    let resp, resp_body =
-      Cohttp_eio.Client.post client ~sw uri ~headers:hdr ~body:body_content
-    in
-    let code =
-      Cohttp.Response.status resp |> Cohttp.Code.code_of_status
-    in
-    let body_str =
-      let max_size = 8 * 1024 * 1024 in
-      let buf = Buffer.create 4096 in
-      let chunk = Cstruct.create 4096 in
-      let rec read_chunks () =
-        if Buffer.length buf > max_size then
-          raise (Failure (Printf.sprintf "masc_http_client: body size exceeds %d MB" (max_size / 1024 / 1024)))
-        else
-          match Eio.Flow.single_read resp_body chunk with
-          | n ->
-            Buffer.add_string buf (Cstruct.to_string ~off:0 ~len:n chunk);
-            Eio.Fiber.yield ();
-            read_chunks ()
-          | exception End_of_file -> Buffer.contents buf
-      in
-      read_chunks ()
-    in
-    Ok (code, body_str)
-  with
-  | Eio.Cancel.Cancelled _ as e -> raise e
-  | exn -> Error (Printexc.to_string exn)
+  with_pool @@ fun pool ->
+  match Pool.request pool ?clock ?timeout_seconds:timeout_sec
+          ~method_:`POST ~url ~headers ~body () with
+  | Ok { Pool.status; body; _ } -> Ok (status, body)
+  | Error e -> Error e
 
 (** GET with structured error handling. *)
-let get_response_sync ?clock ?timeout_sec ~net ?(https = None) ~url ~headers () =
+let get_response_sync ?clock ?timeout_sec ~url ~headers () =
   with_optional_timeout ?clock ?timeout_sec @@ fun () ->
-  try
-    Eio.Switch.run @@ fun sw ->
-    let client = make_closing_client ~sw ~net ~https in
-    let uri = Uri.of_string url in
-    let hdr =
-      Cohttp.Header.of_list (("connection", "close") :: headers)
-    in
-    let resp, resp_body =
-      Cohttp_eio.Client.get client ~sw ~headers:hdr uri
-    in
-    let code =
-      Cohttp.Response.status resp |> Cohttp.Code.code_of_status
-    in
-    let response_headers =
-      Cohttp.Response.headers resp |> Cohttp.Header.to_list
-    in
-    let body_str =
-      let max_size = 8 * 1024 * 1024 in
-      let buf = Buffer.create 4096 in
-      let chunk = Cstruct.create 4096 in
-      let rec read_chunks () =
-        if Buffer.length buf > max_size then
-          raise (Failure (Printf.sprintf "masc_http_client: body size exceeds %d MB" (max_size / 1024 / 1024)))
-        else
-          match Eio.Flow.single_read resp_body chunk with
-          | n ->
-            Buffer.add_string buf (Cstruct.to_string ~off:0 ~len:n chunk);
-            Eio.Fiber.yield ();
-            read_chunks ()
-          | exception End_of_file -> Buffer.contents buf
-      in
-      read_chunks ()
-    in
-    Ok { status = code; headers = response_headers; body = body_str }
-  with
-  | Eio.Cancel.Cancelled _ as e -> raise e
-  | exn -> Error (Printexc.to_string exn)
+  with_pool @@ fun pool ->
+  match Pool.request pool ?clock ?timeout_seconds:timeout_sec
+          ~method_:`GET ~url ~headers () with
+  | Ok { Pool.status; headers; body } ->
+    Ok { status; headers; body }
+  | Error e -> Error e
 
 (** GET with structured error handling. *)
-let get_sync ?clock ?timeout_sec ~net ?(https = None) ~url ~headers () =
-  match get_response_sync ?clock ?timeout_sec ~net ~https ~url ~headers () with
+let get_sync ?clock ?timeout_sec ~url ~headers () =
+  match get_response_sync ?clock ?timeout_sec ~url ~headers () with
   | Ok response -> Ok (response.status, response.body)
   | Error _ as error -> error
+
+(* Read-only accessor on the per-process pool singleton.  Returns
+   [None] before the first HTTP call so callers like [Pool_metrics]
+   can no-op instead of forcing the pool open just to read zeros. *)
+let pool_singleton_opt () : Pool.t option = !pool_ref
+
+module Pool = Pool

@@ -6,6 +6,10 @@ import {
   normalizePendingConfirmSummary,
 } from './pending-confirm'
 import { normalizeKeeperTrust } from './keeper-store-normalize'
+import {
+  normalizeAttentionItem,
+  normalizeRecommendedAction,
+} from './store-normalizers'
 import type {
   AdmissionQueueSnapshot,
   Message,
@@ -15,7 +19,6 @@ import type {
   OperatorGuidanceSummary,
   OperatorJudgment,
   OperatorKeeperSnapshot,
-  OperatorLinkedAutoresearch,
   OperatorReviewDecision,
   OperatorRecommendedAction,
   OperatorJudgeRuntime,
@@ -24,13 +27,14 @@ import type {
   OperatorNamespaceSnapshot,
   PendingConfirmation,
 } from './types'
+import { SYSTEM_ACTOR_NAME } from './types/core'
 
 function normalizeMessage(raw: unknown): Message | null {
   if (!isRecord(raw)) return null
   return {
     id: asString(raw.id),
     seq: asNumber(raw.seq),
-    from: asString(raw.from) ?? asString(raw.from_agent) ?? 'system',
+    from: asString(raw.from) ?? asString(raw.from_agent) ?? SYSTEM_ACTOR_NAME,
     content: asString(raw.content) ?? '',
     timestamp: asString(raw.timestamp) ?? new Date().toISOString(),
     type: asString(raw.type),
@@ -60,41 +64,6 @@ function normalizeStringRecord(raw: unknown): Record<string, string> | undefined
   return entries.length > 0 ? Object.fromEntries(entries) : undefined
 }
 
-function normalizeAttentionItem(raw: unknown): OperatorAttentionItem | null {
-  if (!isRecord(raw)) return null
-  const kind = asString(raw.kind)
-  const summary = asString(raw.summary)
-  const targetType = asString(raw.target_type)
-  if (!kind || !summary || !targetType) return null
-  return {
-    kind,
-    severity: asString(raw.severity) ?? 'unknown',
-    summary,
-    target_type: targetType,
-    target_id: asString(raw.target_id) ?? null,
-    actor: asString(raw.actor) ?? null,
-    evidence: raw.evidence,
-  }
-}
-
-function normalizeRecommendedAction(raw: unknown): OperatorRecommendedAction | null {
-  if (!isRecord(raw)) return null
-  const actionType = asString(raw.action_type)
-  const targetType = asString(raw.target_type)
-  const reason = asString(raw.reason)
-  if (!actionType || !targetType || !reason) return null
-  return {
-    action_type: actionType,
-    target_type: targetType,
-    target_id: asString(raw.target_id) ?? null,
-    severity: asString(raw.severity) ?? 'unknown',
-    reason,
-    confirm_required: asBoolean(raw.confirm_required),
-    suggested_payload: raw.suggested_payload,
-    preview: raw.preview,
-  }
-}
-
 function normalizeOperatorJudgeRuntime(raw: unknown): OperatorJudgeRuntime | null {
   if (!isRecord(raw)) return null
   return {
@@ -103,7 +72,7 @@ function normalizeOperatorJudgeRuntime(raw: unknown): OperatorJudgeRuntime | nul
     refreshing: asBoolean(raw.refreshing),
     generated_at: asString(raw.generated_at) ?? null,
     expires_at: asString(raw.expires_at) ?? null,
-    model_used: asString(raw.model_used) ?? null,
+    model_used: null,
     keeper_name: asString(raw.keeper_name) ?? null,
     last_error: asString(raw.last_error) ?? null,
   }
@@ -172,39 +141,14 @@ function normalizeOperatorJudgment(raw: unknown): OperatorJudgment | null {
     generated_at: asString(raw.generated_at) ?? null,
     fresh_until: asString(raw.fresh_until) ?? null,
     keeper_name: asString(raw.keeper_name) ?? null,
-    model_name: asString(raw.model_name) ?? null,
-    runtime_name: asString(raw.runtime_name) ?? null,
+    model_name: null,
+    runtime_name: asString(raw.runtime_name) ? 'runtime' : null,
     evidence_refs: asStringArray(raw.evidence_refs),
     recommended_action: normalizeRecommendedAction(raw.recommended_action),
     supersedes: asStringArray(raw.supersedes),
     fallback_used: asBoolean(raw.fallback_used),
     disagreement_with_truth: asBoolean(raw.disagreement_with_truth),
     provenance: asString(raw.provenance) ?? null,
-  }
-}
-
-function normalizeLinkedAutoresearch(raw: unknown): OperatorLinkedAutoresearch | null {
-  if (!isRecord(raw)) return null
-  const loopId = asString(raw.loop_id)
-  const status = asString(raw.status)
-  if (!loopId && !status) return null
-  return {
-    loop_id: loopId ?? null,
-    session_id: asString(raw.session_id) ?? null,
-    status: status ?? null,
-    current_cycle: asNumber(raw.current_cycle) ?? undefined,
-    best_score: asNumber(raw.best_score) ?? null,
-    last_decision: asString(raw.last_decision) ?? null,
-    target_file: asString(raw.target_file) ?? null,
-    workdir: asString(raw.workdir) ?? null,
-    source_workdir: asString(raw.source_workdir) ?? null,
-    program_note: asString(raw.program_note) ?? null,
-    operation_id: asString(raw.operation_id) ?? null,
-    queued_hypothesis: asString(raw.queued_hypothesis) ?? null,
-    warnings: extractArray(raw.warnings)
-      .map(item => (typeof item === 'string' ? item.trim() : ''))
-      .filter(Boolean),
-    error: asString(raw.error) ?? null,
   }
 }
 
@@ -272,10 +216,6 @@ function normalizeSession(raw: unknown): OperatorSessionSnapshot | null {
     orchestration_state: isRecord(raw.orchestration_state) ? raw.orchestration_state : isRecord(statusBlock?.orchestration_state) ? statusBlock.orchestration_state : undefined,
     cascade_metrics: isRecord(raw.cascade_metrics) ? raw.cascade_metrics : isRecord(statusBlock?.cascade_metrics) ? statusBlock.cascade_metrics : undefined,
     report_paths: reportPaths,
-    linked_autoresearch:
-      normalizeLinkedAutoresearch(raw.linked_autoresearch)
-      ?? normalizeLinkedAutoresearch(statusBlock?.linked_autoresearch)
-      ?? null,
     session,
     recent_events: recentEvents,
   }
@@ -286,9 +226,13 @@ function normalizeKeeper(raw: unknown): OperatorKeeperSnapshot | null {
   const name = asString(raw.name)
   if (!name) return null
   const contextRaw = isRecord(raw.context) ? raw.context : undefined
+  const hasModelLabel = Boolean(asString(raw.model) ?? asString(raw.active_model) ?? asString(raw.primary_model))
   return {
     name,
     runtime_class: 'keeper' as const,
+    phase: asString(raw.phase) ?? null,
+    pipeline_stage: asString(raw.pipeline_stage) ?? null,
+    paused: asBoolean(raw.paused) ?? null,
     registered: asBoolean(raw.registered),
     agent_name: asString(raw.agent_name),
     status: asString(raw.status),
@@ -300,7 +244,7 @@ function normalizeKeeper(raw: unknown): OperatorKeeperSnapshot | null {
     active_goal_ids: asStringArray(raw.active_goal_ids),
     last_autonomous_action_at: asString(raw.last_autonomous_action_at) ?? null,
     last_turn_ago_s: asNumber(raw.last_turn_ago_s),
-    model: asString(raw.model) ?? asString(raw.active_model) ?? asString(raw.primary_model),
+    model: hasModelLabel ? 'runtime' : undefined,
     needs_attention: typeof raw.needs_attention === 'boolean' ? raw.needs_attention : null,
     attention_reason: asString(raw.attention_reason) ?? null,
     next_human_action: asString(raw.next_human_action) ?? null,

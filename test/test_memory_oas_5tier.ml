@@ -26,7 +26,7 @@ let setup_tmp_dir () =
 
 let cleanup_tmp_dir dir =
   (* Best-effort cleanup *)
-  ignore (Sys.command (Printf.sprintf "rm -rf %s" (Filename.quote dir)))
+  Fs_compat.remove_tree dir
 
 (* ================================================================ *)
 (* oas_procedure_of_masc                                             *)
@@ -222,53 +222,6 @@ let test_procedural_record_success () =
    | None -> Alcotest.fail "expected procedure after success");
   cleanup_tmp_dir dir
 
-let test_flush_procedures_dedupes_legacy_records () =
-  let dir = setup_tmp_dir () in
-  let agent_name = "test-pr-flush" in
-  let existing_old : Procedural_memory.procedure = {
-    id = "proc-legacy";
-    agent_name;
-    pattern = "deploy failure";
-    evidence = ["old"];
-    success_count = 1;
-    failure_count = 0;
-    confidence = 1.0;
-    created_at = 100.0;
-    last_applied = 110.0;
-  } in
-  let existing_latest = {
-    existing_old with
-    evidence = ["latest"];
-    success_count = 2;
-    created_at = 200.0;
-    last_applied = 210.0;
-  } in
-  Procedural_memory.save_procedure ~agent_name existing_old;
-  Procedural_memory.save_procedure ~agent_name existing_latest;
-  let memory = Memory_oas_bridge.create_memory ~agent_name () in
-  let oas_proc : Agent_sdk.Memory.procedure = {
-    id = "proc-legacy";
-    pattern = "deploy failure";
-    action = "rollback";
-    success_count = 2;
-    failure_count = 0;
-    confidence = 1.0;
-    last_used = 210.0;
-    metadata = [];
-  } in
-  ignore (Agent_sdk.Memory.store_procedure memory oas_proc);
-  let flushed = Memory_oas_bridge.flush_procedures ~memory ~agent_name in
-  Alcotest.(check int) "no flush when latest record already matches" 0 flushed;
-  let persisted = Procedural_memory.load_procedures ~agent_name in
-  Alcotest.(check int) "legacy duplicates rewritten away" 1
-    (List.length persisted);
-  let final = List.hd persisted in
-  Alcotest.(check string) "id preserved" "proc-legacy" final.id;
-  Alcotest.(check int) "latest success count preserved" 2 final.success_count;
-  Alcotest.(check string) "latest evidence preserved" "latest"
-    (List.hd final.evidence);
-  cleanup_tmp_dir dir
-
 let contains_substring haystack needle =
   let nlen = String.length needle in
   let hlen = String.length haystack in
@@ -394,6 +347,12 @@ let test_stats_all_tiers () =
 (* JSONL backend + bridge verification                                *)
 (* ================================================================ *)
 
+let memory_jsonl_ops_value ~agent_name ~outcome =
+  Prometheus.metric_value_or_zero
+    Keeper_metrics.(to_string MemoryJsonlOps)
+    ~labels:[ ("outcome", outcome); ("agent", agent_name) ]
+    ()
+
 let test_jsonl_backend_persist () =
   let sid = Printf.sprintf "test-persist-%d" (int_of_float (Unix.gettimeofday () *. 1000.0)) in
   let backend =
@@ -412,11 +371,62 @@ let test_jsonl_backend_retrieve () =
 
 let test_jsonl_backend_query () =
   let sid = Printf.sprintf "test-query-%d" (int_of_float (Unix.gettimeofday () *. 1000.0)) in
+  let agent_name = "test-jsonl-query-ok-" ^ sid in
+  let before_ok = memory_jsonl_ops_value ~agent_name ~outcome:"query_ok" in
+  let before_failed =
+    memory_jsonl_ops_value ~agent_name ~outcome:"query_failed"
+  in
   let backend =
-    Memory_oas_bridge.make_backend ~agent_name:"test-jsonl" ~session_id:sid ()
+    Memory_oas_bridge.make_backend ~agent_name ~session_id:sid ()
   in
   let result = backend.query ~prefix:"test" ~limit:10 in
-  Alcotest.(check int) "query returns empty on fresh session" 0 (List.length result)
+  Alcotest.(check int) "query returns empty on fresh session" 0 (List.length result);
+  Alcotest.(check (float 0.01))
+    "empty successful query counts as ok"
+    (before_ok +. 1.0)
+    (memory_jsonl_ops_value ~agent_name ~outcome:"query_ok");
+  Alcotest.(check (float 0.01))
+    "empty successful query does not count as failed"
+    before_failed
+    (memory_jsonl_ops_value ~agent_name ~outcome:"query_failed")
+
+let test_jsonl_backend_query_failure_counter () =
+  let dir = setup_tmp_dir () in
+  Fun.protect
+    ~finally:(fun () -> cleanup_tmp_dir dir)
+    (fun () ->
+      let base_dir = Filename.concat dir ".masc-query-failure" in
+      let sid =
+        Printf.sprintf
+          "test-query-failure-%d"
+          (int_of_float (Unix.gettimeofday () *. 1000.0))
+      in
+      let agent_name = "test-jsonl-query-failure-" ^ sid in
+      let session_dir =
+        Filename.concat (Filename.concat base_dir "memory") agent_name
+      in
+      Fs_compat.mkdir_p session_dir;
+      Unix.mkdir (Filename.concat session_dir (sid ^ ".jsonl")) 0o700;
+      let before_ok = memory_jsonl_ops_value ~agent_name ~outcome:"query_ok" in
+      let before_failed =
+        memory_jsonl_ops_value ~agent_name ~outcome:"query_failed"
+      in
+      let backend =
+        Memory_oas_bridge.make_backend ~base_dir ~agent_name ~session_id:sid ()
+      in
+      let result = backend.query ~prefix:"test" ~limit:10 in
+      Alcotest.(check int)
+        "query contract still collapses failure to empty"
+        0
+        (List.length result);
+      Alcotest.(check (float 0.01))
+        "failed query does not count as ok"
+        before_ok
+        (memory_jsonl_ops_value ~agent_name ~outcome:"query_ok");
+      Alcotest.(check (float 0.01))
+        "failed query increments failed counter"
+        (before_failed +. 1.0)
+        (memory_jsonl_ops_value ~agent_name ~outcome:"query_failed"))
 
 let test_jsonl_backend_uses_explicit_base_dir () =
   let dir = setup_tmp_dir () in
@@ -437,6 +447,30 @@ let test_jsonl_backend_uses_explicit_base_dir () =
       (sid ^ ".jsonl")
   in
   Alcotest.(check bool) "writes under explicit base_dir" true (Sys.file_exists expected_path);
+  cleanup_tmp_dir dir
+
+let test_create_memory_with_backend_uses_same_backend () =
+  let dir = setup_tmp_dir () in
+  let base_dir = Filename.concat dir ".masc-room-b" in
+  let sid = Printf.sprintf "test-bundle-%d" (int_of_float (Unix.gettimeofday () *. 1000.0)) in
+  let bundle =
+    Memory_oas_bridge.create_memory_with_backend
+      ~base_dir
+      ~agent_name:"test-jsonl"
+      ~session_id:sid
+      ()
+  in
+  ignore
+    (Agent_sdk.Memory.store
+       bundle.created_memory
+       ~tier:Agent_sdk.Memory.Long_term
+       "world:bundle"
+       (`String "ok"));
+  (match
+     bundle.created_memory_long_term_backend.retrieve ~key:"world:bundle"
+   with
+   | Some (`String value) -> Alcotest.(check string) "stored via same backend" "ok" value
+   | _ -> Alcotest.fail "expected memory store to use returned backend");
   cleanup_tmp_dir dir
 
 let test_flush_episodes_appends_only_new_records () =
@@ -476,6 +510,52 @@ let test_flush_episodes_appends_only_new_records () =
   Alcotest.(check bool) "new record appended" true (List.mem "new-episode-id" ids);
   cleanup_tmp_dir dir
 
+let test_success_episode_preserves_oas_turn_count () =
+  let dir = setup_tmp_dir () in
+  Fun.protect
+    ~finally:(fun () -> cleanup_tmp_dir dir)
+    (fun () ->
+      let memory =
+        Memory_oas_bridge.create_memory ~agent_name:"test-success-turn" ()
+      in
+      let snapshot =
+        {
+          Keeper_memory_policy.empty_keeper_state_snapshot with
+          goal = Some "preserve turn clocks";
+          done_summary = Some "keeper turn completed";
+        }
+      in
+      Memory_oas_bridge.store_episode_from_snapshot
+        ~memory
+        ~keeper_name:"test-success-turn"
+        ~turn:24
+        ~oas_turn_count:1
+        ~trace_id:"trace-success-turn"
+        snapshot;
+      let flushed =
+        Memory_oas_bridge.flush_episodes
+          ~memory
+          ~agent_name:"test-success-turn"
+      in
+      Alcotest.(check int) "success episode flushed" 1 flushed;
+      let persisted = Institution_eio.load_recent_episodes_jsonl ~limit:10 in
+      let episode =
+        List.find_opt
+          (fun (episode : Institution_eio.episode) ->
+            String.equal episode.event_type "keeper_turn"
+            && List.mem "test-success-turn" episode.participants)
+          persisted
+      in
+      match episode with
+      | None -> Alcotest.fail "expected successful keeper_turn episode"
+      | Some episode ->
+        Alcotest.(check string) "trace_id preserved" "trace-success-turn"
+          (List.assoc "trace_id" episode.context);
+        Alcotest.(check string) "keeper turn preserved" "24"
+          (List.assoc "turn" episode.context);
+        Alcotest.(check string) "oas turn count preserved" "1"
+          (List.assoc "oas_turn_count" episode.context))
+
 let test_failed_turn_episode_flushes_failure_outcome () =
   let dir = setup_tmp_dir () in
   Fun.protect
@@ -488,6 +568,7 @@ let test_failed_turn_episode_flushes_failure_outcome () =
         ~memory
         ~keeper_name:"test-failed-turn"
         ~turn:7
+        ~oas_turn_count:2
         ~trace_id:"trace-failed-turn"
         ~error_kind:(Memory_oas_bridge.error_kind_of_string "provider_timeout")
         ~error_message:"provider timed out before producing a tool-using turn"
@@ -517,6 +598,8 @@ let test_failed_turn_episode_flushes_failure_outcome () =
           (List.assoc "trace_id" episode.context);
         Alcotest.(check string) "turn preserved" "7"
           (List.assoc "turn" episode.context);
+        Alcotest.(check string) "oas turn count preserved" "2"
+          (List.assoc "oas_turn_count" episode.context);
         Alcotest.(check string) "error kind preserved" "provider_timeout"
           (List.assoc "error_kind" episode.context);
         Alcotest.(check string) "error message preserved"
@@ -548,8 +631,6 @@ let () =
     ("procedural", [
       Alcotest.test_case "store and recall" `Quick test_procedural_store_recall;
       Alcotest.test_case "record success" `Quick test_procedural_record_success;
-      Alcotest.test_case "flush dedupes legacy records" `Quick
-        test_flush_procedures_dedupes_legacy_records;
       Alcotest.test_case "load_procedures_text refreshes after append" `Quick
         test_load_procedures_text_refreshes_after_external_append;
       Alcotest.test_case "flush updates cache for immediate reload" `Quick
@@ -562,10 +643,16 @@ let () =
       Alcotest.test_case "persist returns Ok" `Quick test_jsonl_backend_persist;
       Alcotest.test_case "retrieve returns None" `Quick test_jsonl_backend_retrieve;
       Alcotest.test_case "query returns empty" `Quick test_jsonl_backend_query;
+      Alcotest.test_case "query failure increments failed counter" `Quick
+        test_jsonl_backend_query_failure_counter;
       Alcotest.test_case "uses explicit base_dir" `Quick
         test_jsonl_backend_uses_explicit_base_dir;
+      Alcotest.test_case "create_memory_with_backend uses same backend" `Quick
+        test_create_memory_with_backend_uses_same_backend;
       Alcotest.test_case "flush_episodes appends only new" `Quick
         test_flush_episodes_appends_only_new_records;
+      Alcotest.test_case "successful keeper turn preserves OAS turn count" `Quick
+        test_success_episode_preserves_oas_turn_count;
       Alcotest.test_case "failed keeper turn flushes failure outcome" `Quick
         test_failed_turn_episode_flushes_failure_outcome;
     ]);

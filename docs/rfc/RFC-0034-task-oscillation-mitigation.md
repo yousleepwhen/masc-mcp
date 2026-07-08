@@ -1,13 +1,13 @@
 # RFC-0034: Task Oscillation Mitigation (Cooldown + Severe-Level Human Escalation)
 
 - **Status**: Draft
-- **Author**: Claude (autonomous, audit-driven from issue #13302 P0-4)
+- **Author**: Agent-LLM-A (autonomous, audit-driven from issue #13302 P0-4)
 - **Created**: 2026-05-06
 - **Related**: #10421 (claim-next preservation observability), #13302 (umbrella tracking)
 
 ## Problem
 
-Boot-time observation (2026-05-06, `~/me/.masc/playground` server, port 8935) shows
+Boot-time observation (2026-05-06, `<base-path>/.masc/playground` server, port 8935) shows
 sustained claim/release loops on multiple tasks within ~90 seconds:
 
 ```

@@ -13,6 +13,14 @@ type t = {
   input_base_path : string option;
   effective_base_path : string;
   effective_masc_root : string;
+  current_task_path : string;
+      (** Effective [current_task] path under [effective_masc_root]. *)
+  current_task_shape : string;
+      (** One of [absent], [regular], or the invalid shape/error class
+          observed at startup. *)
+  current_task_error : string option;
+      (** Underlying filesystem error when the path exists but cannot be
+          used as the expected read/write file. *)
   env_masc_base_path : string option;
   resolution_source : string option;
   effective_has_masc_dir : bool;
@@ -34,7 +42,8 @@ type t = {
     ?resolution_source ~effective_base_path ~effective_masc_root ()]
     observes paths from disk + env and returns a populated {!t}.
 
-    - [cwd] defaults to [Sys.getcwd ()].
+    - [cwd] defaults to the current working directory, with the same deleted-cwd
+      fallback used by {!Config_dir_resolver.current_working_dir}.
     - [strict] defaults to the [MASC_BASE_PATH_STRICT] env flag
       (accepts [1|true|yes]).
     - [resolution_source] falls back to
@@ -55,6 +64,10 @@ val detect :
 
 (** Reserved for future strict-mode enforcement; currently always [false]. *)
 val strict_violation : t -> bool
+
+(** [true] when startup must stop instead of serving with malformed runtime
+    state such as a directory-shaped or inaccessible [current_task] path. *)
+val startup_should_abort : t -> bool
 
 (** {1 Reporting} *)
 

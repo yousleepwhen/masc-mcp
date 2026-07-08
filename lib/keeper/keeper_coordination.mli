@@ -1,39 +1,6 @@
-(** Keeper_coordination — Coord presence, compaction policy, checkpoint persistence, and error logging for keeper agents. MASC coordination domain. *)
+(** Keeper_coordination — Coord presence and room cursor management. *)
 
 open Keeper_types
-
-val log_keeper_exn : label:string -> exn -> unit
-
-val load_context_from_checkpoint :
-  max_checkpoint_messages:int ->
-  trace_id:string ->
-  primary_model_max_tokens:int ->
-  base_dir:string ->
-  Keeper_exec_context.session_context * Keeper_exec_context.working_context option
-
-val save_checkpoint :
-  Keeper_exec_context.session_context ->
-  Keeper_exec_context.working_context ->
-  generation:int ->
-  Keeper_exec_context.checkpoint
-
-val compaction_policy_of_keeper : keeper_meta -> float * int * int
-
-val compact_if_needed :
-  meta:keeper_meta ->
-  now_ts:float ->
-  Keeper_exec_context.working_context ->
-  Keeper_exec_context.working_context * string option * string
-
-val generate_trace_id : unit -> string
-
-val keeper_board_write_tool_names : string list
-
-val keeper_write_done : string list -> bool
-
-val keeper_action_kind_of_tool_names : string list -> string
-
-val effective_model_labels_for_turn : keeper_meta -> string list
 
 val room_cursor_for : keeper_meta -> string -> int
 

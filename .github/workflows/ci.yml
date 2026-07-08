@@ -5,7 +5,7 @@ on:
     branches: [main, develop]
   pull_request:
     branches: [main, develop]
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened]
   workflow_dispatch: {}
 
 permissions:
@@ -14,13 +14,22 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name || github.run_id }}
+  # On main pushes each commit gets its own group (keyed by sha) so successive
+  # merges do not abort each other's CI — every commit gets a verification
+  # window. On PRs and non-main pushes, supersede outdated runs as before
+  # (group keyed by ref so synchronize cancels the older run).
+  group: >-
+    ${{ github.workflow }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{
+      github.event_name == 'push' && github.ref_name == 'main' && github.sha
+      || github.head_ref || github.ref_name || github.run_id
+    }}
   # Code-changing PR events supersede older CI for the same PR. Pushes to the
-  # same branch also supersede older post-merge CI; only the latest branch head
-  # needs the full verification matrix. State-only readiness events must not
-  # cancel an already-running code CI; they may queue behind it to run the
-  # ready/full-matrix path.
-  cancel-in-progress: ${{ github.event_name == 'push' || (github.event_name == 'pull_request' && contains(fromJSON('["opened","synchronize","reopened"]'), github.event.action)) }}
+  # same branch also supersede older post-merge CI EXCEPT for main pushes —
+  # main commits are independent state that must each be verified (background:
+  # #14668 / #14670, 30+ main runs cancelled before TLA could complete on
+  # 2026-05-11). State-only readiness is enforced by PR Automation against the
+  # existing head CI Gate; it must not create a fresh required CI Gate context.
+  cancel-in-progress: ${{ (github.event_name == 'push' && github.ref_name != 'main') || (github.event_name == 'pull_request' && contains(fromJSON('["opened","synchronize","reopened"]'), github.event.action)) }}
 
 jobs:
   pr-sync-check:
@@ -65,7 +74,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GITHUB_EVENT_NAME: ${{ github.event_name }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          LIVE_PR_GATE_SETTLE_SEC: 15
         run: |
           set -euo pipefail
 
@@ -77,14 +85,23 @@ jobs:
             exit 0
           fi
 
-          # Give pull_request_target draft automation a short window to restore
-          # draft state before this workflow decides whether to spend runners on
-          # the heavy matrix. This avoids stale ready_for_review payloads running
-          # full CI after the PR has already been converted back to draft.
-          sleep "${LIVE_PR_GATE_SETTLE_SEC}"
+          # Retry-based PR state resolution: instead of a fixed sleep, poll
+          # gh pr view with short intervals. This catches draft restoration
+          # within ~3s on fast APIs while avoiding unnecessary delay on
+          # non-PR events or already-settled states. Capture stderr from each
+          # attempt so a persistent failure reports the underlying gh error
+          # (a silent "after 3 attempts" is undebuggable).
+          err_log="${RUNNER_TEMP:-/tmp}/live-pr-gate.err"
+          : > "$err_log"
+          for _attempt in 1 2 3; do
+            if live_fields="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json state,isDraft --jq '.state + " " + (.isDraft | tostring)' 2>"$err_log")"; then
+              break
+            fi
+            sleep 1
+          done
 
-          if ! live_fields="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json state,isDraft --jq '.state + " " + (.isDraft | tostring)' 2>&1)"; then
-            echo "::error::Could not resolve live PR state for #${PR_NUMBER}: ${live_fields}"
+          if [ -z "${live_fields:-}" ]; then
+            echo "::error::Could not resolve live PR state for #${PR_NUMBER} after 3 attempts: $(cat "$err_log")"
             exit 1
           fi
           live_state="${live_fields%% *}"
@@ -95,10 +112,21 @@ jobs:
             exit 1
           fi
 
+          # Heavy CI runs whenever the PR is live (OPEN), regardless of draft
+          # status. Earlier we skipped draft PRs to save CI minutes, but the
+          # masc-mcp fast-track pattern (open Draft → mark ready → admin-merge
+          # within seconds) means the build/lint/test surfaces almost never
+          # got a chance to run. Two visible failures from that gap this week:
+          # - masc-mcp #15531 (Tool_args / Tool_result sub-lib extract) merged
+          #   main in a non-building state; recovered by #15540.
+          # - oas #1596 (turn_ready_tool_names signature narrow) — same shape,
+          #   recovered by oas #1599.
+          # Running heavy CI on draft PRs costs minutes but catches both
+          # classes of regression *before* the admin-merge decision instead
+          # of after, when the only remaining lever is fix-forward.
+          # Closed/merged PRs still skip — there is nothing to verify there.
           run_heavy=true
           if [ "$live_state" != "OPEN" ]; then
-            run_heavy=false
-          elif [ "$live_is_draft" = "true" ]; then
             run_heavy=false
           fi
 
@@ -124,6 +152,7 @@ jobs:
       tla: ${{ steps.scope.outputs.tla }}
       oas_pin: ${{ steps.scope.outputs.oas_pin }}
       spec_refs: ${{ steps.scope.outputs.spec_refs }}
+      nav_event_parity: ${{ steps.scope.outputs.nav_event_parity }}
 
     steps:
       - name: Checkout
@@ -143,7 +172,7 @@ jobs:
           set -euo pipefail
 
           emit_all_true() {
-            for key in build lint dashboard health health_snapshot lib_deps doc_truth tla oas_pin spec_refs; do
+            for key in build lint dashboard health health_snapshot lib_deps doc_truth tla oas_pin spec_refs nav_event_parity; do
               echo "${key}=true" >> "$GITHUB_OUTPUT"
             done
           }
@@ -194,6 +223,7 @@ jobs:
           tla=false
           oas_pin=false
           spec_refs=false
+          nav_event_parity=false
 
           if has_match '^(\.github/workflows/ci\.yml|\.github/actions/)'; then
             ci_core=true
@@ -203,7 +233,7 @@ jobs:
             build=true
           fi
 
-          if has_match '^(bin/|lib/|test/|proto/|config/|dune-project$|dune-workspace$|.*\.opam$|scripts/install\.sh$|scripts/check-eio-conventions\.sh$|scripts/check-feature-flag-consistency\.sh$|scripts/check-toml-syntax\.sh$|scripts/validate-prompt-paths\.sh$|scripts/check-boundary-guard\.sh$|scripts/check-boundary-guard-mli-pairs\.sh$|scripts/check-ssot\.sh$|scripts/gen-grpc-descriptors\.sh$|scripts/lint/no-unknown-permissive-default\.sh$|scripts/lint/no-unknown-permissive-default\.allowlist$|scripts/lint/yojson-option-default\.py$|scripts/lint/yojson-option-default\.allowlist$|scripts/lint/no-docstring-escape-quote\.sh$|scripts/lint/no-hardcoded-colors-dashboard\.sh$|scripts/lint/no-hardcoded-colors-dashboard\.allowlist$|scripts/ci/|scripts/check-variants\.sh$|dashboard/src/)'; then
+          if has_match '^(bin/|lib/|test/|proto/|config/|dune-project$|dune-workspace$|.*\.opam$|scripts/install\.sh$|scripts/check-eio-conventions\.sh$|scripts/check-feature-flag-consistency\.sh$|scripts/check-toml-syntax\.sh$|scripts/validate-prompt-paths\.sh$|scripts/check-boundary-guard\.sh$|scripts/check-boundary-guard-mli-pairs\.sh$|scripts/check-ssot\.sh$|scripts/gen-grpc-descriptors\.sh$|scripts/lint/no-unknown-permissive-default\.sh$|scripts/lint/no-unknown-permissive-default\.allowlist$|scripts/lint/yojson-option-default\.py$|scripts/lint/yojson-option-default\.allowlist$|scripts/lint/no-docstring-escape-quote\.sh$|scripts/lint/no-hardcoded-colors-dashboard\.sh$|scripts/lint/no-hardcoded-colors-dashboard\.allowlist$|scripts/lint/dashboard-ssot-keeper-state\.sh$|scripts/lint/dashboard-ssot-keeper-state\.allowlist$|scripts/lint/dashboard-ssot-agent-status\.sh$|scripts/lint/dashboard-ssot-agent-status\.allowlist$|scripts/ci/|scripts/check-variants\.sh$|dashboard/src/)'; then
             lint=true
           fi
 
@@ -239,6 +269,10 @@ jobs:
             spec_refs=true
           fi
 
+          if has_match '^(dashboard/src/config/navigation\.ts|dashboard/src/types/sse\.ts|lib/dashboard/dashboard_nav_event\.ml|scripts/check-dashboard-nav-event-parity\.sh)$'; then
+            nav_event_parity=true
+          fi
+
           if [ "${ci_core}" = true ]; then
             build=true
             lint=true
@@ -263,9 +297,10 @@ jobs:
           echo "tla=${tla}" >> "$GITHUB_OUTPUT"
           echo "oas_pin=${oas_pin}" >> "$GITHUB_OUTPUT"
           echo "spec_refs=${spec_refs}" >> "$GITHUB_OUTPUT"
+          echo "nav_event_parity=${nav_event_parity}" >> "$GITHUB_OUTPUT"
 
-          printf 'CI scope => build=%s lint=%s dashboard=%s health=%s health_snapshot=%s lib_deps=%s doc_truth=%s tla=%s oas_pin=%s\n' \
-            "${build}" "${lint}" "${dashboard}" "${health}" "${health_snapshot}" "${lib_deps}" "${doc_truth}" "${tla}" "${oas_pin}"
+          printf 'CI scope => build=%s lint=%s dashboard=%s health=%s health_snapshot=%s lib_deps=%s doc_truth=%s tla=%s oas_pin=%s nav_event_parity=%s\n' \
+            "${build}" "${lint}" "${dashboard}" "${health}" "${health_snapshot}" "${lib_deps}" "${doc_truth}" "${tla}" "${oas_pin}" "${nav_event_parity}"
 
   meta:
     name: Meta Guards
@@ -314,9 +349,10 @@ jobs:
       - name: Check doc truth
         if: needs.changes.outputs.doc_truth == 'true'
         run: |
-          chmod +x scripts/check-doc-truth.sh scripts/sync-oas-pin-docs.sh
+          chmod +x scripts/check-doc-truth.sh scripts/sync-oas-pin-docs.sh scripts/audit-keeper-tool-boundary-matrix.sh
           scripts/check-doc-truth.sh
           scripts/sync-oas-pin-docs.sh --check
+          scripts/audit-keeper-tool-boundary-matrix.sh
 
       - name: Check OAS pin consistency
         if: needs.changes.outputs.oas_pin == 'true'
@@ -347,15 +383,28 @@ jobs:
         if: needs.changes.outputs.spec_refs == 'true'
         run: bash scripts/lint/spec-line-refs.sh
 
+      - name: Check dashboard nav-event allowlist parity
+        if: needs.changes.outputs.nav_event_parity == 'true'
+        run: |
+          chmod +x scripts/check-dashboard-nav-event-parity.sh
+          scripts/check-dashboard-nav-event-parity.sh --check
+
       - name: Check sandbox dune version alignment
         run: |
           chmod +x scripts/check-sandbox-dune-version.sh
           scripts/check-sandbox-dune-version.sh
 
       - name: Meta bug-class gates (SSOT, SIL, STR, BND)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH_PROTECTION_REPOSITORY: ${{ github.repository }}
+          BRANCH_PROTECTION_BRANCH: ${{ github.base_ref || github.ref_name }}
+          BRANCH_PROTECTION_REQUIRED_CONTEXTS: CI Gate,Draft Auto-Merge Guard
+          BRANCH_PROTECTION_ALLOW_UNREADABLE: 1
         run: |
           chmod +x scripts/ci/*.sh
           echo "=== Running meta bug-class gates (see #9516 #9517 #9519 #9521) ==="
+          bash scripts/ci/check-main-branch-protection.sh
           bash scripts/ci/check-ssot-spawn-drift.sh
           bash scripts/check-spec-truth.sh
           bash scripts/ci/check-silent-failure-patterns.sh
@@ -372,6 +421,7 @@ jobs:
           bash scripts/ci/check-actor-consumer-wired.sh
           bash scripts/ci/check-log-severity-anti-patterns.sh
           bash scripts/ci/check-stream-create-bounded.sh
+          bash scripts/ci/check-drain-loop-yields.sh
 
   health:
     name: Health
@@ -512,22 +562,16 @@ jobs:
         run: |
           opam exec -- dune build
 
-      - name: Cascade TOML/JSON drift gate
-        # Detects when config/cascade.toml has been edited but
-        # config/cascade.json was not regenerated.  The runtime
-        # auto-materializes JSON from TOML at boot, so a stale
-        # checked-in JSON does not break production — but it
-        # misleads readers and dashboards that read JSON directly
-        # (e.g., dashboard_cascade.ml).  This gate enforces parity
-        # in the repo so every commit stays self-describing.
-        # See: cascade_toml_materializer.ml, dashboard_cascade.ml:309.
+      - name: Cascade TOML validity gate
+        # RFC-0058 §9: config/cascade.toml is the authoring SSOT.
+        # cascade.json is no longer generated or committed, so the old
+        # cascade_materialize CLI is retired. This focused test renders
+        # the TOML in memory, validates the declarative catalog, and
+        # proves config/cascade.json has not reappeared as a tracked
+        # second source of truth.
+        # See: test/test_cascade_config_validity.ml.
         run: |
-          opam exec -- dune exec ./bin/cascade_materialize.exe -- \
-            config/cascade.json
-          if ! git diff --exit-code config/cascade.json; then
-            echo "::error::config/cascade.json is stale relative to config/cascade.toml.  Run 'dune exec ./bin/cascade_materialize.exe -- config/cascade.json' locally and commit the result."
-            exit 1
-          fi
+          opam exec -- dune build @test/runtest-test_cascade_config_validity
 
       - name: Env knob catalog drift gate
         # Detects when lib/config/env_config_*.ml has been edited
@@ -543,13 +587,32 @@ jobs:
             exit 1
           fi
 
-      - name: Install eio-trace
+      - name: SSE TypeScript codegen drift gate
+        # RFC-0004 Phase A0.2 PR-2: dashboard/src/schemas/sse_event_generated.ts
+        # is regenerated by atdts from lib/sse_event/sse_event.atd
+        # (lib SSOT established in Phase A0.1).  If the .atd changes
+        # without re-running the codegen script, the committed .ts
+        # drifts and dashboard consumers parse against a stale schema.
+        # See: dashboard/scripts/gen-sse-types.sh, RFC-0004 Phase A0.2.
         run: |
-          opam install -y eio-trace || echo "eio-trace install skipped"
+          chmod +x dashboard/scripts/gen-sse-types.sh
+          opam exec -- dashboard/scripts/gen-sse-types.sh --check
+
+      - name: Install eio-trace
+        continue-on-error: true
+        run: |
+          # Diagnostic-only. Avoid opam depexts here: GTK/cairo system
+          # packages can consume the step before the quick suite runs.
+          timeout 45s opam install -y --no-depexts eio-trace \
+            || echo "::warning::eio-trace install skipped"
 
       - name: Run tests (quick suite)
         id: quick_suite
         continue-on-error: true
+        # scripts/ci-run-tests.sh has its own 1200s timeout and diagnostics,
+        # but this step-level bound keeps a stuck timeout/diagnostic path from
+        # holding the shared runner for the full Build and Test job budget.
+        timeout-minutes: 25
         env:
           ME_ROOT: /tmp/me
           ALCOTEST_QUICK_TESTS: "1"
@@ -764,6 +827,12 @@ jobs:
       - name: Run dashboard hardcoded-color lint
         run: bash scripts/lint/no-hardcoded-colors-dashboard.sh
 
+      - name: Run dashboard keeper-state SSOT lint (RFC-0135 §9)
+        run: bash scripts/lint/dashboard-ssot-keeper-state.sh
+
+      - name: Run dashboard agent-status SSOT lint (RFC-0139 §10)
+        run: bash scripts/lint/dashboard-ssot-agent-status.sh
+
       - name: Setup OCaml toolchain
         uses: ./.github/actions/setup-ocaml-toolchain
 
@@ -829,7 +898,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     needs: [pr-live-gate, changes]
-    if: ${{ always() && !cancelled() && needs.pr-live-gate.outputs.run_heavy == 'true' && needs.changes.result == 'success' && needs.changes.outputs.dashboard == 'true' }}
+    # PR mode: stay path-scoped (dashboard=true only when dashboard/ changes).
+    # Non-PR events (push to main/develop, schedule, workflow_dispatch):
+    # ignore path scope and always run, so a dashboard test regression
+    # introduced by a non-dashboard-path change (e.g. a shared-type refactor,
+    # or a dashboard-touching Draft merged via admin-merge fast-track while
+    # the dashboard job was red) is detected on the next main/develop push
+    # rather than persisting silently. Mirrors the tla-specs job; root cause:
+    # keeper-fsm-specs.test.ts / keeper-composite.test.ts sat red on main
+    # after #14252/#14380 because no main-push run re-checked them.
+    if: ${{ always() && !cancelled() && needs.pr-live-gate.outputs.run_heavy == 'true' && needs.changes.result == 'success' && (needs.changes.outputs.dashboard == 'true' || needs.pr-live-gate.outputs.live_state == 'NON_PR') }}
 
     steps:
       - name: Checkout
@@ -893,6 +971,31 @@ jobs:
       - name: Run OAS boundary ratchet
         run: scripts/oas-boundary-ratchet.sh
 
+      - name: Run keeper tool boundary matrix ratchet
+        run: scripts/audit-keeper-tool-boundary-matrix.sh
+
+      - name: Run silent-failure ratchet
+        run: scripts/silent-failure-ratchet.sh
+
+  shell-ir-ratchet:
+    name: Shell IR Consumption Ratchet
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [pr-live-gate, changes]
+    if: ${{ always() && !cancelled() && needs.pr-live-gate.outputs.run_heavy == 'true' && needs.changes.result == 'success' && (needs.changes.outputs.lib_deps == 'true' || needs.changes.outputs.build == 'true') }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install ripgrep and jq
+        run: |
+          sudo apt-get install -y -qq ripgrep
+          sudo apt-get install -y -qq jq
+
+      - name: Run Shell IR consumption ratchet
+        run: scripts/audit-shell-ir-consumption.sh --baseline scripts/shell-ir-consumption-baseline.json
+
   keeper-cwd-leak-gate:
     name: Keeper Cwd Leak Gate
     runs-on: ubuntu-latest
@@ -912,7 +1015,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     needs: [pr-live-gate, changes]
-    if: ${{ always() && !cancelled() && needs.pr-live-gate.outputs.run_heavy == 'true' && needs.changes.result == 'success' && needs.changes.outputs.tla == 'true' }}
+    # PR mode: stay path-scoped (tla=true only when specs/keeper/oas/Makefile change).
+    # main push / schedule / workflow_dispatch: ignore path scope and always run,
+    # so a spec violation introduced by a non-tla-path PR (e.g. dashboard-only
+    # Draft via admin-merge fast-track) is detected on the next main run rather
+    # than persisting silently. See #14668 root cause analysis.
+    if: ${{ always() && !cancelled() && needs.pr-live-gate.outputs.run_heavy == 'true' && needs.changes.result == 'success' && (needs.changes.outputs.tla == 'true' || needs.pr-live-gate.outputs.live_state == 'NON_PR') }}
+    # Per-job concurrency: each main commit gets its own queue slot keyed by
+    # sha, so workflow-level cancel-in-progress doesn't abort an in-flight TLA
+    # check when a subsequent push lands. PR runs use run_id so they still
+    # supersede on synchronize (workflow-level behaviour preserved at the
+    # workflow concurrency block — this job-level block is additive).
+    concurrency:
+      group: tla-specs-${{ github.event_name == 'push' && github.sha || github.run_id }}
+      cancel-in-progress: false
 
     steps:
       - name: Checkout
@@ -926,7 +1042,8 @@ jobs:
 
       - name: Download tla2tools.jar (pinned v1.8.0)
         run: |
-          curl -fsSL -o specs/keeper-state-machine/tla2tools.jar \
+          curl -fsSL --retry 3 --retry-delay 5 --retry-all-errors \
+            -o specs/keeper-state-machine/tla2tools.jar \
             https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar
 
       - name: Run TLA+ model checking
@@ -937,7 +1054,7 @@ jobs:
   ci-gate:
     name: CI Gate
     runs-on: ubuntu-latest
-    needs: [pr-sync-check, pr-live-gate, changes, meta, build, lint, dashboard, health, structure-ratchet, tla-specs]
+    needs: [pr-sync-check, pr-live-gate, changes, meta, build, lint, dashboard, health, structure-ratchet, shell-ir-ratchet, tla-specs]
     if: ${{ always() && !cancelled() }}
     timeout-minutes: 10
 
@@ -966,9 +1083,10 @@ jobs:
             else
               echo "::warning::Could not resolve live PR draft state; falling back to pull_request event payload."
             fi
-            live_labels="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name] | join(",")' 2>/dev/null || true)"
-            if [ -n "$live_labels" ]; then
+            if live_labels="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name] | join(",")' 2>/dev/null)"; then
               export PR_LIVE_LABELS="$live_labels"
+            else
+              echo "::warning::Could not resolve live PR labels; falling back to pull_request event payload."
             fi
             # #10192: CI Gate runs that fire after auto-merge can
             # see the bypass label cleaned up by post-merge
@@ -977,6 +1095,152 @@ jobs:
             live_state="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json state --jq '.state' 2>/dev/null || true)"
             if [ -n "$live_state" ]; then
               export PR_LIVE_STATE="$live_state"
+            fi
+            export PR_EFFECTIVE_LABELS="${PR_LIVE_LABELS:-$PR_LABELS}"
+            fetch_approval_comments() {
+              local output_file="$1"
+              local after=""
+              local page=""
+              : > "$output_file"
+              while :; do
+                local args=(-f owner="${GITHUB_REPOSITORY%/*}" -f repo="${GITHUB_REPOSITORY#*/}" -F number="$PR_NUMBER")
+                if [ -n "$after" ]; then
+                  args+=(-f after="$after")
+                else
+                  args+=(-F after=null)
+                fi
+                page="$(
+                  gh api graphql "${args[@]}" \
+                    -f query='
+                      query($owner: String!, $repo: String!, $number: Int!, $after: String) {
+                        repository(owner: $owner, name: $repo) {
+                          pullRequest(number: $number) {
+                            comments(first: 100, after: $after) {
+                              pageInfo { hasNextPage endCursor }
+                              nodes {
+                                body
+                                createdAt
+                                author { __typename login }
+                              }
+                            }
+                          }
+                        }
+                      }'
+                )"
+                printf '%s\n' "$page" | jq -c '.data.repository.pullRequest.comments.nodes[]' >> "$output_file"
+                if [ "$(printf '%s\n' "$page" | jq -r '.data.repository.pullRequest.comments.pageInfo.hasNextPage')" != "true" ]; then
+                  break
+                fi
+                after="$(printf '%s\n' "$page" | jq -r '.data.repository.pullRequest.comments.pageInfo.endCursor // ""')"
+                if [ -z "$after" ]; then
+                  break
+                fi
+              done
+            }
+            fetch_approval_label_events() {
+              local output_file="$1"
+              local after=""
+              local page=""
+              : > "$output_file"
+              while :; do
+                local args=(-f owner="${GITHUB_REPOSITORY%/*}" -f repo="${GITHUB_REPOSITORY#*/}" -F number="$PR_NUMBER")
+                if [ -n "$after" ]; then
+                  args+=(-f after="$after")
+                else
+                  args+=(-F after=null)
+                fi
+                page="$(
+                  gh api graphql "${args[@]}" \
+                    -f query='
+                      query($owner: String!, $repo: String!, $number: Int!, $after: String) {
+                        repository(owner: $owner, name: $repo) {
+                          pullRequest(number: $number) {
+                            timelineItems(first: 100, after: $after, itemTypes: [LABELED_EVENT, UNLABELED_EVENT]) {
+                              pageInfo { hasNextPage endCursor }
+                              nodes {
+                                __typename
+                                ... on LabeledEvent {
+                                  createdAt
+                                  label { name }
+                                }
+                                ... on UnlabeledEvent {
+                                  createdAt
+                                  label { name }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }'
+                )"
+                printf '%s\n' "$page" | jq -c '.data.repository.pullRequest.timelineItems.nodes[]' >> "$output_file"
+                if [ "$(printf '%s\n' "$page" | jq -r '.data.repository.pullRequest.timelineItems.pageInfo.hasNextPage')" != "true" ]; then
+                  break
+                fi
+                after="$(printf '%s\n' "$page" | jq -r '.data.repository.pullRequest.timelineItems.pageInfo.endCursor // ""')"
+                if [ -z "$after" ]; then
+                  break
+                fi
+              done
+            }
+            approval_gate_payload="$(
+              comments_file="$(mktemp "${RUNNER_TEMP:-/tmp}/masc-approval-comments.XXXXXX")"
+              events_file="$(mktemp "${RUNNER_TEMP:-/tmp}/masc-approval-label-events.XXXXXX")"
+              trap 'rm -f "$comments_file" "$events_file"' EXIT
+              fetch_approval_comments "$comments_file"
+              fetch_approval_label_events "$events_file"
+              jq -n --slurpfile comments "$comments_file" --slurpfile timeline "$events_file" \
+                '{data:{repository:{pullRequest:{comments:{nodes:$comments}, timelineItems:{nodes:$timeline}}}}}'
+            )" || approval_gate_payload=""
+            approval_gate_present="$(
+              if [ -n "$approval_gate_payload" ]; then
+                printf '%s\n' "$approval_gate_payload" | jq -r '
+                  def csv($s):
+                    ($s // "")
+                    | split(",")
+                    | map(gsub("^\\s+|\\s+$"; "") | ascii_downcase | select(length > 0));
+                  def event_label:
+                    (.label.name // "" | ascii_downcase);
+                  def event_kind:
+                    if .__typename == "LabeledEvent" then "labeled"
+                    elif .__typename == "UnlabeledEvent" then "unlabeled"
+                    else ""
+                    end;
+                  def marker_for($root; $label; $label_ts; $previous_label_ts):
+                    any($root.data.repository.pullRequest.comments.nodes[];
+                      (.author.__typename == "Bot") and
+                      ((.body // "") | contains("<!-- masc-human-approval-gate -->")) and
+                      (((.body // "") | ascii_downcase) | contains("`" + $label + "`")) and
+                      ((.body // "") | contains("/actions/runs/")) and
+                      ((.createdAt | fromdateiso8601) as $comment_ts |
+                        (($previous_label_ts == null) or ($comment_ts > $previous_label_ts)) and
+                        ($comment_ts >= $label_ts and $comment_ts <= ($label_ts + 300)))
+                    );
+                  . as $root
+                  |
+                  (csv(env.PR_EFFECTIVE_LABELS)) as $present_labels
+                  | (csv(if (env.AGENT_DRAFT_GUARD_BYPASS_LABELS == null or env.AGENT_DRAFT_GUARD_BYPASS_LABELS == "") then "human-approved-ready" else env.AGENT_DRAFT_GUARD_BYPASS_LABELS end)
+                     | map(select(. != "allow-auto-merge"))) as $bypass_labels
+                  | any($bypass_labels[]; . as $label |
+                      ($present_labels | index($label)) and
+                      (([$root.data.repository.pullRequest.timelineItems.nodes[]
+                         | select(event_label == $label)]) as $label_events
+                       | ($label_events | last) as $latest
+                       | ($latest != null)
+                         and (($latest | event_kind) == "labeled")
+                         and ((if ($label_events | length) > 1
+                               then ($label_events[($label_events | length) - 2].createdAt | fromdateiso8601)
+                               else null
+                               end) as $previous_label_ts
+                              | (($latest.createdAt | fromdateiso8601) as $label_ts |
+                                  marker_for($root; $label; $label_ts; $previous_label_ts)))))
+                ' 2>/dev/null || echo false
+              else
+                echo false
+              fi
+            )"
+            if printf '%s\n' "$approval_gate_present" | grep -qx true; then
+              export PR_HUMAN_APPROVAL_GATE_PRESENT=true
             fi
           fi
           scripts/ci/check-agent-draft-policy.sh

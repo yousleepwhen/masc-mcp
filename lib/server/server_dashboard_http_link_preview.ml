@@ -14,7 +14,7 @@ type cache_payload = {
   expires_at : float;
 }
 
-let cache_ttl_sec = 3600.0
+let cache_ttl_sec = Masc_time_constants.hour
 let error_ttl_sec = 300.0
 let max_preview_urls = 8
 let preview_timeout_sec = 5.0
@@ -23,9 +23,6 @@ let max_html_chars = 262_144
 let preview_cache_mu = Eio.Mutex.create ()
 let preview_cache : (string, cache_payload) Hashtbl.t = Hashtbl.create 128
 
-let trim_to_option value =
-  let trimmed = String.trim value in
-  if trimmed = "" then None else Some trimmed
 
 let lower_trim value = String.lowercase_ascii (String.trim value)
 
@@ -45,7 +42,7 @@ let cache_store ~ttl key preview =
 
 let json_string_opt_field fields key =
   match List.assoc_opt key fields with
-  | Some (`String value) -> trim_to_option value
+  | Some (`String value) -> String_util.trim_to_option value
   | _ -> None
 
 let error_reason_of_json = function
@@ -95,7 +92,7 @@ let collapse_whitespace value =
   |> String.trim
 
 let normalize_text value =
-  value |> decode_html_entities |> collapse_whitespace |> trim_to_option
+  value |> decode_html_entities |> collapse_whitespace |> String_util.trim_to_option
 
 let is_http_scheme = function
   | Some "http" | Some "https" -> true
@@ -334,27 +331,15 @@ let is_success_status code = code >= 200 && code < 300
 let is_redirect_status code =
   code = 301 || code = 302 || code = 303 || code = 307 || code = 308
 
-let https_connector_result () =
-  match Eio_context.get_https_connector_result () with
-  | Ok connector -> Ok (Some connector)
-  | Error message -> Error message
-
-let fetch_response ~net ~url =
-  let uri = Uri.of_string url in
-  let https_result =
-    if Uri.scheme uri = Some "https" then https_connector_result () else Ok None
-  in
-  match https_result with
-  | Error _ as error -> error
-  | Ok https ->
-      Masc_http_client.get_response_sync ~net ~https ~url
-        ~headers:
-          [
-            ("Accept", "text/html,application/xhtml+xml,image/*;q=0.9,*/*;q=0.1");
-            ("Accept-Encoding", "identity");
-            ("User-Agent", "MASC-Dashboard-LinkPreview/1.0");
-          ]
-        ()
+let fetch_response ~net:_ ~url =
+  Masc_http_client.get_response_sync ~url
+    ~headers:
+      [
+        ("Accept", "text/html,application/xhtml+xml,image/*;q=0.9,*/*;q=0.1");
+        ("Accept-Encoding", "identity");
+        ("User-Agent", "MASC-Dashboard-LinkPreview/1.0");
+      ]
+    ()
 
 let rec fetch_response_following_redirects ~net ~url ~remaining_redirects =
   match fetch_response ~net ~url with

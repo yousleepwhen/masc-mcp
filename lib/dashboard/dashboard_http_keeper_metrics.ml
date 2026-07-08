@@ -5,7 +5,7 @@
     database — the helpers here are pure parsers / aggregators over
     JSONL lines.  The actual feed lives in [Dashboard_http_keeper]:
     [Dated_jsonl.read_recent_lines] (current-day metrics window) with
-    [Keeper_memory.read_file_tail_lines] as a tail fallback when the
+    [Dashboard_http_helpers.keeper_tail_lines_or_empty] as an explicit tail degradation path when the
     dated store is empty (see [dashboard_http_keeper.ml], e.g.
     around lines 591 / 1717 / 1839 / 1952 / 2054).  No relational
     store sits on this path, so proposals to "use a single SQL batch
@@ -15,23 +15,11 @@
     aggregation over those same JSONL reads rather than SQL —
     RFC-0029 candidate, tracked in #10710.  *)
 
+open Dashboard_http_helpers
 
 let normalize_model_name s =
   let s = String.trim s in
-  let s =
-    match String.index_opt s ':' with
-    | None -> s
-    | Some i ->
-        let prefix = String.sub s 0 i |> String.lowercase_ascii in
-        if Provider_adapter.resolve_direct_canonical_name prefix <> None then
-          String.sub s (i + 1) (String.length s - i - 1)
-        else
-          s
-  in
-  if String.ends_with ~suffix:":latest" s then
-    String.sub s 0 (String.length s - String.length ":latest")
-  else
-    s
+  Cascade_runtime_candidate.normalize_runtime_name_for_bucket s
 
 type keeper_gen_window_stats = {
   mutable turns: int;
@@ -248,7 +236,7 @@ let metrics_row_has_context_snapshot (j : Yojson.Safe.t) : bool =
 let keeper_metrics_24h_json
     ~(metrics_lines : string list)
     ~(now_ts : float) : Yojson.Safe.t * Yojson.Safe.t =
-  let window_sec = 24.0 *. 3600.0 in
+  let window_sec = Masc_time_constants.day in
   let start_ts = now_ts -. window_sec in
   let lines = metrics_lines in
   let buckets : (int, keeper_24h_bucket_stats) Hashtbl.t = Hashtbl.create 64 in
@@ -265,7 +253,7 @@ let keeper_metrics_24h_json
         then begin
           incr sample_points;
           let bucket_ts =
-            int_of_float (floor (ts_unix /. 3600.0) *. 3600.0)
+            int_of_float (floor (ts_unix /. Masc_time_constants.hour) *. Masc_time_constants.hour)
           in
           let b =
             match Hashtbl.find_opt buckets bucket_ts with
@@ -357,10 +345,8 @@ let keeper_history_summary_json
     ~(filter_fragments : bool)
   : Yojson.Safe.t * Yojson.Safe.t * Yojson.Safe.t * int * int * int =
   let history_lines =
-    Keeper_memory.read_file_tail_lines
-      history_path
-      ~max_bytes:120000
-      ~max_lines:80
+    Dashboard_http_helpers.keeper_tail_lines_or_empty ~site:"dashboard_keeper_history_summary"
+      history_path ~max_bytes:120000 ~max_lines:80
   in
   let mention_counts : (string, int) Hashtbl.t = Hashtbl.create 16 in
   let (conversation_rev, k2k_rev, raw_count, fragment_count, filtered_count) =
@@ -376,7 +362,7 @@ let keeper_history_summary_json
           if ts0 > 0.0 then ts0 else Safe_ops.json_float ~default:0.0 "timestamp" j
         in
         if role = "" || content = ""
-           || Keeper_types.is_internal_history_source source
+           || Keeper_types_support.is_internal_history_source source
            || Keeper_context_core.has_world_state_signature content
         then
           (conv_acc, k2k_acc, raw_count, fragment_count, filtered_count)
@@ -474,6 +460,3 @@ let top_count_name_and_count
   |> function
   | (k, v) :: _ -> Some (k, v)
   | [] -> None
-
-let get_agent_identity (name : string) =
-  Dashboard_execution_helpers.get_agent_identity name

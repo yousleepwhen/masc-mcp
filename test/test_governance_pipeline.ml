@@ -3,15 +3,23 @@
 module Gp = Masc_mcp.Governance_pipeline
 module Coord = Masc_mcp.Coord
 module Tool_dispatch = Masc_mcp.Tool_dispatch
-module Tool_result = Masc_mcp.Tool_result
+module Tool_result = Tool_result
 
 let explicit_claim_tool = "masc_claim_next"
-let managed_claim_tool = "masc_claim_task"
 let generic_transition_tool = "masc_transition"
 let transition_claim_input = `Assoc [("action", `String "claim")]
 let transition_start_input = `Assoc [("action", `String "start")]
 let transition_done_input = `Assoc [("action", `String "done"); ("notes", `String "Completed task implementation and verified correctness")]
+let goal_transition_request_complete_input =
+  `Assoc [("action", `String "request_complete")]
+
+let goal_transition_drop_input = `Assoc [("action", `String "drop")]
+let goal_transition_operator_block_input = `Assoc [("action", `String "operator_block")]
 let no_args = `Null
+
+let tool_ok ?(tool_name = "") message =
+  Tool_result.make_ok ~tool_name ~start_time:0.0 ~data:(`String message) ()
+;;
 
 (* ── Helpers ────────────────────────────────────────────────── *)
 
@@ -117,11 +125,6 @@ let test_risk_medium_claim_next () =
   Alcotest.(check string) "claim_next is medium"
     "medium" (Gp.risk_level_to_string risk)
 
-let test_risk_medium_claim_task () =
-  let risk = Gp.assess_risk ~tool_name:managed_claim_tool ~input:no_args in
-  Alcotest.(check string) "claim_task is medium"
-    "medium" (Gp.risk_level_to_string risk)
-
 let test_risk_medium_transition_claim () =
   let risk =
     Gp.assess_risk ~tool_name:generic_transition_tool ~input:transition_claim_input
@@ -165,7 +168,7 @@ let test_risk_low_status () =
     "low" (Gp.risk_level_to_string risk)
 
 let test_risk_low_list () =
-  let risk = Gp.assess_risk ~tool_name:"masc_list_tasks" ~input:no_args in
+  let risk = Gp.assess_risk ~tool_name:"masc_tasks" ~input:no_args in
   Alcotest.(check string) "list is low"
     "low" (Gp.risk_level_to_string risk)
 
@@ -186,29 +189,61 @@ let test_risk_low_transition_done () =
   Alcotest.(check string) "transition done is low"
     "low" (Gp.risk_level_to_string risk)
 
-let test_risk_high_goal_upsert () =
+let test_risk_medium_goal_upsert () =
   let risk = Gp.assess_risk ~tool_name:"masc_goal_upsert" ~input:no_args in
-  Alcotest.(check string) "goal_upsert is high"
+  Alcotest.(check string) "goal_upsert is medium"
+    "medium" (Gp.risk_level_to_string risk)
+
+let test_risk_medium_goal_transition_request_complete () =
+  let risk =
+    Gp.assess_risk
+      ~tool_name:"masc_goal_transition"
+      ~input:goal_transition_request_complete_input
+  in
+  Alcotest.(check string) "goal_transition request_complete is medium"
+    "medium" (Gp.risk_level_to_string risk)
+
+let test_risk_high_goal_transition_missing_action () =
+  let risk = Gp.assess_risk ~tool_name:"masc_goal_transition" ~input:no_args in
+  Alcotest.(check string) "goal_transition without action is high"
     "high" (Gp.risk_level_to_string risk)
 
-let test_risk_high_goal_transition () =
-  let risk = Gp.assess_risk ~tool_name:"masc_goal_transition" ~input:no_args in
-  Alcotest.(check string) "goal_transition is high"
+let test_risk_high_goal_transition_drop () =
+  let risk =
+    Gp.assess_risk
+      ~tool_name:"masc_goal_transition"
+      ~input:goal_transition_drop_input
+  in
+  Alcotest.(check string) "goal_transition drop is high"
     "high" (Gp.risk_level_to_string risk)
+
+let test_risk_high_goal_transition_operator_block () =
+  let risk =
+    Gp.assess_risk
+      ~tool_name:"masc_goal_transition"
+      ~input:goal_transition_operator_block_input
+  in
+  Alcotest.(check string) "goal_transition operator_block is high"
+    "high" (Gp.risk_level_to_string risk)
+
+let test_risk_medium_goal_verify () =
+  let risk = Gp.assess_risk ~tool_name:"masc_goal_verify" ~input:no_args in
+  Alcotest.(check string) "goal_verify is medium"
+    "medium" (Gp.risk_level_to_string risk)
 
 let test_risk_low_keeper_msg () =
   let risk = Gp.assess_risk ~tool_name:"masc_keeper_msg" ~input:no_args in
   Alcotest.(check string) "keeper_msg is low"
     "low" (Gp.risk_level_to_string risk)
 
-let test_risk_medium_worktree_create () =
-  let risk = Gp.assess_risk ~tool_name:"masc_worktree_create" ~input:no_args in
-  Alcotest.(check string) "worktree_create is medium"
-    "medium" (Gp.risk_level_to_string risk)
+let test_risk_critical_tool_execute_default () =
+  let risk = Gp.assess_risk ~tool_name:"tool_execute" ~input:no_args in
+  Alcotest.(check string) "tool_execute defaults to critical"
+    "critical" (Gp.risk_level_to_string risk)
 
-let test_risk_medium_keeper_pr_create () =
-  let risk = Gp.assess_risk ~tool_name:"keeper_pr_create" ~input:no_args in
-  Alcotest.(check string) "keeper_pr_create is medium"
+let test_risk_medium_keeper_task_create () =
+  let risk = Gp.assess_risk ~tool_name:"keeper_task_create" ~input:no_args in
+  Alcotest.(check string) "keeper_task_create is medium"
     "medium" (Gp.risk_level_to_string risk)
 
 let test_risk_medium_transition_start () =
@@ -223,7 +258,7 @@ let test_risk_medium_transition_start () =
    [Eval_gate.detect_destructive] check that conflated canonical
    destructive substrings (rm -rf, drop table) with evasion-only
    indicators (command substitution `$(...)`, hex escapes).  Every
-   keeper_bash payload that used [$(date ...)] tripped the evasion
+   tool_execute payload that used [$(date ...)] tripped the evasion
    regex and was escalated to Critical, blocking benign helpers like
    `echo "ts: $(date)" && pwd` (see masc-improver evidence
    2026-04-25T18:33Z).  These regression tests pin the new behavior:
@@ -233,7 +268,7 @@ let test_risk_medium_transition_start () =
 
 let test_risk_payload_destructive_rm_rf () =
   let input = `Assoc [ ("cmd", `String "rm -rf /tmp/x") ] in
-  let risk = Gp.assess_risk ~tool_name:"keeper_bash" ~input in
+  let risk = Gp.assess_risk ~tool_name:"tool_execute" ~input in
   Alcotest.(check string) "rm -rf payload remains critical"
     "critical" (Gp.risk_level_to_string risk)
 
@@ -244,14 +279,14 @@ let test_risk_payload_evasion_only_command_substitution () =
         ("cmd", `String "echo \"ts: $(date -u +%FT%TZ)\" && pwd");
       ]
   in
-  let risk = Gp.assess_risk ~tool_name:"keeper_bash" ~input in
+  let risk = Gp.assess_risk ~tool_name:"tool_execute" ~input in
   Alcotest.(check string)
     "command-substitution evasion alone is medium, not critical"
     "medium" (Gp.risk_level_to_string risk)
 
 let test_risk_payload_evasion_only_hex_escape () =
   let input = `Assoc [ ("cmd", `String "printf '\\x72\\x6d'") ] in
-  let risk = Gp.assess_risk ~tool_name:"keeper_bash" ~input in
+  let risk = Gp.assess_risk ~tool_name:"tool_execute" ~input in
   Alcotest.(check string) "hex escape evasion alone is medium"
     "medium" (Gp.risk_level_to_string risk)
 
@@ -260,7 +295,7 @@ let test_risk_payload_destructive_inside_substitution () =
      remains visible to detect_destructive after normalize_command, so
      the result must still escalate to Critical. *)
   let input = `Assoc [ ("cmd", `String "echo $(rm -rf /)") ] in
-  let risk = Gp.assess_risk ~tool_name:"keeper_bash" ~input in
+  let risk = Gp.assess_risk ~tool_name:"tool_execute" ~input in
   Alcotest.(check string) "destructive inside $(...) stays critical"
     "critical" (Gp.risk_level_to_string risk)
 
@@ -276,15 +311,12 @@ let test_risk_precedence_critical_over_high () =
   Alcotest.(check string) "force_create is critical (force wins)"
     "critical" (Gp.risk_level_to_string risk)
 
-let test_risk_metadata_destructive_override () =
-  let risk = Gp.assess_risk ~tool_name:"masc_operation_stop" ~input:no_args in
-  Alcotest.(check string) "operation_stop metadata marks destructive"
-    "critical" (Gp.risk_level_to_string risk)
-
 let test_risk_metadata_admin_cleanup_override () =
+  (* masc_admin_cleanup removed in RFC-0182; assess_risk for unknown tool
+     defaults to low. *)
   let risk = Gp.assess_risk ~tool_name:"masc_admin_cleanup" ~input:no_args in
-  Alcotest.(check string) "admin_cleanup metadata marks destructive"
-    "critical" (Gp.risk_level_to_string risk)
+  Alcotest.(check string) "admin_cleanup unknown defaults to low"
+    "low" (Gp.risk_level_to_string risk)
 
 let test_risk_metadata_pg_query_override () =
   (* masc_pg_query removed — no handler, no catalog metadata.
@@ -295,7 +327,7 @@ let test_risk_metadata_pg_query_override () =
 
 let test_risk_payload_empty_overwrite () =
   let risk =
-    Gp.assess_risk ~tool_name:"masc_code_write"
+    Gp.assess_risk ~tool_name:"tool_write_file"
       ~input:
         (`Assoc
           [
@@ -308,7 +340,7 @@ let test_risk_payload_empty_overwrite () =
 
 let test_risk_payload_destructive_content () =
   let risk =
-    Gp.assess_risk ~tool_name:"masc_code_edit"
+    Gp.assess_risk ~tool_name:"tool_edit_file"
       ~input:
         (`Assoc
           [
@@ -336,9 +368,9 @@ let test_risk_payload_destructive_nested_string () =
   Alcotest.(check string) "nested destructive payload is critical"
     "critical" (Gp.risk_level_to_string risk)
 
-let test_risk_payload_safe_write_remains_high () =
+let test_risk_payload_safe_write_inherits_destructive_metadata () =
   let risk =
-    Gp.assess_risk ~tool_name:"masc_code_write"
+    Gp.assess_risk ~tool_name:"tool_write_file"
       ~input:
         (`Assoc
           [
@@ -346,8 +378,8 @@ let test_risk_payload_safe_write_remains_high () =
             ("content", `String "let answer = 42\n");
           ])
   in
-  Alcotest.(check string) "safe write payload remains high"
-    "high" (Gp.risk_level_to_string risk)
+  Alcotest.(check string) "safe write inherits destructive metadata"
+    "critical" (Gp.risk_level_to_string risk)
 
 let test_risk_payload_safe_nested_string_remains_low () =
   let risk =
@@ -387,7 +419,7 @@ let test_risk_contract_risk_from_delivery_contract () =
                       ] );
                   ("repair_budget", `Int 0);
                 ] );
-            ("tool_names", `List [ `String "keeper_bash"; `String "keeper_shell" ]);
+            ("tool_names", `List [ `String "tool_execute"; `String "tool_search_files" ]);
           ])
   in
   Alcotest.(check string) "delivery contract drives critical risk"
@@ -453,7 +485,7 @@ let test_risk_payload_beats_contract_risk () =
                     `List [ `String "report.md"; `String "test.xml" ] );
                   ("repair_budget", `Int 3);
                 ] );
-            ("tool_names", `List [ `String "keeper_fs_edit" ]);
+            ("tool_names", `List [ `String "tool_edit_file" ]);
             ("note", `String "rm -rf /tmp/demo");
           ])
   in
@@ -614,7 +646,7 @@ let test_hook_development_allows () =
   setup ();
   Tool_dispatch.register
     ~tool_name:"__gov_test_delete"
-    ~handler:(fun ~name:_ ~args:_ -> Some (true, "ok"));
+    ~handler:(fun ~name:_ ~args:_ -> Some (tool_ok "ok"));
   let tmpdir = make_tmpdir () in
   let config = Coord.default_config tmpdir in
   let hook = Gp.make_pre_hook ~config ~governance_level:"development" in
@@ -630,17 +662,17 @@ let test_hook_production_blocks_critical () =
   setup ();
   Tool_dispatch.register
     ~tool_name:"__gov_test_delete2"
-    ~handler:(fun ~name:_ ~args:_ -> Some (true, "should not reach"));
+    ~handler:(fun ~name:_ ~args:_ -> Some (tool_ok "should not reach"));
   let tmpdir = make_tmpdir () in
   let config = Coord.default_config tmpdir in
   let hook = Gp.make_pre_hook ~config ~governance_level:"production" in
   let result = hook ~name:"__gov_test_delete2" ~args:`Null in
   (match result with
    | Tool_dispatch.Reject r ->
-       Alcotest.(check bool) "blocked" false r.Tool_result.success;
-       let status = Yojson.Safe.Util.(r.data |> member "status" |> to_string) in
+       Alcotest.(check bool) "blocked" false (Tool_result.is_success r);
+       let status = Yojson.Safe.Util.((Tool_result.data r) |> member "status" |> to_string) in
        Alcotest.(check string) "awaiting_approval" "awaiting_approval" status;
-       let trace = Yojson.Safe.Util.(r.data |> member "trace_id" |> to_string) in
+       let trace = Yojson.Safe.Util.((Tool_result.data r) |> member "trace_id" |> to_string) in
        Alcotest.(check bool) "has trace_id" true (String.length trace > 0)
    | _ -> Alcotest.fail "production should block critical tool");
   cleanup_tmpdir tmpdir
@@ -668,8 +700,8 @@ let test_hook_enterprise_blocks_high () =
   let result = hook ~name:"masc_create_room" ~args:`Null in
   (match result with
    | Tool_dispatch.Reject r ->
-       Alcotest.(check bool) "blocked" false r.Tool_result.success;
-       let status = Yojson.Safe.Util.(r.data |> member "status" |> to_string) in
+       Alcotest.(check bool) "blocked" false (Tool_result.is_success r);
+       let status = Yojson.Safe.Util.((Tool_result.data r) |> member "status" |> to_string) in
        Alcotest.(check string) "awaiting_approval" "awaiting_approval" status
    | _ -> Alcotest.fail "enterprise should block high tool");
   cleanup_tmpdir tmpdir
@@ -684,8 +716,8 @@ let test_hook_paranoid_blocks_medium () =
   let result = hook ~name:"masc_join" ~args:`Null in
   (match result with
    | Tool_dispatch.Reject r ->
-       Alcotest.(check bool) "blocked" false r.Tool_result.success;
-       let status = Yojson.Safe.Util.(r.data |> member "status" |> to_string) in
+       Alcotest.(check bool) "blocked" false (Tool_result.is_success r);
+       let status = Yojson.Safe.Util.((Tool_result.data r) |> member "status" |> to_string) in
        Alcotest.(check string) "awaiting_approval" "awaiting_approval" status
    | _ -> Alcotest.fail "paranoid should block medium tool");
   cleanup_tmpdir tmpdir
@@ -702,7 +734,7 @@ let test_blocked_response_structure () =
   (match result with
    | Tool_dispatch.Reject r ->
        let module U = Yojson.Safe.Util in
-       let data = r.Tool_result.data in
+       let data = (Tool_result.data r) in
        let _status = data |> U.member "status" |> U.to_string in
        let _trace = data |> U.member "trace_id" |> U.to_string in
        let _risk = data |> U.member "risk_level" |> U.to_string in
@@ -725,7 +757,7 @@ let test_blocked_response_structure_claim_next () =
   (match result with
    | Tool_dispatch.Reject r ->
        let module U = Yojson.Safe.Util in
-       let data = r.Tool_result.data in
+       let data = (Tool_result.data r) in
        let _risk = data |> U.member "risk_level" |> U.to_string in
        let _tool = data |> U.member "tool_name" |> U.to_string in
        Alcotest.(check string) "risk_level" "medium" _risk;
@@ -757,8 +789,8 @@ let test_trifecta_all_three_classes () =
   let (count, ext, sens, state) =
     Gp.assess_trifecta ~active_tool_names:[
       "masc_web_search";     (* External_input *)
-      "keeper_fs_read";      (* Sensitive_access *)
-      "keeper_fs_edit";      (* State_modification *)
+      "tool_read_file";      (* Sensitive_access *)
+      "tool_edit_file";      (* State_modification *)
     ]
   in
   Alcotest.(check int) "3 classes" 3 count;
@@ -769,8 +801,8 @@ let test_trifecta_all_three_classes () =
 let test_trifecta_two_classes_no_escalation () =
   let (count, _, _, _) =
     Gp.assess_trifecta ~active_tool_names:[
-      "keeper_fs_read";      (* Sensitive_access *)
-      "keeper_fs_edit";      (* State_modification *)
+      "tool_read_file";      (* Sensitive_access *)
+      "tool_edit_file";      (* State_modification *)
     ]
   in
   Alcotest.(check int) "2 classes" 2 count
@@ -778,7 +810,7 @@ let test_trifecta_two_classes_no_escalation () =
 let test_trifecta_one_class () =
   let (count, _, _, _) =
     Gp.assess_trifecta ~active_tool_names:[
-      "keeper_fs_read";      (* Sensitive_access *)
+      "tool_read_file";      (* Sensitive_access *)
       "keeper_memory_search"; (* Sensitive_access *)
     ]
   in
@@ -791,9 +823,9 @@ let test_trifecta_empty () =
   Alcotest.(check int) "0 classes" 0 count
 
 let test_trifecta_bash_spans_all () =
-  (* keeper_bash alone has all 3 classes *)
+  (* tool_execute alone has all 3 classes *)
   let (count, ext, sens, state) =
-    Gp.assess_trifecta ~active_tool_names:["keeper_bash"]
+    Gp.assess_trifecta ~active_tool_names:["tool_execute"]
   in
   Alcotest.(check int) "bash alone = 3 classes" 3 count;
   Alcotest.(check bool) "has external" true ext;
@@ -810,12 +842,12 @@ let test_trifecta_unclassified_tools_ignored () =
   Alcotest.(check int) "unclassified = 0" 0 count
 
 let test_escalation_state_mod_in_trifecta () =
-  (* keeper_fs_edit is normally High (contains "modify"/"set" pattern).
+  (* tool_edit_file is normally High (contains "modify"/"set" pattern).
      With trifecta, state_modification tools escalate to at least High. *)
   let escalated =
     Gp.combinatorial_risk_escalation
       ~trifecta_active:true
-      ~tool_name:"keeper_fs_edit"
+      ~tool_name:"tool_edit_file"
       ~base_risk:Gp.Medium
       ~input:`Null
   in
@@ -827,7 +859,7 @@ let test_escalation_keeps_higher_risk () =
   let escalated =
     Gp.combinatorial_risk_escalation
       ~trifecta_active:true
-      ~tool_name:"keeper_fs_edit"
+      ~tool_name:"tool_edit_file"
       ~base_risk:Gp.Critical
       ~input:`Null
   in
@@ -838,7 +870,7 @@ let test_escalation_no_trifecta_no_change () =
   let unchanged =
     Gp.combinatorial_risk_escalation
       ~trifecta_active:false
-      ~tool_name:"keeper_fs_edit"
+      ~tool_name:"tool_edit_file"
       ~base_risk:Gp.Low
       ~input:`Null
   in
@@ -850,26 +882,15 @@ let test_escalation_non_state_mod_unchanged () =
   let unchanged =
     Gp.combinatorial_risk_escalation
       ~trifecta_active:true
-      ~tool_name:"keeper_fs_read"
+      ~tool_name:"tool_read_file"
       ~base_risk:Gp.Low
       ~input:`Null
   in
   Alcotest.(check string) "read-only stays low"
     "low" (Gp.risk_level_to_string unchanged)
 
-let test_escalation_read_only_keeper_shell_gh_unchanged () =
-  let unchanged =
-    Gp.combinatorial_risk_escalation
-      ~trifecta_active:true
-      ~tool_name:"keeper_shell"
-      ~input:(`Assoc [("op", `String "gh"); ("cmd", `String "pr view 123")])
-      ~base_risk:Gp.Low
-  in
-  Alcotest.(check string) "read-only keeper_shell op=gh stays low"
-    "low" (Gp.risk_level_to_string unchanged)
-
 let test_tool_capabilities_known () =
-  let caps = Gp.tool_capabilities "keeper_bash" in
+  let caps = Gp.tool_capabilities "tool_execute" in
   Alcotest.(check int) "bash has 3 capabilities" 3 (List.length caps)
 
 let test_tool_capabilities_unknown () =
@@ -897,7 +918,6 @@ let () =
       Alcotest.test_case "high: send" `Quick test_risk_high_send;
       Alcotest.test_case "high: spawn" `Quick test_risk_high_spawn;
       Alcotest.test_case "medium: claim_next" `Quick test_risk_medium_claim_next;
-      Alcotest.test_case "medium: claim_task" `Quick test_risk_medium_claim_task;
       Alcotest.test_case "medium: transition claim" `Quick
         test_risk_medium_transition_claim;
       Alcotest.test_case "medium: join" `Quick test_risk_medium_join;
@@ -908,10 +928,10 @@ let () =
       Alcotest.test_case "medium: resume" `Quick test_risk_medium_resume;
       Alcotest.test_case "medium: transition start" `Quick
         test_risk_medium_transition_start;
-      Alcotest.test_case "medium: worktree create" `Quick
-        test_risk_medium_worktree_create;
-      Alcotest.test_case "medium: keeper PR create" `Quick
-        test_risk_medium_keeper_pr_create;
+      Alcotest.test_case "critical: tool_execute default" `Quick
+        test_risk_critical_tool_execute_default;
+      Alcotest.test_case "medium: keeper task create" `Quick
+        test_risk_medium_keeper_task_create;
       Alcotest.test_case "payload: rm -rf is critical" `Quick
         test_risk_payload_destructive_rm_rf;
       Alcotest.test_case "payload: $(date) is medium not critical" `Quick
@@ -920,9 +940,18 @@ let () =
         test_risk_payload_evasion_only_hex_escape;
       Alcotest.test_case "payload: destructive inside $(...) is critical"
         `Quick test_risk_payload_destructive_inside_substitution;
-      Alcotest.test_case "high: goal upsert" `Quick test_risk_high_goal_upsert;
-      Alcotest.test_case "high: goal transition" `Quick
-        test_risk_high_goal_transition;
+      Alcotest.test_case "medium: goal upsert" `Quick
+        test_risk_medium_goal_upsert;
+      Alcotest.test_case "medium: goal transition request_complete" `Quick
+        test_risk_medium_goal_transition_request_complete;
+      Alcotest.test_case "medium: goal verify" `Quick
+        test_risk_medium_goal_verify;
+      Alcotest.test_case "high: goal transition missing action" `Quick
+        test_risk_high_goal_transition_missing_action;
+      Alcotest.test_case "high: goal transition drop" `Quick
+        test_risk_high_goal_transition_drop;
+      Alcotest.test_case "high: goal transition operator block" `Quick
+        test_risk_high_goal_transition_operator_block;
       Alcotest.test_case "low: transition" `Quick test_risk_low_transition;
       Alcotest.test_case "low: transition done" `Quick test_risk_low_transition_done;
       Alcotest.test_case "low: keeper msg" `Quick test_risk_low_keeper_msg;
@@ -932,8 +961,6 @@ let () =
       Alcotest.test_case "low: unknown" `Quick test_risk_low_unknown;
       Alcotest.test_case "precedence: critical > high" `Quick
         test_risk_precedence_critical_over_high;
-      Alcotest.test_case "metadata: destructive override" `Quick
-        test_risk_metadata_destructive_override;
       Alcotest.test_case "metadata: admin cleanup override" `Quick
         test_risk_metadata_admin_cleanup_override;
       Alcotest.test_case "metadata: pg query override" `Quick
@@ -944,8 +971,8 @@ let () =
         test_risk_payload_destructive_content;
       Alcotest.test_case "payload: destructive nested string" `Quick
         test_risk_payload_destructive_nested_string;
-      Alcotest.test_case "payload: safe write remains high" `Quick
-        test_risk_payload_safe_write_remains_high;
+      Alcotest.test_case "payload: safe write inherits destructive metadata" `Quick
+        test_risk_payload_safe_write_inherits_destructive_metadata;
       Alcotest.test_case "payload: safe nested string remains low" `Quick
         test_risk_payload_safe_nested_string_remains_low;
       Alcotest.test_case "contract risk: delivery contract" `Quick
@@ -981,8 +1008,6 @@ let () =
         test_escalation_no_trifecta_no_change;
       Alcotest.test_case "escalation: non-state_mod unchanged" `Quick
         test_escalation_non_state_mod_unchanged;
-      Alcotest.test_case "escalation: read-only keeper_shell op=gh unchanged" `Quick
-        test_escalation_read_only_keeper_shell_gh_unchanged;
       Alcotest.test_case "capabilities: known tool" `Quick
         test_tool_capabilities_known;
       Alcotest.test_case "capabilities: unknown tool" `Quick

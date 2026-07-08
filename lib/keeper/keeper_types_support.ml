@@ -6,13 +6,7 @@
 
 include Keeper_config
 
-(* Delegated to Keeper_fs — single fiber-safe ensure_dir implementation. *)
-let mkdir_p_ path = Fs_compat.mkdir_p path
 let ensure_dir_ = Keeper_fs.ensure_dir
-
-(** Backward-compatible mkdir_p: delegates to Keeper_fs.ensure_dir.
-    Used by external callers via [Keeper_types.mkdir_p]. *)
-let mkdir_p path = ignore (Keeper_fs.ensure_dir path)
 
 let keeper_dir_ (config : Coord.config) =
   let d = Filename.concat (Coord.masc_root_dir config) "keepers" in
@@ -38,20 +32,6 @@ let metrics_store_mu = Eio.Mutex.create ()
 
 let keeper_metrics_store config name : Dated_jsonl.t =
   let dir = Filename.concat (keeper_dir_ config) (name ^ "/metrics") in
-  let lookup () =
-    match Hashtbl.find_opt metrics_store_cache dir with
-    | Some store -> store
-    | None ->
-      let store = Dated_jsonl.create ~base_dir:dir () in
-      Hashtbl.replace metrics_store_cache dir store;
-      store
-  in
-  Eio_guard.with_mutex metrics_store_mu lookup
-
-let keeper_pr_action_metrics_store config name : Dated_jsonl.t =
-  let dir =
-    Filename.concat (keeper_dir_ config) (name ^ "/pr-action-metrics")
-  in
   let lookup () =
     match Hashtbl.find_opt metrics_store_cache dir with
     | Some store -> store
@@ -150,14 +130,12 @@ let maybe_rotate_file path =
           for i = max_rotated downto 2 do
             let src = Printf.sprintf "%s.%d" path (i - 1) in
             let dst = Printf.sprintf "%s.%d" path i in
-            try Fs_compat.rename src dst with
-            | Sys_error msg when String_util.contains_substring msg "No such file" -> ()
+            try ignore (Fs_compat.rename_if_exists ~src ~dst : bool) with
             | Sys_error msg ->
               Log.Misc.warn "rotate: cannot rename %s -> %s: %s" src dst msg
           done;
           let rotated = Printf.sprintf "%s.1" path in
-          try Fs_compat.rename path rotated with
-          | Sys_error msg when String_util.contains_substring msg "No such file" -> ()
+          try ignore (Fs_compat.rename_if_exists ~src:path ~dst:rotated : bool) with
           | Sys_error msg ->
             Log.Misc.warn "rotate: cannot rename %s -> %s: %s" path rotated msg
         end

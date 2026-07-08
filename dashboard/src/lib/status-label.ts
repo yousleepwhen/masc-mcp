@@ -1,6 +1,14 @@
+import { UNKNOWN_STATUS_LABEL } from './format-string'
+
 // Unified status display utilities.
-// Consolidates statusLabel, displayStatus, prettyJson from
+// Consolidates statusLabel from
 // mission-utils, agents, agent-roster, status-badge, helpers, ops/helpers.
+//
+// SSOT principle: one English-key → one Korean label. Sister keys that share
+// a meaning (e.g. `done`/`completed`/`ended`) collapse to the same label.
+// Distinct meanings get distinct labels — collisions across unrelated keys
+// (the prior `중단됨` = interrupted + stopped, `대기` = listening + idle + todo,
+// `오류` vs `문제` for error/failed) are an operator-confusion source.
 
 /** Comprehensive status label — maps normalized status strings to Korean labels. */
 export function statusLabel(value?: string | null): string {
@@ -12,6 +20,7 @@ export function statusLabel(value?: string | null): string {
       return '안정'
     case 'active':
     case 'running':
+    case 'in_progress':
       return '진행 중'
     case 'working':
     case 'busy':
@@ -19,14 +28,20 @@ export function statusLabel(value?: string | null): string {
     case 'watching':
       return '관찰 중'
     case 'listening':
-      return '대기'
+      return '수신 대기'
     case 'pending':
       return '대기 중'
+    case 'todo':
+      return '예정'
+    case 'idle':
+      return '대기'
     case 'paused':
       return '일시정지'
     case 'blocked':
       return '차단됨'
     case 'interrupted':
+      return '인터럽트됨'
+    case 'stopped':
       return '중단됨'
     case 'warn':
     case 'watch':
@@ -42,10 +57,6 @@ export function statusLabel(value?: string | null): string {
       return '오프라인'
     case 'unbooted':
       return '미기동'
-    case 'stopped':
-      return '중단됨'
-    case 'idle':
-      return '대기'
     case 'quiet':
       return '조용함'
     case 'loading':
@@ -83,47 +94,16 @@ export function statusLabel(value?: string | null): string {
       return '핸드오프'
     case 'claimed':
       return '점유됨'
-    case 'in_progress':
-      return '진행 중'
     case 'awaiting_verification':
       return '검증 대기'
-    case 'todo':
-      return '대기'
     case 'preview':
       return '미리보기'
     case 'captured':
       return '기록됨'
     case 'unknown':
     case '':
-      return '확인 필요'
+      return UNKNOWN_STATUS_LABEL
     default:
-      return value?.trim() || '확인 필요'
-  }
-}
-
-/** Short display status — fewer cases, used in operator contexts. */
-export function displayStatus(status?: string | null): string {
-  const normalized = (status ?? '').trim().toLowerCase()
-  if (!normalized) return '확인 필요'
-  if (normalized === 'active' || normalized === 'running') return '진행 중'
-  if (normalized === 'paused') return '일시정지'
-  if (normalized === 'done' || normalized === 'ended' || normalized === 'completed') return '완료'
-  if (normalized === 'failed' || normalized === 'error') return '문제'
-  if (normalized === 'stopped') return '중단됨'
-  if (normalized === 'unbooted') return '미기동'
-  if (normalized === 'offline') return '오프라인'
-  if (normalized === 'idle') return '대기'
-  if (normalized === 'unknown') return '확인 필요'
-  return status?.trim() || '확인 필요'
-}
-
-/** Format unknown values as pretty JSON or pass-through strings. */
-export function prettyJson(value: unknown): string {
-  if (value === null || value === undefined) return ''
-  if (typeof value === 'string') return value
-  try {
-    return JSON.stringify(value, null, 2)
-  } catch {
-    return String(value)
+      return value?.trim() || UNKNOWN_STATUS_LABEL
   }
 }

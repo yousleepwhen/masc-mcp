@@ -4,23 +4,24 @@ import { describe, expect, it } from 'vitest'
 import {
   appendCompositeObservation,
   deriveLaneDwellHistograms,
-  deriveObservedLaneSummaries,
-  deriveOperationalInsight,
   derivePhaseLog,
   deriveStateEntries,
   deriveSwimlaneSegments,
   deriveTimeAxisTicks,
   deriveTopTransitions,
   deriveTransitionHistory,
-  filterKeeperNames,
-  flagTooltip,
   inferTransitionReason,
-  invariantDescription,
-  isTransitionInSegment,
   laneTransitionCount,
+} from './fsm-hub-derivations'
+import {
   type CompositeObservation,
   type HoveredSegment,
-} from './fsm-hub'
+} from './fsm-hub-types'
+import { deriveObservedLaneSummaries } from './fsm-hub-lane-analysis'
+import { deriveOperationalInsight } from './fsm-hub-invariant-analysis'
+import { flagTooltip, invariantDescription } from './fsm-hub-health-panels'
+import { isTransitionInSegment } from './fsm-hub-timeline-panels'
+import { filterKeeperNames } from './fsm-hub'
 
 function observation(
   overrides: Partial<CompositeObservation> = {},
@@ -55,7 +56,10 @@ function snapshot(
       no_cascade_before_measurement: true,
       compaction_atomicity: true,
       event_priority_monotone: true,
+      phase_derivation_agreement: true,
     },
+    fsm_guard_violations: 0,
+    fsm_guard_violation_breakdown: [],
     is_live: false,
     last_outcome: null,
     recommended_actions: [],
@@ -174,6 +178,7 @@ describe('fsm-hub derived state', () => {
           no_cascade_before_measurement: true,
           compaction_atomicity: true,
           event_priority_monotone: true,
+          phase_derivation_agreement: true,
         },
       }),
       [observation({ ts: 10, phase: 'Compacting', turn: 'executing' })],
@@ -586,7 +591,7 @@ describe('filterKeeperNames', () => {
     'keeper-planner-agent',
     'keeper-critic-agent',
     'keeper-router-agent',
-    'keeper-autoresearch-agent',
+    'keeper-research-agent',
     'governance-keeper',
   ]
 
@@ -611,7 +616,7 @@ describe('filterKeeperNames', () => {
   })
 
   it('matches substring that does not anchor on prefix', () => {
-    expect(filterKeeperNames(fleet, 'research')).toEqual(['keeper-autoresearch-agent'])
+    expect(filterKeeperNames(fleet, 'research')).toEqual(['keeper-research-agent'])
     expect(filterKeeperNames(fleet, 'governance')).toEqual(['governance-keeper'])
   })
 
@@ -629,7 +634,7 @@ describe('filterKeeperNames', () => {
       'keeper-planner-agent',
       'keeper-critic-agent',
       'keeper-router-agent',
-      'keeper-autoresearch-agent',
+      'keeper-research-agent',
     ])
   })
 

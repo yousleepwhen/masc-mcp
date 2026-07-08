@@ -3,7 +3,10 @@ open Repo_manager_types
 let ( let* ) = Result.bind
 
 let creds_toml_path base_path =
-  Filename.concat base_path ".masc/config/credentials.toml"
+  (* RFC-0121: layout SSOT via [Config_dir_resolver]. Resolver helper
+     returns the same byte-string as the previous direct concat (covered
+     by test_rfc0121_credentials_toml). *)
+  Config_dir_resolver.credentials_toml_path ~base_path
 
 let default_credential =
   {
@@ -16,17 +19,6 @@ let default_credential =
     state = Unmaterialized;
     token_sha256_prefix = None;
   }
-
-let ensure_dir path =
-  let rec loop dir =
-    if dir = "" || dir = "." || Sys.file_exists dir then ()
-    else begin
-      loop (Filename.dirname dir);
-      try Unix.mkdir dir 0o755
-      with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
-    end
-  in
-  loop path
 
 let credential_type_of_string = function
   | "Github" | "github" -> Ok Github
@@ -67,29 +59,23 @@ let credential_of_toml toml id =
   let* cred_type_str = Otoml.find_result toml Otoml.get_string (path "type") in
   let* cred_type = credential_type_of_string cred_type_str in
   let* username = Otoml.find_result toml Otoml.get_string (path "username") in
-  let gh_config_dir =
-    match Otoml.find_result toml Otoml.get_string (path "gh_config_dir") with
-    | Ok dir -> Some dir
-    | Error _ -> None
+  (* RFC-0141 PR-3: lift optional fields through [Field_resolution] so a
+     wrong-type value in [credentials.toml] surfaces as [Error] instead of
+     being silenced into [None]. *)
+  let optional_string field =
+    match Field_resolution.resolve_string toml (path field) with
+    | Present v -> Ok (Some v)
+    | Missing -> Ok None
+    | Type_mismatch { path; expected; message } ->
+      Error
+        (Printf.sprintf "TOML field %s: expected %s (%s)"
+           (String.concat "." path) expected message)
   in
-  let ssh_key_path =
-    match Otoml.find_result toml Otoml.get_string (path "ssh_key_path") with
-    | Ok path -> Some path
-    | Error _ -> None
-  in
-  let gpg_key_id =
-    match Otoml.find_result toml Otoml.get_string (path "gpg_key_id") with
-    | Ok id -> Some id
-    | Error _ -> None
-  in
+  let* gh_config_dir = optional_string "gh_config_dir" in
+  let* ssh_key_path = optional_string "ssh_key_path" in
+  let* gpg_key_id = optional_string "gpg_key_id" in
   let state = credential_state_of_toml toml id in
-  let token_sha256_prefix =
-    match
-      Otoml.find_result toml Otoml.get_string (path "token_sha256_prefix")
-    with
-    | Ok s -> Some s
-    | Error _ -> None
-  in
+  let* token_sha256_prefix = optional_string "token_sha256_prefix" in
   Ok
     {
       id;
@@ -159,25 +145,28 @@ let load_all ~base_path =
         | Ok (Otoml.TomlTable fields | Otoml.TomlInlineTable fields) ->
             let rec loop acc = function
               | [] -> Ok (List.rev acc)
-              | (id, value) :: rest -> (
-                  match value with
-                  | Otoml.TomlTable _ | Otoml.TomlInlineTable _ ->
-                      let cred_toml =
-                        Otoml.TomlTable [("credential", Otoml.TomlTable [(id, value)])]
-                      in
-                      (match credential_of_toml cred_toml id with
-                      | Ok cred -> loop (cred :: acc) rest
-                      | Error msg -> Error msg)
-                  | _ ->
-                      Error (Printf.sprintf "credential.%s must be a table" id))
+              | (id, value) :: rest ->
+                  if is_toml_table value then
+                    let cred_toml =
+                      Otoml.TomlTable [("credential", Otoml.TomlTable [(id, value)])]
+                    in
+                    (match credential_of_toml cred_toml id with
+                    | Ok cred -> loop (cred :: acc) rest
+                    | Error msg -> Error msg)
+                  else
+                    Error (Printf.sprintf "credential.%s must be a table" id)
             in
             loop [] fields
-        | Ok _ -> Ok [])
+        | Ok (Otoml.TomlString _ | Otoml.TomlInteger _ | Otoml.TomlFloat _
+             | Otoml.TomlBoolean _ | Otoml.TomlOffsetDateTime _
+             | Otoml.TomlLocalDateTime _ | Otoml.TomlLocalDate _
+             | Otoml.TomlLocalTime _ | Otoml.TomlArray _ | Otoml.TomlTableArray _) ->
+            Ok [])
 
 let save_all ~base_path (creds : credential list) =
   let path = creds_toml_path base_path in
   let config_dir = Filename.dirname path in
-  ensure_dir config_dir;
+  Fs_compat.mkdir_p config_dir;
   let cred_entries =
     List.map (fun (cred : credential) -> (cred.id, toml_of_credential cred)) creds
   in

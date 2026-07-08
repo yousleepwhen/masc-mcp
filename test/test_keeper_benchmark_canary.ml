@@ -3,7 +3,7 @@ open Alcotest
 module KBC = Masc_mcp.Keeper_benchmark_canary
 module KML = Masc_mcp.Keeper_model_labels
 module KT = Masc_mcp.Keeper_types
-module TQB = Masc_mcp.Tool_call_quality_benchmark
+module TQB = Tool_call_quality_benchmark
 
 let with_env name value_opt f =
   let previous =
@@ -43,8 +43,10 @@ let make_meta ?(name = "analyst") ?(models = []) () =
       ("name", `String name);
       ("agent_name", `String ("keeper-" ^ name ^ "-agent"));
       ("trace_id", `String "trace-keeper-benchmark-canary");
-      ("cascade_name", `String Masc_mcp.Keeper_config.default_cascade_name);
+      ("cascade_name", `String Masc_mcp.(Keeper_config.default_cascade_name ()));
       ("last_model_used", `String "");
+      ("sandbox_profile", `String "local");
+      ("network_mode", `String "none");
     ]
   in
   let fields =
@@ -108,13 +110,13 @@ let test_build_manifest_picks_only_fully_passing_rows () =
       unknown_case_runs = 0;
       grouped_by_provider_model_keeper =
         [
-          row ~provider:"openai" ~model:"gpt-5.4" ~keeper_profile:"bench-analyst"
+          row ~provider:"provider_d" ~model:"model-d-5.4" ~keeper_profile:"bench-analyst"
             ~composite_score:100.0 ~cases_total:2 ~cases_passed:2
             ~stability_score:1.0 ();
-          row ~provider:"openai" ~model:"gpt-5.4-mini"
+          row ~provider:"provider_d" ~model:"model-d-5.4-mini"
             ~keeper_profile:"bench-verifier" ~composite_score:100.0
             ~stability_score:0.6666666667 ();
-          row ~provider:"openai" ~model:"gpt-5.4" ~keeper_profile:"bench-executor"
+          row ~provider:"provider_d" ~model:"model-d-5.4" ~keeper_profile:"bench-executor"
             ~composite_score:75.0 ~cases_passed:0 ();
         ];
       grouped_by_provider_model = [];
@@ -174,16 +176,16 @@ let test_runtime_canary_prepends_recommended_model_only_without_explicit_models 
         let labels =
           KML.configured_model_labels_of_meta (make_meta ~name:"analyst" ())
         in
-        check string "recommended model is prepended"
-          "test-provider:test-model" (List.hd labels);
+        check bool "bench recommendation is not a runtime dispatch override"
+          false (List.mem "test-provider:test-model" labels);
         let explicit_meta =
           { (make_meta ~name:"analyst" ()) with models = [ "explicit:model" ] }
         in
         let explicit_labels =
           KML.configured_model_labels_of_meta explicit_meta
         in
-        check (list string) "explicit models stay untouched"
-          [ "explicit:model" ] explicit_labels)))
+        check bool "legacy explicit models are ignored by runtime labels"
+          false (List.mem "explicit:model" explicit_labels))))
 
 let () =
   run "keeper_benchmark_canary"

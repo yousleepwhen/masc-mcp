@@ -16,7 +16,8 @@ import {
 } from '../store'
 import { FilterChips } from './common/filter-chips'
 import { TextInput } from './common/input'
-import { EmptyState } from './common/empty-state'
+import { EmptyState } from './common/feedback-state'
+import { RouteLink } from './common/route-link'
 import { TimeAgo } from './common/time-ago'
 import {
   keeperIdentityKeys,
@@ -29,7 +30,8 @@ import { AgentPresence } from './common/agent-presence'
 import { AgentCapability } from './common/agent-capability'
 import { openAgentDetail } from './agent-detail-state'
 import { openKeeperDetail } from './keeper-detail'
-import { formatDuration, trimText } from './mission-utils'
+import { formatDuration } from '../lib/format-time'
+import { trimText } from '../lib/truncate'
 import { formatTokens } from '../lib/format-number'
 import { namespaceTruth } from '../namespace-truth-store'
 import {
@@ -41,17 +43,38 @@ import {
   type RuntimeBand,
 } from '../lib/monitoring-runtime'
 import { KeeperPhaseBadge } from './keeper-phase-indicator'
+import { KeeperActionButtons } from './keeper-action-panel'
 import {
+  expectedKeeperDetailRows,
+  expectedRuntimeDetailRows,
+  formatKeeperCountBreakdown,
+  formatRuntimeRosterCount,
   resolveRuntimeCounts,
+  runtimeDetailRows,
   runtimeCountSourceLabel,
   shouldShowExecutionFallbackState,
 } from '../runtime-counts'
 import {
   keeperActivityDisplay,
-  keeperDisplayModel,
+  keeperRuntimeBlockerHint,
+  keeperRuntimeBlockerLabel,
 } from '../lib/keeper-runtime-display'
+// RFC-0135 PR-4: roster card derives its blocker note through the typed
+// KeeperOperationalState SSOT so the headline (`현재 차단` vs `이전 차단`
+// vs `실행중`) matches the detail panel for the same keeper. Previously
+// `rosterStateNote` read `keeper.runtime_blocker_*` flat and never saw
+// `composite.runtime_attention.execution_current`, producing the
+// 2026-05-19 lifecycle-worker symptom (`현재 차단 · synthetic_stall` in
+// the list while detail showed `턴 진행 중 · executing live`).
+import { deriveKeeperOperationalState } from '../lib/keeper-operational-state'
+import { isKeeperPaused } from '../lib/keeper-predicates'
+import type { KeeperCompositeSnapshot } from '../api/schemas/keeper-composite'
+import { fleetCompositeSnapshot } from '../composite-signals'
 
 type StatusFilter = 'all' | RuntimeBand
+
+type RosterStateNote = { label: string; text: string; kind?: string }
+type RosterPresenceDisplay = { status: string | null; detail: string | null }
 
 function stageBadgeClass(stageKey: string): string {
   if (stageKey === 'tool_use') return 'border-[var(--info-border)] bg-[var(--accent-12)] text-[var(--color-accent-fg)]'
@@ -60,34 +83,6 @@ function stageBadgeClass(stageKey: string): string {
   if (stageKey === 'failing' || stageKey === 'crashed') return 'border-[var(--err-border)] bg-[var(--bad-soft)] text-[var(--color-status-err)]'
   if (stageKey === 'paused') return 'border-[var(--purple-24)] bg-[var(--purple-12)] text-[var(--purple)]'
   return 'border-[var(--color-border-default)] bg-[var(--color-bg-surface)] text-[var(--color-fg-muted)]'
-}
-
-function compactModelLabel(model: string | null | undefined): string | null {
-  const value = model?.trim()
-  if (!value) return null
-  const separator = value.indexOf(':')
-  if (separator >= 0 && separator < value.length - 1) {
-    const provider = value.slice(0, separator).trim()
-    const suffix = value.slice(separator + 1).trim()
-    if (!suffix) return value
-    if (suffix === 'auto') return provider.replace(/(?:[_-](?:cli|code))$/i, '')
-    return suffix
-  }
-  return value
-}
-
-function rosterModelMeta(
-  source: {
-    last_model_used_label?: string | null
-    last_model_used?: string | null
-    active_model_label?: string | null
-    active_model?: string | null
-    model?: string | null
-    primary_model?: string | null
-    metrics_series?: Array<{ model_used?: string | null } | null> | null
-  } | null | undefined,
-): { label: string; value: string } | null {
-  return keeperDisplayModel(source)
 }
 
 function rosterContextMeta(
@@ -113,22 +108,142 @@ function rosterContextMeta(
   return { pct, detail }
 }
 
-function rosterStateNote(
-  keeper: {
-    runtime_blocker_summary?: string | null
-    diagnostic?: { last_error?: string | null } | null
-  } | null | undefined,
+/**
+ * RFC-0135 §1.1 root fix. Decide the roster card state note from the
+ * typed `KeeperOperationalState` SSOT — the same function the detail
+ * panel calls — so the two surfaces cannot diverge.
+ *
+ * Display rules per typed state:
+ *  - stuck             → `현재 차단`  (text: backend summary or typed reason)
+ *  - running + staleBlocker → `이전 차단` (informational; not a headline)
+ *  - running           → fallback to diagnostic error / monitoring hint
+ *  - paused / offline  → null — these states are signaled by the row's
+ *                         phase badge and dedicated chips elsewhere; the
+ *                         state-note slot stays available for extra
+ *                         operational context only.
+ */
+export function rosterStateNote(
+  keeper: Keeper | null | undefined,
+  composite: KeeperCompositeSnapshot | null,
   monitoringHint?: string | null,
-): { label: string; text: string } | null {
-  const runtimeBlocker = keeper?.runtime_blocker_summary?.trim()
-  if (runtimeBlocker) return { label: '현재 차단', text: runtimeBlocker }
+): RosterStateNote | null {
+  if (!keeper) return null
 
-  const diagnosticError = keeper?.diagnostic?.last_error?.trim()
-  if (diagnosticError) return { label: '최근 오류', text: diagnosticError }
+  const state = deriveKeeperOperationalState({ keeper, composite })
+
+  if (state.kind === 'paused') {
+    const blockerClass = keeper.runtime_blocker_class ?? undefined
+    const runtimeHint = keeperRuntimeBlockerHint(keeper)
+    if (runtimeHint) {
+      return { label: '일시정지 원인', text: runtimeHint, kind: blockerClass }
+    }
+
+    const summary = keeper.runtime_blocker_summary?.trim()
+    if (summary) {
+      return { label: '일시정지 원인', text: summary, kind: blockerClass }
+    }
+
+    const hint = monitoringHint?.trim()
+    if (hint) return { label: '일시정지', text: hint, kind: blockerClass }
+    return null
+  }
+
+  if (state.kind === 'stuck') {
+    const summary = keeper.runtime_blocker_summary?.trim()
+    if (summary) {
+      return { label: '현재 차단', text: summary, kind: state.reason }
+    }
+    return {
+      label: '현재 차단',
+      text: `차단 종류: ${state.reason} (요약 메시지 없음)`,
+      kind: state.reason,
+    }
+  }
+
+  if (state.kind === 'running' && state.staleBlocker !== null) {
+    return {
+      label: '이전 차단',
+      text: `이전 턴 차단 (${state.staleBlocker}) — 현재는 실행 중`,
+      kind: state.staleBlocker,
+    }
+  }
+
+  if (state.kind === 'offline' && keeper.agent?.current_task) {
+    return { label: '작업 중단', text: `할당된 작업이 있으나 keeper가 ${state.cause} 상태입니다` }
+  }
+
+  const diagnosticError = keeper.diagnostic?.last_error?.trim()
+  if (diagnosticError) {
+    return { label: state.kind === 'running' ? '이전 오류' : '최근 오류', text: diagnosticError }
+  }
 
   const hint = monitoringHint?.trim()
-  if (hint) return { label: '상태 메모', text: hint }
+  if (hint) return { label: '참고', text: hint }
   return null
+}
+
+function noteLooksLikeRawKind(note: RosterStateNote): boolean {
+  if (!note.kind) return false
+  return note.text === note.kind || note.text === `차단 종류: ${note.kind} (요약 메시지 없음)`
+}
+
+function rosterPresenceDisplay(
+  agent: Agent,
+  keeper: Keeper | null,
+  composite: KeeperCompositeSnapshot | null,
+): RosterPresenceDisplay {
+  if (!keeper) return { status: agent.status ?? null, detail: null }
+
+  const state = deriveKeeperOperationalState({ keeper, composite })
+  if (state.kind === 'paused') {
+    const staleTask = agent.current_task?.trim()
+    return {
+      status: 'paused',
+      detail: staleTask ? `오래된 작업 신호 ${staleTask}` : null,
+    }
+  }
+
+  if (state.kind === 'offline' && agent.current_task) {
+    return { status: 'offline', detail: `중단된 작업 ${agent.current_task}` }
+  }
+
+  return { status: agent.status ?? keeper.status ?? null, detail: null }
+}
+
+export function rosterBlockerDisplay(
+  note: RosterStateNote | null,
+  keeper: Keeper | null | undefined,
+): {
+  cell: string
+  detail: string
+  title: string
+  kindLabel: string | null
+  rawKind: string | null
+} {
+  if (!note) {
+    return {
+      cell: '-',
+      detail: '현재 차단 근거 없음',
+      title: '현재 차단 근거 없음',
+      kindLabel: null,
+      rawKind: null,
+    }
+  }
+
+  const kindLabel =
+    note.kind && keeper?.runtime_blocker_class === note.kind
+      ? keeperRuntimeBlockerLabel(keeper.runtime_blocker_class)
+      : null
+  const displayKind = kindLabel ?? note.kind ?? null
+  const cell = displayKind ? `${note.label}: ${displayKind}` : note.label
+  const runtimeHint = noteLooksLikeRawKind(note) ? keeperRuntimeBlockerHint(keeper) : null
+  const detail = runtimeHint ?? note.text
+  const rawKind = note.kind ?? null
+  const title = rawKind && kindLabel
+    ? `${cell} (${rawKind}) · ${detail}`
+    : `${cell} · ${detail}`
+
+  return { cell, detail, title, kindLabel, rawKind }
 }
 
 function registerKeeperLookup<T extends Pick<Keeper, 'keeper_id' | 'name' | 'agent_name'>>(
@@ -174,55 +289,85 @@ function findKeeperRuntimeForAgent(
 
 type KeeperFilterMode = 'all' | 'agent-only' | 'keeper-only'
 
-function isRuntimeBackedKeeper(keeper: Pick<Keeper, 'paused' | 'registered' | 'keepalive_running'>): boolean {
+function isRuntimeBackedKeeper(keeper: Keeper): boolean {
   if (keeper.registered === false && keeper.keepalive_running === false) return false
-  if (keeper.paused === true && keeper.registered !== true && keeper.keepalive_running !== true) return false
+  // RFC-0135 PR-13: use canonical paused predicate. SSOT also covers
+  // `phase === 'Paused'` / `status === 'paused'` / `pipeline_stage ===
+  // 'paused'`. Effect: an FSM-paused but-not-flag-paused keeper that
+  // also lost registration + keepalive is now filtered out, matching
+  // the "no real backing runtime" intent the original `paused === true`
+  // check captured only partially.
+  if (isKeeperPaused(keeper) && keeper.registered !== true && keeper.keepalive_running !== true) return false
   return true
 }
 
-function runtimeBackedKeepers(keeperList: Keeper[]): Keeper[] {
-  return keeperList.filter(isRuntimeBackedKeeper)
+function agentCanBackKeeperRuntime(agent: Agent): boolean {
+  const normalized = agent.status?.trim().toLowerCase()
+  return normalized !== 'inactive' && normalized !== 'offline'
+}
+
+function keeperHasLiveAgentPresence(
+  keeper: Keeper,
+  liveAgentKeys: ReadonlySet<string>,
+): boolean {
+  const candidates = keeperIdentityKeys(keeper.keeper_id ?? null, keeper.name, keeper.agent_name)
+  return candidates.some(candidate => liveAgentKeys.has(candidate))
+}
+
+function liveAgentIdentityKeys(agentList: readonly Agent[]): Set<string> {
+  const keys = new Set<string>()
+  for (const agent of agentList) {
+    if (!agentCanBackKeeperRuntime(agent)) continue
+    for (const candidate of keeperIdentityKeys(
+      agent.keeper_id ?? null,
+      agent.keeper_name ?? null,
+      agent.name,
+    )) {
+      keys.add(candidate)
+    }
+  }
+  return keys
+}
+
+function runtimeBackedKeepers(
+  keeperList: Keeper[],
+  agentList: readonly Agent[] = [],
+): Keeper[] {
+  const liveAgentKeys = liveAgentIdentityKeys(agentList)
+  return keeperList.filter(keeper =>
+    isRuntimeBackedKeeper(keeper) || keeperHasLiveAgentPresence(keeper, liveAgentKeys))
 }
 
 function expectedCountForKeeperFilter(
   keeperFilter: KeeperFilterMode,
   counts: ReturnType<typeof resolveRuntimeCounts>,
 ): number {
-  if (keeperFilter === 'keeper-only') return counts.keepers
-  if (keeperFilter === 'agent-only') return counts.agents
-  return counts.totalRuntimes
+  // Roster fallback messages compare against detail rows, not active runtime
+  // fibers. A paused keeper is not live capacity, but it is still a row the
+  // operator expects to see in the directory.
+  const useDetailRows = runtimeDetailRows(counts) > 0
+  if (keeperFilter === 'keeper-only') return useDetailRows ? expectedKeeperDetailRows(counts) : counts.configured.keepers
+  if (keeperFilter === 'agent-only') return counts.live.agents
+  return useDetailRows ? expectedRuntimeDetailRows(counts) : counts.configured.totalRuntimes
 }
 
 const FILTER_META: Record<StatusFilter, { label: string; description: string }> = {
   all: {
-    label: '전체 보기',
-    description: '등록된 런타임 전체를 보여줍니다.',
+    label: '전체 상세',
+    description: 'execution 상세 행 전체를 보여줍니다. 활성 runtime 총계와는 별도 기준입니다.',
   },
-  active: {
-    label: '가동중',
-    description: '운영자 개입 없이 흐름을 지켜봐도 되는 상태를 묶어 보여줍니다.',
-  },
-  attention: {
-    label: '주의 필요',
-    description: '응답 지연, 오류, 복구, 승계 등으로 상태 확인이 필요한 항목입니다.',
-  },
-  paused: {
-    label: '일시정지',
-    description: '운영자가 멈춰 둔 상태를 따로 모아 봅니다.',
-  },
-  offline: {
-    label: '오프라인',
-    description: '프로세스가 내려갔거나 아직 기동되지 않은 상태입니다.',
-  },
+  active: { label: runtimeBandMeta('active').label, description: runtimeBandMeta('active').description },
+  attention: { label: runtimeBandMeta('attention').label, description: runtimeBandMeta('attention').description },
+  paused: { label: runtimeBandMeta('paused').label, description: runtimeBandMeta('paused').description },
+  offline: { label: runtimeBandMeta('offline').label, description: runtimeBandMeta('offline').description },
 }
 
 /**
  * Pure filter for agent roster rows.
  *
- * Case-insensitive substring match on `row.name`, `row.model`,
- * `row.current_task`, and `row.koreanName` so operators can locate an
- * agent/keeper by display name, by the model it runs, by its current
- * task text, or by the Korean alias shown on the card.
+ * Case-insensitive substring match on `row.name`, `row.current_task`, and
+ * `row.koreanName` so operators can locate an agent/keeper by display name,
+ * current task text, or the Korean alias shown on the card.
  *
  * Empty/whitespace query returns the input reference unchanged (no new
  * array allocation, preserves referential equality for memoisation).
@@ -237,7 +382,6 @@ function filterAgentRoster(
   if (needle === '') return rows
   return rows.filter(row => {
     if (row.name.toLowerCase().includes(needle)) return true
-    if (row.model && row.model.toLowerCase().includes(needle)) return true
     if (row.current_task && row.current_task.toLowerCase().includes(needle)) return true
     if (row.koreanName && row.koreanName.toLowerCase().includes(needle)) return true
     return false
@@ -379,6 +523,7 @@ function buildAgentRoster(
 function countAgentsByStatus(
   agentList: Agent[],
   keeperList: Keeper[],
+  compositeByKeeperKey: ReadonlyMap<string, KeeperCompositeSnapshot> | null = null,
 ): Record<StatusFilter, number> {
   const keeperLookup = buildKeeperRuntimeLookup(keeperList)
   const counts: Record<StatusFilter, number> = {
@@ -391,7 +536,16 @@ function countAgentsByStatus(
 
   for (const agent of agentList) {
     const keeperRuntime = findKeeperRuntimeForAgent(agent, keeperLookup)
-    const band = runtimeBandMetaForAgent(agent, keeperRuntime).key
+    // RFC-0135 PR-12: pass composite to band derivation so stale
+    // blockers are demoted via SSOT instead of inflating attention.
+    const composite =
+      keeperRuntime && compositeByKeeperKey
+        ? compositeByKeeperKey.get(keeperRuntime.name)
+          ?? (typeof keeperRuntime.keeper_id === 'string'
+            ? compositeByKeeperKey.get(keeperRuntime.keeper_id) ?? null
+            : null)
+        : null
+    const band = runtimeBandMetaForAgent(agent, keeperRuntime, composite).key
     counts[band] += 1
   }
 
@@ -401,16 +555,26 @@ function countAgentsByStatus(
 export function countRuntimeKinds(
   agentList: Agent[],
   keeperList: Keeper[],
-): { agents: number; keepers: number; totalRuntimes: number } {
-  const runtimeKeepers = runtimeBackedKeepers(keeperList)
+): { agents: number; keepers: number; pausedKeepers: number; totalRuntimes: number } {
+  const runtimeKeepers = runtimeBackedKeepers(keeperList, agentList)
   const rosterAgents = buildAgentRoster(agentList, runtimeKeepers)
   const keeperLookup = buildKeeperRuntimeLookup(runtimeKeepers)
-  const keeperCount = scopeAgentsByKeeperFilter(rosterAgents, runtimeKeepers, 'keeper-only', keeperLookup).length
+  const allKeepers = scopeAgentsByKeeperFilter(rosterAgents, runtimeKeepers, 'keeper-only', keeperLookup)
+  // Hydrate the Keeper from the lookup before asking whether it is paused.
+  // Agent rows only carry `keeper_id`/`keeper_name`, not the full Keeper, so
+  // `a.keeper` was undefined here and `isKeeperPaused(undefined)` silently
+  // returned false, leaving the paused count stuck at 0.
+  const pausedKeepers = allKeepers.filter(a => {
+    const keeper = findKeeperRuntimeForAgent(a, keeperLookup)
+    return keeper ? isKeeperPaused(keeper) : false
+  }).length
+  const runningKeepers = allKeepers.length - pausedKeepers
   const agentCount = scopeAgentsByKeeperFilter(rosterAgents, runtimeKeepers, 'agent-only', keeperLookup).length
 
   return {
     agents: agentCount,
-    keepers: keeperCount,
+    keepers: runningKeepers,
+    pausedKeepers,
     totalRuntimes: rosterAgents.length,
   }
 }
@@ -418,12 +582,13 @@ export function countRuntimeKinds(
 export function AgentRoster({ keeperFilter = 'all' }: { keeperFilter?: KeeperFilterMode } = {}) {
   const [filter, setFilter] = useState<StatusFilter>('all')
   const [search, setSearch] = useState('')
+  const [selectedKey, setSelectedKey] = useState<string | null>(null)
 
   const agentList = agents.value
   const keeperList = keepers.value
   const runtimeKeeperList = useMemo(
-    () => runtimeBackedKeepers(keeperList),
-    [keeperList],
+    () => runtimeBackedKeepers(keeperList, agentList),
+    [keeperList, agentList],
   )
 
   // Memoize roster and lookup Maps — these iterate full keeper/agent arrays.
@@ -438,17 +603,45 @@ export function AgentRoster({ keeperFilter = 'all' }: { keeperFilter?: KeeperFil
     [runtimeKeeperList],
   )
 
+  // RFC-0135 PR-4: index the fleet-wide composite snapshot stream by
+  // keeper identity so each roster row can read the same conditioning
+  // signals (`runtime_attention.execution_current` etc.) the detail
+  // panel already uses. `.value` access here auto-subscribes the
+  // component to SSE-driven updates from `hydrateFleetCompositeSnapshot`.
+  const fleetSnapshot = fleetCompositeSnapshot.value
+  const compositeByKeeperKey = useMemo(() => {
+    const map = new Map<string, KeeperCompositeSnapshot>()
+    if (!fleetSnapshot) return map
+    for (const snap of fleetSnapshot.snapshots) {
+      const identityKeys = [snap.keeper, snap.correlation_id]
+      for (const candidate of identityKeys) {
+        if (typeof candidate === 'string' && candidate !== '' && !map.has(candidate)) {
+          map.set(candidate, snap)
+        }
+      }
+    }
+    return map
+  }, [fleetSnapshot])
+
   // Derive runtime kind counts from memoized roster (avoids duplicate buildAgentRoster call)
   const liveRuntimeCounts = useMemo(() => {
-    const keeperCount = scopeAgentsByKeeperFilter(rosterAgents, runtimeKeeperList, 'keeper-only', keeperRuntimeLookup).length
+    const allKeepers = scopeAgentsByKeeperFilter(rosterAgents, runtimeKeeperList, 'keeper-only', keeperRuntimeLookup)
+    // See countRuntimeKinds(): Agent rows expose only keeper identifiers, so
+    // `a.keeper` is undefined and isKeeperPaused needs the hydrated Keeper.
+    const pausedCount = allKeepers.filter(a => {
+      const keeper = findKeeperRuntimeForAgent(a, keeperRuntimeLookup)
+      return keeper ? isKeeperPaused(keeper) : false
+    }).length
+    const runningCount = allKeepers.length - pausedCount
     const agentCount = scopeAgentsByKeeperFilter(rosterAgents, runtimeKeeperList, 'agent-only', keeperRuntimeLookup).length
-    return { agents: agentCount, keepers: keeperCount, totalRuntimes: rosterAgents.length }
+    return { agents: agentCount, keepers: runningCount, pausedKeepers: pausedCount, totalRuntimes: rosterAgents.length }
   }, [rosterAgents, runtimeKeeperList, keeperRuntimeLookup])
 
   const runtimeCounts = resolveRuntimeCounts({
     executionLoaded: executionLoaded.value,
     agentsCount: liveRuntimeCounts.agents,
     keepersCount: liveRuntimeCounts.keepers,
+    pausedKeepersCount: liveRuntimeCounts.pausedKeepers,
     namespaceTruthCounts: namespaceTruth.value?.root.counts,
     namespaceTruthConfiguredKeepers: namespaceTruth.value?.root.configured_keepers,
     shellCounts: shellCounts.value,
@@ -465,17 +658,25 @@ export function AgentRoster({ keeperFilter = 'all' }: { keeperFilter?: KeeperFil
   )
   const bandByAgent = useMemo(
     () => new Map(
-      scopedAgents.map(agent => [
-        agent.name,
-        runtimeBandMetaForAgent(
-          agent,
+      scopedAgents.map(agent => {
+        const keeperRuntime =
           keeperRuntimeLookup.get(agent.name)
             ?? findKeeperRuntimeForAgent(agent, keeperRuntimeLookup)
-            ?? findKeeperRuntime(agent.name, runtimeKeeperList),
-        ),
-      ] as const),
+            ?? findKeeperRuntime(agent.name, runtimeKeeperList)
+        // RFC-0135 PR-12: thread composite snapshot through band
+        // derivation so stale-blocker demotion in the typed SSOT
+        // applies to the badge color too.
+        const composite =
+          keeperRuntime
+            ? compositeByKeeperKey.get(keeperRuntime.name)
+              ?? (typeof keeperRuntime.keeper_id === 'string'
+                ? compositeByKeeperKey.get(keeperRuntime.keeper_id) ?? null
+                : null)
+            : null
+        return [agent.name, runtimeBandMetaForAgent(agent, keeperRuntime, composite)] as const
+      }),
     ),
-    [scopedAgents, keeperRuntimeLookup, runtimeKeeperList],
+    [scopedAgents, keeperRuntimeLookup, runtimeKeeperList, compositeByKeeperKey],
   )
   const normalizedSearch = search.trim().toLowerCase()
   const searchTermsByAgent = useMemo(
@@ -496,12 +697,6 @@ export function AgentRoster({ keeperFilter = 'all' }: { keeperFilter?: KeeperFil
     ),
     [scopedAgents, keeperRuntimeLookup, runtimeKeeperList],
   )
-  const pageDescription = keeperFilter === 'keeper-only'
-    ? 'live runtime 기준으로 주 이름과 현재 상태를 먼저 훑습니다.'
-    : keeperFilter === 'agent-only'
-      ? 'live execution 기준으로 키퍼가 연결되지 않은 일반 에이전트만 따로 봅니다.'
-      : 'live execution/runtime 기준으로 현재 상태를 보고, cached 조율 정보는 이 화면에 섞지 않습니다.'
-
   const filtered = scopedAgents
     .filter((a: Agent) => {
       if (filter !== 'all' && bandByAgent.get(a.name)?.key !== filter) return false
@@ -509,7 +704,7 @@ export function AgentRoster({ keeperFilter = 'all' }: { keeperFilter?: KeeperFil
         const terms = searchTermsByAgent.get(a.name) ?? [a.name.toLowerCase()]
         const identityMatch = terms.some(term => term.includes(normalizedSearch))
         if (!identityMatch) {
-          // Fall back to the pure roster filter (model / current_task / koreanName).
+          // Fall back to the pure roster filter (current_task / koreanName).
           const fieldMatch = filterAgentRoster([a], search).length === 1
           if (!fieldMatch) return false
         }
@@ -530,7 +725,7 @@ export function AgentRoster({ keeperFilter = 'all' }: { keeperFilter?: KeeperFil
       return a.name.localeCompare(b.name)
     })
 
-  const counts = countAgentsByStatus(scopedAgents, runtimeKeeperList)
+  const counts = countAgentsByStatus(scopedAgents, runtimeKeeperList, compositeByKeeperKey)
   const showExecutionFallbackState = shouldShowExecutionFallbackState({
     executionLoaded: executionLoaded.value,
     executionLoading: executionLoading.value,
@@ -542,13 +737,13 @@ export function AgentRoster({ keeperFilter = 'all' }: { keeperFilter?: KeeperFil
     expectedScopedCount > scopedAgents.length
       ? (
           filtered.length === scopedAgents.length
-            ? `${filtered.length}개 로드됨 · 예상 ${expectedScopedCount}개`
-            : `${filtered.length} / ${scopedAgents.length}개 표시 · 예상 ${expectedScopedCount}개`
+            ? `상세 행 ${filtered.length}개 로드됨 · 예상 ${expectedScopedCount}개`
+            : `상세 행 ${filtered.length} / ${scopedAgents.length}개 표시 · 예상 ${expectedScopedCount}개`
         )
       : (
           filtered.length === scopedAgents.length
-            ? `${filtered.length}개 표시 중`
-            : `${filtered.length} / ${scopedAgents.length}개 표시 중`
+            ? `상세 행 ${filtered.length}개 표시 중`
+            : `상세 행 ${filtered.length} / ${scopedAgents.length}개 표시 중`
         )
   const statusChips = (['all', 'attention', 'active', 'paused', 'offline'] as StatusFilter[]).map(key => ({
     key,
@@ -556,17 +751,23 @@ export function AgentRoster({ keeperFilter = 'all' }: { keeperFilter?: KeeperFil
     count: executionLoaded.value || scopedAgents.length > 0 ? counts[key] : null,
     title: FILTER_META[key].description,
   }))
+  const liveKeepers = runtimeCounts.live.keepers
+  const livePausedKeepers = runtimeCounts.live.pausedKeepers
+  const configuredKeepers = runtimeCounts.configured.keepers
+  const configuredKeeperDelta = Math.max(0, configuredKeepers - liveKeepers - livePausedKeepers)
   const scopeLabel = keeperFilter === 'keeper-only'
-    ? `키퍼 ${expectedScopedCount}개`
+    ? formatKeeperCountBreakdown({
+        liveKeepers,
+        pausedKeepers: livePausedKeepers,
+        configuredKeepers,
+      })
     : keeperFilter === 'agent-only'
-      ? `일반 에이전트 ${expectedScopedCount}개`
-      : `에이전트/키퍼 ${expectedScopedCount}개`
-  const configuredKeeperHint =
-    keeperFilter === 'agent-only' || runtimeCounts.configuredKeepers <= 0
+      ? `일반 에이전트 활성 ${runtimeCounts.live.agents}`
+      : formatRuntimeRosterCount(runtimeCounts)
+  const configuredIdleHint =
+    keeperFilter === 'agent-only' || configuredKeeperDelta === 0
       ? null
-      : runtimeCounts.configuredKeepers > runtimeCounts.keepers
-        ? `설정된 keeper ${runtimeCounts.configuredKeepers}개 · runtime ${runtimeCounts.keepers}개 · 일시정지/미기동 ${runtimeCounts.configuredKeepers - runtimeCounts.keepers}개`
-        : `설정된 keeper ${runtimeCounts.configuredKeepers}개`
+      : `일시정지/미기동 ${configuredKeeperDelta}개`
   const fallbackStateTitle =
     executionError.value
       ? '상세 상태 불러오기 실패'
@@ -575,10 +776,123 @@ export function AgentRoster({ keeperFilter = 'all' }: { keeperFilter?: KeeperFil
         : '상세 상태 동기화 중'
   const fallbackStateMessage =
     executionError.value
-      ? `${countSourceLabel} 기준 ${scopeLabel}가 등록되어 있지만 상세 상태 정보를 아직 가져오지 못했습니다.`
+      ? `${countSourceLabel} 기준 ${scopeLabel}입니다. 상세 상태 정보를 아직 가져오지 못했습니다.`
       : executionLoaded.value
-        ? `${countSourceLabel} 기준 ${scopeLabel}가 등록되어 있고 일부만 상세 목록에 반영됐습니다.${configuredKeeperHint ? ` ${configuredKeeperHint}.` : ''}`
-        : `${countSourceLabel} 기준 ${scopeLabel}가 등록되어 있습니다.${configuredKeeperHint ? ` ${configuredKeeperHint}.` : ''} 상세 상태 정보가 올라오면 상태별 분류와 카드가 채워집니다.`
+        ? `${countSourceLabel} 기준 ${scopeLabel}입니다. 일부만 상세 목록에 반영됐습니다.${configuredIdleHint ? ` ${configuredIdleHint}.` : ''}`
+        : `${countSourceLabel} 기준 ${scopeLabel}입니다.${configuredIdleHint ? ` ${configuredIdleHint}.` : ''} 상세 상태 정보가 올라오면 상태별 분류와 카드가 채워집니다.`
+
+  const rosterRows = filtered.map((agent: Agent) => {
+    const keeperRuntime =
+      keeperRuntimeLookup.get(agent.name)
+      ?? findKeeperRuntimeForAgent(agent, keeperRuntimeLookup)
+      ?? findKeeperRuntime(agent.name, runtimeKeeperList)
+    const band = bandByAgent.get(agent.name) ?? runtimeBandMeta('attention')
+    const compositeForMonitoring: KeeperCompositeSnapshot | null =
+      keeperRuntime
+        ? compositeByKeeperKey.get(keeperRuntime.name)
+          ?? (typeof keeperRuntime.keeper_id === 'string'
+            ? compositeByKeeperKey.get(keeperRuntime.keeper_id) ?? null
+            : null)
+        : null
+    const keeperMonitoring = keeperRuntime ? summarizeKeeperMonitoring(keeperRuntime, compositeForMonitoring) : null
+    const monitoringEvidence = keeperMonitoring ? summarizeMonitoringEvidence(keeperMonitoring) : null
+    const fsmPhase = keeperRuntime ? keeperPhaseForDisplay(keeperRuntime, compositeForMonitoring) : null
+    const isKeeper = keeperRuntime != null
+    const goalSummary = keeperRuntime?.short_goal ?? keeperRuntime?.goal ?? agent.current_task ?? null
+    const currentWork =
+      keeperRuntime?.recent_output_preview
+      ?? keeperRuntime?.recent_input_preview
+      ?? goalSummary
+      ?? null
+    const activityDisplay = keeperRuntime
+      ? keeperActivityDisplay(keeperRuntime, agent.last_seen)
+      : null
+    const lastActivityAge = activityDisplay?.ageSeconds ?? null
+    const lastActivityAt = activityDisplay?.timestamp ?? agent.last_seen ?? null
+    const lastActivityLabel = activityDisplay?.label ?? '최근 활동'
+    const contextMeta = rosterContextMeta(keeperRuntime ?? null)
+    const workPreview =
+      trimText(keeperRuntime?.recent_output_preview, 140)
+      ?? trimText(keeperRuntime?.recent_input_preview, 140)
+      ?? trimText(goalSummary, 140)
+      ?? '최근 활동 요약 없음'
+    const summaryText = workPreview
+    const compositeForKeeper: KeeperCompositeSnapshot | null = keeperRuntime
+      ? compositeByKeeperKey.get(keeperRuntime.name)
+        ?? (keeperRuntime.keeper_id != null
+          ? compositeByKeeperKey.get(keeperRuntime.keeper_id)
+          : undefined)
+        ?? null
+      : null
+    const stateNote =
+      keeperRuntime
+        ? rosterStateNote(
+            keeperRuntime,
+            compositeForKeeper,
+            band.key === 'active' ? null : keeperMonitoring?.hint ?? null,
+          )
+        : null
+    const presenceDisplay = rosterPresenceDisplay(agent, keeperRuntime, compositeForKeeper)
+    const recentTools = uniqueToolNames(
+      keeperRuntime?.recent_tool_names,
+      keeperRuntime?.latest_tool_names,
+    )
+    const toolCallCount =
+      keeperRuntime?.latest_tool_call_count
+      ?? null
+    const toolAuditAt = keeperRuntime?.tool_audit_at ?? null
+    const displayName =
+      keeperPrimaryName(
+        keeperRuntime?.name ?? null,
+        keeperRuntime?.agent_name ?? agent.name,
+      )
+      ?? agent.name
+    const fsmPhaseKey =
+      keeperMonitoring?.phase.key && keeperMonitoring.phase.key !== 'unknown'
+        ? keeperMonitoring.phase.key
+        : fsmPhase
+    const fsmStageKey = monitoringEvidence?.stage?.key ?? null
+    const fsmStageLabel = monitoringEvidence?.stage?.label ?? null
+    const fsmStageText = fsmStageLabel ? `활동 ${fsmStageLabel}` : null
+    const detailLabel = keeperRuntime ? `${displayName} keeper 상세 보기` : `${displayName} 상세 보기`
+    const openDetail = () => {
+      if (keeperRuntime) {
+        openKeeperDetail(keeperRuntime)
+        return
+      }
+      openAgentDetail(agent.name)
+    }
+
+    return {
+      key: agent.name,
+      agent,
+      keeperRuntime,
+      band,
+      isKeeper,
+      displayName,
+      currentWork,
+      summaryText,
+      stateNote,
+      presenceDisplay,
+      recentTools,
+      toolCallCount,
+      toolAuditAt,
+      lastActivityAge,
+      lastActivityAt,
+      lastActivityLabel,
+      contextMeta,
+      fsmPhaseKey,
+      fsmStageKey,
+      fsmStageText,
+      monitoringEvidence,
+      detailLabel,
+      openDetail,
+    }
+  })
+  const selectedRow = rosterRows.find(row => row.key === selectedKey) ?? rosterRows[0] ?? null
+  const selectedBlockerDisplay = selectedRow
+    ? rosterBlockerDisplay(selectedRow.stateNote, selectedRow.keeperRuntime)
+    : null
 
   return html`
     <div class="agent-page flex w-full flex-col gap-5 px-0 py-1">
@@ -586,21 +900,17 @@ export function AgentRoster({ keeperFilter = 'all' }: { keeperFilter?: KeeperFil
         <div class="flex flex-col gap-5">
           <div class="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px] xl:items-end">
             <div class="flex min-w-0 flex-col gap-2">
-              <div class="flex flex-wrap items-center gap-3">
-                <span class="text-2xs font-semibold uppercase tracking-[var(--track-caps)] text-[var(--color-fg-muted)]">디렉터리 필터</span>
-                <span class="inline-flex items-center rounded-[var(--r-0)] border border-[var(--color-border-default)] bg-[var(--color-accent-soft)] px-2.5 py-1 text-2xs font-medium text-[var(--color-fg-secondary)]">${resultCountLabel}</span>
-              </div>
-              <p class="m-0 max-w-180 text-sm leading-loose text-[var(--color-fg-primary)]">${pageDescription}</p>
+              <span class="inline-flex items-center rounded-[var(--r-0)] border border-[var(--color-border-default)] bg-[var(--color-accent-soft)] px-2.5 py-1 text-2xs font-medium text-[var(--color-fg-secondary)]">${resultCountLabel}</span>
             </div>
 
             <label class="flex w-full flex-col gap-2 text-2xs font-semibold tracking-[var(--track-caps)] text-[var(--color-fg-muted)] uppercase">
-              <span>이름 / model / 작업</span>
+              <span>이름 / 작업</span>
               <${TextInput}
                 class="rounded-[var(--r-1)] bg-[var(--color-bg-surface)] px-4 py-3 text-base text-[var(--color-fg-primary)] shadow-[inset_0_1px_0_var(--color-border-default)] focus:border-[var(--color-accent-fg)] focus:shadow-[0_0_0_2px_var(--color-accent-soft)]"
                 name="agent_search"
-                ariaLabel="에이전트 이름 · 모델 · 작업 검색"
+                ariaLabel="에이전트 이름 · 작업 검색"
                 autoComplete="off"
-                placeholder="이름 · runtime alias · model · 작업으로 찾기"
+                placeholder="이름 · 작업으로 찾기"
                 value=${search}
                 onInput=${(e: Event) => setSearch((e.target as HTMLInputElement).value)}
               />
@@ -609,10 +919,7 @@ export function AgentRoster({ keeperFilter = 'all' }: { keeperFilter?: KeeperFil
 
           <div class="monitor-muted-panel p-3.5 md:p-4">
             <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-              <div class="flex flex-col gap-1">
-                <div class="text-2xs font-semibold tracking-[var(--track-caps)] text-[var(--color-fg-secondary)] uppercase">운영 상태</div>
-                <p class="m-0 text-xs leading-normal text-[var(--color-fg-muted)]">live runtime 신호로 먼저 걸러 보고, 필요할 때만 세부 상태와 최근 근거를 확인합니다.</p>
-              </div>
+              <div class="text-2xs font-semibold tracking-[var(--track-caps)] text-[var(--color-fg-secondary)] uppercase">상세 상태</div>
               <${FilterChips}
                 chips=${statusChips}
                 value=${filter}
@@ -634,7 +941,7 @@ export function AgentRoster({ keeperFilter = 'all' }: { keeperFilter?: KeeperFil
                     <p class="m-0 text-xs leading-paragraph text-[var(--color-fg-primary)]">${fallbackStateMessage}</p>
                     <div class="flex flex-wrap items-center gap-2 text-2xs text-[var(--color-fg-muted)]">
                       <span class="rounded-[var(--r-0)] border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 py-0.5">scope ${namespaceName}</span>
-                      ${configuredKeeperHint ? html`<span class="rounded-[var(--r-0)] border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 py-0.5">${configuredKeeperHint}</span>` : null}
+                      ${configuredIdleHint ? html`<span class="rounded-[var(--r-0)] border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 py-0.5">${configuredIdleHint}</span>` : null}
                     </div>
                   </div>
                 </div>
@@ -643,207 +950,248 @@ export function AgentRoster({ keeperFilter = 'all' }: { keeperFilter?: KeeperFil
         </div>
       </section>
 
-      <div class="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-        ${filtered.map((agent: Agent) => {
-          const keeperRuntime =
-            keeperRuntimeLookup.get(agent.name)
-            ?? findKeeperRuntimeForAgent(agent, keeperRuntimeLookup)
-            ?? findKeeperRuntime(agent.name, runtimeKeeperList)
-          const band = bandByAgent.get(agent.name) ?? runtimeBandMeta('attention')
-          const keeperMonitoring = keeperRuntime ? summarizeKeeperMonitoring(keeperRuntime) : null
-          const monitoringEvidence = keeperMonitoring ? summarizeMonitoringEvidence(keeperMonitoring) : null
-          const fsmPhase = keeperRuntime ? keeperPhaseForDisplay(keeperRuntime) : null
-          const isKeeper = keeperRuntime != null
-          const goalSummary = keeperRuntime?.short_goal ?? keeperRuntime?.goal ?? agent.current_task ?? null
-          const currentWork =
-            keeperRuntime?.recent_output_preview
-            ?? keeperRuntime?.recent_input_preview
-            ?? goalSummary
-            ?? null
-          const activityDisplay = keeperRuntime
-            ? keeperActivityDisplay(keeperRuntime, agent.last_seen)
-            : null
-          const lastActivityAge = activityDisplay?.ageSeconds ?? null
-          const lastActivityAt = activityDisplay?.timestamp ?? agent.last_seen ?? null
-          const lastActivityLabel = activityDisplay?.label ?? '최근 활동'
-          const contextMeta =
-            rosterContextMeta(keeperRuntime ?? null)
-          const workPreview =
-            trimText(keeperRuntime?.recent_output_preview, 140)
-            ?? trimText(keeperRuntime?.recent_input_preview, 140)
-            ?? trimText(goalSummary, 140)
-            ?? '최근 활동 요약 없음'
-          const summaryText = workPreview
-          const stateNote =
-            keeperRuntime
-              ? rosterStateNote(keeperRuntime, band.key === 'active' ? null : keeperMonitoring?.hint ?? null)
-              : null
-          const recentTools = uniqueToolNames(
-            keeperRuntime?.recent_tool_names,
-            keeperRuntime?.latest_tool_names,
-          )
-          const toolCallCount =
-            keeperRuntime?.latest_tool_call_count
-            ?? null
-          const toolAuditAt = keeperRuntime?.tool_audit_at ?? null
-          const displayName =
-            keeperPrimaryName(
-              keeperRuntime?.name ?? null,
-              keeperRuntime?.agent_name ?? agent.name,
-            )
-            ?? agent.name
-          const modelMeta = rosterModelMeta(keeperRuntime ?? agent)
-          const modelDisplay = isKeeper
-            ? modelMeta?.value ?? null
-            : compactModelLabel(modelMeta?.value)
-          const fsmPhaseKey =
-            keeperMonitoring?.phase.key && keeperMonitoring.phase.key !== 'unknown'
-              ? keeperMonitoring.phase.key
-              : fsmPhase
-          const fsmStageKey = monitoringEvidence?.stage?.key ?? null
-          const fsmStageLabel = monitoringEvidence?.stage?.label ?? null
-          const fsmStageText = fsmStageLabel ? `활동 ${fsmStageLabel}` : null
-          const detailLabel = keeperRuntime ? `${displayName} keeper 상세 보기` : `${displayName} 상세 보기`
-          const openDetail = () => {
-            if (keeperRuntime) {
-              openKeeperDetail(keeperRuntime)
-              return
-            }
-            openAgentDetail(agent.name)
-          }
+      <div class="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+        <section class="monitor-surface-card monitor-surface-card-medium overflow-hidden" aria-label="Keeper operations list">
+          <!--
+            2026-05-27 KEEPER OPERATIONS row redesign:
+            - 현재 단계 column was almost always "-" for stuck keepers (the
+              dominant case the surface exists for) and duplicated the
+              SELECTED RUNTIME phase badge. Removed; the blocker/stage cell
+              now switches: blocker text when blocked, stage/phase label
+              when running.
+            - Row is now div role=button so inline action buttons
+              (재개 / 일시정지 / 깨우기 / 기동 / 종료) can be nested without
+              violating no-button-in-button HTML. Enter/Space keep
+              keyboard selection working.
+            - 차단 근거 셀이 truncate(1줄) 였던 것을 line-clamp-2 로 풀어 잘림을 완화.
+          -->
+          <div class="grid grid-cols-[minmax(180px,1.35fr)_minmax(80px,0.5fr)_minmax(170px,1.1fr)_minmax(110px,0.65fr)_minmax(160px,0.9fr)] gap-3 border-b border-[var(--color-border-divider)] px-4 py-2.5 text-3xs font-semibold uppercase tracking-[var(--track-caps)] text-[var(--color-fg-muted)] max-lg:hidden">
+            <span>Keeper</span>
+            <span>운영판정</span>
+            <span>차단 · 단계</span>
+            <span>최근 도구</span>
+            <span>액션</span>
+          </div>
 
-          return html`
-            <button type="button"
-              class="monitor-surface-card monitor-surface-card-medium group flex w-full flex-col gap-3.5 rounded-card p-4 text-left transition-[background-color,border-color,transform] duration-[var(--t-med)] cursor-pointer hover:border-[var(--color-border-default)] hover:bg-[var(--color-bg-surface)] hover:-translate-y-0.5 contain-content"
-              key=${agent.name}
-              aria-label=${detailLabel}
-              onClick=${openDetail}
-            >
-              <div class="flex items-start justify-between gap-4">
-                <div class="flex min-w-0 flex-1 items-start gap-4">
-                  <div class="shrink-0 relative">
-                    <${AgentAvatar}
-                      name=${agent.name}
-                      status=${agent.status}
-                      traits=${agent.traits}
-                      size="xl"
-                      currentWork=${currentWork}
-                      activityAge=${lastActivityAge}
-                    />
-                  </div>
+          <div class="divide-y divide-[var(--color-border-divider)]">
+            ${rosterRows.map(row => {
+              const selected = selectedRow?.key === row.key
+              const blockerDisplay = rosterBlockerDisplay(row.stateNote, row.keeperRuntime)
+              const stageLabel =
+                row.fsmStageText
+                ?? row.monitoringEvidence?.phase?.label
+                ?? row.monitoringEvidence?.stage?.label
+                ?? null
+              // 차단이 있으면 차단 근거가 더 의미 있고, 차단이 없으면 현재 단계 라벨로 fallback.
+              // 둘 다 없으면 '-'.
+              const blockerOrStage = row.stateNote
+                ? blockerDisplay.cell
+                : (stageLabel ?? '-')
+              const blockerOrStageTitle = row.stateNote
+                ? blockerDisplay.title
+                : (stageLabel ?? '')
+              const latestTool = row.recentTools[0] ?? (row.toolCallCount != null && row.toolCallCount > 0 ? `${row.toolCallCount} calls` : '-')
 
-                  <div class="min-w-0 flex-1 py-0.5">
-                    <div class="flex flex-wrap items-center gap-2">
-                      <strong class="min-w-0 overflow-hidden text-lg font-semibold leading-[1.3] text-[var(--color-fg-secondary)] transition-colors group-hover:text-[var(--color-accent-fg)] [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] [overflow-wrap:anywhere]">${displayName}</strong>
-                      ${agent.synthetic ? html`
-                        <span class="inline-flex items-center rounded-[var(--r-0)] border border-dashed border-[var(--color-border-default)] bg-[var(--color-bg-hover)] px-2 py-0.5 text-3xs italic text-[var(--color-fg-muted)]" title="키퍼 데이터에서 파생된 합성 엔트리입니다.">
-                          파생
-                        </span>
-                      ` : null}
-                    </div>
-                  </div>
+              const handleRowKey = (e: KeyboardEvent) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  setSelectedKey(row.key)
+                }
+              }
+
+              return html`
+                <div
+                  role="button"
+                  tabIndex=${0}
+                  key=${row.key}
+                  data-testid="keeper-operations-row"
+                  aria-label=${`${row.displayName} 선택`}
+                  aria-pressed=${selected}
+                  onClick=${() => setSelectedKey(row.key)}
+                  onKeyDown=${handleRowKey}
+                  class="grid w-full cursor-pointer grid-cols-1 gap-2 px-4 py-3 text-left transition-colors hover:bg-[var(--color-bg-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-fg)] lg:grid-cols-[minmax(180px,1.35fr)_minmax(80px,0.5fr)_minmax(170px,1.1fr)_minmax(110px,0.65fr)_minmax(160px,0.9fr)] lg:items-center lg:gap-3 ${selected ? 'bg-[var(--color-bg-surface)]' : 'bg-transparent'}"
+                >
+                  <span class="flex min-w-0 items-center gap-3">
+                    <span class="shrink-0">
+                      <${AgentAvatar}
+                        name=${row.agent.name}
+                        status=${row.presenceDisplay.status}
+                        traits=${row.agent.traits}
+                        size="md"
+                        currentWork=${row.currentWork}
+                        activityAge=${row.lastActivityAge}
+                      />
+                    </span>
+                    <span class="min-w-0">
+                      <span class="block truncate text-sm font-semibold text-[var(--color-fg-secondary)]">${row.displayName}</span>
+                      <span class="mt-0.5 flex flex-wrap items-center gap-1.5 text-3xs text-[var(--color-fg-muted)]">
+                        <${AgentPresence} status=${row.presenceDisplay.status} detail=${row.presenceDisplay.detail} size="sm" />
+                        ${row.agent.synthetic ? html`<span class="rounded-[var(--r-0)] border border-dashed border-[var(--color-border-default)] px-1.5 py-0.5 italic">파생</span>` : null}
+                      </span>
+                    </span>
+                  </span>
+
+                  <span class="inline-flex w-fit items-center rounded-[var(--r-0)] border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2 py-0.5 text-3xs font-medium text-[var(--color-fg-primary)] lg:w-auto">
+                    ${row.band.label}
+                  </span>
+
+                  <span class="min-w-0 text-xs leading-snug text-[var(--color-fg-primary)]">
+                    <span class="block truncate lg:hidden text-3xs uppercase tracking-[var(--track-caps)] text-[var(--color-fg-muted)]">차단 · 단계</span>
+                    <span class="line-clamp-2 break-words" title=${blockerOrStageTitle}>${blockerOrStage}</span>
+                  </span>
+
+                  <span class="min-w-0 text-xs leading-snug text-[var(--color-fg-primary)]">
+                    <span class="block truncate lg:hidden text-3xs uppercase tracking-[var(--track-caps)] text-[var(--color-fg-muted)]">최근 도구</span>
+                    <span class="block truncate" title=${latestTool}>${latestTool}</span>
+                  </span>
+
+                  <span class="min-w-0">
+                    <span class="block lg:hidden text-3xs uppercase tracking-[var(--track-caps)] text-[var(--color-fg-muted)]">액션</span>
+                    ${row.keeperRuntime
+                      ? html`<${KeeperActionButtons}
+                          keeper=${row.keeperRuntime}
+                          size="sm"
+                          compact
+                          stopPropagation
+                        />`
+                      : html`<span class="text-3xs text-[var(--color-fg-muted)]">—</span>`}
+                  </span>
                 </div>
+              `
+            })}
 
-                <div class="flex shrink-0 items-start">
-                  <${AgentPresence} status=${agent.status} size="sm" />
+            ${rosterRows.length === 0 ? html`
+              <div class="px-6 py-10">
+                <${EmptyState}
+                  message=${normalizedSearch && scopedAgents.length > 0
+                    ? `필터 결과 없음 (${scopedAgents.length} items)`
+                    : showExecutionFallbackState && expectedScopedCount > 0
+                      ? `${fallbackStateTitle}: ${countSourceLabel} 기준 ${scopeLabel}가 보이지만, 현재 조건에 맞는 상세 row는 아직 없습니다.`
+                      : '조건에 맞는 에이전트가 없습니다.'}
+                  compact
+                />
+              </div>
+            ` : null}
+          </div>
+        </section>
+
+        <aside class="monitor-surface-card monitor-surface-card-medium p-4" aria-label="Selected keeper detail">
+          ${selectedRow ? html`
+            <div class="flex h-full flex-col gap-4">
+              <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0">
+                  <span class="text-2xs font-semibold uppercase tracking-[var(--track-caps)] text-[var(--color-fg-muted)]">selected runtime</span>
+                  <h3 class="m-0 mt-1 truncate text-xl font-semibold text-[var(--color-fg-secondary)]">${selectedRow.displayName}</h3>
                 </div>
+                <${AgentPresence} status=${selectedRow.presenceDisplay.status} detail=${selectedRow.presenceDisplay.detail} size="sm" />
               </div>
 
-              <p class="m-0 text-sm leading-paragraph text-[var(--color-fg-primary)] break-words line-clamp-2" title=${summaryText}>${summaryText}</p>
+              <p class="m-0 text-sm leading-paragraph text-[var(--color-fg-primary)]" title=${selectedRow.summaryText}>${selectedRow.summaryText}</p>
 
-              ${stateNote ? html`
-                <div class="flex flex-wrap items-center gap-2 text-2xs text-[var(--color-fg-muted)]">
-                  <span class="inline-flex items-center rounded-[var(--r-0)] border border-[var(--warn-20)] bg-[var(--warn-10)] px-2 py-0.5 text-3xs font-semibold text-[var(--color-status-warn)]">
-                    ${stateNote.label}
+              <div class="flex flex-wrap items-center gap-2">
+                ${selectedRow.isKeeper && selectedRow.fsmPhaseKey
+                  ? html`<${KeeperPhaseBadge} phase=${selectedRow.fsmPhaseKey} compact />`
+                  : null}
+                ${selectedRow.fsmStageKey && selectedRow.fsmStageText ? html`
+                  <span class="inline-flex items-center rounded-[var(--r-0)] border px-2 py-0.5 text-3xs font-medium ${stageBadgeClass(selectedRow.fsmStageKey)}" title=${selectedRow.monitoringEvidence?.stage?.description ?? '활동 단계 정보가 없습니다.'}>
+                    ${selectedRow.fsmStageText}
                   </span>
-                  ${lastActivityAt
-                    ? html`<span class="text-3xs text-[var(--color-fg-muted)]">최근 신호 · ${lastActivityLabel} <${TimeAgo} timestamp=${lastActivityAt} /></span>`
-                    : lastActivityAge != null
-                      ? html`<span class="text-3xs text-[var(--color-fg-muted)]">최근 신호 · ${lastActivityLabel} ${formatDuration(lastActivityAge)} 전</span>`
-                    : null}
-                  <span class="min-w-0 flex-1 text-xs leading-relaxed text-[var(--color-fg-primary)] break-words line-clamp-2" title=${stateNote.text}>
-                    ${stateNote.text}
-                  </span>
-                </div>
-              ` : null}
-
-              ${isKeeper && (monitoringEvidence?.phase || monitoringEvidence?.stage) ? html`
-                <div class="rounded-[var(--r-5)] border border-[var(--color-border-divider)] bg-[linear-gradient(180deg,var(--color-bg-surface),var(--color-bg-page))] px-3 py-2.5">
-                  <div class="flex flex-wrap items-center gap-2">
-                    ${monitoringEvidence?.phase && fsmPhaseKey
-                      ? html`<${KeeperPhaseBadge} phase=${fsmPhaseKey} compact />`
-                      : null}
-                    ${fsmStageKey && fsmStageText ? html`
-                      <span class="inline-flex items-center rounded-[var(--r-0)] border px-2 py-0.5 text-3xs font-medium ${stageBadgeClass(fsmStageKey)}" title=${monitoringEvidence?.stage?.description ?? '활동 단계 정보가 없습니다.'}>
-                        ${fsmStageText}
-                      </span>
-                    ` : null}
-                  </div>
-                </div>
-              ` : null}
-
-              <div class="flex flex-wrap items-center gap-2 text-2xs text-[var(--color-fg-muted)]">
-                <span class="inline-flex items-center rounded-[var(--r-0)] border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2.5 py-1">
-                  ${lastActivityLabel}
+                ` : null}
+                <span class="inline-flex items-center rounded-[var(--r-0)] border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2 py-0.5 text-3xs text-[var(--color-fg-muted)]">
+                  ${selectedRow.lastActivityLabel}
                   <span class="ml-1 text-[var(--color-fg-primary)]">
-                    ${lastActivityAt
-                      ? html`<${TimeAgo} timestamp=${lastActivityAt} />`
-                      : lastActivityAge != null
-                        ? `${formatDuration(lastActivityAge)} 전`
+                    ${selectedRow.lastActivityAt
+                      ? html`<${TimeAgo} timestamp=${selectedRow.lastActivityAt} />`
+                      : selectedRow.lastActivityAge != null
+                        ? `${formatDuration(selectedRow.lastActivityAge)} 전`
                         : '기록 없음'}
                   </span>
                 </span>
-                ${isKeeper && contextMeta ? html`
-                  <span class="inline-flex items-center gap-1.5 rounded-[var(--r-0)] border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2.5 py-1">
-                    <span>CTX</span>
-                    <span class="font-mono font-medium ${contextMeta.pct > 85 ? 'text-[var(--color-status-err)]' : contextMeta.pct > 60 ? 'text-[var(--color-status-warn)]' : 'text-[var(--color-fg-secondary)]'}">${contextMeta.pct}%</span>
-                    ${contextMeta.detail ? html`
-                      <span class="font-mono text-3xs text-[var(--color-fg-muted)]">${contextMeta.detail}</span>
-                    ` : null}
-                    <span class="inline-block h-1.5 w-12 overflow-hidden rounded-[var(--r-0)] bg-[var(--color-bg-hover)]">
-                      <span class="block h-full rounded-[var(--r-0)] ${contextMeta.pct > 85 ? 'bg-[var(--color-status-err)]' : contextMeta.pct > 60 ? 'bg-[var(--color-status-warn)]' : 'bg-[var(--color-status-ok)]'}" style="width:${contextMeta.pct}%"></span>
-                    </span>
-                  </span>
-                ` : null}
-                ${modelMeta && modelDisplay ? html`
-                  <span class="inline-flex items-center gap-1.5 rounded-[var(--r-0)] border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2.5 py-1">
-                    <span>${modelMeta.label}</span>
-                    <span class="max-w-[18rem] overflow-hidden text-ellipsis whitespace-nowrap font-mono text-3xs text-[var(--color-fg-primary)]" translate="no" title=${modelMeta.value}>${modelDisplay}</span>
-                  </span>
-                ` : null}
               </div>
 
-              ${(recentTools.length > 0 || toolCallCount != null || toolAuditAt) ? html`
+              ${selectedRow.stateNote ? html`
+                <div class="rounded-[var(--r-1)] border border-[var(--warn-20)] bg-[var(--warn-10)] px-3 py-2.5">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <span class="text-3xs font-semibold uppercase tracking-[var(--track-caps)] text-[var(--color-status-warn)]">${selectedRow.stateNote.label}</span>
+                    ${selectedBlockerDisplay?.kindLabel
+                      ? html`<span class="rounded-[var(--r-0)] border border-[var(--color-border-divider)] bg-[var(--color-bg-page)] px-2 py-0.5 text-3xs text-[var(--color-fg-primary)]">${selectedBlockerDisplay.kindLabel}</span>`
+                      : null}
+                    ${selectedBlockerDisplay?.rawKind
+                      ? html`<span class="rounded-[var(--r-0)] border border-[var(--color-border-divider)] bg-[var(--color-bg-page)] px-2 py-0.5 text-3xs font-mono text-[var(--color-fg-muted)]">${selectedBlockerDisplay.rawKind}</span>`
+                      : null}
+                  </div>
+                  <p class="m-0 mt-1 text-xs leading-relaxed text-[var(--color-fg-primary)]">${selectedBlockerDisplay?.detail}</p>
+                </div>
+              ` : null}
+
+              ${selectedRow.contextMeta ? html`
+                <div class="flex items-center gap-2 rounded-[var(--r-1)] border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-2 text-xs text-[var(--color-fg-muted)]">
+                  <span class="font-semibold uppercase tracking-[var(--track-caps)]">CTX</span>
+                  <span class="font-mono text-[var(--color-fg-secondary)]">${selectedRow.contextMeta.pct}%</span>
+                  ${selectedRow.contextMeta.detail ? html`<span class="font-mono text-3xs">${selectedRow.contextMeta.detail}</span>` : null}
+                  <span class="ml-auto inline-block h-1.5 w-20 overflow-hidden rounded-[var(--r-0)] bg-[var(--color-bg-hover)]">
+                    <span class="block h-full rounded-[var(--r-0)] ${selectedRow.contextMeta.pct > 85 ? 'bg-[var(--color-status-err)]' : selectedRow.contextMeta.pct > 60 ? 'bg-[var(--color-status-warn)]' : 'bg-[var(--color-status-ok)]'}" style="width:${selectedRow.contextMeta.pct}%"></span>
+                  </span>
+                </div>
+              ` : null}
+
+              ${(selectedRow.recentTools.length > 0 || selectedRow.toolCallCount != null || selectedRow.toolAuditAt) ? html`
                 <div class="flex flex-wrap items-center gap-1.5 text-2xs text-[var(--color-fg-muted)]">
-                  <span class="inline-flex items-center rounded-[var(--r-0)] border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2 py-0.5">최근 도구</span>
-                  <${AgentCapability} tools=${recentTools} maxVisible=${3} />
-                  ${toolCallCount != null && toolCallCount > 0 ? html`
-                    <span class="inline-flex items-center rounded-[var(--r-0)] border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2 py-0.5 text-3xs">
-                      ${toolCallCount}회 관찰됨
-                    </span>
+                  <span class="rounded-[var(--r-0)] border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2 py-0.5">최근 도구</span>
+                  <${AgentCapability} tools=${selectedRow.recentTools} maxVisible=${5} />
+                  ${selectedRow.toolCallCount != null && selectedRow.toolCallCount > 0 ? html`
+                    <span class="rounded-[var(--r-0)] border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2 py-0.5 text-3xs">${selectedRow.toolCallCount}회 관찰됨</span>
                   ` : null}
-                  ${toolAuditAt ? html`
-                    <span class="inline-flex items-center rounded-[var(--r-0)] border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2 py-0.5 text-3xs">
-                      감사 <${TimeAgo} timestamp=${toolAuditAt} />
-                    </span>
+                  ${selectedRow.toolAuditAt ? html`
+                    <span class="rounded-[var(--r-0)] border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2 py-0.5 text-3xs">감사 <${TimeAgo} timestamp=${selectedRow.toolAuditAt} /></span>
                   ` : null}
                 </div>
               ` : null}
-            </button>
-          `
-        })}
-        ${filtered.length === 0 ? html`
-          <div class="col-span-full rounded-[var(--radius-xl)] border border-dashed border-[var(--ff-border-subtle)] bg-[var(--color-bg-surface)] px-6 py-10">
-            <${EmptyState}
-              message=${normalizedSearch && scopedAgents.length > 0
-                ? `필터 결과 없음 (${scopedAgents.length} items)`
-                : showExecutionFallbackState && expectedScopedCount > 0
-                  ? `${fallbackStateTitle}: ${countSourceLabel} 기준 ${scopeLabel}가 보이지만, 현재 조건에 맞는 상세 카드는 아직 없습니다.`
-                  : '조건에 맞는 에이전트가 없습니다.'}
-              compact
-            />
-          </div>
-        ` : null}
+
+              ${selectedRow.keeperRuntime ? html`
+                <div class="grid gap-2 rounded-[var(--r-1)] border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3">
+                  <div class="text-2xs font-semibold uppercase tracking-[var(--track-caps)] text-[var(--color-fg-muted)]">detail lenses</div>
+                  <div class="flex flex-wrap gap-2">
+                    <${RouteLink}
+                      tab="monitoring"
+                      params=${{ section: 'cognition', view: 'keeper', keeper: selectedRow.keeperRuntime.name, focus: 'bdi' }}
+                      class="inline-flex items-center rounded-[var(--r-0)] border border-[var(--color-border-default)] bg-[var(--color-bg-page)] px-2.5 py-1.5 text-xs font-medium text-[var(--color-fg-secondary)] transition-colors hover:bg-[var(--color-bg-hover)]"
+                    >
+                      Cognition
+                    <//>
+                    <${RouteLink}
+                      tab="monitoring"
+                      params=${{ section: 'cognition', view: 'keeper', keeper: selectedRow.keeperRuntime.name, focus: 'tool-access' }}
+                      class="inline-flex items-center rounded-[var(--r-0)] border border-[var(--color-border-default)] bg-[var(--color-bg-page)] px-2.5 py-1.5 text-xs font-medium text-[var(--color-fg-secondary)] transition-colors hover:bg-[var(--color-bg-hover)]"
+                    >
+                      Tool Access
+                    <//>
+                    <${RouteLink}
+                      tab="monitoring"
+                      params=${{ section: 'runtime', view: 'inspector', keeper: selectedRow.keeperRuntime.name }}
+                      class="inline-flex items-center rounded-[var(--r-0)] border border-[var(--color-border-default)] bg-[var(--color-bg-page)] px-2.5 py-1.5 text-xs font-medium text-[var(--color-fg-secondary)] transition-colors hover:bg-[var(--color-bg-hover)]"
+                    >
+                      Runtime Trace
+                    <//>
+                  </div>
+                </div>
+              ` : null}
+
+              <div class="mt-auto flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  class="inline-flex items-center justify-center rounded-[var(--r-0)] border border-[var(--accent-20)] bg-[var(--accent-10)] px-3 py-2 text-xs font-medium text-[var(--color-fg-secondary)] transition-colors hover:bg-[var(--accent-20)]"
+                  aria-label=${selectedRow.detailLabel}
+                  onClick=${selectedRow.openDetail}
+                >
+                  상세 열기
+                </button>
+              </div>
+            </div>
+          ` : html`
+            <${EmptyState} message="선택할 keeper 또는 agent가 없습니다." compact />
+          `}
+        </aside>
       </div>
     </div>
   `

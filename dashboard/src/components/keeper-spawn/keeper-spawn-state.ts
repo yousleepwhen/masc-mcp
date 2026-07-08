@@ -3,8 +3,9 @@ import { callMcpTool } from '../../api/mcp'
 import { asBoolean, asString, asStringArray, extractArray, isRecord } from '../common/normalize'
 import { showToast } from '../common/toast'
 import { createAsyncResource, getData } from '../../lib/async-state'
-import { shellAuthSummary } from '../../store'
+import { refreshExecution, shellAuthSummary } from '../../store'
 import { dashboardAuthAccess } from '../../lib/dashboard-auth-access'
+import { errorToString } from '../../lib/format-string'
 
 export interface PersonaSummary {
   name: string
@@ -217,9 +218,12 @@ export async function spawnKeeperFromPersona(personaName: string, opts?: { dryRu
     if (opts?.dryRun) args.dry_run = true
     const result = await callMcpTool('masc_keeper_create_from_persona', args)
     spawnResult.value = { success: true, message: result }
-    if (!opts?.dryRun) showToast(`${personaName} 키퍼 생성 완료`, 'success')
+    if (!opts?.dryRun) {
+      showToast(`${personaName} 키퍼 생성 완료`, 'success')
+      void refreshExecution({ force: true })
+    }
   } catch (err) {
-    const message = formatKeeperSpawnError(err instanceof Error ? err.message : String(err))
+    const message = formatKeeperSpawnError(errorToString(err))
     spawnResult.value = { success: false, message }
     showToast(`키퍼 생성 실패: ${message}`, 'error')
   } finally {
@@ -267,7 +271,7 @@ export async function generatePersonaDraft(input: GeneratePersonaDraftInput): Pr
     personaAuthoringResult.value = { success: true, message: result }
     showToast(`${draft.handle} 페르소나 초안 생성`, 'success')
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
+    const message = errorToString(err)
     personaAuthoringResult.value = { success: false, message }
     showToast(`페르소나 생성 실패: ${message}`, 'error')
   } finally {
@@ -309,7 +313,7 @@ export async function savePersonaDraft(opts?: { overwrite?: boolean; dryRun?: bo
       showToast(`${draft.handle} 페르소나 저장 dry-run 완료`, 'success')
     }
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
+    const message = errorToString(err)
     personaAuthoringResult.value = { success: false, message }
     showToast(`페르소나 저장 실패: ${message}`, 'error')
   } finally {
@@ -317,16 +321,3 @@ export async function savePersonaDraft(opts?: { overwrite?: boolean; dryRun?: bo
   }
 }
 
-export async function shutdownKeeper(keeperName: string): Promise<void> {
-  const access = dashboardAuthAccess(shellAuthSummary.value, 'worker')
-  if (!access.allowed) {
-    showToast(access.reason ?? '키퍼 종료 권한이 없습니다.', 'error', 6000)
-    return
-  }
-  try {
-    await callMcpTool('masc_keeper_down', { name: keeperName })
-    showToast(`${keeperName} 키퍼 종료 완료`, 'success')
-  } catch (err) {
-    showToast(`키퍼 종료 실패: ${err instanceof Error ? err.message : String(err)}`, 'error')
-  }
-}

@@ -1,381 +1,256 @@
-(** Static validity check for config/cascade.json.
+(** RFC-0058 cascade config SSOT validity gate.
 
-    Guards every profile's model string list against typos, unknown
-    provider names, and unsupported aliases by running them through
-    the same parser the server uses at runtime
-    ({!Masc_mcp.Cascade_config.parse_model_strings}).
-
-    Motivation: 2026-04-11 incident adjacent — masc-mcp#6475 introduced a
-    new [glm-coding:*] cascade head, and the only way to know if OAS
-    actually knew that provider name was to read the pinned SHA by hand.
-    A unit test that parses the live cascade.json turns "the pinned OAS
-    understands every provider name in our cascade" from a manual audit
-    into a build-time guarantee.
-
-    The path to cascade.json is injected via the [MASC_CASCADE_JSON_PATH]
-    env var set in the dune stanza — no hardcoded path in the test body.
-    Profile keys follow cascade.json convention: each entry is named
-    [<profile>_models] in the JSON. *)
+    CI calls this test directly to keep [config/cascade.toml] as the checked-in
+    authoring source and to prevent the retired [config/cascade.json] from
+    reappearing as a second source of truth. *)
 
 open Alcotest
 
-let cascade_path () =
-  match Sys.getenv_opt "MASC_CASCADE_JSON_PATH" with
-  | Some p when String.trim p <> "" -> p
-  | _ ->
-    failwith
-      "MASC_CASCADE_JSON_PATH not set; dune stanza must inject it \
-       before running the test"
+module Adapter = Masc_mcp.Cascade_declarative_adapter
+module Parser = Cascade_declarative_parser
+module Types = Cascade_declarative_types
+module Validator = Cascade_declarative_validator
 
-(** Profile names discovered from cascade.json. Kept as a function so
-    the test can always reflect the current on-disk file rather than a
-    frozen list that drifts the next time someone adds a profile. *)
-let discover_profiles path : string list =
-  let ic = open_in path in
-  let content =
-    Fun.protect
-      ~finally:(fun () -> close_in_noerr ic)
-      (fun () ->
-        let len = in_channel_length ic in
-        let buf = Bytes.create len in
-        really_input ic buf 0 len;
-        Bytes.to_string buf)
-  in
-  let json = Yojson.Safe.from_string content in
-  match json with
-  | `Assoc fields ->
-    fields
-    |> List.filter_map (fun (k, v) ->
-           match v with
-           | `List _ ->
-             let suffix = "_models" in
-             let k_len = String.length k in
-             let s_len = String.length suffix in
-             if k_len > s_len
-                && String.sub k (k_len - s_len) s_len = suffix
-             then Some (String.sub k 0 (k_len - s_len))
-             else None
-           | _ -> None)
-  | _ -> []
+let config_path name =
+  Filename.concat
+    (Filename.concat (Masc_test_deps.find_project_root ()) "config")
+    name
+;;
 
-let load_profile_strings ~path ~profile : string list =
-  let ic = open_in path in
-  let content =
-    Fun.protect
-      ~finally:(fun () -> close_in_noerr ic)
-      (fun () ->
-        let len = in_channel_length ic in
-        let buf = Bytes.create len in
-        really_input ic buf 0 len;
-        Bytes.to_string buf)
-  in
-  let json = Yojson.Safe.from_string content in
-  let open Yojson.Safe.Util in
-  let key = profile ^ "_models" in
-  match json |> member key with
-  | `List items ->
-    List.filter_map
-      (function
-        | `String s -> Some (String.trim s)
-        | `Assoc _ as obj ->
-          (* Weighted entry: {"model": "provider:id", "weight": N} *)
-          (match obj |> member "model" with
-           | `String s when String.trim s <> "" -> Some (String.trim s)
-           | _ -> None)
-        | _ -> None)
-      items
-  | _ -> []
+let parse_errors_to_string errs =
+  errs
+  |> List.map (fun (err : Parser.parse_error) ->
+    Printf.sprintf "%s: %s" err.path err.message)
+  |> String.concat "; "
+;;
 
-let empty_profile_has_safe_fallback ~path ~profile : bool =
-  let ic = open_in path in
-  let content =
-    Fun.protect
-      ~finally:(fun () -> close_in_noerr ic)
-      (fun () ->
-        let len = in_channel_length ic in
-        let buf = Bytes.create len in
-        really_input ic buf 0 len;
-        Bytes.to_string buf)
-  in
-  let json = Yojson.Safe.from_string content in
-  let open Yojson.Safe.Util in
-  let fallback =
-    json |> member (profile ^ "_fallback_cascade") |> to_string_option
-  in
-  let keeper_assignable =
-    match json |> member (profile ^ "_keeper_assignable") with
-    | `Bool value -> value
-    | _ -> true
-  in
-  Option.is_some fallback && not keeper_assignable
+let validation_errors_to_string errs =
+  errs
+  |> List.map (fun (err : Validator.validation_error) ->
+    Printf.sprintf "%s %s: %s" err.rule err.path err.message)
+  |> String.concat "; "
+;;
 
-let test_profile_parses_non_empty profile () =
-  let path = cascade_path () in
-  let strings = load_profile_strings ~path ~profile in
-  if strings = [] then
-    check bool
-      (Printf.sprintf "%s empty profile has non-keeper fallback" profile)
-      true
-      (empty_profile_has_safe_fallback ~path ~profile)
-  else
-    let contains_substring ~needle s =
-      let nl = String.length needle in
-      let sl = String.length s in
-      if nl = 0 || nl > sl then false
-      else
-        let limit = sl - nl in
-        let rec loop i =
-          if i > limit then false
-          else if String.sub s i nl = needle then true
-          else loop (i + 1)
-        in
-        loop 0
-    in
-    (* error format from OAS: `provider "glm" unavailable (missing env var "ZAI_API_KEY")` *)
-    let is_unavailable_error msg =
-      contains_substring ~needle:"unavailable" msg
-    in
-    let expanded =
-      Masc_mcp.Cascade_config.expand_auto_models strings
-    in
-    List.iter
-      (fun s ->
-        match Masc_mcp.Cascade_config.parse_model_string_result s with
-        | Ok (cfg : Llm_provider.Provider_config.t) ->
-          check bool
-            (Printf.sprintf "%s: %S has non-empty model_id" profile s)
-            true
-            (String.trim cfg.model_id <> "")
-        | Error msg when is_unavailable_error msg ->
-          (* Provider known but its API key env var is empty — accepted. *)
-          ()
-        | Error msg ->
-          Alcotest.fail
-            (Printf.sprintf "%s: %S hard-fails parse: %s" profile s msg))
-      expanded
+let adapter_errors_to_string errs =
+  errs |> List.map Adapter.show_adapter_error |> String.concat "; "
+;;
 
-(** Meta / regression guard: prove that the happy-path assertion in
-    [test_profile_parses_non_empty] is NOT vacuous.
+let load_checked_in_cascade_toml () =
+  let path = config_path "cascade.toml" in
+  match Parser.parse_file path with
+  | Ok cfg -> cfg
+  | Error errs ->
+    failf "failed to parse %s: %s" path (parse_errors_to_string errs)
+;;
 
-    The happy-path test asserts
-      [List.length parsed = List.length strings]
-    which would trivially pass if OAS [parse_model_strings] silently
-    accepted every string (even known-bad provider names). This negative
-    fixture feeds [parse_model_strings] a two-element profile where one
-    entry uses a deliberately unknown provider name that cannot collide
-    with any real registry entry. We assert the parser drops it — i.e.
-    [List.length parsed < List.length strings]. If this ever becomes
-    equal, the happy-path guarantee is broken and both tests will fire
-    loudly. *)
-let test_unknown_provider_is_dropped () =
-  let tmp = Filename.temp_file "cascade-negative-" ".json" in
+let test_cascade_toml_validates () =
+  let cfg = load_checked_in_cascade_toml () in
+  let validation_errors = Validator.validate cfg in
+  check
+    string
+    "validator errors"
+    ""
+    (validation_errors_to_string validation_errors);
+  let (catalog : Adapter.adapted_catalog) = Adapter.adapt_config cfg in
+  check string "adapter errors" "" (adapter_errors_to_string catalog.errors);
+  check bool "profiles generated" true (List.length catalog.profiles > 0);
+  check bool "routes generated" true (List.length catalog.routes > 0)
+;;
+
+let set_env_opt key = function
+  | Some value -> Unix.putenv key value
+  | None -> Unix.putenv key ""
+;;
+
+let with_env key value f =
+  let previous = Sys.getenv_opt key in
   Fun.protect
-    ~finally:(fun () -> try Sys.remove tmp with _ -> ())
+    ~finally:(fun () -> set_env_opt key previous)
     (fun () ->
-      let oc = open_out tmp in
-      Fun.protect
-        ~finally:(fun () -> close_out_noerr oc)
-        (fun () ->
-          output_string oc
-            {|{
-  "regression_models": [
-    "ollama:qwen3.5:35b-a3b-nvfp4",
-    "__nonexistent_provider_sentinel__:fake-model"
-  ]
-}|});
-      let strings =
-        load_profile_strings ~path:tmp ~profile:"regression"
-      in
-      check int "fixture has both entries" 2 (List.length strings);
-      let parsed =
-        Masc_mcp.Cascade_config.parse_model_strings strings
-      in
-      (* At least one entry must be dropped. Using "<" (not "=") keeps
-         the test correct if a future registry happens to also gate the
-         ollama entry behind an availability flag — the invariant we
-         care about is "unknown providers are non-identity for parse",
-         not an exact surviving count. *)
-      check bool
-        "unknown provider entry is dropped by parse_model_strings"
-        true
-        (List.length parsed < List.length strings))
+       set_env_opt key value;
+       f ())
+;;
 
-let test_committed_json_matches_toml_materializer () =
-  let path = cascade_path () in
-  let source =
-    Masc_mcp.Cascade_toml_materializer.source_info ~config_path:path
-  in
-  check string "repo cascade source kind" "toml"
-    (Masc_mcp.Cascade_toml_materializer.source_kind_to_string source.kind);
-  match source.kind with
-  | Masc_mcp.Cascade_toml_materializer.Json ->
-      fail "config/cascade.toml must remain the committed cascade SSOT"
-  | Masc_mcp.Cascade_toml_materializer.Toml -> (
-      match
-        Masc_mcp.Cascade_toml_materializer.render_toml_file_to_json_string
-          source.source_path
-      with
-      | Error msg -> fail ("cascade.toml failed to materialize: " ^ msg)
-      | Ok rendered_json ->
-          let ic = open_in source.json_path in
-          let committed_json =
-            Fun.protect
-              ~finally:(fun () -> close_in_noerr ic)
-              (fun () ->
-                let len = in_channel_length ic in
-                let buf = Bytes.create len in
-                really_input ic buf 0 len;
-                Bytes.to_string buf)
-          in
-          check bool
-            "committed cascade.json matches cascade.toml materialization"
-            true
-            (String.equal rendered_json committed_json))
+let reset_runtime_config_caches () =
+  Config_dir_resolver.reset ();
+  Masc_mcp.Cascade_catalog_runtime.reset_cache_for_tests ()
+;;
 
-let with_temp_cascade_json body =
-  let tmp = Filename.temp_file "cascade-strategy-" ".json" in
+let test_cascade_toml_runtime_validates_without_rejected_profiles () =
+  let path = config_path "cascade.toml" in
+  let config_dir = Filename.dirname path in
+  with_env "MASC_TEST_ALLOW_CONFIG_PATH_OVERRIDE" (Some "1") @@ fun () ->
+  with_env "MASC_CONFIG_DIR" (Some config_dir) @@ fun () ->
   Fun.protect
-    ~finally:(fun () -> try Sys.remove tmp with _ -> ())
-    (fun () -> body tmp)
-
-let test_priority_tier_label_tiers_normalize_to_model_ids () =
-  with_temp_cascade_json @@ fun tmp ->
-  let oc = open_out tmp in
-  Fun.protect
-    ~finally:(fun () -> close_out_noerr oc)
+    ~finally:reset_runtime_config_caches
     (fun () ->
-      output_string oc
-        {|{
-  "regression_models": [
-    "claude_code:claude-haiku-4-5-20251001",
-    "gemini_cli:gemini-3-flash-preview"
-  ],
-  "regression_strategy": "priority_tier",
-  "regression_tiers": [
-    ["claude_code:claude-haiku-4-5-20251001"],
-    ["gemini_cli:gemini-3-flash-preview"]
-  ]
-}|});
-  let strategy =
-    Masc_mcp.Cascade_config.resolve_strategy
-      ~config_path:tmp ~name:"regression" ()
-  in
-  check string "priority_tier preserved"
-    "priority_tier"
-    (Masc_mcp.Cascade_strategy.kind_to_string strategy.kind);
-  check (list (list string)) "tiers normalized to model ids"
-    [ [ "claude-haiku-4-5-20251001" ]; [ "gemini-3-flash-preview" ] ]
-    strategy.tiers
+       reset_runtime_config_caches ();
+       match Masc_mcp.Cascade_catalog_runtime.inspect_active () with
+       | Ok (Masc_mcp.Cascade_catalog_runtime.Validated _) -> ()
+       | Ok (Masc_mcp.Cascade_catalog_runtime.Validated_with_rejections { rejected_update; _ })
+       | Ok (Masc_mcp.Cascade_catalog_runtime.Serving_last_known_good { rejected_update; _ })
+         ->
+         failf
+           "checked-in cascade.toml should not produce rejected runtime profiles: %s"
+           (Yojson.Safe.to_string
+              (Masc_mcp.Cascade_catalog_runtime.rejection_to_yojson rejected_update))
+       | Error rejection ->
+         failf
+           "checked-in cascade.toml should validate at runtime: %s"
+           (Yojson.Safe.to_string
+              (Masc_mcp.Cascade_catalog_runtime.rejection_to_yojson rejection)))
+;;
 
-let test_priority_tier_invalid_tiers_fall_back_to_default_strategy () =
-  with_temp_cascade_json @@ fun tmp ->
-  let oc = open_out tmp in
-  Fun.protect
-    ~finally:(fun () -> close_out_noerr oc)
-    (fun () ->
-      output_string oc
-        {|{
-  "regression_models": [
-    "claude_code:claude-haiku-4-5-20251001"
-  ],
-  "regression_strategy": "priority_tier",
-  "regression_tiers": [
-    ["codex_cli:auto"]
-  ]
-}|});
-  let strategy =
-    Masc_mcp.Cascade_config.resolve_strategy
-      ~config_path:tmp ~name:"regression" ()
-  in
-  check string "invalid tiers demote to default strategy"
-    "round_robin"
-    (Masc_mcp.Cascade_strategy.kind_to_string strategy.kind);
-  check (list (list string)) "default strategy carries no tiers" [] strategy.tiers
+let test_cascade_json_absent () =
+  check bool "config/cascade.json absent" false (Sys.file_exists (config_path "cascade.json"))
+;;
 
-let test_keeper_assignable_profile_defaults_to_round_robin () =
-  with_temp_cascade_json @@ fun tmp ->
-  let oc = open_out tmp in
-  Fun.protect
-    ~finally:(fun () -> close_out_noerr oc)
-    (fun () ->
-      output_string oc
-        {|{
-  "regression_models": [
-    "claude_code:claude-haiku-4-5-20251001",
-    "gemini_cli:gemini-3-flash-preview"
-  ],
-  "regression_keeper_assignable": true
-}|});
-  let strategy =
-    Masc_mcp.Cascade_config.resolve_strategy
-      ~config_path:tmp ~name:"regression" ()
-  in
-  check string "keeper assignable defaults to round_robin"
-    "round_robin"
-    (Masc_mcp.Cascade_strategy.kind_to_string strategy.kind)
+let find_tier_group cfg name =
+  cfg.Types.tier_groups
+  |> List.find_opt (fun (group : Types.cascade_tier_group) ->
+    String.equal group.name name)
+;;
 
-let test_non_keeper_assignable_profile_defaults_to_failover () =
-  with_temp_cascade_json @@ fun tmp ->
-  let oc = open_out tmp in
-  Fun.protect
-    ~finally:(fun () -> close_out_noerr oc)
-    (fun () ->
-      output_string oc
-        {|{
-  "regression_models": [
-    "claude_code:claude-haiku-4-5-20251001",
-    "gemini_cli:gemini-3-flash-preview"
-  ],
-  "regression_keeper_assignable": false
-}|});
-  let strategy =
-    Masc_mcp.Cascade_config.resolve_strategy
-      ~config_path:tmp ~name:"regression" ()
+let find_tier cfg name =
+  cfg.Types.tiers
+  |> List.find_opt (fun (tier : Types.cascade_tier) ->
+    String.equal tier.name name)
+;;
+
+let index_of value values =
+  let rec loop index = function
+    | [] -> None
+    | candidate :: rest ->
+      if String.equal candidate value then Some index else loop (index + 1) rest
   in
-  check string "non-keeper profile stays failover"
-    "failover"
-    (Masc_mcp.Cascade_strategy.kind_to_string strategy.kind)
+  loop 0 values
+;;
+
+let test_ollama_cloud_stable_is_system_only () =
+  let cfg = load_checked_in_cascade_toml () in
+  match find_tier_group cfg "ollama_cloud_stable" with
+  | None -> fail "missing tier-group.ollama_cloud_stable"
+  | Some group ->
+    check
+      (option bool)
+      "ollama_cloud_stable keeper-assignable"
+      (Some false)
+      group.keeper_assignable
+;;
+
+let test_strict_tool_group_does_not_bypass_glm_before_ollama_cloud () =
+  let cfg = load_checked_in_cascade_toml () in
+  match find_tier_group cfg "strict_tool_candidates" with
+  | None -> fail "missing tier-group.strict_tool_candidates"
+  | Some group ->
+    (match index_of "ollama_cloud_stable" group.tiers with
+     | None -> ()
+     | Some cloud_index ->
+       (match index_of "provider_k-coding-with-spark" group.tiers with
+        | Some glm_index when glm_index < cloud_index -> ()
+        | Some _ ->
+          fail
+            "strict_tool_candidates must try provider_k-coding-with-spark before \
+             ollama_cloud_stable"
+        | None ->
+          fail
+            "strict_tool_candidates must not include ollama_cloud_stable without \
+             provider_k-coding-with-spark ahead of it"))
+;;
+
+let test_no_deprecated_profile_names () =
+  let cfg = load_checked_in_cascade_toml () in
+  let deprecated_tiers =
+    cfg.Types.tiers
+    |> List.filter_map (fun (tier : Types.cascade_tier) ->
+      if Masc_mcp.Cascade_config_loader.is_deprecated_logical_profile_name tier.name
+      then Some ("tier." ^ tier.name)
+      else None)
+  in
+  let deprecated_groups =
+    cfg.Types.tier_groups
+    |> List.filter_map (fun (group : Types.cascade_tier_group) ->
+      if
+        Masc_mcp.Cascade_config_loader.is_deprecated_logical_profile_name
+          group.name
+      then Some ("tier-group." ^ group.name)
+      else None)
+  in
+  check
+    string
+    "deprecated tier/tier-group names"
+    ""
+    (String.concat ", " (deprecated_tiers @ deprecated_groups))
+;;
+
+let check_qwen_thinking_control cfg model_id =
+  match Types.model_capabilities_for_id cfg model_id with
+  | Some c ->
+    check bool (model_id ^ " reasoning budget") true c.supports_reasoning_budget;
+    check
+      string
+      (model_id ^ " thinking control")
+      "Cascade_declarative_types.Chat_template_kwargs"
+      (Types.show_cascade_thinking_control_format c.thinking_control_format)
+  | None -> failf "missing capabilities for %s" model_id
+;;
+
+let test_qwen_models_use_chat_template_kwargs () =
+  let cfg = load_checked_in_cascade_toml () in
+  check_qwen_thinking_control cfg "qwen-runpod";
+  check_qwen_thinking_control cfg "qwen-local";
+  check_qwen_thinking_control cfg "qwen3";
+  check_qwen_thinking_control cfg "qwen3-5"
+;;
+
+let test_primary_priority_order () =
+  let cfg = load_checked_in_cascade_toml () in
+  match find_tier cfg "primary" with
+  | None -> fail "missing tier.primary"
+  | Some tier ->
+    check
+      (list string)
+      "primary priority"
+      [
+        "runpod_mtp.qwen-runpod.keeper";
+        "local_mtp.qwen-local.keeper";
+        "glm-coding.glm-5-turbo";
+        "glm-coding.glm-flashx";
+        "cli_tool_a.codex-spark.for-keeper-turn";
+      ]
+      tier.members
+;;
 
 let () =
-  let path = cascade_path () in
-  let profiles = discover_profiles path in
-  let profile_cases =
-    List.map
-      (fun p ->
-        test_case
-          (Printf.sprintf "%s parses cleanly" p)
-          `Quick
-          (test_profile_parses_non_empty p))
-      profiles
-  in
-  run "Cascade config validity"
-    [
-      "profiles", profile_cases;
-      ( "regression",
-        [
-          test_case
-            "unknown provider dropped (meta-guard)"
+  run
+    "cascade config validity"
+    [ ( "checked-in seed"
+      , [ test_case "cascade.toml parses, validates, and adapts" `Quick test_cascade_toml_validates
+        ; test_case
+            "cascade.toml has no rejected runtime profiles"
             `Quick
-            test_unknown_provider_is_dropped;
-          test_case
-            "committed json matches toml materializer"
+            test_cascade_toml_runtime_validates_without_rejected_profiles
+        ; test_case "cascade.json is not a checked-in source" `Quick test_cascade_json_absent
+        ; test_case
+            "ollama_cloud_stable is system-only"
             `Quick
-            test_committed_json_matches_toml_materializer;
-          test_case
-            "priority_tier label tiers normalize to model ids"
+            test_ollama_cloud_stable_is_system_only
+        ; test_case
+            "strict tool group does not bypass GLM before Ollama Cloud"
             `Quick
-            test_priority_tier_label_tiers_normalize_to_model_ids;
-          test_case
-            "priority_tier invalid tiers fall back to default strategy"
+            test_strict_tool_group_does_not_bypass_glm_before_ollama_cloud
+        ; test_case
+            "cascade.toml has no deprecated profile names"
             `Quick
-            test_priority_tier_invalid_tiers_fall_back_to_default_strategy;
-          test_case
-            "keeper-assignable profile defaults to round_robin"
+            test_no_deprecated_profile_names
+        ; test_case
+            "provider_h models use chat_template_kwargs thinking control"
             `Quick
-            test_keeper_assignable_profile_defaults_to_round_robin;
-          test_case
-            "non-keeper-assignable profile defaults to failover"
+            test_qwen_models_use_chat_template_kwargs
+        ; test_case
+            "primary tier follows operator priority"
             `Quick
-            test_non_keeper_assignable_profile_defaults_to_failover;
-        ] );
+            test_primary_priority_order
+        ] )
     ]
+;;

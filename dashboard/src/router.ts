@@ -21,16 +21,22 @@ interface CrossSurfaceRedirect {
 
 type TabSectionKey = `${TabId}:${string}`
 
-const CROSS_SURFACE_SECTION_REDIRECTS: Record<TabSectionKey, CrossSurfaceRedirect> = {
+// Exported for RFC-0048 PR-A redirect-ledger contract test. Pure data —
+// not part of the runtime API.
+export const CROSS_SURFACE_SECTION_REDIRECTS: Record<TabSectionKey, CrossSurfaceRedirect> = {
+  'command:connectors': {
+    tab: 'connectors',
+    section: 'connector-status',
+  },
   'monitoring:git-graph': {
     tab: 'workspace',
     section: 'repositories',
     view: 'graph',
   },
-  'monitoring:safe-autonomy': {
-    tab: 'command',
-    section: 'operations',
-    view: 'safety',
+  'monitoring:goal-loop': {
+    tab: 'workspace',
+    section: 'planning',
+    view: 'goal-loop',
   },
 }
 
@@ -72,6 +78,10 @@ function shouldApplyCockpitModeRoute(segments: string[], params: Record<string, 
   return false
 }
 
+// Internal-only param key recording the original `<tab>:<section>` key
+// when a redirect resolved the route. RFC-0049 §4.5 — never written to URL.
+export const REDIRECTED_FROM_PARAM = '__redirected_from'
+
 function applyCrossSurfaceRedirect(
   tab: TabId,
   params: Record<string, string>,
@@ -84,6 +94,7 @@ function applyCrossSurfaceRedirect(
   const nextParams = { ...params, ...(redirect.params ?? {}) }
   nextParams.section = redirect.section
   if (redirect.view && !nextParams.view) nextParams.view = redirect.view
+  nextParams[REDIRECTED_FROM_PARAM] = `${tab}:${section}`
   return { tab: redirect.tab, params: nextParams }
 }
 
@@ -129,7 +140,9 @@ function parseSegments(
   if (segments[0] === 'command' && segments[1]) {
     const nextParams = { ...params }
     const second = decodeSafe(segments[1])
-    if (!VALID_COMMAND_SECTIONS.has(second)) {
+    if (`command:${second}` in CROSS_SURFACE_SECTION_REDIRECTS) {
+      nextParams.section = second
+    } else if (!VALID_COMMAND_SECTIONS.has(second)) {
       console.warn('[router] unknown command section, falling back to operations', second)
       nextParams.section = 'operations'
     } else {
@@ -213,6 +226,7 @@ function toHash(r: RouteState): string {
   const path = r.tab
   const paramEntries = Object.entries(r.params).filter(([key, value]) => {
     if (key === 'tab' && value === r.tab) return false
+    if (key === REDIRECTED_FROM_PARAM) return false
     return true
   })
   if (paramEntries.length === 0) return `#${path}`

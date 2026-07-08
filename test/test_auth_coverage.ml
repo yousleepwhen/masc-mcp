@@ -183,8 +183,8 @@ let test_permission_for_tool_status () =
   | _ -> fail "expected CanReadState"
 
 let test_permission_for_tool_runtime_verify () =
-  (* Tool schema was pruned but the permission map still maps the name
-     to CanReadState. Keep the legacy permission contract. *)
+  (* Runtime verification is an admin-surface tool with catalog-owned auth
+     metadata. *)
   match Auth.permission_for_tool "masc_runtime_verify" with
   | Some Masc_domain.CanReadState -> ()
   | _ -> fail "expected CanReadState"
@@ -219,16 +219,6 @@ let test_permission_for_tool_broadcast () =
   | Some Masc_domain.CanBroadcast -> ()
   | _ -> fail "expected CanBroadcast"
 
-let test_permission_for_tool_webrtc_offer () =
-  match Auth.permission_for_tool "masc_webrtc_offer" with
-  | Some Masc_domain.CanBroadcast -> ()
-  | _ -> fail "expected CanBroadcast"
-
-let test_permission_for_tool_webrtc_answer () =
-  match Auth.permission_for_tool "masc_webrtc_answer" with
-  | Some Masc_domain.CanBroadcast -> ()
-  | _ -> fail "expected CanBroadcast"
-
 let test_permission_for_tool_channel_gate () =
   match Auth.permission_for_tool "channel_gate" with
   | Some Masc_domain.CanBroadcast -> ()
@@ -248,16 +238,6 @@ let test_permission_for_tool_board_delete () =
   match Auth.permission_for_tool "masc_board_delete" with
   | Some Masc_domain.CanAdmin -> ()
   | _ -> fail "expected CanAdmin"
-
-let test_permission_for_tool_worktree_create () =
-  match Auth.permission_for_tool "masc_worktree_create" with
-  | Some Masc_domain.CanCreateWorktree -> ()
-  | _ -> fail "expected CanCreateWorktree"
-
-let test_permission_for_tool_worktree_remove () =
-  match Auth.permission_for_tool "masc_worktree_remove" with
-  | Some Masc_domain.CanRemoveWorktree -> ()
-  | _ -> fail "expected CanRemoveWorktree"
 
 let test_permission_for_tool_interrupt () =
   match Auth.permission_for_tool "masc_interrupt" with
@@ -636,41 +616,6 @@ let test_permission_for_tool_operator_confirm () =
   match Auth.permission_for_tool "masc_operator_confirm" with
   | Some Masc_domain.CanBroadcast -> ()
   | _ -> fail "expected CanBroadcast"
-
-let test_permission_for_tool_autoresearch_status () =
-  match Auth.permission_for_tool "masc_autoresearch_status" with
-  | Some Masc_domain.CanReadState -> ()
-  | _ -> fail "expected CanReadState"
-
-let test_permission_for_tool_autoresearch_start () =
-  match Auth.permission_for_tool "masc_autoresearch_start" with
-  | Some Masc_domain.CanAdmin -> ()
-  | _ -> fail "expected CanAdmin"
-
-let test_permission_for_tool_autoresearch_record_finding () =
-  match Auth.permission_for_tool "masc_autoresearch_record_finding" with
-  | Some Masc_domain.CanAdmin -> ()
-  | _ -> fail "expected CanAdmin"
-
-let test_permission_for_tool_autoresearch_search_findings () =
-  match Auth.permission_for_tool "masc_autoresearch_search_findings" with
-  | Some Masc_domain.CanReadState -> ()
-  | _ -> fail "expected CanReadState"
-
-let test_permission_for_tool_autoresearch_cycle () =
-  match Auth.permission_for_tool "masc_autoresearch_cycle" with
-  | Some Masc_domain.CanAdmin -> ()
-  | _ -> fail "expected CanAdmin"
-
-let test_permission_for_tool_autoresearch_inject () =
-  match Auth.permission_for_tool "masc_autoresearch_inject" with
-  | Some Masc_domain.CanAdmin -> ()
-  | _ -> fail "expected CanAdmin"
-
-let test_permission_for_tool_autoresearch_stop () =
-  match Auth.permission_for_tool "masc_autoresearch_stop" with
-  | Some Masc_domain.CanAdmin -> ()
-  | _ -> fail "expected CanAdmin"
 
 let test_permission_for_tool_keeper_create_from_persona () =
   match Auth.permission_for_tool "masc_keeper_create_from_persona" with
@@ -1127,14 +1072,10 @@ let () =
       test_case "claim" `Quick test_permission_for_tool_claim;
       test_case "claim_next" `Quick test_permission_for_tool_claim_next;
       test_case "broadcast" `Quick test_permission_for_tool_broadcast;
-      test_case "webrtc_offer" `Quick test_permission_for_tool_webrtc_offer;
-      test_case "webrtc_answer" `Quick test_permission_for_tool_webrtc_answer;
       test_case "channel_gate" `Quick test_permission_for_tool_channel_gate;
       test_case "board_list" `Quick test_permission_for_tool_board_list;
       test_case "board_post" `Quick test_permission_for_tool_board_post;
       test_case "board_delete" `Quick test_permission_for_tool_board_delete;
-      test_case "worktree_create" `Quick test_permission_for_tool_worktree_create;
-      test_case "worktree_remove" `Quick test_permission_for_tool_worktree_remove;
       test_case "interrupt" `Quick test_permission_for_tool_interrupt;
       test_case "approve" `Quick test_permission_for_tool_approve;
       test_case "auth_enable" `Quick test_permission_for_tool_auth_enable;
@@ -1152,20 +1093,6 @@ let () =
       test_case "surface_audit" `Quick test_permission_for_tool_surface_audit;
       test_case "operator_action" `Quick test_permission_for_tool_operator_action;
       test_case "operator_confirm" `Quick test_permission_for_tool_operator_confirm;
-      test_case "autoresearch_status" `Quick
-        test_permission_for_tool_autoresearch_status;
-      test_case "autoresearch_start" `Quick
-        test_permission_for_tool_autoresearch_start;
-      test_case "autoresearch_record_finding" `Quick
-        test_permission_for_tool_autoresearch_record_finding;
-      test_case "autoresearch_search_findings" `Quick
-        test_permission_for_tool_autoresearch_search_findings;
-      test_case "autoresearch_cycle" `Quick
-        test_permission_for_tool_autoresearch_cycle;
-      test_case "autoresearch_inject" `Quick
-        test_permission_for_tool_autoresearch_inject;
-      test_case "autoresearch_stop" `Quick
-        test_permission_for_tool_autoresearch_stop;
       test_case "keeper_create_from_persona" `Quick
         test_permission_for_tool_keeper_create_from_persona;
       test_case "set_param" `Quick test_permission_for_tool_set_param;

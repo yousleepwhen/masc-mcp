@@ -17,9 +17,11 @@ import {
 } from '../api/attribution'
 import { SurfaceCard } from './common/card'
 import { ErrorState, LoadingState } from './common/feedback-state'
-import { EmptyState } from './common/empty-state'
+import { EmptyState } from './common/feedback-state'
 import { TextInput } from './common/input'
 import { highlightMatch } from '../lib/highlight-match'
+import { unixSecondsToDate } from '../lib/format-time'
+import { isAbortError } from '../lib/async-state'
 
 const POLL_INTERVAL_MS = 5_000
 const RECENT_LIMIT = 50
@@ -32,7 +34,6 @@ const KNOWN_GATES = [
   'keeper_fsm',
   'worker_dev_tools',
   'accountability',
-  'autoresearch',
   'oas_completion',
   'agent_lifecycle',
 ] as const
@@ -62,7 +63,7 @@ function originBadgeClass(origin: Attribution['origin']): string {
 }
 
 function formatTs(recordedAt: number): string {
-  const d = new Date(recordedAt * 1000)
+  const d = unixSecondsToDate(recordedAt)
   return d.toLocaleTimeString('ko-KR', { hour12: false })
 }
 
@@ -253,7 +254,7 @@ export function AttributionPanel() {
         recent.value = r.events
         error.value = null
       } catch (e) {
-        if (cancelled || (e as Error).name === 'AbortError') return
+        if (cancelled || isAbortError(e)) return
         error.value = (e as Error).message || 'attribution fetch failed'
       } finally {
         if (!cancelled) loading.value = false

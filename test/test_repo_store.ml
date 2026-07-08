@@ -12,6 +12,19 @@ let contains_substring s needle =
   in
   if n_len = 0 then true else loop 0
 
+let is_symlink path =
+  try (Unix.lstat path).st_kind = Unix.S_LNK
+  with Unix.Unix_error _ | Sys_error _ -> false
+
+let rec rm_rf path =
+  if Sys.file_exists path || is_symlink path then
+    if is_symlink path then Unix.unlink path
+    else if Sys.is_directory path then begin
+      Sys.readdir path |> Array.iter (fun name -> rm_rf (Filename.concat path name));
+      Unix.rmdir path
+    end else
+      Sys.remove path
+
 let with_temp_base_path f =
   let dir = Filename.temp_file "repo_store_test" "" in
   Sys.remove dir;
@@ -20,18 +33,7 @@ let with_temp_base_path f =
   Unix.mkdir config_dir 0o755;
   let config_subdir = Filename.concat config_dir "config" in
   Unix.mkdir config_subdir 0o755;
-  Fun.protect
-    ~finally:(fun () ->
-      let rec rm_rf path =
-        if Sys.file_exists path then
-          if Sys.is_directory path then begin
-            Sys.readdir path |> Array.iter (fun name -> rm_rf (Filename.concat path name));
-            Unix.rmdir path
-          end else
-            Sys.remove path
-      in
-      rm_rf dir)
-    (fun () -> f dir)
+  Fun.protect ~finally:(fun () -> rm_rf dir) (fun () -> f dir)
 
 let sample_repo id =
   {
@@ -39,6 +41,7 @@ let sample_repo id =
     name = "test-repo-" ^ id;
     url = "https://github.com/test/" ^ id;
     local_path = "repos/" ^ id;
+    aliases = [];
     default_branch = "main";
     credential_id = "cred-1";
     keepers = [ "keeper-a"; "keeper-b" ];
@@ -72,7 +75,7 @@ let test_load_all_backward_compat () =
 
 let test_save_and_load_roundtrip () =
   with_temp_base_path (fun base_path ->
-      let repos = [ sample_repo "r1"; sample_repo "r2" ] in
+      let repos = [ { (sample_repo "r1") with aliases = [ "keeper" ] }; sample_repo "r2" ] in
       match Repo_store.save_all ~base_path repos with
       | Error e -> Alcotest.fail ("save failed: " ^ e)
       | Ok () -> (
@@ -82,7 +85,9 @@ let test_save_and_load_roundtrip () =
               Alcotest.(check int) "count" 2 (List.length loaded);
               let ids = List.map (fun (r : repository) -> r.id) loaded in
               Alcotest.(check bool) "has r1" true (List.mem "r1" ids);
-              Alcotest.(check bool) "has r2" true (List.mem "r2" ids)))
+              Alcotest.(check bool) "has r2" true (List.mem "r2" ids);
+              let r1 = List.find (fun (r : repository) -> String.equal r.id "r1") loaded in
+              Alcotest.(check (list string)) "aliases roundtrip" [ "keeper" ] r1.aliases))
 
 let test_add_new_repo () =
   with_temp_base_path (fun base_path ->
@@ -238,16 +243,28 @@ let test_load_minimal_toml_defaults () =
       | Ok repos ->
           Alcotest.failf "expected one repo, got %d" (List.length repos))
 
-let git_available () =
-  Sys.command "git --version >/dev/null 2>&1" = 0
+let run_git_quiet args =
+  let devnull = Unix.openfile "/dev/null" [ Unix.O_WRONLY ] 0 in
+  Fun.protect
+    ~finally:(fun () -> Unix.close devnull)
+    (fun () ->
+      let argv = Array.of_list ("git" :: args) in
+      try
+        let pid = Unix.create_process "git" argv Unix.stdin devnull devnull in
+        match Unix.waitpid [] pid with
+        | _, Unix.WEXITED code -> code
+        | _, (Unix.WSIGNALED _ | Unix.WSTOPPED _) -> 1
+      with
+      | Unix.Unix_error _ -> 1)
+
+let git_available () = run_git_quiet [ "--version" ] = 0
 
 let init_git_repo dir url =
-  ignore (Sys.command (Printf.sprintf "git init %s >/dev/null 2>&1" (Filename.quote dir)));
-  ignore
-    (Sys.command
-       (Printf.sprintf "git -C %s remote add origin %s >/dev/null 2>&1"
-          (Filename.quote dir)
-          (Filename.quote url)))
+  ignore (run_git_quiet [ "init"; dir ]);
+  ignore (run_git_quiet [ "-C"; dir; "remote"; "add"; "origin"; url ])
+
+let canonical_path path =
+  try Unix.realpath path with Unix.Unix_error _ | Sys_error _ -> path
 
 let test_discover_finds_git_repos () =
   if not (git_available ()) then Alcotest.skip ()
@@ -263,7 +280,7 @@ let test_discover_finds_git_repos () =
             let repo = List.hd repos in
             Alcotest.(check string) "id" "project-a" repo.id;
             Alcotest.(check string) "url" "https://github.com/test/project-a" repo.url;
-            Alcotest.(check string) "local_path" repo_a repo.local_path)
+            Alcotest.(check string) "local_path" (canonical_path repo_a) repo.local_path)
 
 let test_discover_ignores_masc_dir () =
   if not (git_available ()) then Alcotest.skip ()
@@ -297,7 +314,26 @@ let test_discover_finds_grouped_workspace_repos () =
               (List.length repos);
             let repo = List.hd repos in
             Alcotest.(check string) "id" "oas" repo.id;
-            Alcotest.(check string) "local_path" repo_dir repo.local_path)
+            Alcotest.(check string) "local_path" (canonical_path repo_dir) repo.local_path)
+
+let test_discover_keeps_depth_cap () =
+  if not (git_available ()) then Alcotest.skip ()
+  else
+    with_temp_base_path (fun base_path ->
+        let a = Filename.concat base_path "a" in
+        let b = Filename.concat a "b" in
+        let c = Filename.concat b "c" in
+        let d = Filename.concat c "d" in
+        Unix.mkdir a 0o755;
+        Unix.mkdir b 0o755;
+        Unix.mkdir c 0o755;
+        Unix.mkdir d 0o755;
+        init_git_repo d "https://github.com/test/too-deep";
+        match Repo_store.discover_repositories ~base_path with
+        | Error e -> Alcotest.fail ("discover failed: " ^ e)
+        | Ok repos ->
+            Alcotest.(check int) "ignores repo beyond max depth" 0
+              (List.length repos))
 
 let test_discover_ignores_hidden_dirs () =
   if not (git_available ()) then Alcotest.skip ()
@@ -313,6 +349,26 @@ let test_discover_ignores_hidden_dirs () =
         | Ok repos ->
             Alcotest.(check int) "ignores hidden directory repo" 0
               (List.length repos))
+
+let test_discover_ignores_symlink_dirs () =
+  if not (git_available ()) then Alcotest.skip ()
+  else
+    with_temp_base_path (fun base_path ->
+        let outside = Filename.temp_file "repo_store_outside" "" in
+        Sys.remove outside;
+        Unix.mkdir outside 0o755;
+        Fun.protect
+          ~finally:(fun () -> rm_rf outside)
+          (fun () ->
+            init_git_repo outside "https://github.com/test/outside";
+            let link = Filename.concat base_path "linked-outside" in
+            (try Unix.symlink outside link
+             with Unix.Unix_error _ -> Alcotest.skip ());
+            match Repo_store.discover_repositories ~base_path with
+            | Error e -> Alcotest.fail ("discover failed: " ^ e)
+            | Ok repos ->
+                Alcotest.(check int) "ignores symlink directory repo" 0
+                  (List.length repos)))
 
 let test_discover_relative_base_path_keeps_visible_repos () =
   if not (git_available ()) then Alcotest.skip ()
@@ -427,7 +483,8 @@ let test_register_discovered_includes_legacy_root_repo () =
             let ids = List.map (fun (r : repository) -> r.id) registered in
             let has_root =
               List.exists
-                (fun (r : repository) -> String.equal r.local_path base_path)
+                (fun (r : repository) ->
+                  String.equal r.local_path (canonical_path base_path))
                 registered
             in
             Alcotest.(check bool) "has root repo at base_path" true has_root;
@@ -437,7 +494,8 @@ let test_register_discovered_includes_legacy_root_repo () =
             | Ok loaded ->
                 let persisted_root =
                   List.exists
-                    (fun (r : repository) -> String.equal r.local_path base_path)
+                    (fun (r : repository) ->
+                      String.equal r.local_path (canonical_path base_path))
                     loaded
                 in
                 Alcotest.(check int) "persisted 2 repos" 2 (List.length loaded);
@@ -460,6 +518,108 @@ let test_register_discovered_skips_existing () =
         | Error e -> Alcotest.fail ("second register failed: " ^ e)
         | Ok second ->
             Alcotest.(check int) "second count empty" 0 (List.length second))
+
+(* RFC-0128 §4.5 — reverse lookup tests. *)
+
+let with_two_absolute_repos f =
+  with_temp_base_path (fun base_path ->
+    init_empty_store base_path;
+    let masc_path = Filename.concat base_path "workspace/masc" in
+    let oas_path = Filename.concat base_path "workspace/oas" in
+    Unix.mkdir (Filename.concat base_path "workspace") 0o755;
+    Unix.mkdir masc_path 0o755;
+    Unix.mkdir oas_path 0o755;
+    let masc =
+      { (sample_repo "masc") with
+        url = "https://github.com/jeong-sik/masc-mcp"
+      ; local_path = masc_path
+      }
+    in
+    let oas =
+      { (sample_repo "oas") with
+        url = "https://github.com/jeong-sik/oas"
+      ; local_path = oas_path
+      }
+    in
+    (match Repo_store.save_all ~base_path [ masc; oas ] with
+     | Ok () -> ()
+     | Error e -> Alcotest.fail ("save_all: " ^ e));
+    f ~base_path ~masc_path ~oas_path)
+
+let test_find_url_by_id_known () =
+  with_two_absolute_repos (fun ~base_path ~masc_path:_ ~oas_path:_ ->
+    match Repo_store.find_url_by_id ~base_path "masc" with
+    | Some url ->
+      Alcotest.(check string)
+        "masc url"
+        "https://github.com/jeong-sik/masc-mcp"
+        url
+    | None -> Alcotest.fail "expected Some url for masc")
+
+let test_find_url_by_id_unknown () =
+  with_two_absolute_repos (fun ~base_path ~masc_path:_ ~oas_path:_ ->
+    match Repo_store.find_url_by_id ~base_path "nonexistent" with
+    | None -> ()
+    | Some s -> Alcotest.fail ("expected None for unknown, got: " ^ s))
+
+let test_find_repo_by_path_prefix_match () =
+  with_two_absolute_repos (fun ~base_path ~masc_path ~oas_path:_ ->
+    let abs = Filename.concat masc_path "lib/foo.ml" in
+    match Repo_store.find_repo_by_path_prefix ~base_path abs with
+    | Some (repo, rel) ->
+      Alcotest.(check string) "matched repo id" "masc" repo.id;
+      Alcotest.(check string) "relative path" "lib/foo.ml" rel
+    | None -> Alcotest.fail "expected match under masc_path")
+
+let test_find_repo_by_path_prefix_outside () =
+  with_two_absolute_repos (fun ~base_path ~masc_path:_ ~oas_path:_ ->
+    match Repo_store.find_repo_by_path_prefix ~base_path "/tmp/elsewhere.ml" with
+    | None -> ()
+    | Some (repo, _) ->
+      Alcotest.fail ("unexpected match: " ^ repo.id))
+
+let test_find_repo_by_path_prefix_sibling_not_matched () =
+  (* Sibling-style collision: /tmp/masc and /tmp/masc-mirror must not
+     match each other's paths. Guards against pure-substring prefix. *)
+  with_temp_base_path (fun base_path ->
+    init_empty_store base_path;
+    let workspace = Filename.concat base_path "workspace" in
+    Unix.mkdir workspace 0o755;
+    let masc = Filename.concat workspace "masc" in
+    let mirror = Filename.concat workspace "masc-mirror" in
+    Unix.mkdir masc 0o755;
+    Unix.mkdir mirror 0o755;
+    let r1 =
+      { (sample_repo "masc") with
+        url = "https://github.com/owner/masc"
+      ; local_path = masc
+      }
+    in
+    let r2 =
+      { (sample_repo "mirror") with
+        url = "https://github.com/owner/masc-mirror"
+      ; local_path = mirror
+      }
+    in
+    (match Repo_store.save_all ~base_path [ r1; r2 ] with
+     | Ok () -> ()
+     | Error e -> Alcotest.fail ("save_all: " ^ e));
+    let inside_mirror = Filename.concat mirror "lib/x.ml" in
+    match Repo_store.find_repo_by_path_prefix ~base_path inside_mirror with
+    | Some (repo, rel) ->
+      Alcotest.(check string) "must pick mirror, not masc" "mirror" repo.id;
+      Alcotest.(check string) "rel" "lib/x.ml" rel
+    | None -> Alcotest.fail "expected match under mirror")
+
+let test_find_repo_by_path_prefix_root () =
+  (* abs_path equals the repo's local_path itself → empty rel. *)
+  with_two_absolute_repos (fun ~base_path ~masc_path ~oas_path:_ ->
+    match Repo_store.find_repo_by_path_prefix ~base_path masc_path with
+    | Some (repo, rel) ->
+      Alcotest.(check string) "matched repo id" "masc" repo.id;
+      Alcotest.(check string) "empty rel at root" "" rel
+    | None -> Alcotest.fail "expected match at repo root")
+
 let () =
   Alcotest.run "Repo_store"
     [
@@ -513,8 +673,12 @@ let () =
           Alcotest.test_case "ignores .masc repos" `Quick test_discover_ignores_masc_dir;
           Alcotest.test_case "finds grouped workspace repos" `Quick
             test_discover_finds_grouped_workspace_repos;
+          Alcotest.test_case "keeps max depth cap" `Quick
+            test_discover_keeps_depth_cap;
           Alcotest.test_case "ignores hidden dirs" `Quick
             test_discover_ignores_hidden_dirs;
+          Alcotest.test_case "ignores symlink dirs" `Quick
+            test_discover_ignores_symlink_dirs;
           Alcotest.test_case "relative base path keeps visible repos" `Quick
             test_discover_relative_base_path_keeps_visible_repos;
           Alcotest.test_case "skips registered repos" `Quick test_discover_skips_registered;
@@ -531,5 +695,15 @@ let () =
             test_register_discovered_includes_legacy_root_repo;
           Alcotest.test_case "register_discovered skips existing" `Quick
             test_register_discovered_skips_existing;
+        ] );
+      ( "reverse_lookup (RFC-0128)",
+        [
+          Alcotest.test_case "find_url_by_id known" `Quick test_find_url_by_id_known;
+          Alcotest.test_case "find_url_by_id unknown" `Quick test_find_url_by_id_unknown;
+          Alcotest.test_case "path_prefix match" `Quick test_find_repo_by_path_prefix_match;
+          Alcotest.test_case "path_prefix outside" `Quick test_find_repo_by_path_prefix_outside;
+          Alcotest.test_case "path_prefix sibling-safe" `Quick
+            test_find_repo_by_path_prefix_sibling_not_matched;
+          Alcotest.test_case "path_prefix at repo root" `Quick test_find_repo_by_path_prefix_root;
         ] );
     ]

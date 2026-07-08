@@ -177,51 +177,17 @@ let existing_file path =
 let home_dir_opt () =
   raw_value_opt "HOME" |> trim_opt
 
-(** Log a deprecation warning when a legacy env var is set.
-    Called once per legacy var at startup/first-read. *)
-let deprecation_warned = Hashtbl.create 8
+(* RFC-0085 PR-11 — Env var deprecation mechanism removed.
 
-let warn_deprecated ~old_name ~new_name =
-  if not (Hashtbl.mem deprecation_warned old_name) then begin
-    Hashtbl.replace deprecation_warned old_name true;
-    Log.Misc.warn "env %s is deprecated; use %s instead. Support will be removed in a future release."
-      old_name new_name
-  end
+   The deprecation_warned Hashtbl + warn_deprecated + deprecated_opt +
+   resolve_deprecated + get_{float,int,bool}_deprecated cluster had a
+   single caller (keeper_turn_slot.int_of_env_default_with_deprecated
+   for the MASC_KEEPER_AUTOBOT_MAX typo legacy).  Per
+   memory/feedback_hardcoding_and_legacy_zero_tolerance.md, legacy env
+   support is deleted at the same time as the mechanism that hosts it;
+   the typo env is no longer recognised and operators using it must
+   migrate to MASC_KEEPER_AUTOBOOT_MAX. *)
 
-let deprecated_opt ~old_name ~new_name =
-  match raw_value_opt old_name |> trim_opt with
-  | Some value ->
-      warn_deprecated ~old_name ~new_name;
-      Some value
-  | None -> None
-
-(** Read [primary] env var first; if unset, fall back to [deprecated] with a
-    one-time deprecation warning.  Returns [None] when neither is set. *)
-let resolve_deprecated ~primary ~deprecated =
-  match raw_value_opt primary |> trim_opt with
-  | Some _ as v -> v
-  | None -> deprecated_opt ~old_name:deprecated ~new_name:primary
-
-(** Typed deprecated-fallback getters.
-    Read [primary] first, then [deprecated] with warning, then [default]. *)
-let get_float_deprecated ~default ~primary ~deprecated =
-  match resolve_deprecated ~primary ~deprecated with
-  | Some s -> Safe_ops.float_of_string_with_default ~default s
-  | None -> default
-
-let get_int_deprecated ~default ~primary ~deprecated =
-  match resolve_deprecated ~primary ~deprecated with
-  | Some s -> Safe_ops.int_of_string_with_default ~default s
-  | None -> default
-
-let get_bool_deprecated ~default ~primary ~deprecated =
-  match resolve_deprecated ~primary ~deprecated with
-  | Some v ->
-      (match String.trim v |> String.lowercase_ascii with
-       | "true" | "1" | "yes" -> true
-       | "false" | "0" | "no" -> false
-       | _ -> default)
-  | None -> default
 
 let default_http_port = Masc_network_defaults.masc_http_default_port_s
 let default_http_port_int = Masc_network_defaults.masc_http_default_port
@@ -255,10 +221,8 @@ let masc_host () =
   | Some host -> host
   | None -> default_host
 
-(** Centralized MASC_ASSETS_DIR reader.
-    Returns None when MASC_ASSETS_DIR is unset or empty. *)
-let assets_dir_opt () =
-  raw_value_opt "MASC_ASSETS_DIR" |> trim_opt
+(* RFC-0085 PR-10 — [assets_dir_opt] removed (caller 0 after migration).
+   Readers use [(Host_config.from_env ()).assets_dir]. *)
 
 let cluster_name_opt () =
   raw_value_opt "MASC_CLUSTER_NAME" |> trim_opt
@@ -359,7 +323,7 @@ let running_under_test_executable () =
     module init-time caching, or Eio.Path absolute-path
     interpretation) silently falls through to the operator's HOME
     and appends fixture data to the live ledger — the exact
-    failure mode diagnosed on [~/me/.masc/board_votes.jsonl]
+    failure mode diagnosed on [<base-path>/.masc/board_votes.jsonl]
     (112 hot-voter-* rows overwrote real keeper votes).
 
     The safeguard is lossy by design: a test that resolves
@@ -406,15 +370,12 @@ let base_path_prod_guard path =
         else path
   end
 
-(** Project base path with HOME fallback, then "." fallback when unset. *)
+(** Project base path. Missing [MASC_BASE_PATH] falls back to cwd, not HOME. *)
 let base_path () =
   let raw =
     match base_path_opt () with
     | Some path -> path
-    | None ->
-        (match home_dir_opt () with
-         | Some home -> normalize_masc_base_path_input home
-         | None -> ".")
+    | None -> "."
   in
   base_path_prod_guard raw
 
@@ -461,13 +422,12 @@ let storage_type () =
 let config_dir_env_key = "MASC_CONFIG_DIR"
 let personas_dir_env_key = "MASC_PERSONAS_DIR"
 
-(** Config directory override. *)
-let config_dir_opt () =
-  raw_value_opt config_dir_env_key |> trim_opt
-
-(** Personas directory override. *)
-let personas_dir_opt () =
-  raw_value_opt personas_dir_env_key |> trim_opt
+(* RFC-0085 PR-8 — [config_dir_opt] and [personas_dir_opt] removed.
+   All readers now obtain these path values from
+   [Host_config.from_env ()] (fields [config_dir] / [personas_dir]).
+   The two [_env_key] string constants above remain because docker
+   inheritance lists and snapshot catalogs still need them as
+   identifier strings, not as readers. *)
 
 (** SSOT for the MASC_DATA_DIR env-var name (issue 8352).
     Overrides [<base_path>/data] as the root for CDAL verdicts and other
@@ -488,30 +448,20 @@ let relay_calibration_enabled () =
 
 (** SSOT for auth env-var names (issue 8352). *)
 let admin_token_env_key = "MASC_ADMIN_TOKEN"
-let tool_auth_strict_env_key = "MASC_TOOL_AUTH_STRICT"
 
 (** Admin token for privileged endpoints. None = admin auth disabled. *)
 let admin_token_opt () =
   raw_value_opt admin_token_env_key |> trim_opt
 
-(** Strict tool auth mode. Default: true.
-    true = unknown masc_* tools require worker-level permission. *)
-let tool_auth_strict () =
-  get_bool ~default:true tool_auth_strict_env_key
-
 (** {1 Git operations} *)
 
-(** [git fetch origin] before worktree creation is network-bound and
-    can stall behind a slow Docker bridge or a large remote.  The
-    previous hardcoded 30s budget at [coord_worktree.run_argv_exit]
-    rejected legitimately slow fetches inside a Docker keeper
-    playground clone (#9587).  Default 120s gives enough
-    headroom for a cold fetch on a non-trivial repo while still
-    bounding hung connections.  Operators can override via
-    [MASC_GIT_FETCH_TIMEOUT_SEC] when running on faster networks
-    (e.g. 60s in CI) or slower ones (e.g. 300s on a constrained
-    laptop tether).  Floor 10s prevents a footgun setting like
-    [0] from disabling the cap entirely. *)
+(** [git fetch origin] is network-bound and can stall behind a slow
+    Docker bridge or a large remote. Default 120s gives enough headroom
+    for a cold fetch on a non-trivial repo while still bounding hung
+    connections. Operators can override via [MASC_GIT_FETCH_TIMEOUT_SEC]
+    when running on faster networks (e.g. 60s in CI) or slower ones
+    (e.g. 300s on a constrained laptop tether). Floor 10s prevents a
+    footgun setting like [0] from disabling the cap entirely. *)
 let git_fetch_timeout_sec_env_key = "MASC_GIT_FETCH_TIMEOUT_SEC"
 
 let git_fetch_timeout_sec () =

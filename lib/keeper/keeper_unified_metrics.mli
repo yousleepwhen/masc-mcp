@@ -31,21 +31,20 @@ type usage_trust = Keeper_usage_trust.t =
 val classify_usage_trust :
   usage_reported:bool ->
   usage:Agent_sdk.Types.api_usage ->
-  model_used:string ->
-  resolved_model_id:string ->
   context_max:int ->
   usage_trust
+(** Classify usage counters without reconstructing concrete provider/model
+    identity. *)
 
 val usage_trust_is_trusted : usage_trust -> bool
 
 val estimate_trusted_usage_cost_usd :
   usage_trusted:bool ->
-  model:string ->
   Agent_sdk.Types.api_usage ->
   float
-(** Estimate turn cost for trusted usage using the OAS pricing catalog,
-    including cache creation/read token multipliers.  Returns [0.0] for
-    untrusted or missing usage. *)
+(** Return the OAS-reported turn cost for trusted usage.  MASC does not
+    estimate provider/model pricing locally; missing or non-positive cost
+    remains [0.0]. *)
 
 val usage_trust_to_string : usage_trust -> string
 
@@ -95,16 +94,14 @@ val context_max_bucket : int -> string
 
 val record_context_max_observation :
   keeper:string ->
-  model_used:string ->
-  resolved_model_id:string ->
   context_max:int ->
   unit
 (** #9953: emit the
     [masc_keeper_context_max_observed_total
        {keeper, model_used, resolved_model_id, context_max_bucket}]
-    counter for one turn.  Intended to be called once per
-    snapshot-write so the counter rate equals the per-turn
-    rate. *)
+    counter for one turn.  The historical model labels are emitted as the
+    neutral ["runtime"] lane. Intended to be called once per snapshot-write so
+    the counter rate equals the per-turn rate. *)
 
 (** {1 #9943: long-turn observer}
 
@@ -114,7 +111,7 @@ val record_context_max_observation :
     Prometheus cardinality stays at [keeper × 5].
 
     [record_turn_latency_bucket] increments
-    {!Prometheus.metric_keeper_turn_latency_bucket} on the matching
+    {!Keeper_metrics.(to_string TurnLatencyBucket)} on the matching
     bucket and emits a [Log.Keeper.warn] line when [latency_ms]
     crosses {!long_turn_warn_threshold_ms}.  Threshold reads
     [MASC_KEEPER_LONG_TURN_WARN_MS] (ms, default
@@ -129,16 +126,9 @@ val long_turn_warn_threshold_ms : unit -> int
 val record_turn_latency_bucket :
   keeper:string -> latency_ms:int -> unit
 
-val provider_kind_of_model_used : string -> string
-(** Derive the bounded provider label from a keeper [model_used] surface via
-    the provider adapter registry. Empty, unprefixed, or unregistered
-    provider prefixes collapse to [unknown]. *)
-
 val record_turn_latency_by_model_bucket :
   keeper:string ->
   channel:string ->
-  model_used:string ->
-  resolved_model_id:string ->
   cascade_profile:string ->
   latency_ms:int ->
   unit
@@ -161,7 +151,6 @@ val update_metrics_from_failure :
   latency_ms:int ->
   observation:Keeper_world_observation.world_observation ->
   reason:string ->
-  ?is_transient:bool ->
   ?social_state:Keeper_social_model.social_state ->
   ?social_transition_reason:string ->
   ?sdk_error:Agent_sdk.Error.sdk_error ->
@@ -182,9 +171,9 @@ val append_metrics_snapshot :
   context_tokens:int ->
   context_max:int ->
   message_count:int ->
-  compaction:Keeper_exec_context.compaction_event ->
+  compaction:Keeper_context_runtime.compaction_event ->
   handoff_json:Yojson.Safe.t option ->
-  ?timeout_budget_json:Yojson.Safe.t ->
+  ?provider_timeout_plan_json:Yojson.Safe.t ->
   ?deliberation_execution:Keeper_deliberation.execution_result ->
   unit ->
   unit
@@ -211,7 +200,7 @@ val append_decision_record :
 val broadcast_lifecycle_events :
   name:string ->
   turn_generation:int ->
-  compaction:Keeper_exec_context.compaction_event ->
+  compaction:Keeper_context_runtime.compaction_event ->
   handoff_json:Yojson.Safe.t option ->
   unit
 

@@ -4,11 +4,15 @@ module Mention = Mention
 module Keeper_execution = Masc_mcp.Keeper_execution
 module Keeper_memory = Masc_mcp.Keeper_memory
 module Keeper_memory_recall = Masc_mcp.Keeper_memory_recall
+module Keeper_memory_recall_exn_class = Masc_mcp.Keeper_memory_recall_exn_class
 module Keeper_world_observation = Masc_mcp.Keeper_world_observation
 module Meas = Masc_mcp.Keeper_measurement
+module Keeper_fs = Masc_mcp.Keeper_fs
 module Keeper_types = Masc_mcp.Keeper_types
-module KET = Masc_mcp.Keeper_exec_tools
-module KEC = Masc_mcp.Keeper_exec_context
+module Keeper_types_support = Masc_mcp.Keeper_types_support
+module Keeper_memory_policy = Masc_mcp.Keeper_memory_policy
+module KET = Masc_mcp.Agent_tool_dispatch_runtime
+module KEC = Masc_mcp.Keeper_context_runtime
 module Types = Masc_domain
 
 let keeper_meta ?(trace_id = "trace-1") ?(trace_history = []) ~name ~mention_targets () =
@@ -34,6 +38,8 @@ let room_message content =
     content;
     mention = None;
     timestamp = "2026-03-12T00:00:00Z"; trace_context = None;
+    expires_at = None;
+    relevance = "medium";
   }
 
 let test_any_mentioned_exact_target () =
@@ -328,45 +334,190 @@ let rec cleanup_tmpdir_recursive dir =
     (try Unix.rmdir dir with _ -> ())
   end
 
+let history_role = function
+  | "system" -> Agent_sdk.Types.System
+  | "user" -> Agent_sdk.Types.User
+  | "assistant" -> Agent_sdk.Types.Assistant
+  | "tool" -> Agent_sdk.Types.Tool
+  | role -> fail ("unsupported history role fixture: " ^ role)
+
+let history_json_line ?source role text =
+  let msg = Agent_sdk.Types.text_message (history_role role) text in
+  match KEC.message_to_json msg with
+  | `Assoc fields ->
+      let fields =
+        match source with
+        | Some source -> ("source", `String source) :: fields
+        | None -> fields
+      in
+      Yojson.Safe.to_string (`Assoc fields)
+  | _ -> fail "history message fixture must encode as object"
+
 let test_load_history_user_messages () =
   let dir = test_tmpdir () in
   Fun.protect ~finally:(fun () -> cleanup_tmpdir dir) (fun () ->
     let path = Filename.concat dir "history.jsonl" in
     let lines = [
-      {|{"role":"user","content":"hello world"}|};
-      {|{"role":"assistant","content":"hi there"}|};
-      {|{"role":"user","content":"second question"}|};
-      {|{"role":"user","content":""}|};
-      {|{"role":"user","content":"third question"}|};
+      history_json_line "user" "hello world";
+      history_json_line "assistant" "hi there";
+      history_json_line "user" "second question";
+      history_json_line "user" "";
+      history_json_line "user" "third question";
     ] in
     let oc = open_out path in
     List.iter (fun l -> output_string oc (l ^ "\n")) lines;
     close_out oc;
-    let result = Keeper_memory_recall.load_history_user_messages ~path ~max_n:10 in
-    check int "3 user messages" 3 (List.length result);
-    check string "first" "hello world" (List.hd result);
-    check string "last" "third question" (List.nth result 2))
+    match
+      Keeper_memory_recall.load_history_user_messages_result
+        ~path ~max_n:10
+    with
+    | Error _ -> fail "expected Ok for readable history file"
+    | Ok result ->
+      check int "3 user messages" 3 (List.length result);
+      check string "first" "hello world" (List.hd result);
+      check string "last" "third question" (List.nth result 2))
 
 let test_load_history_user_messages_ignores_internal_prompt_entries () =
   let dir = test_tmpdir () in
   Fun.protect ~finally:(fun () -> cleanup_tmpdir dir) (fun () ->
     let path = Filename.concat dir "history.jsonl" in
     let lines = [
-      {|{"role":"user","source":"world_state_prompt","content":"## Current World State\n\n### Namespace State\n- Unclaimed tasks: 1\n\n### Available Tools\n- keeper_board_list\n\n### Continuity\nGoal: keep going"}|};
-      {|{"role":"user","content":"real user question"}|};
-      {|{"role":"user","source":"memory_jsonl","content":"## Current World State\n\n### Namespace State\n- User-authored world memory should survive history filtering"}|};
-      {|{"role":"user","content":"second real question"}|};
+      history_json_line ~source:"world_state_prompt" "user"
+        "## Current World State\n\n### Namespace State\n- Unclaimed tasks: 1\n\n### Available Tools\n- keeper_board_list\n\n### Continuity\nGoal: keep going";
+      history_json_line "user" "real user question";
+      history_json_line ~source:"memory_jsonl" "user"
+        "## Current World State\n\n### Namespace State\n- User-authored world memory should survive history filtering";
+      history_json_line "user" "second real question";
     ] in
     let oc = open_out path in
     List.iter (fun l -> output_string oc (l ^ "\n")) lines;
     close_out oc;
-    let result = Keeper_memory_recall.load_history_user_messages ~path ~max_n:10 in
-    check int "prompt source dropped, user-authored world kept" 3 (List.length result);
-    check string "first real" "real user question" (List.hd result);
-    check string "world memory kept"
-      "## Current World State\n\n### Namespace State\n- User-authored world memory should survive history filtering"
-      (List.nth result 1);
-    check string "second real" "second real question" (List.nth result 2))
+    match
+      Keeper_memory_recall.load_history_user_messages_result
+        ~path ~max_n:10
+    with
+    | Error _ -> fail "expected Ok for readable history file"
+    | Ok result ->
+      check int "prompt source dropped, user-authored world kept" 3
+        (List.length result);
+      check string "first real" "real user question" (List.hd result);
+      check string "world memory kept"
+        "## Current World State\n\n### Namespace State\n- User-authored world memory should survive history filtering"
+        (List.nth result 1);
+      check string "second real" "second real question" (List.nth result 2))
+
+(* RFC-0149 §3.1 PR-11: typed Error path for the user-history reader.
+   A directory path (which [read_file_tail_lines_result] cannot tail) must
+   surface as [Error io_error] rather than collapsing to [Ok []]
+   indistinguishable from "no user messages recorded". *)
+let test_load_history_user_messages_result_error_on_directory_path () =
+  let dir = test_tmpdir () in
+  Fun.protect ~finally:(fun () -> cleanup_tmpdir dir) (fun () ->
+    match
+      Keeper_memory_recall.load_history_user_messages_result
+        ~path:dir ~max_n:10
+    with
+    | Ok _ ->
+      fail "expected Error io_error when path is a directory"
+    | Error exn_class ->
+      check string "Error label is io_error"
+        "io_error"
+        (Keeper_memory_recall_exn_class.to_label exn_class))
+
+let test_read_file_tail_lines_result_reads_tail_without_byte_cap () =
+  let dir = test_tmpdir () in
+  Fun.protect ~finally:(fun () -> cleanup_tmpdir dir) (fun () ->
+    let path = Filename.concat dir "large-history.jsonl" in
+    let oc = open_out path in
+    for i = 1 to 1000 do
+      output_string oc (Printf.sprintf "line-%04d\n" i)
+    done;
+    close_out oc;
+    match
+      Keeper_memory_recall.read_file_tail_lines_result path
+        ~max_bytes:0 ~max_lines:3
+    with
+    | Error exn_class ->
+        fail
+          ( "unexpected tail read error: "
+          ^ Keeper_memory_recall_exn_class.to_label exn_class )
+    | Ok lines ->
+        check (list string) "last three lines"
+          [ "line-0998"; "line-0999"; "line-1000" ]
+          lines)
+
+let test_read_file_tail_lines_result_drops_partial_byte_cap_line () =
+  let dir = test_tmpdir () in
+  Fun.protect ~finally:(fun () -> cleanup_tmpdir dir) (fun () ->
+    let path = Filename.concat dir "capped-history.jsonl" in
+    let oc = open_out path in
+    output_string oc "first\nsecond\nthird\n";
+    close_out oc;
+    match
+      Keeper_memory_recall.read_file_tail_lines_result path
+        ~max_bytes:8 ~max_lines:3
+    with
+    | Error exn_class ->
+        fail
+          ( "unexpected tail read error: "
+          ^ Keeper_memory_recall_exn_class.to_label exn_class )
+    | Ok lines ->
+        check (list string) "partial first capped line dropped" [ "third" ] lines)
+
+(* RFC-0149 §3.1 — direct unit tests for the Result-returning helper.
+   These cases pin the [Ok] / [Ok []] / [Error _] tri-state contract
+   so caller code cannot silently regress the typed boundary. *)
+
+let exn_class_testable =
+  let module E = Keeper_memory_recall_exn_class in
+  Alcotest.testable
+    (fun ppf c -> Format.pp_print_string ppf (E.to_label c))
+    (fun a b -> E.to_label a = E.to_label b)
+
+let test_read_file_tail_lines_result_ok_on_normal_read () =
+  let dir = test_tmpdir () in
+  Fun.protect ~finally:(fun () -> cleanup_tmpdir dir) (fun () ->
+    let path = Filename.concat dir "history.jsonl" in
+    let oc = open_out path in
+    output_string oc "alpha\nbeta\ngamma\n";
+    close_out oc;
+    match
+      Keeper_memory_recall.read_file_tail_lines_result path
+        ~max_bytes:0 ~max_lines:3
+    with
+    | Ok lines ->
+        check (list string) "all three lines on ok"
+          [ "alpha"; "beta"; "gamma" ] lines
+    | Error _ -> fail "expected Ok on a readable file, got Error")
+
+let test_read_file_tail_lines_result_ok_empty_on_missing_file () =
+  let dir = test_tmpdir () in
+  Fun.protect ~finally:(fun () -> cleanup_tmpdir dir) (fun () ->
+    let path = Filename.concat dir "does-not-exist.jsonl" in
+    match
+      Keeper_memory_recall.read_file_tail_lines_result path
+        ~max_bytes:0 ~max_lines:3
+    with
+    | Ok lines ->
+        check (list string) "missing file maps to Ok []" [] lines
+    | Error _ ->
+        fail "missing file must surface as Ok [] (no recorded memory)")
+
+let test_read_file_tail_lines_result_error_on_directory_path () =
+  let dir = test_tmpdir () in
+  Fun.protect ~finally:(fun () -> cleanup_tmpdir dir) (fun () ->
+    (* Use the test tmpdir itself as the "file" path: [Unix.openfile]
+       on a directory raises [Unix.Unix_error (EISDIR, ...)] on macOS /
+       Linux, which the Result helper classifies as [Io_error]. *)
+    match
+      Keeper_memory_recall.read_file_tail_lines_result dir
+        ~max_bytes:0 ~max_lines:3
+    with
+    | Ok _ ->
+        fail "directory-as-path must surface as Error, not Ok"
+    | Error c ->
+        check exn_class_testable "io_error classification"
+          Keeper_memory_recall_exn_class.Io_error c)
 
 let test_recall_candidates_with_history_dedup () =
   let dir = test_tmpdir () in
@@ -374,8 +525,8 @@ let test_recall_candidates_with_history_dedup () =
     let path = Filename.concat dir "history.jsonl" in
     (* history contains same message as checkpoint *)
     let lines = [
-      {|{"role":"user","content":"hello world"}|};
-      {|{"role":"user","content":"unique from history"}|};
+      history_json_line "user" "hello world";
+      history_json_line "user" "unique from history";
     ] in
     let oc = open_out path in
     List.iter (fun l -> output_string oc (l ^ "\n")) lines;
@@ -397,8 +548,8 @@ let test_recall_candidates_with_history_appends () =
   Fun.protect ~finally:(fun () -> cleanup_tmpdir dir) (fun () ->
     let path = Filename.concat dir "history.jsonl" in
     let lines = [
-      {|{"role":"user","content":"old question from 3 days ago"}|};
-      {|{"role":"user","content":"another old question"}|};
+      history_json_line "user" "old question from 3 days ago";
+      history_json_line "user" "another old question";
     ] in
     let oc = open_out path in
     List.iter (fun l -> output_string oc (l ^ "\n")) lines;
@@ -416,12 +567,65 @@ let test_recall_candidates_with_history_appends () =
 (* --- E2E memory write → recall integration tests (I1) --- *)
 
 module Keeper_memory_bank = Masc_mcp.Keeper_memory_bank
+module Keeper_memory_llm_summary = Masc_mcp.Keeper_memory_llm_summary
 module Coord = Masc_mcp.Coord
 
 (** Create a minimal Coord.config for testing with a temp base_path.
     Uses Coord.default_config which creates FileSystem backend. *)
 let make_test_room_config dir =
   Coord.default_config dir
+
+(* RFC-0149 §3.1: typed Error path for the horizon-counts reader.
+   A keeper whose memory.jsonl path resolves to a directory (which
+   [read_file_tail_lines_result] cannot tail) must surface as
+   [Error io_error] rather than collapsing to [Ok []]
+   indistinguishable from "no rows recorded". *)
+let test_read_memory_horizon_counts_result_error_on_directory_path () =
+  let dir = test_tmpdir () in
+  Fun.protect ~finally:(fun () -> cleanup_tmpdir dir) (fun () ->
+    let config = make_test_room_config dir in
+    let memory_path =
+      Masc_mcp.Keeper_types_support.keeper_memory_bank_path config "bad-keeper"
+    in
+    (* Pre-create the parent directory structure, then a *directory*
+       (not a file) at the memory.jsonl path. *)
+    let parent = Filename.dirname memory_path in
+    (try Unix.mkdir parent 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+    Unix.mkdir memory_path 0o755;
+    match
+      Keeper_memory_recall.read_memory_horizon_counts_result config
+        ~name:"bad-keeper" ~max_bytes:100000 ~max_lines:100
+    with
+    | Ok _ ->
+      fail "expected Error io_error when memory.jsonl path is a directory"
+    | Error exn_class ->
+      check string "Error label is io_error"
+        "io_error"
+        (Keeper_memory_recall_exn_class.to_label exn_class))
+
+(* RFC-0149 §3.1: typed Error path for the recent-memory-texts reader. *)
+let test_read_recent_memory_texts_result_error_on_directory_path () =
+  let dir = test_tmpdir () in
+  Fun.protect ~finally:(fun () -> cleanup_tmpdir dir) (fun () ->
+    let config = make_test_room_config dir in
+    let memory_path =
+      Masc_mcp.Keeper_types_support.keeper_memory_bank_path config "bad-keeper"
+    in
+    let parent = Filename.dirname memory_path in
+    (try Unix.mkdir parent 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+    Unix.mkdir memory_path 0o755;
+    match
+      Keeper_memory_recall.read_recent_memory_texts_result config
+        ~name:"bad-keeper"
+        ~horizon:Masc_mcp.Keeper_memory_policy.long_term_horizon
+        ~max_bytes:100000 ~max_lines:100 ~limit:5
+    with
+    | Ok _ ->
+      fail "expected Error io_error when memory.jsonl path is a directory"
+    | Error exn_class ->
+      check string "Error label is io_error"
+        "io_error"
+        (Keeper_memory_recall_exn_class.to_label exn_class))
 
 (** E2E: write memory via append_memory_notes_from_reply, then read back via recall.
     Tests the full pipeline: reply → parse → snapshot → candidates → JSONL → recall.
@@ -451,10 +655,20 @@ let test_memory_write_then_recall_with_state_block () =
     check bool "at least one note written" true (notes_written > 0);
     check bool "goal kind present" true (List.mem "goal" kinds);
 
-    (* Verify recall reads back what was written *)
+    (* Verify recall reads back what was written.  RFC-0149 §3.1 migration:
+       route through the Result-returning entry point and fail the test on
+       [Error _] so an IO fault cannot masquerade as an empty summary. *)
     let summary =
-      Keeper_memory_recall.read_keeper_memory_summary config
-        ~name:"e2e-keeper" ~max_bytes:100000 ~max_lines:100 ~recent_limit:10
+      match
+        Keeper_memory_recall.read_keeper_memory_summary_result config
+          ~name:"e2e-keeper" ~max_bytes:100000 ~max_lines:100 ~recent_limit:10
+      with
+      | Ok s -> s
+      | Error exn_class ->
+          fail
+            (Printf.sprintf
+               "memory bank read failed: %s"
+               (Keeper_memory_recall_exn_class.to_label exn_class))
     in
     check bool "recall finds notes" true (summary.total_notes > 0);
     check bool "recall has goal kind" true
@@ -479,15 +693,24 @@ let test_memory_write_then_recall_meta_fallback () =
     check bool "fallback wrote notes" true (notes_written > 0);
     check bool "fallback wrote goal kind" true (List.mem "goal" kinds);
 
-    (* Recall should find the note *)
+    (* Recall should find the note.  RFC-0149 §3.1 migration: same
+       Result-pattern as above. *)
     let summary =
-      Keeper_memory_recall.read_keeper_memory_summary config
-        ~name:"fallback-keeper" ~max_bytes:100000 ~max_lines:100 ~recent_limit:10
+      match
+        Keeper_memory_recall.read_keeper_memory_summary_result config
+          ~name:"fallback-keeper" ~max_bytes:100000 ~max_lines:100 ~recent_limit:10
+      with
+      | Ok s -> s
+      | Error exn_class ->
+          fail
+            (Printf.sprintf
+               "memory bank read failed: %s"
+               (Keeper_memory_recall_exn_class.to_label exn_class))
     in
     check bool "recall finds fallback notes" true (summary.total_notes > 0))
 
 let read_memory_bank_entries config name =
-  let path = Keeper_types.keeper_memory_bank_path config name in
+  let path = Masc_mcp.Keeper_types_support.keeper_memory_bank_path config name in
   if not (Sys.file_exists path) then []
   else
     let ic = open_in path in
@@ -613,8 +836,10 @@ let test_read_continuity_summary_prefers_progress_log () =
   Fun.protect ~finally:(fun () -> cleanup_tmpdir_recursive dir) (fun () ->
     let config = make_test_room_config dir in
     let meta = keeper_meta ~name:"progress-pref-keeper" ~mention_targets:["progress-pref-keeper"] () in
-    let progress_path = Keeper_types.keeper_progress_path config "progress-pref-keeper" in
-    Keeper_types.mkdir_p (Filename.dirname progress_path);
+    let progress_path =
+      Masc_mcp.Keeper_types_support.keeper_progress_path config "progress-pref-keeper"
+    in
+    let (_ : string) = Keeper_fs.ensure_dir (Filename.dirname progress_path) in
     (match
        Fs_compat.save_file_atomic progress_path
          "# Keeper Progress\nGoal: recover from progress file\nNEXT: verify only progress path is used\n"
@@ -629,20 +854,52 @@ let test_read_continuity_summary_prefers_progress_log () =
     check bool "reads next plan from progress log" true
       (Astring.String.is_infix ~affix:"verify only progress path is used" continuity))
 
+let test_read_continuity_summary_caps_progress_log () =
+  let dir = test_tmpdir () in
+  Fun.protect ~finally:(fun () -> cleanup_tmpdir_recursive dir) (fun () ->
+    let config = make_test_room_config dir in
+    let keeper = "progress-cap-keeper" in
+    let meta = keeper_meta ~name:keeper ~mention_targets:[keeper] () in
+    let progress_path = Masc_mcp.Keeper_types_support.keeper_progress_path config keeper in
+    let (_ : string) = Keeper_fs.ensure_dir (Filename.dirname progress_path) in
+    let max_chars =
+      Masc_mcp.Keeper_memory_policy.default_continuity_summary_max_chars
+    in
+    let long_goal = String.make (max_chars * 2) 'g' in
+    (match
+       Fs_compat.save_file_atomic progress_path
+         ("# Keeper Progress\nGoal: "
+          ^ long_goal
+          ^ "\nNEXT: verify progress cap is enforced\n")
+     with
+     | Ok () -> ()
+     | Error err -> fail ("failed to seed progress log: " ^ err));
+    let continuity =
+      Keeper_world_observation.read_continuity_summary ~config ~meta
+    in
+    check bool "progress log continuity capped" true
+      (String.length continuity <= max_chars + 3);
+    check bool "progress log continuity ellipsis" true
+      (Astring.String.is_suffix ~affix:"…" continuity))
+
 let test_keeper_context_status_reports_recovery_source_and_tiers () =
   let dir = test_tmpdir () in
   Fun.protect ~finally:(fun () -> cleanup_tmpdir_recursive dir) (fun () ->
     let config = make_test_room_config dir in
     let meta = keeper_meta ~name:"status-keeper" ~mention_targets:["status-keeper"] () in
-    let progress_path = Keeper_types.keeper_progress_path config "status-keeper" in
-    Keeper_types.mkdir_p (Filename.dirname progress_path);
+    let progress_path =
+      Masc_mcp.Keeper_types_support.keeper_progress_path config "status-keeper"
+    in
+    let (_ : string) = Keeper_fs.ensure_dir (Filename.dirname progress_path) in
     (match
        Fs_compat.save_file_atomic progress_path
          "# Keeper Progress\nGoal: status recovery\nNEXT: emit recovery source\n"
      with
      | Ok () -> ()
      | Error err -> fail ("failed to seed progress log: " ^ err));
-    let bank_path = Keeper_types.keeper_memory_bank_path config "status-keeper" in
+    let bank_path =
+      Masc_mcp.Keeper_types_support.keeper_memory_bank_path config "status-keeper"
+    in
     (match
        Fs_compat.save_file_atomic bank_path
          (Yojson.Safe.to_string
@@ -651,11 +908,12 @@ let test_keeper_context_status_reports_recovery_source_and_tiers () =
                  "kind", `String "long_term";
                  "horizon", `String "long_term";
                  "source", `String "cross_trace_recurrence";
-                 "schema_version", `Int 2;
+                 "schema_version", `Int Keeper_memory_bank.keeper_memory_schema_version;
                  "text", `String "durable note";
                  "priority", `Int 95;
                  "generation", `Int 1;
                  "turn", `Int 1;
+                 "trace_id", `String "status-trace";
                  "ts_unix", `Float 1000.0;
                  "ts", `String "2026-01-01T00:00:00Z";
                ])
@@ -665,7 +923,7 @@ let test_keeper_context_status_reports_recovery_source_and_tiers () =
      | Error err -> fail ("failed to seed memory bank: " ^ err));
     let ctx_work = KEC.create ~system_prompt:"test" ~max_tokens:4096 in
     let json =
-      Masc_mcp.Keeper_exec_memory.keeper_context_status_json
+      Masc_mcp.Agent_tool_memory_runtime.keeper_context_status_json
         ~config ~meta ~ctx_work
       |> Yojson.Safe.from_string
     in
@@ -675,6 +933,14 @@ let test_keeper_context_status_reports_recovery_source_and_tiers () =
       Yojson.Safe.Util.(json |> member "sandbox_root" |> to_string);
     check string "sandbox repos is tool-ready" "repos"
       Yojson.Safe.Util.(json |> member "sandbox_repos" |> to_string);
+    check bool "legacy playground bundle alias removed" true
+      Yojson.Safe.Util.(json |> member "playground_bundle" = `Null);
+    check bool "legacy playground mind alias removed" true
+      Yojson.Safe.Util.(json |> member "playground_mind" = `Null);
+    check bool "legacy playground repos alias removed" true
+      Yojson.Safe.Util.(json |> member "playground_repos" = `Null);
+    check bool "legacy tool paths alias removed" true
+      Yojson.Safe.Util.(json |> member "tool_paths" = `Null);
     check string "sandbox backend is local by default" "local"
       Yojson.Safe.Util.(json |> member "sandbox_backend" |> to_string);
     check int "long-term count exposed" 1
@@ -744,7 +1010,7 @@ let rec cleanup_tmpdir_r dir =
 
 (** Write lines to a file, creating parent dirs as needed. *)
 let write_lines path lines =
-  Keeper_types.mkdir_p (Filename.dirname path);
+  let (_ : string) = Keeper_fs.ensure_dir (Filename.dirname path) in
   let oc = open_out path in
   Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
     List.iter (fun l -> output_string oc (l ^ "\n")) lines)
@@ -759,12 +1025,12 @@ let test_memory_search_cross_generation () =
     let meta = keeper_meta ~name:"cross-gen-keeper" ~mention_targets:["cross-gen-keeper"] () in
     let trace_id = meta.runtime.trace_id in
     (* Write history.jsonl with messages from previous generations *)
-    let history_path = Keeper_types.keeper_history_path config (Masc_mcp.Keeper_id.Trace_id.to_string trace_id) in
+    let history_path = Masc_mcp.Keeper_types_support.keeper_history_path config (Masc_mcp.Keeper_id.Trace_id.to_string trace_id) in
     write_lines history_path [
-      {|{"role":"user","content":"deploy the canary release"}|};
-      {|{"role":"assistant","content":"deploying now"}|};
-      {|{"role":"user","content":"what was the incident root cause"}|};
-      {|{"role":"user","content":"scale the fleet to 12 pods"}|};
+      history_json_line "user" "deploy the canary release";
+      history_json_line "assistant" "deploying now";
+      history_json_line "user" "what was the incident root cause";
+      history_json_line "user" "scale the fleet to 12 pods";
     ];
     (* Current checkpoint has different messages — no overlap with history query *)
     let ctx_work = KEC.create ~system_prompt:"test" ~max_tokens:4096 in
@@ -808,10 +1074,10 @@ let test_memory_search_dedup () =
     let config = make_test_room_config dir in
     let meta = keeper_meta ~name:"dedup-keeper" ~mention_targets:["dedup-keeper"] () in
     let trace_id = meta.runtime.trace_id in
-    let history_path = Keeper_types.keeper_history_path config (Masc_mcp.Keeper_id.Trace_id.to_string trace_id) in
+    let history_path = Masc_mcp.Keeper_types_support.keeper_history_path config (Masc_mcp.Keeper_id.Trace_id.to_string trace_id) in
     write_lines history_path [
-      {|{"role":"user","content":"unique needle from history"}|};
-      {|{"role":"user","content":"shared needle message"}|};
+      history_json_line "user" "unique needle from history";
+      history_json_line "user" "shared needle message";
     ];
     let ctx_work = KEC.create ~system_prompt:"test" ~max_tokens:4096 in
     let ctx_work = KEC.append ctx_work
@@ -839,15 +1105,15 @@ let test_memory_search_prev_generation () =
       ~mention_targets:["multi-gen-keeper"]
       () in
     (* Previous generation's history — different trace_id directory *)
-    let prev_history_path = Keeper_types.keeper_history_path config prev_trace in
+    let prev_history_path = Masc_mcp.Keeper_types_support.keeper_history_path config prev_trace in
     write_lines prev_history_path [
-      {|{"role":"user","content":"migrate the postgres schema to v3"}|};
-      {|{"role":"user","content":"rollback the failed deployment"}|};
+      history_json_line "user" "migrate the postgres schema to v3";
+      history_json_line "user" "rollback the failed deployment";
     ];
     (* Current generation's history — empty (just started) *)
-    let curr_history_path = Keeper_types.keeper_history_path config curr_trace in
+    let curr_history_path = Masc_mcp.Keeper_types_support.keeper_history_path config curr_trace in
     write_lines curr_history_path [
-      {|{"role":"user","content":"check cluster health"}|};
+      history_json_line "user" "check cluster health";
     ];
     (* Checkpoint has only new-gen messages *)
     let ctx_work = KEC.create ~system_prompt:"test" ~max_tokens:4096 in
@@ -880,32 +1146,184 @@ let test_memory_search_prev_generation () =
 
 (** Helper: write memory bank JSONL lines for a keeper. *)
 let write_memory_bank config name lines =
-  let path = Keeper_types.keeper_memory_bank_path config name in
+  let path = Masc_mcp.Keeper_types_support.keeper_memory_bank_path config name in
   write_lines path lines
 
-let memory_note ?horizon ?source ~kind ~text ~priority ~generation ~turn ~ts_unix () =
-  let extra_fields =
-    (match horizon with
-     | Some value -> [ ("horizon", `String value) ]
-     | None -> [])
-    @
-    (match source with
-     | Some value -> [ ("source", `String value) ]
-     | None -> [])
+let persistence_read_drop_total ~surface ~reason =
+  Masc_mcp.Prometheus.metric_value_or_zero
+    Masc_mcp.Prometheus.metric_persistence_read_drops
+    ~labels:[("surface", surface); ("reason", reason)]
+    ()
+
+let check_persistence_read_drop_delta ~surface ~reason ~before ~delta =
+  check (float 0.0001)
+    (Printf.sprintf "%s/%s read drops" surface reason)
+    (before +. float_of_int delta)
+    (persistence_read_drop_total ~surface ~reason)
+
+let llm_summary_provider ~kind ~model_id =
+  Llm_provider.Provider_config.make ~kind ~model_id ~base_url:"" ()
+
+let test_llm_summary_direct_provider_filter () =
+  check bool "provider_d compat direct" true
+    (Keeper_memory_llm_summary.is_direct_completion_provider
+       (llm_summary_provider
+          ~kind:Llm_provider.Provider_config.Provider_d_compat
+          ~model_id:"openrouter/model"));
+  check bool "ollama direct" true
+    (Keeper_memory_llm_summary.is_direct_completion_provider
+       (llm_summary_provider
+          ~kind:Llm_provider.Provider_config.Ollama
+          ~model_id:"local-model"));
+  check bool "agent_code cli excluded" false
+    (Keeper_memory_llm_summary.is_direct_completion_provider
+       (llm_summary_provider
+          ~kind:Llm_provider.Provider_config.Cli_tool_a
+          ~model_id:"model-d-5.4"));
+  check bool "agent_llm_a cli excluded" false
+    (Keeper_memory_llm_summary.is_direct_completion_provider
+       (llm_summary_provider
+          ~kind:Llm_provider.Provider_config.Cli_tool_d
+          ~model_id:"opus"))
+
+let test_llm_summary_provider_caps_plain_text_request () =
+  let provider =
+    Llm_provider.Provider_config.make
+      ~kind:Llm_provider.Provider_config.Provider_d_compat
+      ~model_id:"summary-model" ~base_url:"" ~max_tokens:4096
+      ~tool_choice:Agent_sdk.Types.Auto ~disable_parallel_tool_use:false
+      ~response_format:Agent_sdk.Types.JsonMode
+      ~output_schema:(`Assoc [ ("type", `String "object") ])
+      ()
+  in
+  let summary_provider =
+    Keeper_memory_llm_summary.provider_for_summary provider
+  in
+  check (option int) "summary token cap" (Some 512)
+    summary_provider.max_tokens;
+  check (option (float 0.0001)) "deterministic temperature"
+    (Some 0.0) summary_provider.temperature;
+  check bool "tool choice disabled" true
+    (Option.is_none summary_provider.tool_choice);
+  check bool "parallel tools disabled" true
+    summary_provider.disable_parallel_tool_use;
+  check bool "plain text response format" true
+    (summary_provider.response_format = Agent_sdk.Types.Off);
+  check bool "schema disabled" true
+    (Option.is_none summary_provider.output_schema)
+
+let text_from_message (message : Agent_sdk.Types.message) =
+  match message.content with
+  | [ Agent_sdk.Types.Text text ] -> text
+  | _ -> fail "expected single text message"
+
+let test_llm_summary_messages_include_trace_and_notes () =
+  let messages =
+    Keeper_memory_llm_summary.messages_for_summary
+      ~trace_id:"trace-llm-msg"
+      ~texts:
+        [
+          "edited lib/keeper/keeper_memory_bank.ml";
+          "ran scripts/dune-local.sh build test/test_keeper_memory.exe";
+        ]
+  in
+  check int "system + user messages" 2 (List.length messages);
+  let user_text = List.nth messages 1 |> text_from_message in
+  check bool "trace included" true
+    (Astring.String.is_infix ~affix:"trace-llm-msg" user_text);
+  check bool "path included" true
+    (Astring.String.is_infix
+       ~affix:"lib/keeper/keeper_memory_bank.ml" user_text);
+  check bool "command included" true
+    (Astring.String.is_infix
+       ~affix:"scripts/dune-local.sh build test/test_keeper_memory.exe"
+       user_text)
+
+let rec find_upwards ~limit dir rel =
+  let path = Filename.concat dir rel in
+  if Sys.file_exists path then Some path
+  else if limit <= 0 then None
+  else
+    let parent = Filename.dirname dir in
+    if String.equal parent dir then None
+    else find_upwards ~limit:(limit - 1) parent rel
+
+let read_repo_file rel =
+  match find_upwards ~limit:8 (Sys.getcwd ()) rel with
+  | None -> fail ("missing repo file: " ^ rel)
+  | Some path ->
+      let ic = open_in path in
+      Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+        really_input_string ic (in_channel_length ic))
+
+let test_keeper_agent_run_wires_memory_llm_summarizer () =
+  (* The memory-LLM summarizer wiring lives in the post-turn memory
+     sub-module after the RFC-0147 keeper_agent_run decomposition.
+     [Keeper_memory_llm_summary.make] is constructed there and threaded
+     into [Keeper_memory_bank.compact_memory_bank_if_needed] via the
+     [?summarizer] labelled argument. *)
+  let source =
+    read_repo_file "lib/keeper/keeper_agent_run_post_turn_memory.ml"
+  in
+  let summarizer_pos =
+    match Astring.String.find_sub ~sub:"Keeper_memory_llm_summary.make" source with
+    | None ->
+      fail
+        "expected Keeper_memory_llm_summary.make in keeper_agent_run_post_turn_memory"
+    | Some pos -> pos
+  in
+  let compaction_pos =
+    match
+      Astring.String.find_sub
+        ~sub:"Keeper_memory_bank.compact_memory_bank_if_needed"
+        source
+    with
+    | None ->
+      fail
+        "expected compact_memory_bank_if_needed in keeper_agent_run_post_turn_memory"
+    | Some pos -> pos
+  in
+  check bool "summarizer constructed before compaction" true
+    (summarizer_pos < compaction_pos);
+  check bool "summarizer passed into compaction" true
+    (Astring.String.is_infix
+       ~affix:"?summarizer:memory_summarizer" source)
+
+let memory_note
+      ?(schema_version = Keeper_memory_bank.keeper_memory_schema_version)
+      ?horizon
+      ?(source = "test_seed")
+      ?(trace_id = "t1")
+      ~kind
+      ~text
+      ~priority
+      ~generation
+      ~turn
+      ~ts_unix
+      ()
+  =
+  let horizon =
+    match horizon with
+    | Some value -> value
+    | None ->
+      Keeper_memory_bank.memory_horizon_of_kind_opt kind
+      |> Option.value ~default:""
   in
   Yojson.Safe.to_string
     (`Assoc
-      ([
-         ("ts", `String "2026-04-06T00:00:00Z");
-         ("ts_unix", `Float ts_unix);
-         ("name", `String "test");
-         ("trace_id", `String "t1");
-         ("generation", `Int generation);
-         ("turn", `Int turn);
-         ("kind", `String kind);
-         ("priority", `Int priority);
-         ("text", `String text);
-       ] @ extra_fields))
+       [ ("schema_version", `Int schema_version)
+       ; ("ts", `String "2026-04-06T00:00:00Z")
+       ; ("ts_unix", `Float ts_unix)
+       ; ("name", `String "test")
+       ; ("trace_id", `String trace_id)
+       ; ("generation", `Int generation)
+       ; ("turn", `Int turn)
+       ; ("kind", `String kind)
+       ; ("horizon", `String horizon)
+       ; ("source", `String source)
+       ; ("priority", `Int priority)
+       ; ("text", `String text)
+       ])
 
 (** Test: memory bank search returns structured results with scoring. *)
 let test_memory_search_bank_basic () =
@@ -1037,17 +1455,59 @@ let test_memory_search_bank_empty () =
     let match_count = Yojson.Safe.Util.(json |> member "match_count" |> to_int) in
     check int "match_count is 0" 0 match_count)
 
+let test_memory_search_bank_counts_read_drops () =
+  let surface = "agent_tool_memory_bank" in
+  let entry_reason = "entry_load_error" in
+  let invalid_reason = "invalid_payload" in
+  let before_entry =
+    persistence_read_drop_total ~surface ~reason:entry_reason
+  in
+  let before_invalid =
+    persistence_read_drop_total ~surface ~reason:invalid_reason
+  in
+  let dir = test_tmpdir () in
+  Fun.protect ~finally:(fun () -> cleanup_tmpdir_r dir) (fun () ->
+    let config = make_test_room_config dir in
+    let keeper_name = "drop-metric-keeper" in
+    let meta = keeper_meta ~name:keeper_name ~mention_targets:[keeper_name] () in
+    write_memory_bank config keeper_name [
+      memory_note ~kind:"decision" ~text:"needle survives malformed rows"
+        ~priority:80 ~generation:1 ~turn:1 ~ts_unix:1000.0 ();
+      "{not-json";
+      "[]";
+      {|{"kind":"decision","priority":1}|};
+    ];
+    let ctx_work = KEC.create ~system_prompt:"test" ~max_tokens:4096 in
+    let result = KET.execute_keeper_tool_call ~config ~meta ~ctx_work ~exec_cache:None
+      ~name:"keeper_memory_search"
+      ~input:(`Assoc [ ("query", `String "needle") ])
+      () in
+    let json = Yojson.Safe.from_string result in
+    let match_count = Yojson.Safe.Util.(json |> member "match_count" |> to_int) in
+    let total_candidates =
+      Yojson.Safe.Util.(json |> member "total_candidates" |> to_int)
+    in
+    check int "valid memory row still matches" 1 match_count;
+    check int "only valid rows become candidates" 1 total_candidates);
+  check_persistence_read_drop_delta ~surface ~reason:entry_reason
+    ~before:before_entry ~delta:1;
+  check_persistence_read_drop_delta ~surface ~reason:invalid_reason
+    ~before:before_invalid ~delta:2
+
 let test_memory_search_decision_log_failure_is_observable () =
   let dir = test_tmpdir () in
   Fun.protect ~finally:(fun () -> cleanup_tmpdir_r dir) (fun () ->
     let config = make_test_room_config dir in
     let keeper_name = "memory-search-log-failure" in
     let meta = keeper_meta ~name:keeper_name ~mention_targets:[keeper_name] () in
-    Keeper_types.mkdir_p (Keeper_types.keeper_decision_log_path config keeper_name);
+    let (_ : string) =
+      Keeper_fs.ensure_dir
+        (Masc_mcp.Keeper_types_support.keeper_decision_log_path config keeper_name)
+    in
     let ctx_work = KEC.create ~system_prompt:"test" ~max_tokens:4096 in
     let before =
       Masc_mcp.Prometheus.metric_value_or_zero
-        Masc_mcp.Prometheus.metric_keeper_decision_audit_flush_failures
+        Masc_mcp.Keeper_metrics.(to_string DecisionAuditFlushFailures)
         ~labels:[("keeper", keeper_name)]
         ()
     in
@@ -1057,7 +1517,7 @@ let test_memory_search_decision_log_failure_is_observable () =
       () in
     let after =
       Masc_mcp.Prometheus.metric_value_or_zero
-        Masc_mcp.Prometheus.metric_keeper_decision_audit_flush_failures
+        Masc_mcp.Keeper_metrics.(to_string DecisionAuditFlushFailures)
         ~labels:[("keeper", keeper_name)]
         ()
     in
@@ -1084,16 +1544,16 @@ let test_memory_search_bank_no_match () =
     let no_match = Yojson.Safe.Util.(json |> member "no_match" |> to_bool) in
     check bool "no_match for unrelated query" true no_match)
 
-(** Test: source=history uses legacy cross-generation search. *)
+(** Test: source=history reads canonical history JSONL. *)
 let test_memory_search_source_history () =
   let dir = test_tmpdir () in
   Fun.protect ~finally:(fun () -> cleanup_tmpdir_r dir) (fun () ->
     let config = make_test_room_config dir in
     let meta = keeper_meta ~name:"hist-keeper" ~mention_targets:["hist-keeper"] () in
     let trace_id = meta.runtime.trace_id in
-    let history_path = Keeper_types.keeper_history_path config (Masc_mcp.Keeper_id.Trace_id.to_string trace_id) in
+    let history_path = Masc_mcp.Keeper_types_support.keeper_history_path config (Masc_mcp.Keeper_id.Trace_id.to_string trace_id) in
     write_lines history_path [
-      {|{"role":"user","content":"deploy the legacy service"}|};
+      history_json_line "user" "deploy the legacy service";
     ];
     let ctx_work = KEC.create ~system_prompt:"test" ~max_tokens:4096 in
     let result = KET.execute_keeper_tool_call ~config ~meta ~ctx_work ~exec_cache:None
@@ -1118,9 +1578,9 @@ let test_memory_search_source_all () =
     ];
     (* History has raw message *)
     let trace_id = meta.runtime.trace_id in
-    let history_path = Keeper_types.keeper_history_path config (Masc_mcp.Keeper_id.Trace_id.to_string trace_id) in
+    let history_path = Masc_mcp.Keeper_types_support.keeper_history_path config (Masc_mcp.Keeper_id.Trace_id.to_string trace_id) in
     write_lines history_path [
-      {|{"role":"user","content":"alpha from history"}|};
+      history_json_line "user" "alpha from history";
     ];
     let ctx_work = KEC.create ~system_prompt:"test" ~max_tokens:4096 in
     let result = KET.execute_keeper_tool_call ~config ~meta ~ctx_work ~exec_cache:None
@@ -1132,6 +1592,26 @@ let test_memory_search_source_all () =
     check string "source is all" "all" source;
     let match_count = Yojson.Safe.Util.(json |> member "match_count" |> to_int) in
     check bool "found matches from both sources" true (match_count >= 2))
+
+let test_memory_search_invalid_source_rejected () =
+  let dir = test_tmpdir () in
+  Fun.protect ~finally:(fun () -> cleanup_tmpdir_r dir) (fun () ->
+    let config = make_test_room_config dir in
+    let meta = keeper_meta ~name:"bad-source-keeper" ~mention_targets:["bad-source-keeper"] () in
+    let ctx_work = KEC.create ~system_prompt:"test" ~max_tokens:4096 in
+    let result =
+      KET.execute_keeper_tool_call
+        ~config
+        ~meta
+        ~ctx_work
+        ~exec_cache:None
+        ~name:"keeper_memory_search"
+        ~input:(`Assoc [ ("query", `String "alpha"); ("source", `String "bogus") ])
+        ()
+    in
+    let json = Yojson.Safe.from_string result in
+    check string "invalid source rejected" "invalid_memory_search_source"
+      Yojson.Safe.Util.(json |> member "error_kind" |> to_string))
 
 (* ── Memory Quality Filter Tests ────────────────────────── *)
 
@@ -1197,7 +1677,14 @@ let test_quality_accepts_meaningful () =
 
 let test_priority_clamp_low () =
   let line =
-    {|{"kind":"goal","text":"test","priority":-5,"ts_unix":1.0,"schema_version":2}|}
+    memory_note
+      ~kind:"goal"
+      ~text:"test"
+      ~priority:(-5)
+      ~generation:1
+      ~turn:1
+      ~ts_unix:1.0
+      ()
   in
   match Keeper_memory_bank.parse_memory_bank_row line with
   | Some row -> check int "clamped to 1" 1 row.priority
@@ -1205,7 +1692,14 @@ let test_priority_clamp_low () =
 
 let test_priority_clamp_high () =
   let line =
-    {|{"kind":"goal","text":"test","priority":999,"ts_unix":1.0,"schema_version":2}|}
+    memory_note
+      ~kind:"goal"
+      ~text:"test"
+      ~priority:999
+      ~generation:1
+      ~turn:1
+      ~ts_unix:1.0
+      ()
   in
   match Keeper_memory_bank.parse_memory_bank_row line with
   | Some row -> check int "clamped to 100" 100 row.priority
@@ -1213,7 +1707,14 @@ let test_priority_clamp_high () =
 
 let test_priority_valid_preserved () =
   let line =
-    {|{"kind":"goal","text":"test","priority":42,"ts_unix":1.0,"schema_version":2}|}
+    memory_note
+      ~kind:"goal"
+      ~text:"test"
+      ~priority:42
+      ~generation:1
+      ~turn:1
+      ~ts_unix:1.0
+      ()
   in
   match Keeper_memory_bank.parse_memory_bank_row line with
   | Some row -> check int "preserved 42" 42 row.priority
@@ -1221,13 +1722,28 @@ let test_priority_valid_preserved () =
 
 let test_schema_version_mismatch () =
   let line =
-    {|{"kind":"goal","text":"test","priority":1,"ts_unix":1.0,"schema_version":99}|}
+    memory_note
+      ~schema_version:99
+      ~kind:"goal"
+      ~text:"test"
+      ~priority:1
+      ~generation:1
+      ~turn:1
+      ~ts_unix:1.0
+      ()
   in
   check bool "mismatch rejected" true (Keeper_memory_bank.parse_memory_bank_row line = None)
 
 let test_schema_version_match () =
   let line =
-    {|{"kind":"goal","text":"test","priority":1,"ts_unix":1.0,"schema_version":2}|}
+    memory_note
+      ~kind:"goal"
+      ~text:"test"
+      ~priority:1
+      ~generation:1
+      ~turn:1
+      ~ts_unix:1.0
+      ()
   in
   check bool "match accepted" true (Keeper_memory_bank.parse_memory_bank_row line <> None)
 
@@ -1293,7 +1809,7 @@ let test_cap_dropped_by_total () =
 
 let memory_metric_value ~keeper ~source ~outcome =
   Masc_mcp.Prometheus.metric_value_or_zero
-    Masc_mcp.Prometheus.metric_keeper_memory_consolidations
+    Masc_mcp.Keeper_metrics.(to_string MemoryConsolidations)
     ~labels:[("keeper", keeper); ("source", source); ("outcome", outcome)]
     ()
 
@@ -1303,7 +1819,10 @@ let memory_bank_test_row ~kind ~trace_id ~text ~priority ~idx =
        [
          ("schema_version", `Int Keeper_memory_bank.keeper_memory_schema_version);
          ("kind", `String kind);
-         ("horizon", `String (Keeper_memory_bank.memory_horizon_of_kind kind));
+         ( "horizon",
+           `String
+             (Keeper_memory_bank.memory_horizon_of_kind_opt kind
+              |> Option.value ~default:Keeper_memory_bank.mid_term_horizon) );
          ("source", `String "test_seed");
          ("text", `String text);
          ("priority", `Int priority);
@@ -1314,6 +1833,80 @@ let memory_bank_test_row ~kind ~trace_id ~text ~priority ~idx =
          ("ts", `String "2026-01-01T00:00:00Z");
        ])
 
+let parse_memory_bank_test_row line =
+  match Keeper_memory_bank.parse_memory_bank_row line with
+  | Some row -> row
+  | None -> fail ("failed to parse seeded memory row: " ^ line)
+
+let progress_memory_rows trace_id =
+  List.init 3 (fun i ->
+    memory_bank_test_row
+      ~kind:"progress"
+      ~trace_id
+      ~text:
+        (Printf.sprintf
+           "progress cluster item %d retains enough semantic detail"
+           i)
+      ~priority:80
+      ~idx:i
+    |> parse_memory_bank_test_row)
+
+let generated_progress_consolidation rows =
+  List.filter
+    (fun (row : Keeper_memory_bank.keeper_memory_row_raw) ->
+      String.equal row.source "progress_consolidation")
+    rows
+
+let test_consolidation_uses_opt_in_summarizer () =
+  with_env "MASC_KEEPER_MEMORY_LLM_SUMMARY" "true" @@ fun () ->
+  let calls = ref [] in
+  let summarizer ~trace_id ~texts =
+    calls := (trace_id, texts) :: !calls;
+    Some "LLM durable summary\n[STATE]\nsecret state\n[/STATE]\nkept tail"
+  in
+  let rows = progress_memory_rows "trace-llm-summary" in
+  let consolidated, count =
+    Keeper_memory_bank.consolidate_memory_notes ~summarizer rows
+  in
+  check int "one progress cluster consolidated" 1 count;
+  check int "summarizer called once" 1 (List.length !calls);
+  (match !calls with
+   | [ (trace_id, texts) ] ->
+       check string "trace_id passed to summarizer"
+         "trace-llm-summary" trace_id;
+       check int "texts passed to summarizer" 3 (List.length texts)
+   | _ -> fail "unexpected summarizer call count");
+  match generated_progress_consolidation consolidated with
+  | [ row ] ->
+      check bool "llm summary marker persisted" true
+        (Astring.String.is_infix ~affix:"[llm]" row.text);
+      check bool "llm summary text persisted" true
+        (Astring.String.is_infix ~affix:"LLM durable summary" row.text);
+      check bool "state block scrubbed from llm summary" false
+        (Astring.String.is_infix ~affix:"secret state" row.text)
+  | _ -> fail "expected one generated progress consolidation row"
+
+let test_consolidation_summarizer_requires_opt_in () =
+  with_env "MASC_KEEPER_MEMORY_LLM_SUMMARY" "off" @@ fun () ->
+  let called = ref false in
+  let summarizer ~trace_id:_ ~texts:_ =
+    called := true;
+    Some "this should not be used"
+  in
+  let rows = progress_memory_rows "trace-disabled-summary" in
+  let consolidated, count =
+    Keeper_memory_bank.consolidate_memory_notes ~summarizer rows
+  in
+  check int "one progress cluster consolidated" 1 count;
+  check bool "summarizer not called while disabled" false !called;
+  match generated_progress_consolidation consolidated with
+  | [ row ] ->
+      check bool "deterministic fallback used" true
+        (Astring.String.is_infix ~affix:"[consolidated:3]" row.text);
+      check bool "llm marker absent while disabled" false
+        (Astring.String.is_infix ~affix:"[llm]" row.text)
+  | _ -> fail "expected one generated progress consolidation row"
+
 let test_compaction_records_consolidation_metrics () =
   with_env "MASC_KEEPER_MEMORY_MAX_NOTES" "40" @@ fun () ->
   with_env "MASC_KEEPER_MEMORY_MAX_LENGTH" "4096" @@ fun () ->
@@ -1323,8 +1916,8 @@ let test_compaction_records_consolidation_metrics () =
     let keeper = "metric-memory-keeper" in
     let config = make_test_room_config dir in
     let meta = keeper_meta ~name:keeper ~mention_targets:[keeper] () in
-    let bank_path = Keeper_types.keeper_memory_bank_path config keeper in
-    Keeper_types.mkdir_p (Filename.dirname bank_path);
+    let bank_path = Masc_mcp.Keeper_types_support.keeper_memory_bank_path config keeper in
+    let (_ : string) = Keeper_fs.ensure_dir (Filename.dirname bank_path) in
     let progress_rows =
       List.init 3 (fun i ->
         memory_bank_test_row
@@ -1395,10 +1988,11 @@ let test_compaction_records_consolidation_metrics () =
     let compaction =
       Keeper_memory_bank.compact_memory_bank_if_needed config meta
     in
-    let compaction_reason =
-      Option.value ~default:"none" compaction.reason
+    let compaction_source_str =
+      Option.value ~default:"none"
+        (Option.map Masc_mcp.Keeper_memory_policy.compaction_source_to_string compaction.source)
     in
-    check bool (Printf.sprintf "compaction ran (%s)" compaction_reason)
+    check bool (Printf.sprintf "compaction ran (%s)" compaction_source_str)
       true compaction.performed;
     check (float 0.001) "progress consolidation generated"
       (generated_progress_before +. 1.0)
@@ -1433,8 +2027,8 @@ let test_compaction_runs_on_note_pressure_under_byte_trigger () =
     let keeper = "note-pressure-memory-keeper" in
     let config = make_test_room_config dir in
     let meta = keeper_meta ~name:keeper ~mention_targets:[ keeper ] () in
-    let bank_path = Keeper_types.keeper_memory_bank_path config keeper in
-    Keeper_types.mkdir_p (Filename.dirname bank_path);
+    let bank_path = Masc_mcp.Keeper_types_support.keeper_memory_bank_path config keeper in
+    let (_ : string) = Keeper_fs.ensure_dir (Filename.dirname bank_path) in
     let target_notes = Keeper_memory_bank.memory_compaction_target_notes () in
     let rows =
       List.init (target_notes + 1) (fun i ->
@@ -1456,8 +2050,13 @@ let test_compaction_runs_on_note_pressure_under_byte_trigger () =
       Keeper_memory_bank.compact_memory_bank_if_needed config meta
     in
     check bool "compaction ran from note pressure" true compaction.performed;
-    check (option string) "compaction reason" (Some "compacted")
-      compaction.reason;
+    check (option string) "compaction source"
+      (Some
+         (Masc_mcp.Keeper_memory_policy.compaction_source_to_string
+            Masc_mcp.Keeper_memory_policy.Memory_bank))
+      (Option.map
+         Masc_mcp.Keeper_memory_policy.compaction_source_to_string
+         compaction.source);
     check int "before notes" (target_notes + 1) compaction.before_notes;
     check int "after notes capped to target" target_notes compaction.after_notes;
     check int "one note dropped" 1 compaction.dropped_notes)
@@ -1486,6 +2085,22 @@ let () =
             test_load_history_user_messages;
           test_case "load_history_user_messages ignores internal prompt entries" `Quick
             test_load_history_user_messages_ignores_internal_prompt_entries;
+          test_case "load_history_user_messages_result Error on directory path" `Quick
+            test_load_history_user_messages_result_error_on_directory_path;
+          test_case "read_memory_horizon_counts_result Error on directory path" `Quick
+            test_read_memory_horizon_counts_result_error_on_directory_path;
+          test_case "read_recent_memory_texts_result Error on directory path" `Quick
+            test_read_recent_memory_texts_result_error_on_directory_path;
+          test_case "read_file_tail_lines_result reads tail without byte cap" `Quick
+            test_read_file_tail_lines_result_reads_tail_without_byte_cap;
+          test_case "read_file_tail_lines_result drops partial byte-cap line" `Quick
+            test_read_file_tail_lines_result_drops_partial_byte_cap_line;
+          test_case "read_file_tail_lines_result Ok on normal read" `Quick
+            test_read_file_tail_lines_result_ok_on_normal_read;
+          test_case "read_file_tail_lines_result Ok [] on missing file" `Quick
+            test_read_file_tail_lines_result_ok_empty_on_missing_file;
+          test_case "read_file_tail_lines_result Error on directory path" `Quick
+            test_read_file_tail_lines_result_error_on_directory_path;
           test_case "recall_candidates_with_history deduplicates" `Quick
             test_recall_candidates_with_history_dedup;
           test_case "recall_candidates_with_history appends history" `Quick
@@ -1540,6 +2155,8 @@ let () =
         [
           test_case "continuity prefers progress log" `Quick
             test_read_continuity_summary_prefers_progress_log;
+          test_case "continuity caps progress log" `Quick
+            test_read_continuity_summary_caps_progress_log;
           test_case "context status reports recovery source + tiers" `Quick
             test_keeper_context_status_reports_recovery_source_and_tiers;
           test_case "progress cache tracks generation" `Quick
@@ -1559,14 +2176,18 @@ let () =
             test_memory_search_bank_prefers_long_term_over_stale_short_term;
           test_case "empty bank returns no_match" `Quick
             test_memory_search_bank_empty;
+          test_case "malformed bank rows count read drops" `Quick
+            test_memory_search_bank_counts_read_drops;
           test_case "decision log append failure is observable" `Quick
             test_memory_search_decision_log_failure_is_observable;
           test_case "no matching query returns no_match" `Quick
             test_memory_search_bank_no_match;
-          test_case "source=history uses legacy search" `Quick
+          test_case "source=history searches history" `Quick
             test_memory_search_source_history;
           test_case "source=all merges bank and history" `Quick
             test_memory_search_source_all;
+          test_case "invalid source is rejected" `Quick
+            test_memory_search_invalid_source_rejected;
         ] );
       ( "memory_quality_filter",
         [
@@ -1602,6 +2223,18 @@ let () =
         [
           test_case "cap enforcement reports dropped_by_kind" `Quick test_cap_dropped_by_kind;
           test_case "total cap reports dropped_by_total_cap" `Quick test_cap_dropped_by_total;
+          test_case "LLM summary filters direct providers" `Quick
+            test_llm_summary_direct_provider_filter;
+          test_case "LLM summary requests plain text" `Quick
+            test_llm_summary_provider_caps_plain_text_request;
+          test_case "LLM summary prompt carries trace and notes" `Quick
+            test_llm_summary_messages_include_trace_and_notes;
+          test_case "keeper turn wires LLM memory summarizer" `Quick
+            test_keeper_agent_run_wires_memory_llm_summarizer;
+          test_case "consolidation uses opt-in summarizer" `Quick
+            test_consolidation_uses_opt_in_summarizer;
+          test_case "consolidation summarizer requires opt-in" `Quick
+            test_consolidation_summarizer_requires_opt_in;
           test_case "compaction records consolidation metrics" `Quick
             test_compaction_records_consolidation_metrics;
           test_case "note pressure triggers compaction under byte trigger" `Quick

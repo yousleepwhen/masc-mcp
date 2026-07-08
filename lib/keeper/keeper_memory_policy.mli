@@ -97,6 +97,18 @@ val empty_keeper_state_snapshot : keeper_state_snapshot
 (** All-empty snapshot used as a default when no [STATE] block was
     emitted. *)
 
+type compaction_source =
+  | Pre_dispatch_hygiene
+  | MASC_policy
+  | OAS_proactive
+  | OAS_emergency
+  | Memory_bank
+(** Closed-sum variant distinguishing which subsystem initiated a
+    compaction. Replaces the previous generic "compacted" string. *)
+
+val compaction_source_to_string : compaction_source -> string
+val compaction_source_of_string_opt : string -> compaction_source option
+
 (** {1 Memory bank entry types} *)
 
 type keeper_memory_line = {
@@ -118,7 +130,7 @@ type keeper_memory_summary = {
 
 type memory_bank_compaction = {
   performed : bool;
-  reason : string option;
+  source : compaction_source option;
   target_notes : int;
   before_notes : int;
   after_notes : int;
@@ -161,16 +173,10 @@ val memory_horizon_of_kind_opt : string -> string option
 (** Horizon for [kind], or [None] when [kind] is unknown.  Use this in
     silent-default contexts. *)
 
-val memory_horizon_of_kind : string -> string
-(** Horizon for [kind] with a typed fallback to [mid_term_horizon] for
-    unknown kinds. *)
-
 val memory_horizon_of_json_opt : Yojson.Safe.t -> string option
-val memory_horizon_of_json : kind:string -> Yojson.Safe.t -> string
 
 (** {1 [STATE] block parsing} *)
 
-val trim_nonempty : string -> string option
 (** [Some trimmed] when [text] is non-blank, else [None]. *)
 
 val split_state_items : string -> string list
@@ -210,6 +216,7 @@ val keeper_state_snapshot_to_summary_text : keeper_state_snapshot -> string
 val default_max_string_chars : int
 val default_max_list_items : int
 val default_max_item_chars : int
+val default_continuity_summary_max_chars : int
 
 val cap_string : max_chars:int -> string option -> string option
 (** Truncate to [max_chars]; [None] passes through. *)
@@ -224,6 +231,11 @@ val cap_snapshot :
   ?max_item_chars:int -> keeper_state_snapshot -> keeper_state_snapshot
 (** Apply per-field caps using the [default_max_*] values when none
     are supplied. *)
+
+val cap_continuity_summary_text : ?max_chars:int -> string -> string
+(** Trim and truncate rendered [continuity_summary] text. This final
+    shared cap is used by production and fallback consumption paths, so
+    legacy oversized summaries cannot bypass {!cap_snapshot}. *)
 
 (** {1 Prompt rendering} *)
 

@@ -2,28 +2,30 @@
 const { useState } = React;
 const _Wx = (props) => (window.WxHead ? React.createElement(window.WxHead, props) : null);
 const _useCol = (id) => (window.useCollapsed ? window.useCollapsed(id) : [false, () => {}]);
-const _isToggleKey = (e) => e.key === "Enter" || e.key === " " || e.key === "Spacebar";
-const _fromNestedControl = (e) =>
-  e.target !== e.currentTarget &&
-  e.target.closest &&
-  e.target.closest("a,button,input,textarea,select");
 
 const keeperTone = { "nick0cave":"brass", "masc-improver":"ok", "sangsu":"info", "qa-king":"err", "rama":"stalled", "scholar":"idle", "taskmaster":"idle", "velvet-hammer":"idle" };
 const statusColor = s => ({ running:"running", ok:"ok", pending:"info", fail:"err", stalled:"stalled", idle:"idle", queued:"queued", done:"done", active:"active" }[s] || "idle");
+const activateOnKey = (handler) => (e) => {
+  if (e.target !== e.currentTarget) return;
+  if (e.repeat) return;
+  if (e.key === "Enter" || e.key === " ") {
+    e.preventDefault();
+    handler();
+  }
+};
 
 // ============== Sidebar ==============
 // Section header — collapsible per-section, no outer wx-head wrapper
 function SideSectHead({ id, label, count, right, onCollapseAll, popoutId }) {
   const [col, toggle] = _useCol(id);
-  const onKeyDown = (e) => {
-    if (_fromNestedControl(e)) return;
-    if (_isToggleKey(e)) {
-      e.preventDefault();
-      toggle();
-    }
-  };
   return (
-    <div className="side-sect-h sx" onClick={toggle} onKeyDown={onKeyDown} role="button" tabIndex={0} aria-expanded={!col}>
+    <div
+      className="side-sect-h sx"
+      onClick={toggle}
+      onKeyDown={activateOnKey(toggle)}
+      role="button"
+      tabIndex={0}
+      aria-expanded={!col}>
       <span className="sx-chev">{col ? "▸" : "▾"}</span>
       <span className="sx-lbl">{label}</span>
       {count != null && <span className="count">{count}</span>}
@@ -55,18 +57,12 @@ function Sidebar({ keepers, goals, selKeeper, setSelKeeper, selGoal, setSelGoal,
       <aside
         className="side wx-collapsed"
         onClick={toggleSide}
-        onKeyDown={(e) => {
-          if (e.repeat) return;
-          if (_isToggleKey(e)) {
-            e.preventDefault();
-            toggleSide();
-          }
-        }}
+        onKeyDown={activateOnKey(toggleSide)}
         role="button"
         tabIndex={0}
-        title="expand sidebar"
-        aria-label="expand sidebar"
-        aria-expanded={!colSide}>
+        aria-label="Expand sidebar"
+        aria-expanded={false}
+        title="expand sidebar">
         <div className="wx-rail-vlabel">FLEET · GOALS</div>
       </aside>
     );
@@ -312,7 +308,7 @@ function Deck({ tasks, goals, providers, cascade }) {
               ))}
             </div>
             <div style={{font:"10px/1.5 var(--font-mono)",color:"var(--color-fg-muted)",paddingTop:4}}>
-              Triggered by <span style={{color:"var(--color-accent-fg)"}}>nick0cave</span> on <span style={{color:"var(--color-fg-primary)"}}>t-9f2a</span> · soft rate-limit on anthropic → fell through to moonshot at step 2 · kimi-k2 responded in 420ms.
+              Triggered by <span style={{color:"var(--color-accent-fg)"}}>nick0cave</span> on <span style={{color:"var(--color-fg-primary)"}}>t-9f2a</span> · soft rate-limit on provider-a → fell through to provider-b at step 2 · model-c responded in 420ms.
             </div>
           </div>
         )}
@@ -325,7 +321,7 @@ function Deck({ tasks, goals, providers, cascade }) {
   ↳ task=t-9f2a assigned to nick0cave
 
 > keeper.trace({ cascade: "cascade-3f19" })
-  ↳ anthropic[miss 820ms] → moonshot[hit 420ms] · total 1240ms
+  ↳ provider-a[miss 820ms] → provider-b[hit 420ms] · total 1240ms
 
 > keeper.verify("suite-merge-blockers")
   ↳ 3 FAIL / 47 PASS
@@ -341,15 +337,14 @@ function Deck({ tasks, goals, providers, cascade }) {
 // ============== Rail ==============
 function RailSectHead({ id, label, count, right, onCollapseAll, popoutId }) {
   const [col, toggle] = _useCol(id);
-  const onKeyDown = (e) => {
-    if (_fromNestedControl(e)) return;
-    if (_isToggleKey(e)) {
-      e.preventDefault();
-      toggle();
-    }
-  };
   return (
-    <div className="rail-sect-h sx" onClick={toggle} onKeyDown={onKeyDown} role="button" tabIndex={0} aria-expanded={!col}>
+    <div
+      className="rail-sect-h sx"
+      onClick={toggle}
+      onKeyDown={activateOnKey(toggle)}
+      role="button"
+      tabIndex={0}
+      aria-expanded={!col}>
       <span className="sx-chev">{col ? "▸" : "▾"}</span>
       <span className="sx-lbl">{label}</span>
       {count != null && <span className="count">{count}</span>}
@@ -381,18 +376,12 @@ function Rail({ events, cascade }) {
       <aside
         className="rail wx-collapsed"
         onClick={toggleRail}
-        onKeyDown={(e) => {
-          if (e.repeat) return;
-          if (_isToggleKey(e)) {
-            e.preventDefault();
-            toggleRail();
-          }
-        }}
+        onKeyDown={activateOnKey(toggleRail)}
         role="button"
         tabIndex={0}
-        title="expand activity rail"
-        aria-label="expand activity rail"
-        aria-expanded={!colRail}>
+        aria-label="Expand activity rail"
+        aria-expanded={false}
+        title="expand activity rail">
         <div className="wx-rail-vlabel">ACTIVITY · NUDGES</div>
       </aside>
     );

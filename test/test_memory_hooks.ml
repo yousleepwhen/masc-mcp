@@ -12,6 +12,10 @@ open Alcotest
 
 module Memory_oas_bridge = Masc_mcp.Memory_oas_bridge
 module Memory_hooks = Masc_mcp.Memory_hooks
+module Runtime_manifest = Masc_mcp.Keeper_runtime_manifest
+module Keeper_execution_receipt = Masc_mcp.Keeper_execution_receipt
+module Keeper_agent_tool_surface = Masc_mcp.Keeper_agent_tool_surface
+module Keeper_types = Masc_mcp.Keeper_types
 module P = Masc_mcp.Prometheus
 
 let test_base_path = Filename.temp_dir "masc_memory_hooks_base" ""
@@ -55,6 +59,48 @@ let make_before_turn_params_event ?(extra_ctx = None) ~turn () =
                        extra_system_context = extra_ctx };
     reasoning = Agent_sdk.Hooks.empty_reasoning_summary;
   }
+
+let make_after_turn_event ?(turn = 1) () =
+  Agent_sdk.Hooks.AfterTurn {
+    turn;
+    response = {
+      Agent_sdk.Types.id = "r1";
+      model = "test";
+      stop_reason = Agent_sdk.Types.EndTurn;
+      content = [];
+      usage = None;
+      telemetry = None;
+    };
+  }
+
+let manifest_context ?(keeper_turn_id = 11) () : Runtime_manifest.turn_context =
+  { manifest_keeper_name = "test_memory_hooks_keeper"
+  ; manifest_agent_name = Some "test_memory_hooks_agent"
+  ; manifest_trace_id = "trace-memory-hooks"
+  ; manifest_generation = Some 3
+  ; manifest_keeper_turn_id = Some keeper_turn_id
+  }
+
+let row_event row = Runtime_manifest.event_kind_to_string row.Runtime_manifest.event
+
+let json_int_member name json =
+  match Yojson.Safe.Util.member name json with
+  | `Int value -> value
+  | `Intlit raw -> Option.value ~default:0 (int_of_string_opt raw)
+  | _ -> 0
+
+let json_bool_member name json =
+  match Yojson.Safe.Util.member name json with
+  | `Bool value -> value
+  | _ -> false
+
+let require_manifest_event event rows =
+  match List.find_opt (fun row -> row.Runtime_manifest.event = event) rows with
+  | Some row -> row
+  | None ->
+    fail
+      ("missing manifest event: "
+       ^ Runtime_manifest.event_kind_to_string event)
 
 (* ── Pure read function tests ──────────────────────────────── *)
 
@@ -245,17 +291,7 @@ let test_after_turn_hook_returns_continue () =
     ~memory
     ()
   in
-  let event = Agent_sdk.Hooks.AfterTurn {
-    turn = 1;
-    response = {
-      Agent_sdk.Types.id = "r1";
-      model = "test";
-      stop_reason = Agent_sdk.Types.EndTurn;
-      content = [];
-      usage = None;
-      telemetry = None;
-    };
-  } in
+  let event = make_after_turn_event () in
   let decision = match hooks.after_turn with
     | Some f -> f event
     | None -> fail "after_turn hook should be Some"
@@ -272,7 +308,7 @@ let test_after_turn_flush_failure_still_continues () =
     [("callback", "memory_after_turn_flush")]
   in
   let before =
-    P.metric_value_or_zero P.metric_keeper_lifecycle_callback_failures
+    P.metric_value_or_zero Masc_mcp.Keeper_metrics.(to_string LifecycleCallbackFailures)
       ~labels ()
   in
   let memory_hooks =
@@ -297,17 +333,7 @@ let test_after_turn_flush_failure_still_continues () =
   let hooks =
     Memory_hooks.compose_with_inner ~memory_hooks ~inner:inner_hooks
   in
-  let event = Agent_sdk.Hooks.AfterTurn {
-    turn = 1;
-    response = {
-      Agent_sdk.Types.id = "r1";
-      model = "test";
-      stop_reason = Agent_sdk.Types.EndTurn;
-      content = [];
-      usage = None;
-      telemetry = None;
-    };
-  } in
+  let event = make_after_turn_event () in
   let decision =
     match hooks.after_turn with
     | Some f -> f event
@@ -317,10 +343,129 @@ let test_after_turn_flush_failure_still_continues () =
     (match decision with Agent_sdk.Hooks.Continue -> true | _ -> false);
   check bool "inner after_turn still ran" true !inner_seen;
   let after =
-    P.metric_value_or_zero P.metric_keeper_lifecycle_callback_failures
+    P.metric_value_or_zero Masc_mcp.Keeper_metrics.(to_string LifecycleCallbackFailures)
       ~labels ()
   in
   check (float 0.0001) "flush failure counted" (before +. 1.0) after;
+  (try Sys.rmdir tmp_dir with _ -> ())
+
+let test_after_turn_flush_records_pipeline_metrics () =
+  let tmp_dir = Filename.temp_dir "masc_test_mh" "" in
+  let config = make_test_config ~base_path:tmp_dir in
+  let memory = Memory_oas_bridge.create_memory ~agent_name:"test_pipeline" () in
+  let success_labels =
+    [ ("agent_name", "test_pipeline"); ("outcome", "success") ]
+  in
+  let episodic_labels =
+    [ ("agent_name", "test_pipeline"); ("tier", "episodic") ]
+  in
+  let procedural_labels =
+    [ ("agent_name", "test_pipeline"); ("tier", "procedural") ]
+  in
+  let before_flushes =
+    P.metric_value_or_zero P.metric_memory_pipeline_flushes
+      ~labels:success_labels ()
+  in
+  let before_duration_count =
+    P.metric_value_or_zero
+      (P.metric_memory_pipeline_flush_duration_seconds ^ "_count")
+      ~labels:success_labels ()
+  in
+  let before_episodes =
+    P.metric_value_or_zero P.metric_memory_pipeline_flush_records
+      ~labels:episodic_labels ()
+  in
+  let before_procedures =
+    P.metric_value_or_zero P.metric_memory_pipeline_flush_records
+      ~labels:procedural_labels ()
+  in
+  let hooks =
+    Memory_hooks.make
+      ~agent_name:"test_pipeline"
+      ~config
+      ~memory
+      ~flush_incremental:(fun ~memory:_ ~agent_name:_ -> (2, 3))
+      ()
+  in
+  let decision =
+    match hooks.after_turn with
+    | Some f -> f (make_after_turn_event ())
+    | None -> fail "after_turn hook should be Some"
+  in
+  check bool "after_turn returns Continue" true
+    (match decision with Agent_sdk.Hooks.Continue -> true | _ -> false);
+  check (float 0.0001) "success flush counted" (before_flushes +. 1.0)
+    (P.metric_value_or_zero P.metric_memory_pipeline_flushes
+       ~labels:success_labels ());
+  check (float 0.0001) "duration observation counted"
+    (before_duration_count +. 1.0)
+    (P.metric_value_or_zero
+       (P.metric_memory_pipeline_flush_duration_seconds ^ "_count")
+       ~labels:success_labels ());
+  check (float 0.0001) "episodic records counted" (before_episodes +. 2.0)
+    (P.metric_value_or_zero P.metric_memory_pipeline_flush_records
+       ~labels:episodic_labels ());
+  check (float 0.0001) "procedural records counted"
+    (before_procedures +. 3.0)
+    (P.metric_value_or_zero P.metric_memory_pipeline_flush_records
+       ~labels:procedural_labels ());
+  (try Sys.rmdir tmp_dir with _ -> ())
+
+let test_memory_hooks_emit_runtime_manifest_rows () =
+  let tmp_dir = Filename.temp_dir "masc_test_mh" "" in
+  let config = make_test_config ~base_path:tmp_dir in
+  let memory = Agent_sdk.Memory.create () in
+  ignore
+    (Agent_sdk.Memory.store
+       memory
+       ~tier:Agent_sdk.Memory.Long_term
+       "world:manifest"
+       (`Assoc [ "content", `String "Memory hook manifest evidence." ]));
+  let rows = ref [] in
+  let hooks =
+    Memory_hooks.make
+      ~agent_name:"test_manifest"
+      ~config
+      ~memory
+      ~flush_incremental:(fun ~memory:_ ~agent_name:_ -> (2, 1))
+      ~runtime_manifest_context:(manifest_context ())
+      ~runtime_manifest_append:(fun row -> rows := row :: !rows)
+      ()
+  in
+  let before_decision =
+    match hooks.before_turn_params with
+    | Some f -> f (make_before_turn_params_event ~turn:4 ())
+    | None -> fail "before_turn_params hook should be Some"
+  in
+  (match before_decision with
+   | Agent_sdk.Hooks.AdjustParams _ -> ()
+   | _ -> fail "world memory should adjust params");
+  let after_decision =
+    match hooks.after_turn with
+    | Some f -> f (make_after_turn_event ~turn:4 ())
+    | None -> fail "after_turn hook should be Some"
+  in
+  check bool "after_turn returns Continue" true
+    (match after_decision with Agent_sdk.Hooks.Continue -> true | _ -> false);
+  let rows = List.rev !rows in
+  check (list string)
+    "memory manifest events"
+    [ "memory_injected"; "memory_flushed" ]
+    (List.map row_event rows);
+  let injected = require_manifest_event Runtime_manifest.Memory_injected rows in
+  check (option int) "injected keeper turn" (Some 11) injected.keeper_turn_id;
+  check (option int) "injected OAS turn" (Some 4) injected.oas_turn_count;
+  check string "injected status" "injected" injected.status;
+  check bool "memory context present" true
+    (json_bool_member "memory_context_present" injected.decision);
+  check bool "memory context chars recorded" true
+    (json_int_member "memory_context_chars" injected.decision > 0);
+  let flushed = require_manifest_event Runtime_manifest.Memory_flushed rows in
+  check string "flush status" "success" flushed.status;
+  check int "episodes flushed" 2
+    (json_int_member "episodes_flushed" flushed.decision);
+  check int "procedures flushed" 1
+    (json_int_member "procedures_flushed" flushed.decision);
   (try Sys.rmdir tmp_dir with _ -> ())
 
 (* ── Flush idempotency test ────────────────────────────────── *)
@@ -356,6 +501,220 @@ let test_hook_slots_populated () =
   check bool "on_error is None" true (Option.is_none hooks.on_error);
   (try Sys.rmdir tmp_dir with _ -> ())
 
+(* ── Memory injection recording tests (OAS checklist #3) ──────── *)
+
+let triple a b c =
+  let pp fmt (x, y, z) =
+    Format.fprintf fmt "(%a, %a, %a)" (Alcotest.pp a) x (Alcotest.pp b) y (Alcotest.pp c) z
+  in
+  let equal (x1, y1, z1) (x2, y2, z2) =
+    Alcotest.equal a x1 x2 && Alcotest.equal b y1 y2 && Alcotest.equal c z1 z2
+  in
+  Alcotest.testable pp equal
+
+let test_record_and_get_last_memory_injection () =
+  Memory_hooks.record_last_memory_injection "agent_a" "digest123" 400 456;
+  let result = Memory_hooks.get_last_memory_injection "agent_a" in
+  check (option (triple string int int)) "retrieves recorded injection"
+    (Some ("digest123", 400, 456)) result
+
+let test_get_last_memory_injection_returns_none_when_missing () =
+  let result = Memory_hooks.get_last_memory_injection "unknown_agent_xyz" in
+  check (option (triple string int int)) "returns None for unknown agent" None result
+
+let test_record_last_memory_injection_overwrites () =
+  Memory_hooks.record_last_memory_injection "agent_b" "first" 100 150;
+  Memory_hooks.record_last_memory_injection "agent_b" "second" 200 250;
+  let result = Memory_hooks.get_last_memory_injection "agent_b" in
+  check (option (triple string int int)) "overwrites previous injection"
+    (Some ("second", 200, 250)) result
+
+let test_clear_last_memory_injection () =
+  Memory_hooks.record_last_memory_injection "agent_clear" "digest" 100 123;
+  Memory_hooks.clear_last_memory_injection "agent_clear";
+  let result = Memory_hooks.get_last_memory_injection "agent_clear" in
+  check (option (triple string int int)) "cleared" None result
+
+let test_memory_injection_cleared_on_continue () =
+  let tmp_dir = Filename.temp_dir "masc_test_mh" "" in
+  let config = make_test_config ~base_path:tmp_dir in
+  let memory = Memory_oas_bridge.create_memory ~agent_name:"test_clear" () in
+  let hooks = Memory_hooks.make
+    ~agent_name:"test_clear"
+    ~config
+    ~memory
+    ()
+  in
+  let event = make_before_turn_params_event ~turn:1 () in
+  let decision = match hooks.before_turn_params with
+    | Some f -> f event
+    | None -> fail "before_turn_params hook should be Some"
+  in
+  (match decision with
+   | Agent_sdk.Hooks.Continue ->
+     let result = Memory_hooks.get_last_memory_injection "test_clear" in
+     check (option (triple string int int)) "cleared on Continue" None result
+   | Agent_sdk.Hooks.AdjustParams _ ->
+     let result = Memory_hooks.get_last_memory_injection "test_clear" in
+     check bool "has entry after AdjustParams" true (Option.is_some result);
+     let event2 = make_before_turn_params_event ~turn:2 () in
+     let decision2 = match hooks.before_turn_params with
+       | Some f -> f event2
+       | None -> fail "before_turn_params hook should be Some"
+     in
+     (match decision2 with
+      | Agent_sdk.Hooks.Continue ->
+        let result2 = Memory_hooks.get_last_memory_injection "test_clear" in
+        check (option (triple string int int)) "cleared on second Continue" None result2
+      | _ -> ())
+   | _ -> fail "unexpected decision");
+  (try Sys.rmdir tmp_dir with _ -> ())
+
+let test_execution_receipt_json_includes_memory_fields () =
+  let receipt : Keeper_execution_receipt.t =
+    { keeper_name = "test_keeper"
+    ; agent_name = "test_agent"
+    ; trace_id = "trace-abc"
+    ; generation = 1
+    ; turn_count = Some 1
+    ; oas_turn_count = None
+    ; oas_dispatch_mode = None
+    ; oas_internal_cascade_disabled = false
+    ; current_task_id = None
+    ; goal_ids = []
+    ; outcome = `Ok
+    ; terminal_reason_code = "test"
+    ; response_text_present = false
+    ; model_used = None
+    ; requested_tools = []
+    ; reported_tools = []
+    ; observed_tools = []
+    ; canonical_tools = []
+    ; unexpected_tools = []
+    ; tools_used = []
+    ; tool_contract_result = Keeper_execution_receipt.Contract_not_dispatched
+    ; tool_surface =
+        { turn_lane = Keeper_agent_tool_surface.Lane_pre_dispatch
+        ; tool_surface_class = Keeper_agent_tool_surface.Surface_none
+        ; tool_requirement = No_tools
+        ; visible_tool_count = 0
+        ; tool_gate_enabled = false
+        ; tool_surface_fallback_used = false
+        ; required_tools = []
+        ; required_tool_candidates = []
+        ; missing_required_tools = []
+        ; materialized_tools = []
+        }
+    ; sandbox_kind = Keeper_types.Local
+    ; sandbox_root = None
+    ; network_mode = Keeper_types.Network_none
+    ; approval_profile = None
+    ; approval_profile_derived = false
+    ; cascade_name = Cascade_name.of_string_exn "test"
+    ; cascade_selected_model = None
+    ; cascade_attempt_count = 0
+    ; cascade_fallback_applied = false
+    ; cascade_outcome = Keeper_execution_receipt.Cascade_not_dispatched
+    ; degraded_retry_applied = false
+    ; degraded_retry_cascade = None
+    ; fallback_reason = None
+    ; cascade_rotation_attempts = []
+    ; stop_reason = None
+    ; error_kind = None
+    ; error_message = None
+    ; started_at = "2024-01-01T00:00:00Z"
+    ; ended_at = "2024-01-01T00:00:01Z"
+    ; extra_system_context_digest = Some "sha256:abc123"
+    ; extra_system_context_injected_size = Some 789
+    ; extra_system_context_computed_size = Some 400
+    ; pre_dispatch_compacted = false
+    ; pre_dispatch_compaction_trigger = None
+    ; pre_dispatch_compaction_before_tokens = None
+    ; pre_dispatch_compaction_after_tokens = None
+    ; oas_internal_cascade_allowed = false
+    }
+  in
+  let json = Keeper_execution_receipt.to_json receipt in
+  let digest = Yojson.Safe.Util.(member "extra_system_context_digest" json) in
+  let size = Yojson.Safe.Util.(member "extra_system_context_injected_size" json) in
+  let computed = Yojson.Safe.Util.(member "extra_system_context_computed_size" json) in
+  check string "extra_system_context_digest in JSON" "sha256:abc123"
+    (match digest with `String s -> s | _ -> "");
+  check int "extra_system_context_injected_size in JSON" 789
+    (match size with `Int n -> n | `Intlit s -> int_of_string s | _ -> 0);
+  check int "extra_system_context_computed_size in JSON" 400
+    (match computed with `Int n -> n | `Intlit s -> int_of_string s | _ -> 0)
+
+let test_execution_receipt_json_null_when_missing () =
+  let receipt : Keeper_execution_receipt.t =
+    { keeper_name = "test_keeper"
+    ; agent_name = "test_agent"
+    ; trace_id = "trace-abc"
+    ; generation = 1
+    ; turn_count = Some 1
+    ; oas_turn_count = None
+    ; oas_dispatch_mode = None
+    ; oas_internal_cascade_disabled = false
+    ; current_task_id = None
+    ; goal_ids = []
+    ; outcome = `Ok
+    ; terminal_reason_code = "test"
+    ; response_text_present = false
+    ; model_used = None
+    ; requested_tools = []
+    ; reported_tools = []
+    ; observed_tools = []
+    ; canonical_tools = []
+    ; unexpected_tools = []
+    ; tools_used = []
+    ; tool_contract_result = Keeper_execution_receipt.Contract_not_dispatched
+    ; tool_surface =
+        { turn_lane = Keeper_agent_tool_surface.Lane_pre_dispatch
+        ; tool_surface_class = Keeper_agent_tool_surface.Surface_none
+        ; tool_requirement = No_tools
+        ; visible_tool_count = 0
+        ; tool_gate_enabled = false
+        ; tool_surface_fallback_used = false
+        ; required_tools = []
+        ; required_tool_candidates = []
+        ; missing_required_tools = []
+        ; materialized_tools = []
+        }
+    ; sandbox_kind = Keeper_types.Local
+    ; sandbox_root = None
+    ; network_mode = Keeper_types.Network_none
+    ; approval_profile = None
+    ; approval_profile_derived = false
+    ; cascade_name = Cascade_name.of_string_exn "test"
+    ; cascade_selected_model = None
+    ; cascade_attempt_count = 0
+    ; cascade_fallback_applied = false
+    ; cascade_outcome = Keeper_execution_receipt.Cascade_not_dispatched
+    ; degraded_retry_applied = false
+    ; degraded_retry_cascade = None
+    ; fallback_reason = None
+    ; cascade_rotation_attempts = []
+    ; stop_reason = None
+    ; error_kind = None
+    ; error_message = None
+    ; started_at = "2024-01-01T00:00:00Z"
+    ; ended_at = "2024-01-01T00:00:01Z"
+    ; extra_system_context_digest = None
+    ; extra_system_context_injected_size = None
+    ; extra_system_context_computed_size = None
+    ; pre_dispatch_compacted = false
+    ; pre_dispatch_compaction_trigger = None
+    ; pre_dispatch_compaction_before_tokens = None
+    ; pre_dispatch_compaction_after_tokens = None
+    ; oas_internal_cascade_allowed = false
+    }
+  in
+  let json = Keeper_execution_receipt.to_json receipt in
+  let digest = Yojson.Safe.Util.(member "extra_system_context_digest" json) in
+  let size = Yojson.Safe.Util.(member "extra_system_context_injected_size" json) in
+  check bool "extra_system_context_digest is Null" true (digest = `Null);
+  check bool "extra_system_context_injected_size is Null" true (size = `Null)
+
 (* ── Test suite ────────────────────────────────────────────── *)
 
 let () =
@@ -371,8 +730,12 @@ let () =
       test_case "composition preserves inner before_turn_params" `Quick
         test_compose_preserves_inner_before_turn_params;
       test_case "after_turn returns Continue" `Quick test_after_turn_hook_returns_continue;
+      test_case "after_turn records pipeline metrics" `Quick
+        test_after_turn_flush_records_pipeline_metrics;
       test_case "after_turn flush failure still continues" `Quick
         test_after_turn_flush_failure_still_continues;
+      test_case "runtime manifest rows emitted" `Quick
+        test_memory_hooks_emit_runtime_manifest_rows;
     ];
     "hook_structure", [
       test_case "hook slots populated correctly" `Quick test_hook_slots_populated;
@@ -382,5 +745,16 @@ let () =
     ];
     "feature_flag", [
       test_case "flag removed (Phase 2)" `Quick test_feature_flag_removed;
+    ];
+    "memory_injection_record", [
+      test_case "record and get last injection" `Quick test_record_and_get_last_memory_injection;
+      test_case "get returns None when missing" `Quick test_get_last_memory_injection_returns_none_when_missing;
+      test_case "record overwrites previous" `Quick test_record_last_memory_injection_overwrites;
+      test_case "clear last injection" `Quick test_clear_last_memory_injection;
+      test_case "cleared on Continue branch" `Quick test_memory_injection_cleared_on_continue;
+    ];
+    "execution_receipt_json", [
+      test_case "includes memory fields in JSON" `Quick test_execution_receipt_json_includes_memory_fields;
+      test_case "emits Null when memory fields absent" `Quick test_execution_receipt_json_null_when_missing;
     ];
   ]

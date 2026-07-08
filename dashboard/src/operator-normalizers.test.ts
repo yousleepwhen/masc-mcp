@@ -118,7 +118,7 @@ describe('normalizeOperatorDigest', () => {
     })
     expect(result.operator_judge_runtime).not.toBeNull()
     expect(result.operator_judge_runtime!.enabled).toBe(true)
-    expect(result.operator_judge_runtime!.model_used).toBe('gpt-4')
+    expect(result.operator_judge_runtime!.model_used).toBeNull()
   })
 
   it('returns null operator_judge_runtime for invalid input', () => {
@@ -134,11 +134,15 @@ describe('normalizeOperatorDigest', () => {
         surface: 'operator',
         status: 'complete',
         confidence: 0.85,
+        model_name: 'gpt-4.1',
+        runtime_name: 'provider-d',
       },
     })
     expect(result.judgment).not.toBeNull()
     expect(result.judgment!.surface).toBe('operator')
     expect(result.judgment!.confidence).toBe(0.85)
+    expect(result.judgment!.model_name).toBeNull()
+    expect(result.judgment!.runtime_name).toBe('runtime')
   })
 
   it('extracts active_guidance_layer and active_summary', () => {
@@ -227,13 +231,25 @@ describe('normalizeOperatorSnapshot', () => {
   it('extracts keepers with valid name', () => {
     const result = normalizeOperatorSnapshot({
       keepers: [
-        { name: 'janitor', status: 'Running', generation: 10 },
+        {
+          name: 'janitor',
+          status: 'Running',
+          phase: 'paused',
+          pipeline_stage: 'paused',
+          paused: true,
+          generation: 10,
+          active_model: 'agent-llm-a-sonnet',
+        },
         { name: 'dreamer', status: 'Idle' },
       ],
     })
     expect(result.keepers).toHaveLength(2)
     expect(result.keepers[0]!.name).toBe('janitor')
+    expect(result.keepers[0]!.phase).toBe('paused')
+    expect(result.keepers[0]!.pipeline_stage).toBe('paused')
+    expect(result.keepers[0]!.paused).toBe(true)
     expect(result.keepers[0]!.generation).toBe(10)
+    expect(result.keepers[0]!.model).toBe('runtime')
   })
 
   it('preserves keeper runtime_trust terminal reason fields', () => {
@@ -248,6 +264,7 @@ describe('normalizeOperatorSnapshot', () => {
             execution: {
               tool_contract_result: 'violated',
               missing_required_tools: ['masc_board_post'],
+              provider_selected_model: 'provider:runtime-lane',
             },
             latest_terminal_reason: {
               code: 'required_tool_use_unsatisfied',
@@ -266,6 +283,7 @@ describe('normalizeOperatorSnapshot', () => {
       execution_summary: {
         tool_contract_result: 'violated',
         missing_required_tools: ['masc_board_post'],
+        provider_selected_model: 'provider:runtime-lane',
       },
       latest_terminal_reason: {
         code: 'required_tool_use_unsatisfied',
@@ -304,29 +322,29 @@ describe('normalizeOperatorSnapshot', () => {
     expect(result.keepers).toEqual([])
   })
 
-  it('preserves keeper runtime_trust and stopped-reaction attention fields', () => {
+  it('preserves keeper runtime_trust and owner-specific stopped-reaction attention fields', () => {
     const result = normalizeOperatorSnapshot({
       keepers: [
         {
           name: 'blocked-keeper',
           status: 'active',
           needs_attention: true,
-          attention_reason: 'timeout_budget_exhausted',
-          next_human_action: 'inspect_timeout_budget',
+          attention_reason: 'turn_timeout',
+          next_human_action: 'inspect_runtime_blocker',
           runtime_trust: {
             disposition: 'Alert',
             operator_disposition: 'pause_runtime',
-            operator_disposition_reason: 'timeout_budget_exhausted',
+            operator_disposition_reason: 'turn_timeout',
             needs_attention: true,
-            attention_reason: 'timeout_budget_exhausted',
+            attention_reason: 'turn_timeout',
             latest_terminal_reason: {
-              code: 'timeout_budget_exhausted',
+              code: 'turn_timeout',
               source: 'execution_receipt',
               severity: 'bad',
-              summary: 'Turn budget exhausted after 15 turns',
-              next_action: 'inspect_timeout_budget',
+              summary: 'Turn execution exceeded the keeper turn deadline',
+              next_action: 'inspect_runtime_blocker',
             },
-            latest_next_action: 'inspect_timeout_budget',
+            latest_next_action: 'inspect_runtime_blocker',
           },
         },
       ],
@@ -334,20 +352,20 @@ describe('normalizeOperatorSnapshot', () => {
     expect(result.keepers).toHaveLength(1)
     const keeper = result.keepers[0]!
     expect(keeper.needs_attention).toBe(true)
-    expect(keeper.attention_reason).toBe('timeout_budget_exhausted')
-    expect(keeper.next_human_action).toBe('inspect_timeout_budget')
+    expect(keeper.attention_reason).toBe('turn_timeout')
+    expect(keeper.next_human_action).toBe('inspect_runtime_blocker')
     expect(keeper.runtime_trust).toMatchObject({
       disposition: 'Alert',
       operator_disposition: 'pause_runtime',
-      operator_disposition_reason: 'timeout_budget_exhausted',
+      operator_disposition_reason: 'turn_timeout',
       needs_attention: true,
       latest_terminal_reason: {
-        code: 'timeout_budget_exhausted',
+        code: 'turn_timeout',
         severity: 'bad',
-        summary: 'Turn budget exhausted after 15 turns',
-        next_action: 'inspect_timeout_budget',
+        summary: 'Turn execution exceeded the keeper turn deadline',
+        next_action: 'inspect_runtime_blocker',
       },
-      latest_next_action: 'inspect_timeout_budget',
+      latest_next_action: 'inspect_runtime_blocker',
     })
   })
 

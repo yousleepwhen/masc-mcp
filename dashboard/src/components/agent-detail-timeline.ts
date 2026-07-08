@@ -3,14 +3,16 @@
 
 import { html } from 'htm/preact'
 import { signal } from '@preact/signals'
-import { Card } from './common/card'
-import { EmptyState } from './common/empty-state'
+import { CollapsibleSection } from './common/collapsible'
+import { EmptyState } from './common/feedback-state'
 import { TimeAgo } from './common/time-ago'
 import { FilterChips } from './common/filter-chips'
 import { TextInput } from './common/input'
+import { DashboardFeedSourceStrip } from './common/dashboard-feed-source-strip'
 import { agentTimeline } from './agent-detail-state'
 import { trimText } from '../lib/truncate'
-import { toolCategory, durationColor, formatDuration, formatArgs } from './tool-call-shared'
+import { formatMsCompact } from '../lib/format-number'
+import { toolCategory, durationColor, formatArgs } from './tool-call-shared'
 import type { AgentTimelineEvent } from '../api'
 
 function timelineEventIcon(type: string): string {
@@ -110,7 +112,7 @@ function ToolCallEventRow({ evt, idx }: { evt: AgentTimelineEvent; idx: number }
         <span class="text-xs font-mono font-medium ${cat.color} truncate max-w-50" title=${toolName}>${toolName}</span>
         <span class="text-3xs px-1 py-0.5 rounded-[var(--r-1)] bg-[var(--color-bg-elevated)] text-[var(--color-fg-disabled)]">${cat.label}</span>
         ${durationMs != null
-          ? html`<span class="text-2xs font-mono ${durationColor(durationMs)}">${formatDuration(durationMs)}</span>`
+          ? html`<span class="text-2xs font-mono ${durationColor(durationMs)}">${formatMsCompact(durationMs)}</span>`
           : null}
         ${success
           ? html`<span class="text-3xs px-1 py-0.5 rounded-[var(--r-1)] bg-[var(--ok-soft)] text-[var(--color-status-ok)]">ok</span>`
@@ -145,7 +147,7 @@ export function AgentTimelineSection() {
   const filterActive = activeCategory !== 'all' || query.trim() !== ''
 
   return html`
-    <${Card} title="활동 타임라인 (${summary?.total_events ?? 0}건)">
+    <${CollapsibleSection} title=${`활동 타임라인 (${summary?.total_events ?? 0})`} mountWhenOpen=${true}>
       ${summary ? html`
         <div class="flex gap-1.5 flex-wrap mb-2">
           ${summary.tasks_completed > 0 ? html`<${SummaryBadge}>완료 ${summary.tasks_completed}<//>` : null}
@@ -155,6 +157,7 @@ export function AgentTimelineSection() {
           ${summary.active_duration_minutes > 0 ? html`<${SummaryBadge}>${Math.round(summary.active_duration_minutes)}분 활동<//>` : null}
         </div>
       ` : null}
+      <${DashboardFeedSourceStrip} meta=${timeline} className="mb-2" />
       ${events.length === 0
         ? html`<${EmptyState} message="작업 기록이 아직 없습니다" compact />`
         : html`

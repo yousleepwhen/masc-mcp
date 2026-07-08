@@ -18,7 +18,7 @@ vi.mock('../../lib/keeper-runtime-display', () => ({
   keeperActivityDisplay: (...args: Parameters<typeof mockKeeperActivityDisplay>) => mockKeeperActivityDisplay(...args),
 }))
 
-vi.mock('../mission-utils', () => ({
+vi.mock('../../lib/format-time', () => ({
   formatDuration: (...args: Parameters<typeof mockFormatDuration>) => mockFormatDuration(...args),
 }))
 
@@ -45,7 +45,7 @@ describe('AgentRuntimeStrip', () => {
 
   it('renders pipeline stage badge', () => {
     mockFindKeeper.mockReturnValue({
-      pipeline_stage: 'thinking',
+      pipeline_stage: 'compacting',
       context_ratio: null,
       generation: null,
     })
@@ -53,7 +53,8 @@ describe('AgentRuntimeStrip', () => {
     mockKeeperActivityDisplay.mockReturnValue({ ageSeconds: null, label: '' })
     const container = document.createElement('div')
     render(h(AgentRuntimeStrip, { name: 'Alpha' }), container)
-    expect(container.textContent).toContain('thinking')
+    // STAGES short label for `compacting` is `compact`.
+    expect(container.textContent).toContain('compact')
   })
 
   it('renders context ratio bar when present', () => {
@@ -93,12 +94,12 @@ describe('AgentRuntimeStrip', () => {
       context_ratio: null,
       generation: null,
     })
-    mockKeeperDisplayModel.mockReturnValue({ label: 'Model', value: 'claude-4' })
+    mockKeeperDisplayModel.mockReturnValue({ label: 'Model', value: 'agent-llm-a-4' })
     mockKeeperActivityDisplay.mockReturnValue({ ageSeconds: null, label: '' })
     const container = document.createElement('div')
     render(h(AgentRuntimeStrip, { name: 'Alpha' }), container)
     expect(container.textContent).toContain('Model')
-    expect(container.textContent).toContain('claude-4')
+    expect(container.textContent).toContain('agent-llm-a-4')
   })
 
   it('renders activity when ageSeconds present', () => {

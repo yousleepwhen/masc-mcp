@@ -20,11 +20,7 @@ let with_env name value_opt f =
 let with_isolated_runtime_env f =
   with_env "MASC_BASE_PATH" None (fun () ->
     with_env "MASC_BASE_PATH_INPUT" None (fun () ->
-      with_env "MASC_STORAGE_TYPE" None (fun () ->
-        with_env "MASC_POSTGRES_URL" None (fun () ->
-          with_env "DATABASE_URL" None (fun () ->
-            with_env "SUPABASE_DB_URL" None (fun () ->
-              with_env "SB_PG_URL" None f))))))
+      with_env "MASC_STORAGE_TYPE" None f))
 
 let make_ctx base_path =
   let config = Coord.default_config base_path in
@@ -46,8 +42,8 @@ let run_transition ctx ~task_id ~action ?(notes = "") () =
       ]
   in
   match Tool_task.dispatch ctx ~name:"masc_transition" ~args with
-  | Some (true, _) -> ()
-  | Some (false, msg) -> Alcotest.fail msg
+  | Some result ->
+      if not (Tool_result.is_success result) then Alcotest.fail ((Tool_result.message result))
   | None -> Alcotest.fail "masc_transition dispatch returned None"
 
 let event_exists predicate config =
@@ -68,10 +64,10 @@ let test_masc_transition_claim_done_emits_task_lifecycle () =
     in
     Unix.mkdir base_path 0o755;
     let ctx = make_ctx base_path in
-    let ok, result =
-      Tool_task.handle_add_task ctx (`Assoc [ ("title", `String "Telemetry task") ])
+    let result =
+      Tool_task.handle_add_task ~tool_name:"test_tool" ~start_time:0.0 ctx (`Assoc [ ("title", `String "Telemetry task") ])
     in
-    if not ok then Alcotest.fail result;
+    if not (Tool_result.is_success result) then Alcotest.fail (Tool_result.message result);
     run_transition ctx ~task_id:"task-001" ~action:"claim" ();
     run_transition ctx ~task_id:"task-001" ~action:"done"
       ~notes:"Telemetry lifecycle regression proof completed." ();

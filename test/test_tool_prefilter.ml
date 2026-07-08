@@ -55,16 +55,13 @@ let essential_tools = [
 let extended_tools =
   essential_tools
   @ [
-    make_schema "masc_code_search"
+    make_schema "tool_search_files"
       "Search for symbols and patterns across the codebase.";
-    make_schema "masc_code_read"
+    make_schema "tool_read_file"
       "Read the contents of a source file.";
-    make_schema "masc_autoresearch_start"
-      "Start an automated research cycle.";
-
-    make_schema "masc_worktree_create"
+    make_schema "tool_execute"
       "Create a new git worktree for an isolated branch.";
-    make_schema "masc_worktree_list"
+    make_schema "tool_execute"
       "List all active git worktrees.";
     make_schema "masc_agent_card"
       "Retrieve the agent card and profile information.";
@@ -148,27 +145,20 @@ let test_synonym_claim_next () =
 let test_synonym_code_search () =
   let result = Tool_prefilter.filter
     ~tools:extended_tools ~query:"search the codebase for a symbol" ~k:3 in
-  check bool "synonym: masc_code_search via 'codebase search'" true
-    (has_tool "masc_code_search" result)
+  check bool "synonym: tool_search_files via 'codebase search'" true
+    (has_tool "tool_search_files" result)
 
 let test_synonym_code_read () =
   let result = Tool_prefilter.filter
     ~tools:extended_tools ~query:"read source file contents" ~k:3 in
-  check bool "synonym: masc_code_read via 'read source'" true
-    (has_tool "masc_code_read" result)
-
-let test_synonym_autoresearch_start () =
-  let result = Tool_prefilter.filter
-    ~tools:extended_tools ~query:"begin auto research" ~k:3 in
-  check bool "synonym: masc_autoresearch_start via 'begin research'" true
-    (has_tool "masc_autoresearch_start" result)
-
+  check bool "synonym: tool_read_file via 'read source'" true
+    (has_tool "tool_read_file" result)
 
 let test_synonym_worktree_create () =
   let result = Tool_prefilter.filter
     ~tools:extended_tools ~query:"create a new worktree" ~k:3 in
-  check bool "synonym: masc_worktree_create via 'create worktree'" true
-    (has_tool "masc_worktree_create" result)
+  check bool "synonym: tool_execute via 'create worktree'" true
+    (has_tool "tool_execute" result)
 
 let test_synonym_web_search () =
   let result = Tool_prefilter.filter
@@ -270,8 +260,6 @@ let () =
           test_case "claim_next via synonym" `Quick test_synonym_claim_next;
           test_case "code_search via synonym" `Quick test_synonym_code_search;
           test_case "code_read via synonym" `Quick test_synonym_code_read;
-          test_case "autoresearch_start via synonym" `Quick test_synonym_autoresearch_start;
-
           test_case "worktree_create via synonym" `Quick test_synonym_worktree_create;
           test_case "web_search via synonym" `Quick test_synonym_web_search;
         ] );

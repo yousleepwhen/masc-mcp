@@ -41,6 +41,26 @@ let test_run_argv_with_status_fallback_includes_stderr_on_failure () =
   check bool "fallback stderr surfaced in output" true
     (contains output "stderr-fallback")
 
+let test_spawn_guard_wraps_foreground_run_argv () =
+  Process_eio.reset_for_testing ();
+  let calls = Atomic.make 0 in
+  Process_eio.set_spawn_guard
+    { Process_eio.run =
+        (fun f ->
+          Atomic.incr calls;
+          f ())
+    };
+  Fun.protect
+    ~finally:Process_eio.reset_spawn_guard_for_testing
+    (fun () ->
+      let status, output =
+        Process_eio.run_argv_with_status [ "/bin/echo"; "guarded" ]
+      in
+      let code = match status with Unix.WEXITED c -> c | _ -> 1 in
+      check int "guarded command exit code" 0 code;
+      check string "guarded command output" "guarded" (String.trim output);
+      check int "spawn guard called once" 1 (Atomic.get calls))
+
 let test_run_argv_with_stdin_fallback_preserves_input () =
   let output =
     Process_eio.run_argv_with_stdin ~stdin_content:"ping\n" [ "/bin/cat" ]
@@ -78,8 +98,8 @@ let with_timeout_observer f =
   let previous = Atomic.get Process_eio.process_timeout_observer_fn in
   let seen = ref [] in
   Atomic.set Process_eio.process_timeout_observer_fn
-    (fun ~program ~timeout_sec ->
-       seen := (program, timeout_sec) :: !seen);
+    (fun ~program ~timeout_sec ~origin ->
+       seen := (program, timeout_sec, Timeout_origin.to_label origin) :: !seen);
   Fun.protect
     ~finally:(fun () ->
       Atomic.set Process_eio.process_timeout_observer_fn previous)
@@ -93,10 +113,12 @@ let test_run_argv_with_status_fallback_observes_timeout () =
       in
       let code = match status with Unix.WEXITED c -> c | _ -> -1 in
       check int "fallback timeout exit code" 124 code;
+      (* Unix fallback runs after [create_process_env] returns, so the
+         stage is always [command]. *)
       check
-        (list (pair string (float 0.0001)))
+        (list (triple string (float 0.0001) string))
         "fallback timeout observer payload"
-        [ ("sleep", 0.02) ]
+        [ ("sleep", 0.02, "command") ]
         (List.rev !seen))
 
 let test_init_exposes_complete_runtime () =
@@ -240,6 +262,8 @@ let () =
           test_case "argv-with-status-fallback-includes-stderr-on-failure"
             `Quick
             test_run_argv_with_status_fallback_includes_stderr_on_failure;
+          test_case "spawn-guard-wraps-foreground-run-argv" `Quick
+            test_spawn_guard_wraps_foreground_run_argv;
           test_case "argv-with-stdin-fallback-preserves-input" `Quick
             test_run_argv_with_stdin_fallback_preserves_input;
           test_case "argv-fallback-surfaces-spawn-error" `Quick

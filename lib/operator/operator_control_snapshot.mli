@@ -20,8 +20,8 @@
       [test/test_types]).
     - {!align_keeper_runtime_status}, {!max_turns_override_source}
       (test-only direct callers).
-    - {!iso_of_unix}, {!get_payload} (cascade-include
-      consumer {!Operator_control_action} reaches both
+    - {!get_payload} (cascade-include
+      consumer {!Operator_control_action} reaches it
       unqualified).
 
     Internal helpers stay private at this boundary
@@ -29,7 +29,6 @@
     [_snapshot_mu] / [_snapshot_table] / [_snapshot_ttl_s]
     cache state, [Cached] / [Computing] cache states, the
     keeper-context snapshot helpers,
-    [resolved_context_budget_of_meta],
     [compute_context_ratio],
     [keeper_context_snapshot] type +
     [keeper_context_snapshot_is_empty] /
@@ -40,7 +39,7 @@
     [keeper_context_snapshot_fields],
     [action_result_status] / [confirmation_state] /
     [action_log_entry] types and their stringifiers,
-    [json_ok], [action_log_path],
+    [action_log_path],
     [remote_confirm_ttl_seconds],
     [runtime_status_from_live_signal],
     [health_state_allows_runtime_status_override],
@@ -194,12 +193,6 @@ val append_action_log :
     Pinned because {!Operator_control} reaches it via the
     cascade-include of this module. *)
 
-val json_ok : (string * Yojson.Safe.t) list -> Yojson.Safe.t
-(** Builds [`Assoc] envelope with a leading
-    [("status", "ok")] field followed by [fields].  Pinned
-    because {!Operator_control} reaches it via the
-    cascade-include of this module. *)
-
 val remote_client_type_of_context : 'a context -> string
 (** Classifies the [mcp_session_id] of an operator
     request context into a wire string (["dashboard"] /
@@ -212,7 +205,12 @@ val remote_client_type_of_context : 'a context -> string
 
 type snapshot_slot =
   | Cached of { value : Yojson.Safe.t; expires_at : float }
-  | Computing of { cond : Eio.Condition.t }
+  | Computing of
+      { cond : Eio.Condition.t
+      ; stale : Yojson.Safe.t option
+      ; started_at : float
+      ; stuck_warned : bool ref
+      }
 
 val _snapshot_mu : Eio.Mutex.t
 val _snapshot_table : (string, snapshot_slot) Hashtbl.t
@@ -254,12 +252,6 @@ val cached_tool_audit_json :
     seed and a 30-second TTL; [lightweight=false] uses a
     2-second TTL for fresh dashboard reads.  Pinned for
     [test/test_operator_control_snapshot.ml]. *)
-
-val iso_of_unix : float -> string
-(** Re-export of {!Dashboard_utils.iso_of_unix}.  Pinned
-    here because {!Operator_control_action} reaches it
-    unqualified through the
-    [include Operator_control_snapshot] cascade. *)
 
 val get_payload : Yojson.Safe.t -> Yojson.Safe.t
 (** Extracts the [payload] field from a JSON args object,

@@ -128,7 +128,7 @@ describe('Governance surface', () => {
 
     expect(container.textContent).toContain('judge-only / 0 recent judgments')
     expect(container.textContent).toContain('Judge Status')
-    expect(container.textContent).toContain('Judge Model')
+    expect(container.textContent).toContain('Judge Runtime')
     expect(container.textContent).toContain('Live Judgment')
     expect(container.textContent).toContain('Refresh')
     expect(container.querySelector('[data-testid="governance-retired-banner"]')).toBeNull()
@@ -148,7 +148,7 @@ describe('Governance surface', () => {
       activity: [],
       judgments: [],
       pending_actions: [],
-      judge: { judge_online: true, model_used: 'gemini', keeper_name: 'governance-judge' },
+      judge: { judge_online: true, model_used: 'provider-f', keeper_name: 'governance-judge' },
     }
     const originalVisibility = Object.getOwnPropertyDescriptor(Document.prototype, 'visibilityState')
     const fetchDashboardGovernance = vi.fn<() => Promise<DashboardGovernanceResponse>>()
@@ -238,7 +238,7 @@ describe('Governance surface', () => {
     const judgeStatus = container.querySelector('[data-testid="judge-status"]')
     expect(judgeStatus).toBeTruthy()
     expect(judgeStatus?.textContent).toContain('Online')
-    expect(judgeStatus?.textContent).toContain('llama:qwen3.5')
+    expect(judgeStatus?.textContent).not.toContain('llama:qwen3.5')
   }, 20000)
 
   it('shows judge offline with error', async () => {
@@ -284,7 +284,7 @@ describe('Governance surface', () => {
         cached_judgments_visible: true,
         last_error: 'Execution timed out after 60.0s',
         keeper_name: 'governance-judge',
-        model_used: 'glm:test',
+        model_used: 'provider-k:test',
         generated_at: '2026-04-23T00:00:00Z',
       },
       judgments: [],
@@ -331,7 +331,7 @@ describe('Governance surface', () => {
         {
           id: 'appr-1',
           keeper_name: 'governance-judge',
-          tool_name: 'masc_code_delete',
+          tool_name: 'tool_edit_file',
           risk_level: 'critical',
           requested_at: '2026-04-09T00:00:00Z',
           waiting_s: 18,
@@ -360,7 +360,7 @@ describe('Governance surface', () => {
 
     expect(container.textContent).toContain('Keeper HITL Approval Queue')
     expect(container.textContent).toContain('governance-judge')
-    expect(container.textContent).toContain('masc_code_delete')
+    expect(container.textContent).toContain('tool_edit_file')
     expect(container.textContent).toContain('critical')
     expect(container.textContent).toContain('Approval Input')
     expect(container.textContent).toContain('Admin Queue')
@@ -419,7 +419,7 @@ describe('Governance surface', () => {
     expect(empty).toBeTruthy()
     expect(empty?.textContent).toContain('AI Judge is offline')
     expect(empty?.textContent).toContain('governance-judge')
-    expect(empty?.textContent).toContain('qwen3.5:35b')
+    expect(empty?.textContent).not.toContain('qwen3.5:35b')
   }, 20000)
 
   it('renders live judge empty state with idle message when retired + judge online but no judgments', async () => {
@@ -485,7 +485,7 @@ describe('Governance surface', () => {
     expect(empty?.textContent).toContain('AI Judge is offline')
     expect(empty?.textContent).toContain('keeper is running')
     expect(empty?.textContent).toContain('governance-judge')
-    expect(empty?.textContent).toContain('qwen3.5:35b')
+    expect(empty?.textContent).not.toContain('qwen3.5:35b')
   }, 20000)
 
   it('renders keeper HITL empty state with healthy-idle context when queue is empty and judge is active', async () => {
@@ -524,4 +524,3 @@ describe('Governance surface', () => {
     expect(empty?.textContent).not.toContain('Offline')
   }, 20000)
 })
-

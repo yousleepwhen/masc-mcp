@@ -5,7 +5,7 @@ import { html } from 'htm/preact'
 import { useEffect, useRef } from 'preact/hooks'
 import { DataSet } from 'vis-data'
 import { Timeline, TimelineOptions } from 'vis-timeline'
-import { Card } from './common/card'
+import { SectionCard } from './common/card'
 import { EmptyState, LoadingState } from './common/feedback-state'
 import { fetchSwimlane } from '../api'
 import { registerActivityRefresh } from '../sse-store'
@@ -14,6 +14,7 @@ import { selectedNodeId, highlightedAgentId } from './activity-graph-selection'
 import { formatDurationMs } from '../lib/format-time'
 import { createManagedAsyncResource } from '../lib/async-state'
 import { escapeHtml, tooltipHtml } from '../lib/escape-html'
+import { truncate } from '../lib/truncate'
 import 'vis-timeline/styles/vis-timeline-graph2d.css'
 
 const swimlaneResource = createManagedAsyncResource<SwimlaneResponse | null>(null)
@@ -31,9 +32,6 @@ interface SwimlaneTimelineItem {
   style: string
 }
 
-function truncateLabel(value: string, max = 20): string {
-  return value.length > max ? `${value.slice(0, max - 2)}..` : value
-}
 
 function syncHighlightedGroups(
   container: HTMLDivElement,
@@ -127,7 +125,7 @@ export function ActivitySwimlane({ since }: { since?: string }) {
       const duration = formatDurationMs(span.end_ms - span.start_ms)
       const itemId = idCounter++
       const title = tooltipHtml([span.label || span.kind, `종류: ${span.kind}`, `지속: ${duration}`])
-      const content = span.label ? escapeHtml(truncateLabel(span.label)) : ''
+      const content = span.label ? escapeHtml(truncate(span.label, 20)) : ''
 
       const agentItemIds = itemIdsByAgent.get(span.agent) ?? []
       agentItemIds.push(itemId)
@@ -207,7 +205,7 @@ export function ActivitySwimlane({ since }: { since?: string }) {
 
   if (s.loading && !data) {
     return html`
-      <${Card} title="활동 타임라인" testId="activity_swimlane">
+      <${SectionCard} label="활동 타임라인" testId="activity_swimlane">
         <${LoadingState}>타임라인 불러오는 중...<//>
       <//>
     `
@@ -215,7 +213,7 @@ export function ActivitySwimlane({ since }: { since?: string }) {
 
   if (s.error && !data) {
     return html`
-      <${Card} title="활동 타임라인" testId="activity_swimlane">
+      <${SectionCard} label="활동 타임라인" testId="activity_swimlane">
         <${EmptyState}>타임라인을 불러올 수 없습니다: ${s.error}<//>
       <//>
     `
@@ -223,7 +221,7 @@ export function ActivitySwimlane({ since }: { since?: string }) {
 
   if (!data) {
     return html`
-      <${Card} title="활동 타임라인" testId="activity_swimlane">
+      <${SectionCard} label="활동 타임라인" testId="activity_swimlane">
         <${LoadingState}>activity feed 워밍업 중...<//>
       <//>
     `
@@ -231,14 +229,14 @@ export function ActivitySwimlane({ since }: { since?: string }) {
 
   if (data.agents.length === 0) {
     return html`
-      <${Card} title="활동 타임라인" testId="activity_swimlane">
+      <${SectionCard} label="활동 타임라인" testId="activity_swimlane">
         <${EmptyState}>표시할 에이전트 활동 타임라인이 없습니다.<//>
       <//>
     `
   }
 
   return html`
-    <${Card} title="활동 타임라인" testId="activity_swimlane">
+    <${SectionCard} label="활동 타임라인" testId="activity_swimlane">
       <div class="mb-2">
         <p class="text-sm text-[var(--color-fg-muted)]">에이전트별 활동 구간을 시간축으로 보여줍니다. 마우스 휠로 줌인/아웃, 드래그로 이동이 가능합니다.</p>
       </div>

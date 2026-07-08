@@ -21,14 +21,7 @@ val load_context_from_checkpoint :
   trace_id:string ->
   primary_model_max_tokens:int ->
   base_dir:string ->
-  Keeper_exec_context.session_context * Keeper_exec_context.working_context option
-
-(** Save a checkpoint for the current context. *)
-val save_checkpoint :
-  Keeper_exec_context.session_context ->
-  Keeper_exec_context.working_context ->
-  generation:int ->
-  Keeper_exec_context.checkpoint
+  Keeper_context_runtime.session_context * Keeper_context_runtime.working_context option
 
 (** Ensure keeper is joined to all configured rooms. *)
 val ensure_keeper_room_presence : Coord.config -> keeper_meta -> keeper_meta
@@ -46,18 +39,10 @@ val memory_check_default_json : unit -> Yojson.Safe.t
 (** Extract compaction policy tuple from keeper metadata. *)
 val compaction_policy_of_keeper : keeper_meta -> float * int * int
 
-(** Compact context if thresholds are exceeded.
-    Returns updated context, optional summary, and compaction label. *)
-val compact_if_needed :
-  meta:keeper_meta ->
-  now_ts:float ->
-  Keeper_exec_context.working_context ->
-  Keeper_exec_context.working_context * string option * string
-
 (** {1 Trace and Model} *)
 
 (** Generate unique trace ID for a keeper turn. *)
-val generate_trace_id : unit -> string
+val generate_trace_id : ?now:float -> unit -> string
 
 (** Resolve effective model labels for a turn. *)
 val effective_model_labels_for_turn : keeper_meta -> string list
@@ -89,9 +74,6 @@ val build_keeper_system_prompt :
   instructions:string ->
   ?persona_extended:string ->
   ?keeper_name:string ->
-  ?allowed_orgs:string list ->
-  ?denied_repos:string list ->
-  ?git_clone_policy_loaded:bool ->
   ?active_goals:(string * string * string) list ->
   unit ->
   string

@@ -1,18 +1,22 @@
-// MASC Dashboard — Unified Agents Tab
-// Absorbs: agent-roster + execution + keeper-roster + FSM hub into one view with chip toggle.
+// MASC Dashboard — Keeper Fleet
+// Absorbs: agent-roster + execution + keeper-roster + FSM hub into one
+// operator-first board. Cognition stays available through keeper detail links.
 
 import { html } from 'htm/preact'
 import { useState } from 'preact/hooks'
 import { computed } from '@preact/signals'
 import { FilterChips } from './common/filter-chips'
 import { navigate, route } from '../router'
-import { agents, keepers, executionLoaded, shellCounts } from '../store'
+import { agents, keepers, executionLoaded } from '../store'
 import { AgentRoster, countRuntimeKinds } from './agent-roster'
 import { AgentProfile } from './agent-profile'
-import { KeeperDetailPage } from './keeper-detail'
-import { RouteLink } from './common/route-link'
+import { KeeperDetailPage } from './keeper-detail-page'
 import { namespaceTruth } from '../namespace-truth-store'
-import { resolveRuntimeCounts } from '../runtime-counts'
+import {
+  formatKeeperRosterCount,
+  formatRuntimeRosterCount,
+  resolveRuntimeCounts,
+} from '../runtime-counts'
 import { KeeperSpawnPanel } from './keeper-spawn/keeper-spawn-panel'
 import { KeeperTokenStats } from './keeper-token-stats'
 import { KeeperMultiSelect } from './keeper-multi-select'
@@ -33,9 +37,9 @@ const activeView = computed<AgentsView>(() => {
 })
 
 const CHIPS: { id: AgentsView; label: string; description: string }[] = [
-  { id: 'all', label: '전체', description: '에이전트와 키퍼를 한 목록에서 봅니다.' },
-  { id: 'agents', label: '에이전트', description: '키퍼가 연결되지 않은 일반 에이전트만 봅니다.' },
-  { id: 'keepers', label: '키퍼', description: '키퍼만 따로 봅니다.' },
+  { id: 'all', label: 'Keeper Ops', description: '키퍼와 일반 에이전트를 attention-first 운영 목록으로 봅니다.' },
+  { id: 'agents', label: 'Agents', description: '키퍼가 연결되지 않은 일반 에이전트만 봅니다.' },
+  { id: 'keepers', label: 'Keepers', description: '키퍼만 따로 봅니다.' },
   { id: 'fsm', label: 'FSM', description: '키퍼 composite FSM lifecycle 상태를 봅니다.' },
 ]
 
@@ -53,25 +57,19 @@ export function AgentsUnified() {
 
   const currentView = activeView.value
 
-  // Compute counts for chip badges.
   const liveRuntimeCounts = countRuntimeKinds(agents.value, keepers.value)
   const runtimeCounts = resolveRuntimeCounts({
     executionLoaded: executionLoaded.value,
     agentsCount: liveRuntimeCounts.agents,
     keepersCount: liveRuntimeCounts.keepers,
+    pausedKeepersCount: liveRuntimeCounts.pausedKeepers,
     namespaceTruthCounts: namespaceTruth.value?.root.counts,
     namespaceTruthConfiguredKeepers: namespaceTruth.value?.root.configured_keepers,
-    shellCounts: shellCounts.value,
-    shellConfiguredKeepers: shellCounts.value?.configured_keepers,
   })
-  const totalCount = runtimeCounts.totalRuntimes
-  const keeperCount = runtimeCounts.keepers
-  const agentOnlyCount = runtimeCounts.agents
-  const configuredKeeperDelta = Math.max(0, runtimeCounts.configuredKeepers - keeperCount)
-  function chipCount(id: AgentsView): number | null {
-    if (id === 'all') return totalCount
-    if (id === 'agents') return agentOnlyCount
-    if (id === 'keepers') return keeperCount
+  function chipCount(id: AgentsView): number | string | null {
+    if (id === 'all') return formatRuntimeRosterCount(runtimeCounts)
+    if (id === 'agents') return `활성 ${runtimeCounts.live.agents}`
+    if (id === 'keepers') return formatKeeperRosterCount(runtimeCounts)
     return null
   }
   const viewChips = CHIPS.map(chip => ({
@@ -93,27 +91,6 @@ export function AgentsUnified() {
         tone="accent"
         class="monitor-muted-panel w-fit p-1.5 shadow-[inset_0_1px_0_var(--color-border-default)]"
       />
-
-      ${configuredKeeperDelta > 0 ? html`
-        <div class="monitor-muted-panel flex w-fit flex-wrap items-center gap-2 px-3 py-2 text-xs text-[var(--color-fg-muted)]">
-          <span class="text-2xs font-semibold uppercase tracking-[var(--track-caps)] text-[var(--color-fg-muted)]">runtime truth</span>
-          <span>live runtime ${keeperCount} · configured keeper ${runtimeCounts.configuredKeepers} · 일시정지/미기동 ${configuredKeeperDelta}</span>
-        </div>
-      ` : null}
-
-      ${currentView !== 'fsm' ? html`
-        <div class="monitor-muted-panel flex flex-wrap items-center gap-2 px-4 py-3 text-xs text-[var(--color-fg-muted)]">
-          <span class="text-2xs font-semibold uppercase tracking-[var(--track-caps)] text-[var(--color-fg-muted)]">이 화면 밖</span>
-          <span>cached 조율 스냅샷, 이벤트 로그, 도구 품질, 거버넌스</span>
-          <${RouteLink}
-            tab="monitoring"
-            params=${{ section: 'fleet-health' }}
-            class="inline-flex shrink-0 items-center justify-center rounded-[var(--r-0)] border border-[var(--accent-20)] bg-[var(--accent-10)] px-3 py-1.5 text-xs font-medium text-[var(--color-fg-secondary)] transition-colors hover:bg-[var(--accent-20)]"
-          >
-            플릿 텔레메트리 열기
-          <//>
-        </div>
-      ` : null}
 
       ${currentView === 'fsm'
         ? html`<${FleetAndFsmHubPanel} />`

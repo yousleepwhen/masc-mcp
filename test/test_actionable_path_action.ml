@@ -7,7 +7,7 @@
     string for each class so a copy-paste rename or reorder fails at
     the test boundary, not in production operator-facing output. *)
 
-open Masc_mcp.Keeper_exec_shared
+open Masc_mcp.Agent_tool_shared_runtime
 module CB = Masc_mcp.Keeper_failure_circuit_breaker
 
 let r = Alcotest.(check string)
@@ -21,8 +21,8 @@ let test_path_not_found () =
   in
   Alcotest.(check bool) "mentions ls hint" true
     (try
-       ignore (Str.search_forward (Str.regexp_string "keeper_shell op=ls") action 0);
-       true
+       Str.search_forward (Str.regexp_string "Execute executable='ls'") action 0
+       >= 0
      with Not_found -> false);
   Alcotest.(check bool) "mentions playground" true
     (try
@@ -43,7 +43,7 @@ let test_path_not_allowed () =
 
 let test_cwd_not_directory () =
   r "cwd guidance"
-    "The cwd is not a directory. Omit cwd to use your default playground root, or create/repair the repo worktree first (keeper_shell op=git_clone, then git_worktree/masc_worktree_create for repos/<repo>/.worktrees/<task>)."
+    "The cwd is not a directory. Omit cwd to use your default playground root, or create/repair the repo worktree first with Execute and typed git argv, then run inside repos/<repo>/.worktrees/<task>."
     (actionable_path_action_for_class
        ~playground:pg ~raw_path:"foo" CB.Cwd_not_directory)
 

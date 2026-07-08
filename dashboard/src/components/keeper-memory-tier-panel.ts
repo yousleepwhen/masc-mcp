@@ -8,20 +8,22 @@ import {
   type KeeperCompositeSnapshot,
   type MemoryKindUsageEntry,
 } from '../api/keeper'
-import { EmptyState } from './common/empty-state'
+import { EmptyState } from './common/feedback-state'
 import { InlineSpinner } from './common/inline-spinner'
 import { CytoscapeFsm } from './common/cytoscape-fsm'
 import { FilterChips } from './common/filter-chips'
 import { TextInput } from './common/input'
 import { StatusChip, type StatusChipTone } from './common/status-chip'
 import { buildCompactionSpec } from './keeper-fsm-specs'
-import { setupVisibleAutoRefresh } from '../lib/auto-refresh'
-
-const REFRESH_MS = 30_000
+import { DEFAULT_PANEL_REFRESH_MS, setupVisibleAutoRefresh } from '../lib/auto-refresh'
+import { toKeeperPhase } from '../keeper-store-normalize'
 
 interface KeeperMemoryTierPanelProps {
   keeperName: string
-  currentPhase?: string | null
+  /** RFC-0046: parent-supplied composite snapshot. When provided,
+   *  this panel reads the SSOT from the shared FsmHub fetch instead
+   *  of issuing its own /composite call. */
+  snapshot?: KeeperCompositeSnapshot | null
 }
 
 type MemoryTierFilter = 'all' | 'saturated'
@@ -68,10 +70,16 @@ export function filterMemoryKindUsage(
  */
 export function KeeperMemoryTierPanel({
   keeperName,
-  currentPhase,
+  snapshot: externalSnapshot,
 }: KeeperMemoryTierPanelProps) {
   const [usage, setUsage] = useState<MemoryKindUsageEntry[] | null>(null)
-  const [snapshot, setSnapshot] = useState<KeeperCompositeSnapshot | null>(null)
+  /** RFC-0149 §3.1 — typed memory-bank read failure label
+   *  (`Keeper_memory_recall_exn_class.t`).  Disambiguates "no rows
+   *  recorded" (usage=[], errorClass=null) from "bank read failed"
+   *  (usage=[], errorClass="<label>"). */
+  const [memoryBankErrorClass, setMemoryBankErrorClass] = useState<string | null>(null)
+  const [internalSnapshot, setInternalSnapshot] = useState<KeeperCompositeSnapshot | null>(null)
+  const snapshot = externalSnapshot ?? internalSnapshot
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [query, setQuery] = useState('')
@@ -83,9 +91,16 @@ export function KeeperMemoryTierPanel({
     setError(null)
 
     const refresh = async () => {
+      // RFC-0046 §7 #1: skip composite fetch when parent supplies it.
+      // `undefined` = standalone caller (legacy fallback); `null` =
+      // parent is still loading, wait rather than dual-fetch.
+      const compositePromise: Promise<KeeperCompositeSnapshot | null> = externalSnapshot !== undefined
+        ? Promise.resolve(externalSnapshot)
+        : fetchKeeperComposite(keeperName, { signal: controller.signal })
+
       Promise.allSettled([
         fetchKeeperStateDiagram(keeperName, { signal: controller.signal }),
-        fetchKeeperComposite(keeperName, { signal: controller.signal }),
+        compositePromise,
       ])
         .then(([usageResult, compositeResult]) => {
           if (controller.signal.aborted) return
@@ -93,15 +108,17 @@ export function KeeperMemoryTierPanel({
 
           if (usageResult.status === 'fulfilled') {
             setUsage(usageResult.value.memory_kind_usage ?? [])
+            setMemoryBankErrorClass(usageResult.value.memory_kind_usage_error_class ?? null)
           } else {
             setUsage(null)
+            setMemoryBankErrorClass(null)
             nextError = usageResult.reason instanceof Error ? usageResult.reason.message : 'memory tier fetch failed'
           }
 
           if (compositeResult.status === 'fulfilled') {
-            setSnapshot(compositeResult.value)
+            setInternalSnapshot(compositeResult.value)
           } else {
-            setSnapshot(null)
+            setInternalSnapshot(null)
             nextError ||= compositeResult.reason instanceof Error
               ? compositeResult.reason.message
               : 'composite fetch failed'
@@ -118,7 +135,7 @@ export function KeeperMemoryTierPanel({
     }
 
     refresh()
-    const cleanup = setupVisibleAutoRefresh(() => refresh(), REFRESH_MS)
+    const cleanup = setupVisibleAutoRefresh(() => refresh(), DEFAULT_PANEL_REFRESH_MS)
 
     return () => {
       controller.abort()
@@ -135,8 +152,15 @@ export function KeeperMemoryTierPanel({
     `
   }
 
-  if (error || !usage || usage.length === 0) {
-    return html`<${EmptyState} message=${error ?? '메모리 티어 데이터 없음'} compact />`
+  if (error || memoryBankErrorClass !== null || !usage || usage.length === 0) {
+    // RFC-0149 §3.1 — if the bank read returned a typed failure class,
+    // surface it on the empty-state message so operators can distinguish
+    // "no memory rows recorded" from "memory bank unreadable".
+    const emptyMessage = error
+      ?? (memoryBankErrorClass !== null
+        ? `메모리 뱅크 읽기 실패: ${memoryBankErrorClass}`
+        : '메모리 티어 데이터 없음')
+    return html`<${EmptyState} message=${emptyMessage} compact />`
   }
 
   const totalUsed = usage.reduce((sum, row) => sum + row.used, 0)
@@ -149,8 +173,12 @@ export function KeeperMemoryTierPanel({
     () => filterMemoryKindUsage(usage, query, filter),
     [usage, query, filter],
   )
-  const phase = snapshot?.phase ?? currentPhase ?? null
-  const isCompacting = phase === 'Compacting' || phase === 'compacting'
+  const phase = snapshot?.phase ?? null
+  // RFC-0135 PR-2 normalization (audit A2): the composite observer
+  // emits lowercase phase tokens while flat keeper records use
+  // PascalCase. `toKeeperPhase` collapses both into the canonical
+  // PascalCase form so a single equality covers either wire shape.
+  const isCompacting = toKeeperPhase(phase) === 'Compacting'
   const compactionStage = snapshot?.compaction.stage ?? (isCompacting ? 'compacting' : 'accumulating')
   const compactionSpec = buildCompactionSpec(compactionStage, phase)
 

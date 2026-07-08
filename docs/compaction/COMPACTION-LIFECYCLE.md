@@ -71,7 +71,7 @@ stateDiagram-v2
 **Post-turn lifecycle contract**
 ([`keeper_state_machine.mli:110-138`](../../lib/keeper/keeper_state_machine.mli)):
 `Compaction_started`/`Compaction_completed`/`Compaction_failed` MUST
-be dispatched only from `Keeper_post_turn.apply_post_turn_lifecycle`.
+be dispatched only from `Keeper_post_turn.apply_post_turn_lifecycle_with_resilience_handles`.
 Violations reopen the
 [`KeepalivePhaseConsistency.tla`](../../specs/bug-models/KeepalivePhaseConsistency.tla)
 bug — `NoDrainTransition` / `GhostDispatch` invariants would catch it.
@@ -97,6 +97,9 @@ OAS strategies  →  MASC fold  →  Repair  →  Sync
 Message count is additionally bounded by
 `default_max_checkpoint_messages = 120` and per-message sub-caps
 (text chars ≤16KB, tool result chars ≤8KB, total ≤200KB).
+The same caps are applied to the pre-dispatch resume checkpoint even
+when compaction does not fire, so Agent.run never receives a raw
+between-save checkpoint payload.
 
 ## 4. Observability Surfaces
 
@@ -105,11 +108,11 @@ separate storage / lifecycle / retention.
 
 | Surface | Location | Lifecycle | Retention |
 |---------|----------|-----------|-----------|
-| **Paired audit JSONL (new)** | `.masc/data/harness-compact/YYYY-MM/DD.jsonl` | written by `Keeper_compact_audit` subscriber on every ContextCompactStarted + ContextCompacted | rolling, default 14 days (`MASC_COMPACTION_AUDIT_RETENTION_DAYS` override) |
-| Legacy pre-compact JSONL | `.masc/data/harness-pre-compact/YYYY-MM/DD.jsonl` | written by `Dashboard_harness_health.record_pre_compact` (deprecated) | historical; read-only fallback for existing dashboards |
+| **Paired audit JSONL** | `.masc/data/harness-compact/YYYY-MM/DD.jsonl` | written by `Keeper_compact_audit` subscriber on every ContextCompactStarted + ContextCompacted | rolling, default 14 days (`MASC_COMPACTION_AUDIT_RETENTION_DAYS` override) |
+| Pre-compact dashboard JSONL | `.masc/data/harness-pre-compact/YYYY-MM/DD.jsonl` | written by `Dashboard_harness_health.record_pre_compact` for the dashboard harness summary | dashboard harness retention |
 | Prometheus | `masc_keeper_compactions_total`, `masc_keeper_compaction_ratio_change` | incremented on every compaction attempt / completion | process-lifetime, scrape-based |
 | TLA+ trace (opt-in) | `.masc/keepers/<name>.tla-trace.jsonl` | written when `MASC_TLA_TRACE=1` | until operator deletes; zero overhead when disabled |
-| Checkpoint store | `.masc/keepers/<name>/traces/<trace_id>/ckpt-<ts>.json` | atomic write after every `Turn_succeeded` | max 3 retained per session |
+| Checkpoint store | `.masc/keepers/<name>/traces/<trace_id>/<trace_id>.json` | canonical OAS checkpoint write after successful keeper turns | current checkpoint plus OAS history snapshots |
 
 ### CLI: `masc-compaction-audit`
 

@@ -87,10 +87,9 @@ The privileged executor class is internal-only.
 
 Examples:
 
-- `keeper_bash`
-- `keeper_fs_edit`
+- `tool_execute`
+- `tool_edit_file`
 - `keeper_edit`
-- `keeper_github`
 
 These tools are:
 

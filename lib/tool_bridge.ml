@@ -17,11 +17,12 @@ module Float = Stdlib.Float
 
 (** OAS boundary adapter for tool results, schemas, and tool definitions.
 
-    MASC tools use [(bool * string)] internally (success flag + message).
-    OAS uses [Agent_sdk.Types.tool_result = (tool_output, tool_error) Result.t].
+    MASC dispatch uses typed [Tool_result.result] internally.  This module is the
+    boundary adapter that converts typed MASC results to/from
+    [Agent_sdk.Types.tool_result = (tool_output, tool_error) Result.t].
 
-    This module converts at the OAS boundary only — internal MASC
-    tool handlers keep their existing convention unchanged.
+    Central [Tool_dispatch.handler] implementations should return
+    [Tool_result.result] directly rather than reintroducing tuple dispatch.
 
     @since 2.95.1 — result conversion
     @since 2.110.0 — schema conversion + OAS Tool.t creation
@@ -72,7 +73,7 @@ let resolve_blob_store () =
         | Some store -> store
         | None ->
             let store =
-              match Env_config_core.base_path_opt () with
+              match (Host_config.from_env ()).base_path with
               | None -> None
               | Some base_path -> Some (Tool_blob_store.create ~base_path)
             in
@@ -131,22 +132,13 @@ let tool_error_metadata_from_json_message msg =
     | _ -> (false, None)
   with Yojson.Json_error _ -> (false, None)
 
-let recoverable_from_json_message msg =
-  fst (tool_error_metadata_from_json_message msg)
-
-let to_oas_tool_result ?(recoverable = false) (success, msg)
-  : Agent_sdk.Types.tool_result =
-  if success then Ok { Agent_sdk.Types.content = maybe_externalize msg }
-  else
-    let json_recoverable, error_class =
-      tool_error_metadata_from_json_message msg
-    in
-    let recoverable = recoverable || json_recoverable in
-    make_tool_error ~recoverable ?error_class (maybe_externalize msg)
-
-let of_oas_tool_result : Agent_sdk.Types.tool_result -> bool * string = function
-  | Ok { content } -> (true, content)
-  | Error { message; _ } -> (false, message)
+let oas_error_class_of_tool_failure_class = function
+  | Tool_result.Transient_error -> Some Agent_sdk.Types.Transient
+  | Tool_result.Policy_rejection
+  | Tool_result.Workflow_rejection ->
+    Some Agent_sdk.Types.Deterministic
+  | Tool_result.Runtime_failure -> Some Agent_sdk.Types.Unknown
+;;
 
 (** {1 Schema Conversion}
 
@@ -174,35 +166,54 @@ let type_string_of_schema_property prop =
   | _ -> None
 
 let params_of_json_schema schema =
+  let __t0 = Mtime_clock.now () in
   let open Yojson.Safe.Util in
-  let required_list =
+  (* [required] is conceptually a set (membership semantics, no ordering
+     or duplicates) — materialise as Hashtbl so the per-property check
+     below is O(1) instead of O(R) per property.  Per-call savings scale
+     with property × required-field count; this helper fires from
+     [oas_tool_of_masc] per OAS conversion. *)
+  let required_set =
     match schema |> member "required" with
     | `List items ->
-        List.filter_map
+        (* Constant initial size 16: avoid the extra [List.length items]
+           pass (which itself is O(R)) before [List.iter].  Hashtbl
+           auto-resizes — sizing exactly to the input only saves a
+           handful of resizes per call, which is cheaper than re-walking
+           the list. *)
+        let tbl = Hashtbl.create 16 in
+        List.iter
           (function
-            | `String value -> Some value
-            | _ -> None)
-          items
+            | `String value -> Hashtbl.replace tbl value ()
+            | _ -> ())
+          items;
+        tbl
+    | _ -> Hashtbl.create 0
+  in
+  let result =
+    match schema |> member "properties" with
+    | `Assoc pairs ->
+        List.map
+          (fun (name, prop) ->
+            let param_type =
+              prop
+              |> type_string_of_schema_property
+              |> Option.value ~default:"string"
+              |> param_type_of_string
+            in
+            let description =
+              string_of_json_member "description" prop
+              |> Option.value ~default:""
+            in
+            let required = Hashtbl.mem required_set name in
+            { Agent_sdk.Types.name = name; description; param_type; required })
+          pairs
     | _ -> []
   in
-  match schema |> member "properties" with
-  | `Assoc pairs ->
-      List.map
-        (fun (name, prop) ->
-          let param_type =
-            prop
-            |> type_string_of_schema_property
-            |> Option.value ~default:"string"
-            |> param_type_of_string
-          in
-          let description =
-            string_of_json_member "description" prop
-            |> Option.value ~default:""
-          in
-          let required = List.mem name required_list in
-          { Agent_sdk.Types.name = name; description; param_type; required })
-        pairs
-  | _ -> []
+  Prometheus_hotpath.observe
+    ~metric:Prometheus_hotpath.metric_oas_params_of_schema_sec
+    ~start:__t0;
+  result
 
 (** {1 OAS Tool.t Creation}
 
@@ -215,8 +226,10 @@ let oas_permission_of_masc_tool name =
   | Some true, _ -> Some Agent_sdk.Tool.Destructive
   | _, Some true -> Some Agent_sdk.Tool.ReadOnly
   | _, Some false -> Some Agent_sdk.Tool.Write
-  | _ when Tool_dispatch.is_destructive name -> Some Agent_sdk.Tool.Destructive
-  | _ when Tool_dispatch.is_read_only name -> Some Agent_sdk.Tool.ReadOnly
+  | _ when Tool_capability.has Tool_capability.Destructive name ->
+    Some Agent_sdk.Tool.Destructive
+  | _ when Tool_capability.has Tool_capability.Read_only name ->
+    Some Agent_sdk.Tool.ReadOnly
   | _ -> None
 
 let oas_descriptor_of_masc_tool name =
@@ -235,6 +248,7 @@ let oas_descriptor_of_masc_tool name =
       mutation_class;
       concurrency_class;
       permission = Some permission;
+      evidence_role = None;
       shell = None;
       notes = [];
       examples = [];
@@ -242,12 +256,28 @@ let oas_descriptor_of_masc_tool name =
   in
   Option.map descriptor_of_permission (oas_permission_of_masc_tool name)
 
-let to_oas_typed_result (tr : Tool_result.t) : Agent_sdk.Types.tool_result =
-  to_oas_tool_result (tr.success, Tool_result.message tr)
+let to_oas_typed_result (tr : Tool_result.result) : Agent_sdk.Types.tool_result =
+  if Tool_result.is_success tr
+  then Ok { Agent_sdk.Types.content = maybe_externalize (Tool_result.message tr) }
+  else (
+    let msg = Tool_result.message tr in
+    let json_recoverable, json_error_class =
+      tool_error_metadata_from_json_message msg
+    in
+    let recoverable, error_class =
+      match Tool_result.failure_class tr with
+      | Some Tool_result.Runtime_failure
+        when json_recoverable || Option.is_some json_error_class ->
+        json_recoverable, json_error_class
+      | Some cls ->
+        (Tool_result.is_retryable cls, oas_error_class_of_tool_failure_class cls)
+      | None -> json_recoverable, json_error_class
+    in
+    make_tool_error ~recoverable ?error_class (maybe_externalize msg))
 
 (** Create an OAS [Tool.t] from a MASC tool schema and a typed handler.
 
-    [handler] receives raw JSON args and returns a {!Tool_result.t}.
+    [handler] receives raw JSON args and returns a {!Tool_result.result}.
     The bridge converts the result to OAS [tool_result] automatically.
 
     {[

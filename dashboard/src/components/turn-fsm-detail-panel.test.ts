@@ -3,7 +3,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { render } from "preact"
 import { html } from "htm/preact"
 import {
-  isExactTurnProjection,
   terminalTone,
   TurnFsmDetailPanel,
   turnFsmChipTone,
@@ -32,7 +31,10 @@ function keeperCompositeSnapshot(
       no_cascade_before_measurement: true,
       compaction_atomicity: true,
       event_priority_monotone: true,
+      phase_derivation_agreement: true,
     },
+    fsm_guard_violations: 0,
+    fsm_guard_violation_breakdown: [],
     is_live: false,
     last_outcome: null,
     recommended_actions: [],
@@ -61,35 +63,25 @@ describe("turnFsmChipTone", () => {
   })
 })
 
+// `execution.outcome` wire format is the TLA-prefix form
+// (`receipt_done` | `receipt_skipped` | `receipt_failed` |
+//  `receipt_cancelled`) emitted by `outcome_kind_to_tla_receipt`
+// (lib/keeper/keeper_execution_receipt.ml:24-29). Short forms
+// ('done' / 'skipped' / 'failed' / 'error') never appear here in
+// production — prior fixtures asserting them was a mock↔mock loophole
+// that hid five dead branches.
 describe("terminalTone", () => {
   it.each([
-    ["done", "ok"],
-    ["skipped", "ok"],
-    ["cancelled", "warn"],
-    ["failed", "err"],
-    ["error", "err"],
+    ["receipt_done", "ok"],
+    ["receipt_skipped", "ok"],
+    ["receipt_cancelled", "warn"],
+    ["receipt_failed", "err"],
     ["unknown", "neutral"],
     ["", "neutral"],
     [null, "neutral"],
     [undefined, "neutral"],
   ])("maps %s to %s", (outcome, expected) => {
     expect(terminalTone(outcome)).toBe(expected)
-  })
-})
-
-describe("isExactTurnProjection", () => {
-  it.each([
-    ["idle", "idle", true],
-    ["AWAITING_TOOL", "awaiting_tool", true],
-    ["awaiting_tool", "awaiting_tool_result", true],
-    ["  awaiting_tool  ", "awaiting_tool_result", true],
-    ["done", "done", true],
-    ["done", "idle", false],
-    ["awaiting_tool", "awaiting_tool", true],
-    ["unknown", null, false],
-    ["", "idle", false],
-  ])("isExactTurnProjection(%s, %s) → %s", (raw, projected, expected) => {
-    expect(isExactTurnProjection(raw, projected)).toBe(expected)
   })
 })
 
@@ -108,7 +100,7 @@ describe("TurnFsmDetailPanel", () => {
 
   it("renders turn state and receipt badges through StatusChip", () => {
     const snapshot = keeperCompositeSnapshot({
-      turn_phase: "awaiting_tool",
+      turn_phase: "executing",
       execution: {
         latest_receipt_present: true,
         recorded_at: "2026-05-01T16:00:00Z",
@@ -117,7 +109,7 @@ describe("TurnFsmDetailPanel", () => {
         operator_disposition: null,
         operator_disposition_reason: null,
         tool_contract_result: "violated",
-        model_used: "glm-4.5",
+        model_used: "provider-k-4.5",
         stop_reason: null,
         duration_ms: null,
         error: null,
@@ -130,17 +122,13 @@ describe("TurnFsmDetailPanel", () => {
 
     const chips = [...container.querySelectorAll("[data-status-chip]")]
     expect(chips.map(chip => chip.textContent?.trim())).toEqual(expect.arrayContaining([
-      "awaiting_tool_result",
-      "KTC awaiting_tool",
-      "TLA awaiting_tool",
+      "실행 중",
       "receipt failed",
       "reason tool_contract",
-      "tool violated",
-      "model glm-4.5",
+      "tool 도구 계약 위반",
     ]))
     expect(chips.map(chip => chip.getAttribute("data-status-chip-tone"))).toEqual(expect.arrayContaining([
       "info",
-      "neutral",
       "bad",
     ]))
     expect(chips.every(chip => chip.getAttribute("data-status-chip-uppercase") === "false")).toBe(true)

@@ -6,7 +6,7 @@
     credential prompt — the container has no tty to display it, so the
     timeout trips only after the outer wall-clock cap fires.
 
-    Design reference: [GIT_NO_PROMPT_ENV] record in claude-code at
+    Design reference: [GIT_NO_PROMPT_ENV] record in agent_llm_a-code at
     [src/utils/worktree.ts:199-202] and [src/utils/plugins/marketplaceManager.ts:510-512].
     Principle P3 of RFC-0007: "Non-interactive defaults are a constant,
     not an opinion." *)
@@ -21,9 +21,6 @@ val env_pairs : string list
 
 val docker_args : string list
 (** Flattened ["-e"; "K=V"; ...] pairs for direct [docker run] argv. *)
-
-val docker_env_args : string list
-(** Backwards-compatible alias for {!docker_args}. *)
 
 val inject_into_environment : string array -> string array
 (** Prepend {!env_pairs} to [env], stripping any pre-existing entries

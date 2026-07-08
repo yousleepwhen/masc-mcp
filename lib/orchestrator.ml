@@ -107,34 +107,6 @@ You have access to MASC MCP tools via mcp__masc__* prefix.
 Start by calling mcp__masc__masc_status to see the current room state.|}
   end
 
-(** Spawn the orchestrator agent. *)
-let spawn_orchestrator ~sw:_ ~proc_mgr:_ ?domain_mgr:_ config room_config =
-  if Coord.is_paused room_config then begin
-    Log.Orchestrator.debug "room paused before spawn, aborting";
-    { Spawn.success = false; output = "Coord paused"; exit_code = 0; elapsed_ms = 0;
-      input_tokens = None; output_tokens = None; cache_creation_tokens = None;
-      cache_read_tokens = None; cost_usd = None }
-  end else begin
-  Log.Orchestrator.info "spawning agent: %s (with MCP tools)" config.orchestrator_agent;
-
-  let _msg = Coord.broadcast room_config ~from_agent:"system"
-    ~content:"Auto-orchestrator activated - spawning coordinator with MCP tools" in
-
-  let prompt = make_orchestrator_prompt ~port:config.port in
-  let result =
-    Spawn.spawn ~agent_name:config.orchestrator_agent ~prompt
-      ~timeout_seconds:config.agent_timeout_s ()
-  in
-
-  if result.success then
-    Log.Orchestrator.info "completed in %dms" result.elapsed_ms
-  else
-    Log.Orchestrator.warn "failed (exit %d) in %dms"
-      result.exit_code result.elapsed_ms;
-
-  result
-  end
-
 (* ── Pulse helpers ─────────────────────────────────────────── *)
 
 (** Fixed-interval rhythm with no quiet hours.
@@ -161,14 +133,7 @@ let make_orchestrator_check_consumer ~sw ~proc_mgr ?domain_mgr ~config ~room_con
     let on_beat _beat =
       try
         if should_orchestrate ~min_priority:config.min_priority room_config then
-          Eio.Fiber.fork ~sw (fun () ->
-            try
-              let (_ : Spawn.spawn_result) =
-                spawn_orchestrator ~sw ~proc_mgr ?domain_mgr config room_config
-              in
-              ()
-            with Eio.Cancel.Cancelled _ as e -> raise e | exn ->
-              Log.Orchestrator.error "spawn failed: %s" (Printexc.to_string exn));
+          Log.Orchestrator.info "orchestration needed but vendor-specific spawn removed";
         Ok ()
       with Eio.Cancel.Cancelled _ as e -> raise e | exn ->
         let msg = Printf.sprintf "orchestrator check error: %s" (Printexc.to_string exn) in
@@ -180,6 +145,7 @@ let make_orchestrator_check_consumer ~sw ~proc_mgr ?domain_mgr ~config ~room_con
     Runs Coord.cleanup_zombies and logs if zombies were found. *)
 let make_zero_zombie_consumer ~sw ~room_config
     : (module Pulse.Consumer) =
+  let cleanup_running = Atomic.make false in
   (module struct
     let name = "zero-zombie-cleanup"
     let should_act _beat = true
@@ -187,35 +153,91 @@ let make_zero_zombie_consumer ~sw ~room_config
       (* Run GC in background fiber to avoid blocking Pulse consumers.
          Heartbeat and other consumers proceed without waiting for
          cleanup_zombies I/O. See RFC #3646 M5 / #3626. *)
-      Eio.Fiber.fork ~sw (fun () ->
-        try
-          let status = Coord.cleanup_zombies room_config in
-          let status_trimmed = String.trim status in
-          if String.length status_trimmed > 0 then begin
-            let has_zombie_indicator =
+      (* Typed outcome for stale-claim release. Carries a structured
+         [reason] so the catch-all wildcard and untyped [Printexc.to_string]
+         warn cannot hide error classification.  benign := matches
+         {!Coord_resilience.ZeroZombie.is_benign_error} (transient FS race
+         or MASC-not-initialized at startup), in which case operators
+         expect no log noise.
+
+         Kept local to the consumer body — release_stale_claims itself
+         still raises and is wrapped here, because lifting Result into
+         the public signature would force every test-suite caller
+         (test_room.ml:909-964) to be rewritten.  Follow-up RFC =
+         Liveness Recovery Supervisor that consumes typed failures here
+         and escalates to operators (see project_keeper-reaction-chain-break). *)
+      let module Stale_claim_outcome = struct
+        type t =
+          | Released of (string * string) list
+          | Empty
+          | Failed of { benign : bool; reason : string }
+      end in
+      let release_stale_claims_typed () : Stale_claim_outcome.t =
+        let ttl = Env_config_runtime.Claim.ttl_seconds in
+        match
+          Coord_task_schedule.release_stale_claims room_config ~ttl_seconds:ttl
+        with
+        | exception (Eio.Cancel.Cancelled _ as e) -> raise e
+        | exception exn ->
+          Stale_claim_outcome.Failed
+            { benign = Coord_resilience.ZeroZombie.is_benign_error exn
+            ; reason = Printexc.to_string exn
+            }
+        | [] -> Stale_claim_outcome.Empty
+        | released -> Stale_claim_outcome.Released released
+      in
+      if not (Atomic.compare_and_set cleanup_running false true)
+      then Log.Orchestrator.debug "[zombie] cleanup already running; skipping beat"
+      else
+        Eio.Fiber.fork ~sw (fun () ->
+          Fun.protect
+            ~finally:(fun () -> Atomic.set cleanup_running false)
+            (fun () ->
               try
-                String.starts_with status_trimmed ~prefix:"\xf0\x9f\xa7\x9f" ||
-                String.starts_with status_trimmed ~prefix:"Cleaned"
+                let zombie_result = Coord.cleanup_zombies room_config in
+                (* Explicit variant match — no catch-all.  Adding a new
+                   [cleanup_zombie_result] constructor must surface as a
+                   compile error here, not a silent debug. *)
+                (match zombie_result with
+                 | Coord.Cleaned { count = 0; _ } ->
+                     Log.Orchestrator.debug "[zombie] no zombies to clean"
+                 | Coord.Cleaned { count; names; _ } ->
+                     let status =
+                       Printf.sprintf "Cleaned up %d zombie agent(s): %s"
+                         count (String.concat ", " names)
+                     in
+                     Log.Orchestrator.info "[zombie] %s" status
+                 | Coord.No_zombies ->
+                     Log.Orchestrator.debug "[zombie] no zombies to clean"
+                 | Coord.No_agents_dir ->
+                     (* Misconfiguration signal: room has no agents/ directory.
+                        Distinct from No_zombies — operators should know GC
+                        ran against a missing target. *)
+                     Log.Orchestrator.warn
+                       "[zombie] skipped: agents directory missing for room");
+                (match release_stale_claims_typed () with
+                 | Stale_claim_outcome.Empty ->
+                     Log.Orchestrator.debug "[stale-claims] no stale claims to release"
+                 | Stale_claim_outcome.Released released ->
+                     Log.Orchestrator.info "[stale-claims] released %d stale task(s): %s"
+                       (List.length released)
+                       (String.concat ", " (List.map (fun (tid, agent) ->
+                         Printf.sprintf "%s(%s)" tid agent) released))
+                 | Stale_claim_outcome.Failed { benign = true; reason } ->
+                     (* Same policy as zombie-loop benign-error filter:
+                        startup FS races / MASC-not-initialized should not
+                        page operators. *)
+                     Log.Orchestrator.debug "[stale-claims] benign: %s" reason
+                 | Stale_claim_outcome.Failed { benign = false; reason } ->
+                     (* Real failure — not silent.  Promoted from .warn to
+                        .error so it surfaces past the default WARN→DEBUG
+                        demote of repeated lines. *)
+                     Log.Orchestrator.error
+                       "[stale-claims] non-benign failure: %s"
+                       reason)
               with Eio.Cancel.Cancelled _ as e -> raise e | exn ->
-                Log.Orchestrator.warn "zombie indicator check failed: %s" (Printexc.to_string exn);
-                false
-            in
-            if has_zombie_indicator then
-              Log.Orchestrator.info "[zombie] %s" status_trimmed
-          end;
-          let ttl = Env_config_runtime.Claim.ttl_seconds in
-          (try
-            let released = Coord_task_schedule.release_stale_claims room_config ~ttl_seconds:ttl in
-            if released <> [] then
-              Log.Orchestrator.info "[stale-claims] released %d stale task(s): %s"
-                (List.length released)
-                (String.concat ", " (List.map (fun (tid, agent) ->
-                  Printf.sprintf "%s(%s)" tid agent) released))
-          with Eio.Cancel.Cancelled _ as e -> raise e | exn ->
-            Log.Orchestrator.warn "[stale-claims] error: %s" (Printexc.to_string exn))
-        with Eio.Cancel.Cancelled _ as e -> raise e | exn ->
-          if not (Coord_resilience.ZeroZombie.is_benign_error exn) then
-            Log.Orchestrator.warn "[zombie] error: %s" (Printexc.to_string exn));
+                if not (Coord_resilience.ZeroZombie.is_benign_error exn) then
+                  Log.Orchestrator.warn "[zombie] error: %s" (Printexc.to_string exn)));
       Ok ()
   end)
 

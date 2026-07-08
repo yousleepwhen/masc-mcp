@@ -2,11 +2,7 @@
 open Masc_domain
 open Server_utils
 
-let trim_opt = function
-  | None -> None
-  | Some raw ->
-      let value = String.trim raw in
-      if value = "" then None else Some value
+let trim_opt = Env_config_core.trim_opt
 
 let configured_bind_host () =
   Env_config_core.masc_host ()
@@ -275,6 +271,20 @@ let sanitize_dashboard_actor_name raw =
     value;
   Buffer.contents buf
 
+(* Consolidates the two prior [silent:dashboard_actor_fallback] warn sites
+   (Ok None / Error err arms in [dashboard_actor_for_request]) onto a single
+   helper. The message rendering and prometheus labels are owned by
+   [Auth_error_kind] so the contract is round-tripped through a typed
+   record rather than two parallel inline format strings. *)
+let record_dashboard_actor_fallback
+    (fb : Auth_error_kind.dashboard_actor_fallback) =
+  Log.Auth.warn "%s"
+    (Auth_error_kind.dashboard_actor_fallback_log_message fb);
+  Prometheus.inc_counter
+    Prometheus.metric_silent_dashboard_actor_fallback
+    ~labels:(Auth_error_kind.dashboard_actor_fallback_prometheus_labels fb)
+    ()
+
 let dashboard_actor_for_request ~base_path request =
   match auth_token_from_request request with
   | Some token -> (
@@ -294,16 +304,21 @@ let dashboard_actor_for_request ~base_path request =
       | Ok None ->
           (* PR-I: surface the silent fallback. Token did not resolve to any
              agent, so we drop to the request actor hint (header / query
-             param), masking identity drift in the HTTP transport. *)
-          Log.Auth.warn
-            "[silent:dashboard_actor_fallback] outcome=none token_hash_prefix=%s \
-             — bearer token resolved to no agent, falling back to request \
-             actor hint"
-            token_hash_prefix;
-          Prometheus.inc_counter
-            Prometheus.metric_silent_dashboard_actor_fallback
-            ~labels:[ ("outcome", "none") ]
-            ();
+             param), masking identity drift in the HTTP transport.
+
+             WORKAROUND-CARRYOVER: the fallback path itself is retained as a
+             production safety net — the dashboard cannot go dark on token
+             churn — but the two warn sites here and at the [Error] arm now
+             flow through [Auth_error_kind.dashboard_actor_fallback], giving
+             callers a typed handle on *why* the fallback fired. The
+             string emitted by [dashboard_actor_fallback_log_message] is
+             byte-equivalent to the prior inline format so prometheus log
+             alerts keyed on the literal prefix continue to fire.
+             Reference: Reverse Engineering Design Map §개선 #2. *)
+          let fb : Auth_error_kind.dashboard_actor_fallback =
+            { outcome = Auth_error_kind.Outcome_none; token_hash_prefix }
+          in
+          record_dashboard_actor_fallback fb;
           request_actor_hint request
       | Error err ->
           (* The previous warn line elided the actual error string and the
@@ -311,42 +326,21 @@ let dashboard_actor_for_request ~base_path request =
              told them *something* errored — not what.  Production logs
              showed the warn firing 1–2 times/second with no diagnostic
              surface, so the WARN was loud noise without root-cause
-             attribution.  Surface both the error class and the hint. *)
-          let err_str = Masc_domain.masc_error_to_string err in
-          let hint =
-            match request_actor_hint request with
-            | Some s -> s
-            | None -> "<none>"
+             attribution.  Surface both the error class and the hint via
+             the typed [Auth_error_kind.Outcome_error] arm — the
+             [Token_mismatch] remediation tail is embedded in
+             [dashboard_actor_fallback_log_message]. *)
+          let fb : Auth_error_kind.dashboard_actor_fallback =
+            { outcome =
+                Auth_error_kind.Outcome_error
+                  { err
+                  ; err_kind = Auth_error_kind.classify err
+                  ; actor_hint = request_actor_hint request
+                  }
+            ; token_hash_prefix
+            }
           in
-          (* err_kind is a closed enum in [Auth_error_kind] — issue #11266
-             Track 2a. The inline label match here previously diverged
-             silently from the MCP-side dispatch in
-             [mcp_server_eio_execute.ml:silent_auth_token_error_kind]. *)
-          let err_kind = Auth_error_kind.to_string (Auth_error_kind.classify err) in
-          (* P3-5: token_mismatch means the dashboard's bearer token does not
-             match any credential on file.  This is a structural auth-path
-             defect: the dashboard is presenting a stale token from a previous
-             startup or a browser session whose credential was rotated.  Add a
-             one-time remediation hint to guide operators toward the fix:
-             clearing the stored dashboard token causes ensure_dashboard_dev_token
-             to mint a fresh one on the next page load. *)
-          let extra_hint =
-            if String.equal err_kind "token_mismatch" then
-              " Remediation: clear the browser's stored dashboard token \
-               (localStorage masc_dashboard_token) or delete \
-               .masc/auth/dashboard.token so a fresh token is minted on \
-               the next dashboard load."
-            else ""
-          in
-          Log.Auth.warn
-            "[silent:dashboard_actor_fallback] outcome=error \
-             token_hash_prefix=%s err_kind=%s actor_hint=%s err=%s — falling \
-             back to request actor hint.%s"
-            token_hash_prefix err_kind hint err_str extra_hint;
-          Prometheus.inc_counter
-            Prometheus.metric_silent_dashboard_actor_fallback
-            ~labels:[ ("outcome", "error"); ("err_kind", err_kind) ]
-            ();
+          record_dashboard_actor_fallback fb;
           request_actor_hint request)
   | None -> request_actor_hint request
 
@@ -380,12 +374,9 @@ let normalize_loopback_host host =
   | "::1" | "0:0:0:0:0:0:0:1" -> "localhost"
   | other -> other
 
-let trim_nonempty raw =
-  let value = String.trim raw in
-  if String.equal value "" then None else Some value
 
 let split_csv_nonempty raw =
-  raw |> String.split_on_char ',' |> List.filter_map trim_nonempty
+  raw |> String.split_on_char ',' |> List.filter_map String_util.trim_nonempty
 
 (** Returns (host, explicit_port, scheme). *)
 let host_port_scheme_of_origin origin =
@@ -500,10 +491,39 @@ let ensure_same_origin_browser_request request :
                { agent = "browser";
                  action = "cross-origin HTTP mutation" })))
 
+(* Mirrors [Masc_error.code] (the typed SSOT in lib/types/masc_error.ml).
+   Previously the catch-all [_ -> `Internal_server_error] silently demoted
+   [RateLimitExceeded _] to 500 (should be 429), [Task/Agent (NotFound _)]
+   to 500 (should be 404), and the 400-class validation errors to 500.
+   Operators reading the access log could not distinguish rate limiting
+   from a real server fault. The match is now exhaustive; adding a new
+   [Masc_error.t] outer variant will trip Warning 8 here and force an
+   explicit HTTP-status decision. *)
+(* Type annotation kept row-polymorphic (no [Httpun.Status.t] ascription)
+   so callers in both [server_h2_gateway] (H2.Status.t) and the Httpun
+   handlers can narrow to their respective protocol enums.  The .mli
+   pins the six tags this function actually returns. *)
 let http_status_of_auth_error = function
-  | Masc_domain.Auth (Masc_domain.Auth_error.Unauthorized _ | Masc_domain.Auth_error.InvalidToken _ | Masc_domain.Auth_error.TokenExpired _) -> `Unauthorized
+  | Masc_domain.Auth
+      (Masc_domain.Auth_error.Unauthorized _
+      | Masc_domain.Auth_error.InvalidToken _
+      | Masc_domain.Auth_error.TokenExpired _) -> `Unauthorized
   | Masc_domain.Auth (Masc_domain.Auth_error.Forbidden _) -> `Forbidden
-  | _ -> `Internal_server_error
+  | Masc_domain.Task (Masc_domain.Task_error.NotFound _) -> `Not_found
+  | Masc_domain.Agent (Masc_domain.Agent_error.NotFound _) -> `Not_found
+  | Masc_domain.Task
+      (Masc_domain.Task_error.AlreadyClaimed _
+      | Masc_domain.Task_error.NotClaimed _
+      | Masc_domain.Task_error.InvalidState _
+      | Masc_domain.Task_error.InvalidId _) -> `Bad_request
+  | Masc_domain.Agent
+      (Masc_domain.Agent_error.NotJoined _
+      | Masc_domain.Agent_error.AlreadyJoined _
+      | Masc_domain.Agent_error.InvalidName _) -> `Bad_request
+  | Masc_domain.Portal _ -> `Bad_request
+  | Masc_domain.System _ -> `Bad_request
+  | Masc_domain.RateLimitExceeded _ -> `Too_many_requests
+  | Masc_domain.CacheError _ -> `Internal_server_error
 
 (** Server state - initialized at startup *)
 let server_state : Mcp_server.server_state option ref = ref None
@@ -562,7 +582,13 @@ let cors_headers origin =
 
 let respond_json_with_cors ?(status = `OK) request reqd body =
   let origin = get_origin request in
-  Http_server_eio.Response.json ~status ~extra_headers:(cors_headers origin) body reqd
+  Http_server_eio.Response.json ~status ~request
+    ~extra_headers:(cors_headers origin) body reqd
+
+let respond_json_value_with_cors ?(status = `OK) request reqd value =
+  let origin = get_origin request in
+  Http_server_eio.Response.json_value ~status ~request
+    ~extra_headers:(cors_headers origin) value reqd
 
 let public_read_cors_headers request =
   match public_read_cors_origin_opt request with
@@ -571,7 +597,11 @@ let public_read_cors_headers request =
 
 let respond_public_read_json ?(status = `OK) request reqd body =
   Http_server_eio.Response.json ~status
-    ~extra_headers:(public_read_cors_headers request) body reqd
+    ~request ~extra_headers:(public_read_cors_headers request) body reqd
+
+let respond_public_read_json_value ?(status = `OK) request reqd value =
+  Http_server_eio.Response.json_value ~status
+    ~request ~extra_headers:(public_read_cors_headers request) value reqd
 
 let auth_error_json err =
   Yojson.Safe.to_string
@@ -585,7 +615,7 @@ let respond_auth_error request reqd err =
     ("content-length", string_of_int (String.length body))
     :: cors_headers origin
   ) in
-  let response = Httpun.Response.create ~headers status in
+  let response = Httpun.Response.create ~headers (status :> Httpun.Status.t) in
   Httpun.Reqd.respond_with_string reqd response body
 
 (** Respond with 429 Too Many Requests when the per-agent rate limit is

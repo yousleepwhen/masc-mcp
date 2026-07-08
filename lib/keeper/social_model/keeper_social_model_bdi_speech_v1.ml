@@ -100,9 +100,6 @@ let belief_summary_of_observation
         (if observation.idle_seconds > 0 then
            Some (Printf.sprintf "idle=%ds" observation.idle_seconds)
          else None);
-        (if Option.is_some observation.worktree_change_summary then
-           Some "worktree_delta"
-         else None);
       ]
   in
   match parts with
@@ -180,7 +177,7 @@ let inferred_tool_surface tools =
           delivery_surface = Types.Broadcast_surface;
         }
       , Types.Tool_only_broadcast )
-  else if List.exists Keeper_tool_disclosure.is_claim_tool_name tools then
+  else if List.exists Keeper_tool_progress.is_claim_tool_name tools then
     Some
       ( {
           speech_act = Types.Claim_task;
@@ -267,7 +264,12 @@ let should_dedupe_request_help ~(meta : keeper_meta) ~(blocker : string option) 
   match blocker with
   | None -> false
   | Some blocker ->
-      String.equal blocker (String.trim meta.runtime.last_blocker)
+      let previous_blocker_detail =
+        match meta.runtime.last_blocker with
+        | Some info -> String.trim info.detail
+        | None -> ""
+      in
+      String.equal blocker previous_blocker_detail
       && String.equal meta.runtime.last_speech_act "request_help"
       && meta.runtime.proactive_rt.last_ts > 0.0
       && Time_compat.now () -. meta.runtime.proactive_rt.last_ts
@@ -395,7 +397,7 @@ let apply_output_to_result ~(meta : keeper_meta)
   | _ ->
       let response_text =
         match
-          Keeper_tool_disclosure.normalize_response_text
+          Keeper_tool_response.normalize_response_text
             ~text:visible_response_body
             ~tool_names:result.tools_used ()
         with

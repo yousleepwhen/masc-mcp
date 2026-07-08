@@ -36,6 +36,7 @@ let decide
       ~verification_enabled
       ~verification_timeout_seconds
       ~new_verification_id
+      ~same_agent
       ~agent_name
       ~task_id
       ~task_status
@@ -45,31 +46,32 @@ let decide
       ~notes
       ~reason
   =
-  let same_agent assignee = String.equal assignee agent_name in
   match action, task_status with
   (* ── Claim ────────────────────────────────────── *)
   | Masc_domain.Claim, Masc_domain.Todo ->
-    ok ~set_current:task_id (Masc_domain.Claimed { assignee = agent_name; claimed_at = now })
-  | Masc_domain.Claim, (Masc_domain.Claimed { assignee; _ } | Masc_domain.InProgress { assignee; _ }) ->
-    if same_agent assignee then ok task_status
-    else Error Invalid_transition
-  | Masc_domain.Claim, Masc_domain.Done _ ->
-    ok task_status
+    ok
+      ~set_current:task_id
+      (Masc_domain.Claimed { assignee = agent_name; claimed_at = now })
+  | ( Masc_domain.Claim
+    , (Masc_domain.Claimed { assignee; _ } | Masc_domain.InProgress { assignee; _ }) ) ->
+    if same_agent assignee then ok task_status else Error Invalid_transition
+  | Masc_domain.Claim, Masc_domain.Done _ -> ok task_status
   | Masc_domain.Claim, (Masc_domain.AwaitingVerification _ | Masc_domain.Cancelled _) ->
     Error Invalid_transition
   (* ── Start ────────────────────────────────────── *)
   | Masc_domain.Start, Masc_domain.Claimed { assignee; _ } ->
     if same_agent assignee || force
-    then ok ~set_current:task_id
-           (Masc_domain.InProgress { assignee = agent_name; started_at = now })
+    then
+      ok
+        ~set_current:task_id
+        (Masc_domain.InProgress { assignee = agent_name; started_at = now })
     else Error Invalid_transition
   | Masc_domain.Start, Masc_domain.InProgress { assignee; _ } ->
-    if same_agent assignee then ok task_status
-    else Error Invalid_transition
-  | Masc_domain.Start, Masc_domain.Done _ ->
-    ok task_status
-  | Masc_domain.Start, (Masc_domain.Todo | Masc_domain.AwaitingVerification _ | Masc_domain.Cancelled _) ->
-    Error Invalid_transition
+    if same_agent assignee then ok task_status else Error Invalid_transition
+  | Masc_domain.Start, Masc_domain.Done _ -> ok task_status
+  | ( Masc_domain.Start
+    , (Masc_domain.Todo | Masc_domain.AwaitingVerification _ | Masc_domain.Cancelled _) )
+    -> Error Invalid_transition
   (* ── Done ─────────────────────────────────────── *)
   | Masc_domain.Done_action, Masc_domain.Claimed { assignee; _ } ->
     if same_agent assignee || force
@@ -79,16 +81,15 @@ let decide
     if same_agent assignee || force
     then ok (done_status ~agent_name ~now ~notes)
     else Error Invalid_transition
-  | Masc_domain.Done_action, Masc_domain.Done _ ->
-    ok task_status
-  | Masc_domain.Done_action, (Masc_domain.Todo | Masc_domain.AwaitingVerification _ | Masc_domain.Cancelled _) ->
-    Error Invalid_transition
+  | Masc_domain.Done_action, Masc_domain.Done _ -> ok task_status
+  | ( Masc_domain.Done_action
+    , (Masc_domain.Todo | Masc_domain.AwaitingVerification _ | Masc_domain.Cancelled _) )
+    -> Error Invalid_transition
   (* ── Cancel ───────────────────────────────────── *)
-  | Masc_domain.Cancel, Masc_domain.Cancelled _ ->
-    ok task_status
-  | Masc_domain.Cancel, Masc_domain.Todo ->
-    ok (cancelled_status ~agent_name ~now ~reason)
-  | Masc_domain.Cancel, (Masc_domain.Claimed { assignee; _ } | Masc_domain.InProgress { assignee; _ }) ->
+  | Masc_domain.Cancel, Masc_domain.Cancelled _ -> ok task_status
+  | Masc_domain.Cancel, Masc_domain.Todo -> ok (cancelled_status ~agent_name ~now ~reason)
+  | ( Masc_domain.Cancel
+    , (Masc_domain.Claimed { assignee; _ } | Masc_domain.InProgress { assignee; _ }) ) ->
     if same_agent assignee || force
     then ok (cancelled_status ~agent_name ~now ~reason)
     else Error Invalid_transition
@@ -96,87 +97,132 @@ let decide
     if force
     then ok (cancelled_status ~agent_name ~now ~reason)
     else Error Invalid_transition
-  | Masc_domain.Cancel, Masc_domain.Done _ ->
-    Error Invalid_transition
+  | Masc_domain.Cancel, Masc_domain.Done _ -> Error Invalid_transition
   (* ── Release ──────────────────────────────────── *)
-  | Masc_domain.Release, (Masc_domain.Claimed { assignee; _ } | Masc_domain.InProgress { assignee; _ }) ->
-    if same_agent assignee || force then ok Masc_domain.Todo
-    else Error Invalid_transition
-  | Masc_domain.Release, Masc_domain.Todo ->
-    ok task_status
-  | Masc_domain.Release, (Masc_domain.AwaitingVerification _ | Masc_domain.Done _ | Masc_domain.Cancelled _) ->
-    Error Invalid_transition
+  | ( Masc_domain.Release
+    , (Masc_domain.Claimed { assignee; _ } | Masc_domain.InProgress { assignee; _ }) ) ->
+    if same_agent assignee || force then ok Masc_domain.Todo else Error Invalid_transition
+  | Masc_domain.Release, Masc_domain.Todo -> ok task_status
+  | ( Masc_domain.Release
+    , (Masc_domain.AwaitingVerification _ | Masc_domain.Done _ | Masc_domain.Cancelled _)
+    ) -> Error Invalid_transition
   (* ── Submit for verification ──────────────────── *)
   | Masc_domain.Submit_for_verification, Masc_domain.Todo ->
-    if verification_enabled then Error Invalid_transition
-    else Error Verification_disabled
-  | Masc_domain.Submit_for_verification,
-    (Masc_domain.Claimed { assignee; _ } | Masc_domain.InProgress { assignee; _ }) ->
-    if not verification_enabled then Error Verification_disabled
+    if verification_enabled then Error Invalid_transition else Error Verification_disabled
+  | ( Masc_domain.Submit_for_verification
+    , (Masc_domain.Claimed { assignee; _ } | Masc_domain.InProgress { assignee; _ }) ) ->
+    if not verification_enabled
+    then Error Verification_disabled
     else if same_agent assignee
-    then ok
-           (Masc_domain.AwaitingVerification
-              { assignee
-              ; submitted_at = now
-              ; verification_id = new_verification_id ()
-              ; deadline =
-                  verification_deadline
-                    ~now
-                    ~timeout_seconds:verification_timeout_seconds
-              })
+    then
+      ok
+        (Masc_domain.AwaitingVerification
+           { assignee
+           ; submitted_at = now
+           ; verification_id = new_verification_id ()
+           ; deadline =
+               verification_deadline ~now ~timeout_seconds:verification_timeout_seconds
+           })
     else Error Invalid_transition
-  | Masc_domain.Submit_for_verification,
-    (Masc_domain.AwaitingVerification _ | Masc_domain.Done _ | Masc_domain.Cancelled _) ->
-    if verification_enabled then Error Invalid_transition
-    else Error Verification_disabled
+  | ( Masc_domain.Submit_for_verification
+    , (Masc_domain.AwaitingVerification _ | Masc_domain.Done _ | Masc_domain.Cancelled _)
+    ) ->
+    if verification_enabled then Error Invalid_transition else Error Verification_disabled
   (* ── Submit PR evidence (Todo bypass: any agent may submit merged PR) ── *)
   | Masc_domain.Submit_pr_evidence, Masc_domain.Todo ->
-    if not verification_enabled then Error Verification_disabled
-    else ok
-           (Masc_domain.AwaitingVerification
-              { assignee = agent_name
-              ; submitted_at = now
-              ; verification_id = new_verification_id ()
-              ; deadline =
-                  verification_deadline
-                    ~now
-                    ~timeout_seconds:verification_timeout_seconds
-              })
-  | Masc_domain.Submit_pr_evidence,
-    (Masc_domain.Claimed _ | Masc_domain.InProgress _ | Masc_domain.AwaitingVerification _
-    | Masc_domain.Done _ | Masc_domain.Cancelled _) ->
-    Error Invalid_transition
+    if not verification_enabled
+    then Error Verification_disabled
+    else
+      ok
+        (Masc_domain.AwaitingVerification
+           { assignee = agent_name
+           ; submitted_at = now
+           ; verification_id = new_verification_id ()
+           ; deadline =
+               verification_deadline ~now ~timeout_seconds:verification_timeout_seconds
+           })
+  | ( Masc_domain.Submit_pr_evidence
+    , ( Masc_domain.Claimed _
+      | Masc_domain.InProgress _
+      | Masc_domain.AwaitingVerification _
+      | Masc_domain.Done _
+      | Masc_domain.Cancelled _ ) ) -> Error Invalid_transition
   (* ── Approve verification ─────────────────────── *)
-  | Masc_domain.Approve_verification,
-    Masc_domain.AwaitingVerification { assignee; verification_id; _ } ->
-    if same_agent assignee then Error Self_approval
+  | ( Masc_domain.Approve_verification
+    , Masc_domain.AwaitingVerification { assignee; verification_id; _ } ) ->
+    if same_agent assignee
+    then Error Self_approval
     else if verification_enabled
-    then ok
-           (Masc_domain.Done
-              { assignee
-              ; completed_at = now
-              ; notes =
-                  Some
-                    (Printf.sprintf
-                       "Approved by %s (vrf:%s)%s"
-                       agent_name
-                       verification_id
-                       (if String.equal notes "" then "" else " — " ^ notes))
-              })
+    then
+      ok
+        (Masc_domain.Done
+           { assignee
+           ; completed_at = now
+           ; notes =
+               Some
+                 (Printf.sprintf
+                    "Approved by %s (vrf:%s)%s"
+                    agent_name
+                    verification_id
+                    (if String.equal notes "" then "" else " — " ^ notes))
+           })
     else Error Verification_disabled
-  | Masc_domain.Approve_verification,
-    (Masc_domain.Todo | Masc_domain.Claimed _ | Masc_domain.InProgress _ | Masc_domain.Done _ | Masc_domain.Cancelled _) ->
-    if verification_enabled then Error Invalid_transition
-    else Error Verification_disabled
+  | ( Masc_domain.Approve_verification
+    , ( Masc_domain.Todo
+      | Masc_domain.Claimed _
+      | Masc_domain.InProgress _
+      | Masc_domain.Done _
+      | Masc_domain.Cancelled _ ) ) ->
+    if verification_enabled then Error Invalid_transition else Error Verification_disabled
   (* ── Reject verification ──────────────────────── *)
-  | Masc_domain.Reject_verification,
-    Masc_domain.AwaitingVerification { assignee; _ } ->
-    if same_agent assignee then Error Self_rejection
+  | Masc_domain.Reject_verification, Masc_domain.AwaitingVerification { assignee; _ } ->
+    if same_agent assignee
+    then Error Self_rejection
     else if verification_enabled
     then ok (Masc_domain.InProgress { assignee; started_at = now })
     else Error Verification_disabled
-  | Masc_domain.Reject_verification,
-    (Masc_domain.Todo | Masc_domain.Claimed _ | Masc_domain.InProgress _ | Masc_domain.Done _ | Masc_domain.Cancelled _) ->
-    if verification_enabled then Error Invalid_transition
-    else Error Verification_disabled
+  | ( Masc_domain.Reject_verification
+    , ( Masc_domain.Todo
+      | Masc_domain.Claimed _
+      | Masc_domain.InProgress _
+      | Masc_domain.Done _
+      | Masc_domain.Cancelled _ ) ) ->
+    if verification_enabled then Error Invalid_transition else Error Verification_disabled
+;;
+
+(* Enumerate the actions that [decide] would accept for the given status under
+   ~same_agent / ~force / ~verification_enabled. Pure function over the decide
+   table; closes the workaround posture noted in
+   lib/task_transition_state/task_transition_state.ml header. Pass [~same_agent]
+   reflecting whether the caller is the task's current assignee (irrelevant for
+   Todo / AwaitingVerification approver checks but [decide] still routes
+   through it for [Claim] / [Start] / [Done_action] / [Cancel] / [Release] /
+   [Submit_for_verification]). *)
+let valid_next_actions
+      ~verification_enabled
+      ~same_agent
+      ~force
+      ~task_status
+  =
+  let same_agent_pred _ = same_agent in
+  let try_action action =
+    match
+      decide
+        ~verification_enabled
+        ~verification_timeout_seconds:0.0
+        ~new_verification_id:(fun () -> "")
+        ~same_agent:same_agent_pred
+        ~agent_name:""
+        ~task_id:""
+        ~task_status
+        ~action
+        ~now:""
+        ~force
+        ~notes:""
+        ~reason:""
+    with
+    | Ok _ -> true
+    | Error _ -> false
+  in
+  List.filter try_action Masc_domain.all_task_actions
 ;;

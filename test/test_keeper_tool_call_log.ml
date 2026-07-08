@@ -8,6 +8,12 @@ let eio_test name fn =
     Fs_compat.set_fs (Eio.Stdenv.fs env);
     fn ())
 
+let eio_env_test name fn =
+  Alcotest.test_case name `Quick (fun () ->
+    Eio_main.run @@ fun env ->
+    Fs_compat.set_fs (Eio.Stdenv.fs env);
+    fn env)
+
 let counter = ref 0
 
 let with_tmp_log f =
@@ -22,7 +28,7 @@ let with_tmp_log f =
   Fun.protect
     ~finally:(fun () ->
       Keeper_tool_call_log.reset_for_testing ();
-      ignore (Sys.command (Printf.sprintf "rm -rf %s" (Filename.quote dir))))
+      Fs_compat.remove_tree dir)
     (fun () -> f ())
 
 let with_tmp_log_dir f =
@@ -37,7 +43,7 @@ let with_tmp_log_dir f =
   Fun.protect
     ~finally:(fun () ->
       Keeper_tool_call_log.reset_for_testing ();
-      ignore (Sys.command (Printf.sprintf "rm -rf %s" (Filename.quote dir))))
+      Fs_compat.remove_tree dir)
     (fun () -> f dir)
 
 let with_tmp_corrupt_tool_call_store f =
@@ -54,7 +60,7 @@ let with_tmp_corrupt_tool_call_store f =
   Fun.protect
     ~finally:(fun () ->
       Keeper_tool_call_log.reset_for_testing ();
-      ignore (Sys.command (Printf.sprintf "rm -rf %s" (Filename.quote dir))))
+      Fs_compat.remove_tree dir)
     (fun () -> f ~dir ~masc_root)
 
 (* ── read_recent edge cases ─────────────────────────── *)
@@ -122,9 +128,9 @@ let test_sensitive_input_fields_redacted () =
     Alcotest.(check int) "one entry logged" 1 (List.length entries);
     let entry_str = Yojson.Safe.to_string (List.hd entries) in
     Alcotest.(check bool) "token value redacted" false
-      (Observability_redact.contains_substring ~sub:"sk-proj-abcdefghijklmnop12345678" entry_str))
+      (String_util.contains_substring entry_str "sk-proj-abcdefghijklmnop12345678"))
 
-(* ── Model field preserved ───────────────────────────── *)
+(* ── Model field redacted ───────────────────────────── *)
 
 let test_model_field_stored () =
   with_tmp_log (fun () ->
@@ -132,20 +138,28 @@ let test_model_field_stored () =
       ~keeper_name:"k" ~tool_name:"masc_status"
       ~input:(`Assoc []) ~output_text:"ok"
       ~success:true ~duration_ms:2.0
-      ~model:"glm-4-9b" ();
+      ~model:"provider_k-4-9b"
+      ~cascade_profile:"local_qwen3_27b_only"
+      ();
     let entries = Keeper_tool_call_log.read_recent () in
     Alcotest.(check int) "one entry" 1 (List.length entries);
     let entry_str = Yojson.Safe.to_string (List.hd entries) in
-    Alcotest.(check bool) "model field present" true
-      (Observability_redact.contains_substring ~sub:"glm-4-9b" entry_str))
+    Alcotest.(check bool) "raw model absent" false
+      (String_util.contains_substring entry_str "provider_k-4-9b");
+    Alcotest.(check (option string)) "model redacted to runtime"
+      (Some "runtime")
+      (Safe_ops.json_string_opt "model" (List.hd entries));
+    Alcotest.(check (option string)) "cascade profile stored"
+      (Some "local_qwen3_27b_only")
+      (Safe_ops.json_string_opt "cascade_profile" (List.hd entries)))
 
 let test_policy_denied_structured_error_gets_semantic_failure () =
   with_tmp_log (fun () ->
     Keeper_tool_call_log.log_call
-      ~keeper_name:"k" ~tool_name:"keeper_fs_read"
+      ~keeper_name:"k" ~tool_name:"tool_read_file"
       ~input:(`Assoc [("path", `String "blocked.txt")])
       ~output_text:
-        {|{"ok":false,"error":"tool_not_allowed","tool":"keeper_fs_read"}|}
+        {|{"ok":false,"error":"tool_not_allowed","tool":"tool_read_file"}|}
       ~success:true ~duration_ms:1.0 ();
     let entries = Keeper_tool_call_log.read_recent ~n:1 () in
     Alcotest.(check int) "one entry" 1 (List.length entries);
@@ -172,6 +186,50 @@ let test_policy_denied_structured_error_gets_semantic_failure () =
       (Some "policy_denied")
       (Safe_ops.json_string_opt "category" failure_category))
 
+let test_structured_ok_overrides_transport_failure_for_semantic_success () =
+  with_tmp_log (fun () ->
+    Keeper_tool_call_log.log_call
+      ~keeper_name:"k" ~tool_name:"tool_execute"
+      ~input:(`Assoc [ "cmd", `String "rg missing lib" ])
+      ~output_text:
+        {|{"ok":true,"semantic_status":"no_match","summary":"Search completed with no matches."}|}
+      ~success:false ~duration_ms:1.0 ();
+    let entries = Keeper_tool_call_log.read_recent ~n:1 () in
+    let entry = List.hd entries in
+    Alcotest.(check bool) "transport failure preserved" false
+      (Safe_ops.json_bool ~default:true "success" entry);
+    Alcotest.(check bool) "semantic success follows structured output" true
+      (Safe_ops.json_bool ~default:false "semantic_success" entry);
+    Alcotest.(check (option string)) "semantic outcome"
+      (Some "no_match")
+      (Safe_ops.json_string_opt "semantic_outcome" entry))
+
+let test_blocked_structured_output_keeps_semantic_category () =
+  with_tmp_log (fun () ->
+    Keeper_tool_call_log.log_call
+      ~keeper_name:"k" ~tool_name:"tool_execute"
+      ~input:(`Assoc [ "cmd", `String "git log --oneline | head -5" ])
+      ~output_text:
+        {|{"ok":false,"error":"tool_execute_command_shape_blocked","failure_class":"workflow_rejection","semantic_status":"blocked","shape_block":"pipe_or_redirect"}|}
+      ~success:false ~duration_ms:1.0 ();
+    let entries = Keeper_tool_call_log.read_recent ~n:1 () in
+    let entry = List.hd entries in
+    Alcotest.(check bool) "semantic success is false" false
+      (Safe_ops.json_bool ~default:true "semantic_success" entry);
+    Alcotest.(check (option string)) "semantic outcome"
+      (Some "blocked")
+      (Safe_ops.json_string_opt "semantic_outcome" entry);
+    let summary = Dashboard_http_tool_quality.aggregate ~n:10 () in
+    let failure_category =
+      summary
+      |> Yojson.Safe.Util.member "failure_categories"
+      |> Yojson.Safe.Util.to_list
+      |> List.hd
+    in
+    Alcotest.(check (option string)) "failure category keeps shape tag"
+      (Some "shape_block:pipe_or_redirect")
+      (Safe_ops.json_string_opt "category" failure_category))
+
 let test_turn_context_fields_stored () =
   with_tmp_log (fun () ->
     Keeper_tool_call_log.set_turn_context
@@ -196,8 +254,9 @@ let test_turn_context_fields_stored () =
       ~approval_mode:"manual"
       ~tool_surface_class:"execution"
       ~visible_tool_count:2
-      ~required_tools:["keeper_bash"]
-      ~missing_required_tools:["keeper_fs_edit"]
+      ~required_tools:["tool_execute"]
+      ~required_tool_candidates:["tool_execute"; "tool_search_files"]
+      ~missing_required_tools:["tool_edit_file"]
       ~cascade_profile:"tool_use_strict"
       ();
     Keeper_tool_call_log.log_call
@@ -229,10 +288,15 @@ let test_turn_context_fields_stored () =
     Alcotest.(check (option string)) "session_id field"
       (Some "trace-k")
       (Safe_ops.json_string_opt "session_id" entry);
+    Alcotest.(check int) "generation field" 3
+      (Safe_ops.json_int ~default:0 "generation" entry);
     Alcotest.(check int) "turn field" 7
       (Safe_ops.json_int ~default:0 "turn" entry);
     Alcotest.(check int) "keeper_turn_id field" 7
       (Safe_ops.json_int ~default:0 "keeper_turn_id" entry);
+    Alcotest.(check (option string)) "cascade_profile field"
+      (Some "tool_use_strict")
+      (Safe_ops.json_string_opt "cascade_profile" entry);
     Alcotest.(check (option string)) "task_id field"
       (Some "task-runtime-trust")
       (Safe_ops.json_string_opt "task_id" entry);
@@ -264,14 +328,22 @@ let test_turn_context_fields_stored () =
       Yojson.Safe.Util.(
         runtime_contract |> member "allowed_paths" |> to_list |> List.map to_string);
     Alcotest.(check (list string)) "runtime_contract required_tools"
-      ["keeper_bash"]
+      ["tool_execute"]
       Yojson.Safe.Util.(
         runtime_contract |> member "required_tools" |> to_list |> List.map to_string);
+    Alcotest.(check (list string)) "runtime_contract required_tool_candidates"
+      ["tool_execute"; "tool_search_files"]
+      Yojson.Safe.Util.(
+        runtime_contract |> member "required_tool_candidates" |> to_list
+        |> List.map to_string);
     Alcotest.(check (list string)) "runtime_contract missing_required_tools"
-      ["keeper_fs_edit"]
+      ["tool_edit_file"]
       Yojson.Safe.Util.(
         runtime_contract |> member "missing_required_tools" |> to_list
         |> List.map to_string);
+    Alcotest.(check (option string)) "runtime_contract cascade_profile"
+      (Some "tool_use_strict")
+      (Safe_ops.json_string_opt "cascade_profile" runtime_contract);
     let action_radius = Yojson.Safe.Util.member "action_radius" entry in
     Alcotest.(check (option string)) "action_radius tool"
       (Some "masc_status")
@@ -326,7 +398,7 @@ let test_route_evidence_stored_for_git_push () =
   with_tmp_log (fun () ->
     Keeper_tool_call_log.log_call
       ~keeper_name:"executor"
-      ~tool_name:"keeper_bash"
+      ~tool_name:"tool_execute"
       ~input:
         (`Assoc
            [
@@ -348,8 +420,17 @@ let test_route_evidence_stored_for_git_push () =
     | [ entry ] ->
       let evidence = Yojson.Safe.Util.member "route_evidence" entry in
       Alcotest.(check (option string)) "tool name"
-        (Some "keeper_bash")
+        (Some "tool_execute")
         (Safe_ops.json_string_opt "tool_name" evidence);
+      Alcotest.(check (option string)) "descriptor id"
+        (Some "agent.execute")
+        (Safe_ops.json_string_opt "descriptor_id" evidence);
+      Alcotest.(check (option string)) "public name"
+        (Some "Execute")
+        (Safe_ops.json_string_opt "public_name" evidence);
+      Alcotest.(check (option string)) "canonical name"
+        (Some "tool_execute")
+        (Safe_ops.json_string_opt "canonical_name" evidence);
       Alcotest.(check (option string)) "command captured"
         (Some "git push -u origin [REDACTED]")
         (Safe_ops.json_string_opt "command" evidence);
@@ -373,41 +454,6 @@ let test_route_evidence_stored_for_git_push () =
         (Safe_ops.json_string_opt "label" status)
     | _ -> Alcotest.fail "expected exactly one entry")
 
-let test_route_evidence_extracts_pr_url_from_gh_output () =
-  with_tmp_log (fun () ->
-    Keeper_tool_call_log.log_call
-      ~keeper_name:"executor"
-      ~tool_name:"keeper_bash"
-      ~input:
-        (`Assoc
-           [
-             ( "cmd",
-               `String
-                 "gh pr create --draft --title proof --body proof --base main"
-             );
-             ( "cwd",
-               `String "repos/masc-mcp-keeper-direct-proof-20260506-1039" );
-           ])
-      ~output_text:
-        "https://github.com/jeong-sik/masc-mcp/pull/13550\n"
-      ~success:true
-      ~duration_ms:10.0
-      ();
-    let entries = Keeper_tool_call_log.read_recent ~n:1 () in
-    Alcotest.(check int) "entry persisted" 1 (List.length entries);
-    match entries with
-    | [ entry ] ->
-      let evidence = Yojson.Safe.Util.member "route_evidence" entry in
-      Alcotest.(check (option string)) "pr url captured"
-        (Some "https://github.com/jeong-sik/masc-mcp/pull/13550")
-        (Safe_ops.json_string_opt "pr_url" evidence);
-      (match Safe_ops.json_string_opt "command" evidence with
-       | Some command ->
-         Alcotest.(check bool) "command captured" true
-           (String.starts_with ~prefix:"gh pr create" command)
-       | None -> Alcotest.fail "expected command evidence")
-    | _ -> Alcotest.fail "expected exactly one entry")
-
 let test_route_evidence_stored_for_blob_backed_git_push () =
   with_tmp_log (fun () ->
     let sentinel =
@@ -422,7 +468,7 @@ let test_route_evidence_stored_for_blob_backed_git_push () =
     in
     Keeper_tool_call_log.log_call
       ~keeper_name:"executor"
-      ~tool_name:"keeper_bash"
+      ~tool_name:"tool_execute"
       ~input:
         (`Assoc
            [
@@ -455,12 +501,12 @@ let test_route_evidence_stored_for_blob_backed_git_push () =
         (Safe_ops.json_string_opt "command" evidence)
     | _ -> Alcotest.fail "expected exactly one entry")
 
-let test_route_evidence_skips_unproven_filesystem_calls () =
+let test_route_evidence_records_descriptor_for_filesystem_calls () =
   with_tmp_log (fun () ->
     Keeper_tool_call_log.log_call
       ~keeper_name:"executor"
-      ~tool_name:"keeper_fs_read"
-      ~input:(`Assoc [ ("path", `String "README.md") ])
+      ~tool_name:"ReadFile"
+      ~input:(`Assoc [ ("file_path", `String "README.md") ])
       ~output_text:"file contents"
       ~success:true
       ~duration_ms:4.0
@@ -469,9 +515,134 @@ let test_route_evidence_skips_unproven_filesystem_calls () =
     Alcotest.(check int) "entry persisted" 1 (List.length entries);
     match entries with
     | [ entry ] ->
-      Alcotest.(check bool) "route evidence absent without proof" true
-        (match Yojson.Safe.Util.member "route_evidence" entry with
-         | `Null -> true
+      let evidence = Yojson.Safe.Util.member "route_evidence" entry in
+      Alcotest.(check (option string)) "tool name"
+        (Some "ReadFile")
+        (Safe_ops.json_string_opt "tool_name" evidence);
+      Alcotest.(check (option string)) "descriptor id"
+        (Some "agent.read_file")
+        (Safe_ops.json_string_opt "descriptor_id" evidence);
+      Alcotest.(check (option string)) "public name"
+        (Some "ReadFile")
+        (Safe_ops.json_string_opt "public_name" evidence);
+      Alcotest.(check (option string)) "canonical name"
+        (Some "tool_read_file")
+        (Safe_ops.json_string_opt "canonical_name" evidence);
+      Alcotest.(check (option string)) "executor"
+        (Some "filesystem")
+        (Safe_ops.json_string_opt "executor" evidence);
+      Alcotest.(check (option string)) "backend"
+        (Some "sandbox_process")
+        (Safe_ops.json_string_opt "backend" evidence);
+      Alcotest.(check (option string)) "sandbox"
+        (Some "backend_selected")
+        (Safe_ops.json_string_opt "sandbox" evidence)
+    | _ -> Alcotest.fail "expected exactly one entry")
+
+let test_route_evidence_records_internal_descriptor () =
+  with_tmp_log (fun () ->
+    Keeper_tool_call_log.log_call
+      ~keeper_name:"executor"
+      ~tool_name:"keeper_time_now"
+      ~input:(`Assoc [])
+      ~output_text:
+        {|{"ok":true,"iso":"2026-05-26T00:00:00Z","epoch":1780000000}|}
+      ~success:true
+      ~duration_ms:1.0
+      ();
+    let entries = Keeper_tool_call_log.read_recent ~n:1 () in
+    Alcotest.(check int) "entry persisted" 1 (List.length entries);
+    match entries with
+    | [ entry ] ->
+      let evidence = Yojson.Safe.Util.member "route_evidence" entry in
+      Alcotest.(check (option string)) "tool name"
+        (Some "keeper_time_now")
+        (Safe_ops.json_string_opt "tool_name" evidence);
+      Alcotest.(check (option string)) "descriptor id"
+        (Some "keeper.time.now")
+        (Safe_ops.json_string_opt "descriptor_id" evidence);
+      Alcotest.(check (option string)) "public name"
+        (Some "keeper_time_now")
+        (Safe_ops.json_string_opt "public_name" evidence);
+      Alcotest.(check (option string)) "canonical name"
+        (Some "keeper_time_now")
+        (Safe_ops.json_string_opt "canonical_name" evidence);
+      Alcotest.(check (option string)) "executor"
+        (Some "in_process")
+        (Safe_ops.json_string_opt "executor" evidence);
+      Alcotest.(check (option string)) "backend"
+        (Some "ocaml_runtime")
+        (Safe_ops.json_string_opt "backend" evidence);
+      Alcotest.(check (option string)) "sandbox"
+        (Some "none")
+        (Safe_ops.json_string_opt "sandbox" evidence);
+      Alcotest.(check (option string)) "runtime handler"
+        (Some "tool_time_now")
+        (Safe_ops.json_string_opt "runtime_handler" evidence)
+    | _ -> Alcotest.fail "expected exactly one entry")
+
+let test_route_evidence_records_masc_board_descriptor () =
+  with_tmp_log (fun () ->
+    Keeper_tool_call_log.log_call
+      ~keeper_name:"executor"
+      ~tool_name:"mcp__masc__masc_board_post"
+      ~input:(`Assoc [ "body", `String "descriptor evidence test" ])
+      ~output_text:{|{"ok":true,"post_id":"post-1"}|}
+      ~success:true
+      ~duration_ms:2.0
+      ();
+    let entries = Keeper_tool_call_log.read_recent ~n:1 () in
+    Alcotest.(check int) "entry persisted" 1 (List.length entries);
+    match entries with
+    | [ entry ] ->
+      let evidence = Yojson.Safe.Util.member "route_evidence" entry in
+      Alcotest.(check (option string)) "tool name"
+        (Some "mcp__masc__masc_board_post")
+        (Safe_ops.json_string_opt "tool_name" evidence);
+      Alcotest.(check (option string)) "descriptor id"
+        (Some "masc.board.post")
+        (Safe_ops.json_string_opt "descriptor_id" evidence);
+      Alcotest.(check (option string)) "public name"
+        (Some "masc_board_post")
+        (Safe_ops.json_string_opt "public_name" evidence);
+      Alcotest.(check (option string)) "canonical name"
+        (Some "masc_board_post")
+        (Safe_ops.json_string_opt "canonical_name" evidence);
+      Alcotest.(check (option string)) "executor"
+        (Some "in_process")
+        (Safe_ops.json_string_opt "executor" evidence);
+      Alcotest.(check (option string)) "effect domain"
+        (Some "masc_coordination")
+        (Safe_ops.json_string_opt "effect_domain" evidence);
+      Alcotest.(check (option string)) "runtime handler"
+        (Some "tool_masc_board_dispatch")
+        (Safe_ops.json_string_opt "runtime_handler" evidence)
+    | _ -> Alcotest.fail "expected exactly one entry")
+
+let test_non_object_input_still_logs_action_radius () =
+  with_tmp_log (fun () ->
+    Keeper_tool_call_log.log_call
+      ~keeper_name:"executor"
+      ~tool_name:"tool_write_file"
+      ~input:(`String "raw pre-tool gate payload")
+      ~output_text:"approval_required:governance_approval"
+      ~success:false
+      ~duration_ms:3.0
+      ();
+    let entries = Keeper_tool_call_log.read_recent ~n:1 () in
+    Alcotest.(check int) "entry persisted" 1 (List.length entries);
+    match entries with
+    | [ entry ] ->
+      let action_radius = Yojson.Safe.Util.member "action_radius" entry in
+      Alcotest.(check (option string)) "action key falls back to tool"
+        (Some "tool_write_file")
+        (Safe_ops.json_string_opt "action_key" action_radius);
+      Alcotest.(check (option string)) "target kind falls back to tool"
+        (Some "tool")
+        (Safe_ops.json_string_opt "target_kind" action_radius);
+      Alcotest.(check bool) "input preserved as string" true
+        (match Yojson.Safe.Util.member "input" entry with
+         | `String "raw pre-tool gate payload" -> true
          | _ -> false)
     | _ -> Alcotest.fail "expected exactly one entry")
 
@@ -487,16 +658,18 @@ let test_dashboard_aggregate_groups_runtime_fields () =
       ~keeper_name:"k1" ~tool_name:"masc_status"
       ~input:(`Assoc []) ~output_text:"ok"
       ~success:true ~duration_ms:2.0
-      ~model:"glm-5.1" ~lane:"tool_required"
+      ~model:"provider_k-5.1" ~lane:"tool_required"
       ~tool_choice:"required"
-      ~thinking_enabled:false ~thinking_budget:1024 ();
+      ~thinking_enabled:false ~thinking_budget:1024
+      ~cascade_profile:"primary" ();
     Keeper_tool_call_log.log_call
       ~keeper_name:"k2" ~tool_name:"masc_status"
       ~input:(`Assoc []) ~output_text:"error: {\"ok\":false,\"error\":\"boom\"}"
       ~success:false ~duration_ms:3.0
       ~model:"qwen3.5-27b-unified" ~lane:"retry"
       ~tool_choice:"auto"
-      ~thinking_enabled:true ~thinking_budget:4096 ();
+      ~thinking_enabled:true ~thinking_budget:4096
+      ~cascade_profile:"local_qwen3_27b_only" ();
     let summary = Dashboard_http_tool_quality.aggregate ~n:10 () in
     Alcotest.(check (option string)) "sampling mode present"
       (Some "recent_n")
@@ -524,15 +697,22 @@ let test_dashboard_aggregate_groups_runtime_fields () =
     Alcotest.(check bool) "latest age present" true
       (Safe_ops.json_float_opt "latest_age_s" summary |> Option.is_some);
     let by_model = Yojson.Safe.Util.member "by_model" summary in
+    let by_cascade = Yojson.Safe.Util.member "by_cascade" summary in
     let by_lane = Yojson.Safe.Util.member "by_lane" summary in
     let by_thinking = Yojson.Safe.Util.member "by_thinking_mode" summary in
     let by_tool_choice = Yojson.Safe.Util.member "by_tool_choice" summary in
-    let glm_bucket = find_bucket "glm-5.1" by_model in
+    let runtime_bucket = find_bucket "runtime" by_model in
+    let primary_cascade_bucket = find_bucket "primary" by_cascade in
+    let local_cascade_bucket = find_bucket "local_qwen3_27b_only" by_cascade in
     let retry_bucket = find_bucket "retry" by_lane in
     let enabled_bucket = find_bucket "enabled" by_thinking in
     let auto_bucket = find_bucket "auto" by_tool_choice in
-    Alcotest.(check int) "glm bucket calls" 1
-      (Safe_ops.json_int ~default:0 "calls" glm_bucket);
+    Alcotest.(check int) "runtime bucket calls" 2
+      (Safe_ops.json_int ~default:0 "calls" runtime_bucket);
+    Alcotest.(check int) "primary cascade bucket calls" 1
+      (Safe_ops.json_int ~default:0 "calls" primary_cascade_bucket);
+    Alcotest.(check int) "local cascade bucket calls" 1
+      (Safe_ops.json_int ~default:0 "calls" local_cascade_bucket);
     Alcotest.(check int) "retry bucket calls" 1
       (Safe_ops.json_int ~default:0 "calls" retry_bucket);
     Alcotest.(check int) "enabled thinking calls" 1
@@ -680,6 +860,7 @@ let test_dashboard_aggregate_surfaces_coverage_gap () =
    entire JSONL file and silently drop rows. *)
 let test_output_invalid_utf8_sanitized () =
   with_tmp_log_dir (fun dir ->
+    Safe_ops.reset_persistence_utf8_repair_stats_for_tests ();
     let raw_output = "prefix\xecsuffix" in
     Keeper_tool_call_log.log_call
       ~keeper_name:"k" ~tool_name:"tool_bin"
@@ -711,7 +892,12 @@ let test_output_invalid_utf8_sanitized () =
         if dlen > 0 && Uchar.utf_decode_is_valid dec then scan (i + dlen)
         else false
     in
-    Alcotest.(check bool) "persisted file is valid UTF-8" true (scan 0))
+    Alcotest.(check bool) "persisted file is valid UTF-8" true (scan 0);
+    let repair_stats = Safe_ops.persistence_utf8_repair_stats () in
+    Alcotest.(check int)
+      "writer-side tool output parsing does not emit persistence repair"
+      0
+      repair_stats.repaired_reads)
 
 let test_output_valid_utf8_untouched () =
   with_tmp_log (fun () ->
@@ -790,6 +976,72 @@ let test_output_inline_string_preserved () =
         "small inline result" s
     | _ -> Alcotest.fail "expected exactly one entry")
 
+let test_string_input_keeps_action_radius () =
+  with_tmp_log (fun () ->
+    Keeper_tool_call_log.log_call
+      ~keeper_name:"k" ~tool_name:"tool_large_input"
+      ~input:(`String "{\"action\":\"write\"}")
+      ~output_text:"ok"
+      ~success:true ~duration_ms:1.0 ();
+    let results = Keeper_tool_call_log.read_recent ~n:1 () in
+    match results with
+    | [ json ] ->
+      let action_radius =
+        match json with
+        | `Assoc fields ->
+          Option.value (List.assoc_opt "action_radius" fields) ~default:`Null
+        | _ -> `Null
+      in
+      let action_key =
+        Safe_ops.json_string ~default:"" "action_key" action_radius
+      in
+      let target_kind =
+        Safe_ops.json_string ~default:"" "target_kind" action_radius
+      in
+      Alcotest.(check string)
+        "falls back when input is not a JSON object"
+        "tool_large_input"
+        action_key;
+      Alcotest.(check string) "non-object input has tool target" "tool" target_kind
+    | _ -> Alcotest.fail "expected exactly one entry")
+
+let test_async_append_defers_until_flush env =
+  with_tmp_log_dir (fun _dir ->
+    Eio.Switch.run (fun sw ->
+      Keeper_tool_call_log.start_flush_fiber
+        ~sw
+        ~clock:(Eio.Stdenv.clock env);
+      Keeper_tool_call_log.log_call
+        ~keeper_name:"async-k"
+        ~tool_name:"masc_status"
+        ~input:(`Assoc [])
+        ~output_text:"ok"
+        ~success:true
+        ~duration_ms:1.0
+        ();
+      Alcotest.(check int)
+        "record queued before background flush"
+        1
+        (Keeper_tool_call_log.queued_count_for_testing ());
+      Alcotest.(check int)
+        "queued record not visible before explicit flush"
+        0
+        (List.length (Keeper_tool_call_log.read_recent ~n:1 ()));
+      Keeper_tool_call_log.flush_now ();
+      Alcotest.(check int)
+        "queue drained by explicit flush"
+        0
+        (Keeper_tool_call_log.queued_count_for_testing ());
+      let entries = Keeper_tool_call_log.read_recent ~n:1 () in
+      Alcotest.(check int) "record persisted after flush" 1 (List.length entries);
+      match entries with
+      | [ entry ] ->
+        Alcotest.(check (option string))
+          "keeper persisted"
+          (Some "async-k")
+          (Safe_ops.json_string_opt "keeper" entry)
+      | _ -> Alcotest.fail "expected exactly one entry"))
+
 let () =
   Alcotest.run "keeper_tool_call_log"
     [ ( "read_recent",
@@ -803,17 +1055,25 @@ let () =
         ; eio_test "model field stored" test_model_field_stored
         ; eio_test "policy denied is semantic failure"
             test_policy_denied_structured_error_gets_semantic_failure
+        ; eio_test "structured ok overrides transport failure"
+            test_structured_ok_overrides_transport_failure_for_semantic_success
+        ; eio_test "blocked output keeps semantic category"
+            test_blocked_structured_output_keeps_semantic_category
         ; eio_test "turn context fields stored" test_turn_context_fields_stored
         ; eio_test "turn context fields absent without context"
             test_turn_context_fields_absent_without_context
         ; eio_test "route evidence stored for git push"
             test_route_evidence_stored_for_git_push
-        ; eio_test "route evidence extracts PR URL"
-            test_route_evidence_extracts_pr_url_from_gh_output
         ; eio_test "route evidence reads blob-backed git push preview"
             test_route_evidence_stored_for_blob_backed_git_push
-        ; eio_test "route evidence skips unproven filesystem calls"
-            test_route_evidence_skips_unproven_filesystem_calls
+        ; eio_test "route evidence records descriptor for filesystem calls"
+            test_route_evidence_records_descriptor_for_filesystem_calls
+        ; eio_test "route evidence records internal descriptor"
+            test_route_evidence_records_internal_descriptor
+        ; eio_test "route evidence records masc board descriptor"
+            test_route_evidence_records_masc_board_descriptor
+        ; eio_test "non-object input still logs action radius"
+            test_non_object_input_still_logs_action_radius
         ; eio_test "dashboard aggregate groups runtime fields"
             test_dashboard_aggregate_groups_runtime_fields
         ; eio_test "dashboard hourly trend buckets numeric ts"
@@ -836,5 +1096,13 @@ let () =
             test_output_blob_sentinel_normalized
         ; eio_test "inline string output stays a JSON string"
             test_output_inline_string_preserved
+        ] )
+    ; ( "action_radius",
+        [ eio_test "string input does not break action radius"
+            test_string_input_keeps_action_radius
+        ] )
+    ; ( "async_append",
+        [ eio_env_test "append queues until flush when async fiber is active"
+            test_async_append_defers_until_flush
         ] )
     ]

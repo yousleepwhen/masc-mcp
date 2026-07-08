@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   resetKeeperConfig: vi.fn(),
   selectKeeper: vi.fn(),
   navigate: vi.fn(),
+  replaceRoute: vi.fn(),
   route: {
     value: {
       tab: 'monitoring',
@@ -45,18 +46,33 @@ vi.mock('./keeper-config-panel', async () => {
   }
 })
 
-vi.mock('./keeper-detail-panels', () => ({
+vi.mock('./keeper-detail-charts', () => ({
   ContextChart: () => null,
-  CtxCompositionPanel: () => null,
-  EquipmentList: () => null,
-  InferenceTelemetryPanel: () => null,
-  KpiGrid: () => null,
   MetricsCharts: () => null,
-  PromptTelemetryPanel: () => null,
-  RawDataDebug: () => null,
-  RelationshipList: () => null,
   TokenTrendChart: () => null,
+}))
+
+vi.mock('./keeper-detail-ctx-composition', () => ({
+  CtxCompositionPanel: () => null,
+}))
+
+vi.mock('./keeper-detail-debug', () => ({
+  RawDataDebug: () => null,
+}))
+
+vi.mock('./keeper-detail-kpi', () => ({
+  KpiGrid: () => null,
+}))
+
+vi.mock('./keeper-detail-lists', () => ({
+  EquipmentList: () => null,
+  RelationshipList: () => null,
   TraitsList: () => null,
+}))
+
+vi.mock('./keeper-detail-telemetry', () => ({
+  InferenceTelemetryPanel: () => null,
+  PromptTelemetryPanel: () => null,
 }))
 
 vi.mock('./keeper-detail-history', async () => {
@@ -116,11 +132,12 @@ vi.mock('../keeper-runtime', async () => {
 
 vi.mock('../router', () => ({
   navigate: mocks.navigate,
+  replaceRoute: mocks.replaceRoute,
   route: mocks.route,
 }))
 
+import { KeeperDetailPage } from './keeper-detail-page'
 import {
-  KeeperDetailPage,
   clearKeeperDetailSelection,
   closeKeeperDetail,
   filterCheckpointHistory,
@@ -145,6 +162,7 @@ describe('openKeeperDetail', () => {
     mocks.resetKeeperConfig.mockClear()
     mocks.selectKeeper.mockClear()
     mocks.navigate.mockClear()
+    mocks.replaceRoute.mockClear()
     mocks.route.value = {
       tab: 'monitoring',
       params: { section: 'agents', view: 'keepers' },
@@ -265,14 +283,14 @@ describe('KeeperDetailPage', () => {
       generation: 0,
       turn_count: 97,
       last_turn_ago_s: 1108,
-      primary_model: 'codex_cli:gpt-5.3-codex-spark',
-      active_model: 'claude_code:auto',
-      active_model_label: 'claude_code:auto',
+      primary_model: 'cli-tool-a:model-d-spark',
+      active_model: 'cli-tool-d:auto',
+      active_model_label: 'cli-tool-d:auto',
       context_ratio: 0.000008,
       context_tokens: 8,
       context_max: 1000000,
       last_speech_act: 'defer',
-      recent_tool_names: ['keeper_stay_silent', 'keeper_tasks_list', 'keeper_shell'],
+      recent_tool_names: ['keeper_stay_silent', 'keeper_tasks_list', 'Execute'],
       agent: {
         exists: true,
         name: 'keeper-analyst-agent',
@@ -302,7 +320,7 @@ describe('KeeperDetailPage', () => {
         next_eligible_at_s: null,
       },
       trust: {
-        disposition: 'Pause',
+        disposition: 'Blocked',
         disposition_reason: 'tool_required_unsatisfied',
         needs_attention: true,
       },
@@ -313,6 +331,14 @@ describe('KeeperDetailPage', () => {
     expect(screen.getByText('analyst')).toBeTruthy()
     expect(mocks.selectKeeper).toHaveBeenCalledWith('analyst')
   })
+
+  // Removed test 'surfaces and clears keeper route focus...' (2026-05-19):
+  // KeeperRouteFocusPanel was deleted as part of the Phase 5 layout SSOT
+  // reconciliation. Page header (KeeperDetailHeaderInfo) renders the same
+  // keeper name + status, and the existing close button covers the CLEAR
+  // navigation. `data-route-focused-keeper` attribute moved to the outer
+  // page container in keeper-detail-page.ts and remains testable from
+  // there if needed.
 })
 
 function makeSummary(overrides: Partial<KeeperCheckpointSummary> = {}): KeeperCheckpointSummary {

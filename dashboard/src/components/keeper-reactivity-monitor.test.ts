@@ -3,8 +3,8 @@ import {
   extractKeeperStopSummaries,
   extractProactiveSkips,
   extractBatchTerminations,
-  isKeeperPaused,
 } from './keeper-reactivity-monitor'
+import { isKeeperPaused } from '../lib/keeper-predicates'
 import type { ParsedMetric } from './prometheus-metrics'
 import type { Keeper } from '../types'
 
@@ -69,37 +69,26 @@ describe('extractKeeperStopSummaries', () => {
     expect(gamma.storm_pauses).toBe(7)
   })
 
-  it('aggregates budget_loop_pauses from masc_keeper_oas_timeout_budget_loop_paused_total', () => {
+  it('aggregates provider_timeout_loop_pauses from masc_keeper_provider_timeout_loop_paused_total', () => {
     const metrics: ParsedMetric[] = [
-      makeMetric('masc_keeper_oas_timeout_budget_loop_paused_total', [
+      makeMetric('masc_keeper_provider_timeout_loop_paused_total', [
         { labels: { keeper: 'delta' }, value: 4 },
       ]),
     ]
     const summaries = extractKeeperStopSummaries(metrics)
     const delta = summaries.find(s => s.keeper === 'delta')!
-    expect(delta.budget_loop_pauses).toBe(4)
+    expect(delta.provider_timeout_loop_pauses).toBe(4)
   })
 
-  it('aggregates budget_strikes from masc_keeper_oas_timeout_budget_strike', () => {
+  it('aggregates provider_timeout_strikes from masc_keeper_provider_timeout_strike_total', () => {
     const metrics: ParsedMetric[] = [
-      makeMetric('masc_keeper_oas_timeout_budget_strike', [
+      makeMetric('masc_keeper_provider_timeout_strike_total', [
         { labels: { keeper: 'epsilon' }, value: 2 },
       ]),
     ]
     const summaries = extractKeeperStopSummaries(metrics)
     const epsilon = summaries.find(s => s.keeper === 'epsilon')!
-    expect(epsilon.budget_strikes).toBe(2)
-  })
-
-  it('aggregates budget_strikes from masc_keeper_oas_timeout_budget_strike_total', () => {
-    const metrics: ParsedMetric[] = [
-      makeMetric('masc_keeper_oas_timeout_budget_strike_total', [
-        { labels: { keeper: 'zeta' }, value: 6 },
-      ]),
-    ]
-    const summaries = extractKeeperStopSummaries(metrics)
-    const zeta = summaries.find(s => s.keeper === 'zeta')!
-    expect(zeta.budget_strikes).toBe(6)
+    expect(epsilon.provider_timeout_strikes).toBe(2)
   })
 
   it('skips samples without keeper label', () => {
@@ -150,9 +139,9 @@ describe('extractKeeperStopSummaries', () => {
     expect(solo.idle_turn).toBe(0)
     expect(solo.in_turn_hung).toBe(0)
     expect(solo.noop_failure_loop).toBe(0)
-    expect(solo.budget_strikes).toBe(0)
+    expect(solo.provider_timeout_strikes).toBe(0)
     expect(solo.storm_pauses).toBe(0)
-    expect(solo.budget_loop_pauses).toBe(0)
+    expect(solo.provider_timeout_loop_pauses).toBe(0)
   })
 })
 
@@ -288,7 +277,7 @@ describe('isKeeperPaused', () => {
   })
 
   it('returns false when paused is false and phase is Running', () => {
-    expect(isKeeperPaused(keeper({ paused: false, phase: 'Running', pipeline_stage: 'thinking' }))).toBe(false)
+    expect(isKeeperPaused(keeper({ paused: false, phase: 'Running', pipeline_stage: 'idle' }))).toBe(false)
   })
 
   it('returns false when paused is undefined (unset)', () => {

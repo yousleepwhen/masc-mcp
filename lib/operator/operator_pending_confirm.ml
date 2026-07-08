@@ -10,11 +10,7 @@ type 'a context = {
   mcp_session_id : string option;
 }
 
-let option_to_json f = function
-  | Some value -> f value
-  | None -> `Null
-
-let string_option_to_json = option_to_json (fun value -> `String value)
+let string_option_to_json = Json_util.option_to_yojson (fun value -> `String value)
 
 let operator_dir config =
   Filename.concat (Coord.masc_dir config) "operator"
@@ -50,7 +46,7 @@ let operator_judge_runtime_json (config : Coord.config) =
       ("refreshing", `Bool runtime.refreshing);
       ("generated_at", string_option_to_json runtime.generated_at);
       ("expires_at", string_option_to_json runtime.expires_at);
-      ("model_used", string_option_to_json runtime.model_used);
+      ("model_used", `Null);
       ("keeper_name", `String runtime.keeper_name);
       ("last_error", string_option_to_json runtime.last_error);
     ]
@@ -258,16 +254,6 @@ let available_actions : available_action list =
     make_available_action ~action_type:"task_inject" ~tool_name:"masc_add_task"
       ~target_type:"root"
       ~description:"Inject a backlog task into the namespace.";
-    make_available_action
-      ~action_type:"github_identity_login_prepare"
-      ~tool_name:"masc_github_identity_login_prepare"
-      ~target_type:"root"
-      ~description:"Prepare a MASC-owned GitHub CLI identity login command.";
-    make_available_action
-      ~action_type:"github_identity_status"
-      ~tool_name:"masc_github_identity_status"
-      ~target_type:"root"
-      ~description:"Inspect a MASC-owned GitHub identity bundle and gh auth status.";
     make_available_action ~action_type:"keeper_message" ~tool_name:"masc_keeper_msg"
       ~target_type:"keeper"
       ~description:"Send a direct operator message to a keeper.";
@@ -277,16 +263,6 @@ let available_actions : available_action list =
     make_available_action ~action_type:"keeper_recover" ~tool_name:"masc_keeper_recover"
       ~target_type:"keeper"
       ~description:"Safe down/up recovery for stale/degraded keeper.";
-    make_available_action
-      ~action_type:"keeper_github_identity_login_prepare"
-      ~tool_name:"masc_keeper_github_identity_login_prepare"
-      ~target_type:"keeper"
-      ~description:"Prepare a keeper-bound GitHub CLI login command under operator confirmation.";
-    make_available_action
-      ~action_type:"keeper_github_identity_status"
-      ~tool_name:"masc_keeper_github_identity_status"
-      ~target_type:"keeper"
-      ~description:"Inspect keeper-bound GitHub identity bundle and gh auth status.";
   ]
 
 let available_action_to_yojson (entry : available_action) =

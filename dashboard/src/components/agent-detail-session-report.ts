@@ -3,18 +3,17 @@
 
 import { html } from 'htm/preact'
 import { useState } from 'preact/hooks'
-import { Card } from './common/card'
+import { SectionCard } from './common/card'
 import { TimeAgo } from './common/time-ago'
 import { Markdown } from './common/markdown'
 import { TextInput } from './common/input'
 import { ringFocusClasses } from './common/ring'
 import {
   agentTimeline,
-  selectedAgent,
   missionAgentBrief,
   continuityBriefForAgent,
-  keeperForAgent,
 } from './agent-detail-state'
+import { findKeeper } from '../lib/keeper-utils'
 import type { AgentTimelineEvent } from '../api'
 
 // ── Helpers (exported for testing) ───────────────
@@ -128,10 +127,9 @@ function taskEventColor(type: string): string {
 // ── Components ───────────────────────────────────
 
 function SessionMeta({ agentName }: { agentName: string }) {
-  const agent = selectedAgent()
   const brief = missionAgentBrief(agentName)
   const continuity = continuityBriefForAgent(agentName)
-  const keeper = keeperForAgent(agentName)
+  const keeper = findKeeper(agentName)
   const timeline = agentTimeline.value
 
   const meta: { label: string; value: string }[] = []
@@ -142,10 +140,6 @@ function SessionMeta({ agentName }: { agentName: string }) {
 
   if (brief?.related_session_id) {
     meta.push({ label: '세션', value: brief.related_session_id })
-  }
-
-  if (agent?.model) {
-    meta.push({ label: '모델', value: agent.model })
   }
 
   if (timeline?.summary?.active_duration_minutes) {
@@ -262,7 +256,7 @@ export function AgentSessionReport({ agentName }: { agentName: string }) {
   const hasQuery = query.trim() !== ''
 
   return html`
-    <${Card} title="세션 활동 리포트" class="mb-5">
+    <${SectionCard} label="세션 활동 리포트" class="mb-5">
       <${SessionMeta} agentName=${agentName} />
 
       ${summary ? html`

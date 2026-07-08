@@ -51,11 +51,12 @@ import { mergeServerStatus } from './store-normalizers'
 import { normalizeOperatorSnapshot, normalizeOperatorDigest } from './operator-normalizers'
 import { operatorSnapshot, operatorRoomDigest } from './operator-signals'
 import { compositeTick, hydrateFleetCompositeSnapshot } from './composite-signals'
+import { isRecord } from './lib/type-guards'
 import { hydrateGoalTreeSnapshot } from './goal-tree-state'
 import { showToast } from './components/common/toast'
 import type { ErrorCode } from './types/error'
 import { route } from './router'
-import { routeWantsRefreshTarget } from './refresh-scope'
+import { routeWantsRefreshTarget, type RouteRefreshTarget } from './refresh-scope'
 import {
   PERIODIC_REFRESH_DEV_MS,
   PERIODIC_REFRESH_PROD_MS,
@@ -120,7 +121,7 @@ function scheduleRefresh(key: string, fn: () => void, delayMs = SSE_DEFAULT_DEBO
 // Simple events that map directly to a debounced refresh target.
 // Complex events (conditional logic, async imports) use named handlers below.
 
-type RefreshTarget = 'execution' | 'board' | 'operator' | 'activity'
+type RefreshTarget = RouteRefreshTarget
 
 interface SimpleRoute {
   target: RefreshTarget
@@ -204,12 +205,6 @@ function normalizeMascEventType(type: string): string {
   return type.startsWith('masc/') ? type.slice('masc/'.length) : type
 }
 
-const AUTORESEARCH_EVENTS = new Set([
-  'autoresearch_cycle',
-  'autoresearch_started',
-  'autoresearch_stopped',
-])
-
 /** Hydrate project-snapshot signals directly from SSE payload — zero HTTP fetch. */
 function handleNamespaceTruthSnapshot(payload: unknown): void {
   try {
@@ -220,7 +215,10 @@ function handleNamespaceTruthSnapshot(payload: unknown): void {
       normalized.root.status ?? null,
     )
   } catch (err) {
-    console.debug('[SSE] project-snapshot hydration failed, will fallback to HTTP', err instanceof Error ? err.message : '')
+    // Mirrors the transport-health P2 fix below: hydration failures are
+    // operator-actionable (UI shows stale data + falls back to HTTP), not
+    // background-debug, so they get console.warn instead of console.debug.
+    console.warn('[SSE] project-snapshot hydration failed, will fallback to HTTP', err instanceof Error ? err.message : '')
   }
 }
 
@@ -229,7 +227,7 @@ function handleExecutionSnapshot(payload: unknown): void {
   try {
     hydrateExecutionSnapshot(payload as DashboardExecutionResponse)
   } catch (err) {
-    console.debug('[SSE] execution snapshot hydration failed, will fallback to HTTP', err instanceof Error ? err.message : '')
+    console.warn('[SSE] execution snapshot hydration failed, will fallback to HTTP', err instanceof Error ? err.message : '')
   }
 }
 
@@ -237,7 +235,7 @@ function handleOperatorSnapshot(payload: unknown): void {
   try {
     operatorSnapshot.value = normalizeOperatorSnapshot(payload)
   } catch (err) {
-    console.debug('[SSE] operator snapshot hydration failed', err instanceof Error ? err.message : '')
+    console.warn('[SSE] operator snapshot hydration failed', err instanceof Error ? err.message : '')
   }
 }
 
@@ -245,7 +243,7 @@ function handleOperatorDigest(payload: unknown): void {
   try {
     operatorRoomDigest.value = normalizeOperatorDigest(payload)
   } catch (err) {
-    console.debug('[SSE] operator digest hydration failed', err instanceof Error ? err.message : '')
+    console.warn('[SSE] operator digest hydration failed', err instanceof Error ? err.message : '')
   }
 }
 
@@ -319,10 +317,6 @@ async function refreshActiveRoute(): Promise<void> {
     _refreshOperatorFn?.()
     _refreshMissionFn?.()
   }
-}
-
-function activeAutoresearchRoute(): boolean {
-  return route.value.tab === 'lab' && route.value.params.section === 'autoresearch'
 }
 
 // --- SSE reconnection handler ---
@@ -466,12 +460,6 @@ export function routeServerPushEvent(event: SSEEvent): void {
     handleKeeperLifecycle(event)
   }
 
-  if (AUTORESEARCH_EVENTS.has(event.type) && activeAutoresearchRoute()) {
-    scheduleRefresh('autoresearch_route', () => {
-      void refreshActiveRoute()
-    }, SSE_DEFAULT_DEBOUNCE_MS)
-  }
-
   if (
     event.type.startsWith('decision_')
     || event.type === 'governance_param_changed'
@@ -490,7 +478,7 @@ export function routeServerPushEvent(event: SSEEvent): void {
 }
 
 export function hydrateServerPushEvent(event: SSEEvent): boolean {
-  if ((event.type === 'project_snapshot' || event.type === 'namespace_truth_snapshot' || event.type === 'room_truth_snapshot') && event.payload) {
+  if ((event.type === 'project_snapshot' || event.type === 'namespace_truth_snapshot') && event.payload) {
     handleNamespaceTruthSnapshot(event.payload)
     return true
   }
@@ -554,16 +542,13 @@ export function hydrateServerPushEvent(event: SSEEvent): boolean {
 }
 
 function eventPayloadRecord(payload: unknown): Record<string, unknown> {
-  return payload && typeof payload === 'object' && !Array.isArray(payload)
-    ? payload as Record<string, unknown>
-    : { payload }
+  return isRecord(payload) ? payload : { payload }
 }
 
 export function hydrateDashboardSlice(slice: string, payload: unknown, eventType?: string): void {
   switch (eventType) {
     case 'project_snapshot':
     case 'namespace_truth_snapshot':
-    case 'room_truth_snapshot':
     case 'execution_snapshot':
     case 'operator_snapshot':
     case 'operator_digest':

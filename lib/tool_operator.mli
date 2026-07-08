@@ -33,10 +33,9 @@ type 'a context = {
 
 (** {1 Result} *)
 
-type tool_result = bool * string
-(** Standard MCP tool return: [(success, body_or_error)].
-    [body_or_error] is the JSON-serialised body on success or an
-    error message on failure. *)
+type tool_result = Tool_result.result
+(** Re-exported from {!Tool_result}.  RFC-0062 Phase 4c-2:
+    handlers return structured [Tool_result.result] records. *)
 
 (** {1 Dispatch} *)
 
@@ -44,7 +43,7 @@ val dispatch :
   float Eio.Time.clock_ty context ->
   name:string ->
   args:Yojson.Safe.t ->
-  tool_result option
+  Tool_result.result option
 (** [dispatch ctx ~name ~args] dispatches the named MCP tool call.
     Returns [None] for unrecognised names so callers can fall
     through to other dispatchers.
@@ -72,10 +71,17 @@ val dispatch :
     safe-to-expose subset.  The full {!schemas} is consumed inside
     the keeper-bound dispatcher only. *)
 
+val schemas : Masc_domain.tool_schema list
+(** Full operator tool schemas for local/internal MCP catalogs. *)
+
 val remote_schemas : Masc_domain.tool_schema list
 (** Operator-remote tool schemas — the subset advertised to remote
     MCP clients.  Pinned at the .mli seam so dashboard / SDK
     consumers see a stable list ordering. *)
+
+val schemas : Masc_domain.tool_schema list
+(** Full operator tool schemas — consumed by keeper-local dispatchers
+    and schema coverage checks. *)
 
 val remote_tool_names : string list
 (** [List.map (fun s -> s.name) remote_schemas].  Pre-computed for

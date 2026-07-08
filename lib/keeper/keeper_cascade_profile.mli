@@ -1,49 +1,18 @@
-(** Canonical keeper cascade profile names and config-driven route lookup.
+(** Config-driven cascade profile name resolution.
 
-    Keepers historically used stringly-typed cascade names in TOML, runtime
-    metadata, telemetry labels, and cascade.json lookups. This module is the
-    SSOT for the small built-in profile vocabulary and the logical route keys
-    that resolve through [cascade.json]/[cascade.toml].
-
-    One keeper-assignable bootstrap profile (Big_three) and one system-only
-    profile (Tool_rerank). Historical routing, judge, evaluator, and local names
-    are logical uses, not live catalog profiles.
+    Per RFC-0041 cascade routing SSOT, the live cascade catalog
+    (cascade.toml) is the only source of truth for cascade profile
+    names — there is no compile-time enum here.  Code that needs to
+    know "what profiles are available" reads them through
+    {!catalog_names} / {!catalog_names_result} /
+    {!catalog_names_for_validation}; the boot-time gate at
+    [Cascade_catalog_runtime.validate_path_result] rejects keeper boot
+    when the catalog is empty so a missing catalog never reaches the
+    helpers below.
 
     @since 0.9.5 *)
 
-(** SSOT variant for the 1+1 cascade model.
-
-    One keeper-assignable bootstrap profile ({!Big_three}) and one system-only
-    profile ({!Tool_rerank}).
-
-    Adding a new profile is a compile-time event: add a variant here, then
-    exhaustive [match] sites flag every consumer that needs to handle it.
-    Personal/playground-only cascades must NOT be added here — they live in
-    [$MASC_BASE_PATH/.masc/playground/.../cascade.json] only. *)
-type t =
-  | Big_three
-  | Tool_rerank
-
-val all : t list
-(** [all] is exhaustive: every variant constructor of {!t} appears
-    exactly once. *)
-
-val to_string : t -> string
-(** Canonical lowercase-snake-case name. *)
-
-val of_string_opt : string -> t option
-(** Parse a raw cascade profile name into the built-in variant. Logical route
-    names and legacy aliases return [None]; use {!cascade_name_for_use} for
-    call sites that mean "governance judge", "operator judge", etc. *)
-
-val canonical : string -> t
-(** [canonical raw] = [of_string_opt raw |> Option.value ~default]. *)
-
-val default : t
-val default_name : string
-(** [default_name = to_string default = "big_three"]. *)
-
-type logical_use =
+type logical_use = Cascade_ref.logical_use =
   | Keeper_turn
   | Phase_recovery
   | Phase_buffer
@@ -52,7 +21,6 @@ type logical_use =
   | Operator_judge
   | Cross_verifier
   | Verifier
-  | Autoresearch
   | Adversarial_reviewer
   | Auto_responder
   | Routing
@@ -68,42 +36,54 @@ val logical_use_key : logical_use -> string
 (** Stable config key under [routes]. *)
 
 val logical_use_of_string_opt : string -> logical_use option
-(** Parse a logical route key or historical alias. Concrete profile names such
-    as [big_three] and [tool_rerank] are not logical route keys. *)
+(** Parse a canonical logical route key. Concrete cascade profile names are
+    not logical route keys — they live in the catalog. *)
 
 val cascade_name_for_use : ?config_path:string -> logical_use -> string
 (** Runtime cascade profile for a logical call site.
 
     Resolution order:
-    1. [routes.<logical_use_key>] from the active cascade config, when it points
-       at a live catalog profile.
-    2. A catalog-derived fallback based on route policy: keeper work prefers a
-       keeper-assignable profile; system work prefers a system-only profile.
-    3. The two-profile seed names only when no catalog is available.
+    1. TOML [routes.<logical_use_key>] from the active cascade config,
+       when it points at a live catalog profile.
+    2. The first catalog entry from the live catalog.
+    3. The canonical [route.<key>] name when the catalog itself is empty —
+       boot-time validation is the upstream gate that prevents this state at
+       runtime.
+
+    This returns a cascade profile name, never a provider/model string.
+    Phonebook model/provider resolution is exposed separately through
+    {!model_strings_for_use} and {!provider_configs_for_use}.
 
     This is the boundary for code that used to hardcode profile names such as
-    ["governance_judge"], ["operator_judge"], ["local_recovery"], or
+    ["governance_judge"], ["operator_judge"], ["phase_recovery"], or
     ["cross_verifier"]. *)
+
+val provider_configs_for_use :
+  ?config_path:string ->
+  ?temperature:float ->
+  ?max_tokens:int ->
+  logical_use ->
+  Llm_provider.Provider_config.t list option
+(** Resolve a logical use to [Provider_config.t] list via the phonebook.
+    Direct phonebook path: logical_use → task_use → tier-group → models →
+    providers → endpoint/auth → Provider_config.t.
+    Returns [None] when phonebook is unavailable or no models resolve.
+    @since RFC Cascade-Phonebook Phase 4 *)
+
+val model_strings_for_use :
+  ?config_path:string ->
+  logical_use ->
+  string list option
+(** Resolve a logical use to model strings via the phonebook.
+    Returns [None] when phonebook is unavailable.
+    @since RFC Cascade-Phonebook Phase 4 *)
 
 val configured_route_targets : ?config_path:string -> unit -> string list
 (** Unique non-empty profile names referenced from [routes]. *)
 
-val known_cascades : string list
-(** [known_cascades = List.map to_string all]. Provided for consumers
-    that still operate on strings; new code should take {!t} directly. *)
-
-type runtime_name = Runtime_name of string
-(** Catalog-aware cascade name after point-of-use runtime normalization.
-    Unlike {!t}, this can carry dynamic cascade catalog names. *)
-
-val runtime_name_to_string : runtime_name -> string
-val runtime_name_of_string : string -> runtime_name
-(** Canonicalizes legacy aliases and live catalog names for runtime
-    telemetry/admission labels. Unknown nonblank values fall back to
-    {!default_name}, matching {!canonicalize}. *)
 
 val catalog_names : ?config_path:string -> unit -> string list
-(** Live profile catalog discovered from the active [cascade.json].
+(** Live profile catalog discovered from the active [cascade.toml].
     When the file cannot be read, returns [[]]. *)
 
 val catalog_names_result : ?config_path:string -> unit -> (string list, string) result
@@ -111,41 +91,35 @@ val catalog_names_result : ?config_path:string -> unit -> (string list, string) 
     boundaries can fail loud instead of collapsing catalog drift into an empty
     dynamic profile set. *)
 
-(** Provenance of the names returned by {!catalog_names_with_toml_fallback}. *)
-type catalog_names_source =
-  | Live_catalog
-      (** The full strict catalog ([Cascade_config_loader.load_catalog])
-          succeeded; names are the live, validated catalog entries. *)
-  | Toml_section_fallback of { catalog_error : string }
-      (** Strict catalog load failed but [cascade.toml] was parseable.
-          Names come from the top-level table sections; [catalog_error]
-          is the original loader error so callers can WARN about the
-          degraded mode. *)
+val catalog_lookup_names : ?config_path:string -> unit -> string list
+(** Live catalog names usable for lookup. Includes canonical declarative
+    names such as ["tier-group.primary"] / ["tier.primary"] plus public
+    short aliases such as ["primary"]. *)
 
-val catalog_names_with_toml_fallback :
-  ?config_path:string ->
-  unit ->
-  (string list * catalog_names_source, string) result
-(** #10259 — accept-list source for the keeper cascade-name validator.
+val catalog_names_for_validation :
+  ?config_path:string -> unit -> (string list, string) result
+(** Accept-list source for the keeper cascade-name validator.
 
-    On strict-load success, returns the live catalog names tagged
-    [Live_catalog].  On strict-load failure, falls back to enumerating
-    [cascade.toml]'s top-level table sections (filtering meta-keys
-    starting with ['_']) and tags the result [Toml_section_fallback].
-    Returns [Error _] when neither source produces a non-empty name list.
-    An empty degraded fallback is not a safe success for the validator.
-
-    This decouples the validator's accept list from full strict
-    materialization so a localized field-whitelist regression in the
-    materializer does not silently reject every operator-defined
-    cascade across the fleet. *)
+    Requires the declarative cascade catalog; retired flat-profile TOML and
+    flat-key catalog fallback are intentionally not accepted.  Includes both
+    public names, such as [primary], and qualified declarative names, such as
+    [tier.primary] / [tier-group.primary], so explicit keeper assignments do
+    not collapse to the public route target. *)
 
 val keeper_catalog_names : ?config_path:string -> unit -> string list
 (** Assignable live profile names from {!catalog_names}, filtered by
     [keeper_assignable] metadata. *)
 
 val system_catalog_names : ?config_path:string -> unit -> string list
-(** Live system-only profile names present in [cascade.json]. *)
+(** Live system-only profile names present in [cascade.toml]. *)
+
+val required_capability_profile_of_cascade_name : string -> string option
+(** [required_capability_profile_of_cascade_name name] returns the
+    [required_capability_profile] declared for cascade [name] in the
+    live catalog snapshot, or [None] when the snapshot is missing or
+    the cascade is not found.  Used by pre-dispatch capability-aware
+    rotation filtering so [Tool_required] turns do not rotate into
+    cascades whose providers cannot satisfy forced [tool_choice]. *)
 
 val fallback_cascade_for : ?config_path:string -> string -> string option
 (** Declarative escalation hint for [name].
@@ -169,32 +143,101 @@ val is_system_only_cascade : string -> bool
 val canonicalize_with_catalog : catalog:string list -> string -> string
 (** Resolves dynamic profiles against an explicit live catalog. *)
 
-val resolve_live_with_catalog : catalog:string list -> string -> string
+val resolve_live_with_catalog_result :
+  catalog:string list -> string -> (Cascade_name.t, [ `Unresolved of string ]) result
 (** Resolves a keeper-declared cascade against an explicit live catalog.
 
-    Compile-time built-in names absent from the runtime catalog are treated
-    as drift and fall back to {!default_name}. *)
+    Returns [Ok normalized] when [raw] either matches the
+    catalog directly or normalizes via a canonical logical route key that
+    lands on a catalog member; otherwise [Error (`Unresolved raw)] carrying the
+    original (un-trimmed) input so the operator-visible diagnostic can
+    point to exactly what was provided.
 
-val resolve_live : ?config_path:string -> string -> string
-(** Like {!resolve_live_with_catalog}, but reads the active catalog from the
-    resolved cascade config path. *)
+    Names already present in the catalog pass through; canonical route
+    keys resolve via [routes].  Callers that accept qualified
+    declarative names must pass a lookup catalog containing those
+    qualified names, not only display/public names.
+
+    The legacy silent-fallback [resolve_live_with_catalog]/[resolve_live]
+    entry points (+ their counter and WARN-once Hashtbl) were removed as
+    part of the RFC-0149 §3.3 sunset closeout.
+
+    @since RFC-0149 Phase 1 *)
+
+val resolve_live_result :
+  ?config_path:string -> string -> (Cascade_name.t, [ `Unresolved of string ]) result
+(** Result-returning resolver that reads the active catalog from the
+    resolved cascade config path.  Wraps {!resolve_live_with_catalog_result}
+    with the catalog loaded from [config_path].
+
+    @since RFC-0149 Phase 1 *)
 
 val canonicalize : string -> string
-(** [canonicalize raw = to_string (canonical raw)]. Legacy aliases collapse
-    to their canonical name, live catalog names pass through, unknown values
-    fall back to {!default_name}. *)
+(** Catalog-aware normalization: canonical route keys resolve through
+    [routes], live catalog names pass through, otherwise [String.trim] is
+    applied and the name is returned as-is.  If the catalog is empty, a
+    canonical [route.<key>] name remains the fallback. *)
 
-val normalize_declared_name : string -> string
-(** Normalizes keeper-side implicit default and legacy aliases.
-    Unknown nonblank names are preserved (trimmed). *)
+val normalize_declared_name : ?config_path:string -> string -> string
+(** Normalizes keeper-side logical route aliases.
+    Logical route aliases resolve through {!cascade_name_for_use}; public live
+    catalog names resolve to their canonical [tier.*] / [tier-group.*] form;
+    otherwise the trimmed input is returned. *)
 
-(** {1 cascade.json key helpers} *)
+val normalize_keeper_runtime_declared_name : ?config_path:string -> string -> string
+(** Like {!normalize_declared_name}, but ignores stale keeper-local profile
+    assignments that point at a route target reserved for non-keeper logical
+    uses. In that case the active [routes.keeper_turn] target is returned. *)
 
-val models_key_t : t -> string
-val temperature_key_t : t -> string
-val max_tokens_key_t : t -> string
+(** {1 In-memory cascade key helpers} *)
 
-(** String-based wrappers; first canonicalize, then build the key. *)
+(** First canonicalize, then build the key. *)
 val models_key : string -> string
 val temperature_key : string -> string
 val max_tokens_key : string -> string
+
+(** {1 RFC-0143 — typed catalog query}
+
+    Distinguishes the three control-flow origins of an unavailable
+    catalog so callers can decide what to do about each instead of
+    collapsing them into [Error _ -> false] / [Error _ -> []].
+
+    The legacy string-error [catalog_metadata_result] was deleted by
+    the §4 PR-5 closeout once all in-file callers consumed the typed
+    variant. *)
+
+(** Catalog metadata record returned by the query.  Exposed here so
+    the typed query is callable from outside the module. *)
+type catalog_metadata = {
+  qualified_names : string list;
+  public_names : string list;
+  keeper_assignable_names : string list;
+  system_qualified_names : string list;
+  system_names : string list;
+  fallback_hints : (string * string) list;
+}
+
+type catalog_unavailable_reason =
+  | Catalog_path_not_resolved
+  | Catalog_load_failed of string
+  | Catalog_metadata_invalid of string
+
+type 'a catalog_query_result =
+  | Catalog_ok of 'a
+  | Catalog_unavailable of {
+      reason : catalog_unavailable_reason;
+      message : string;
+    }
+
+val catalog_unavailable_reason_to_string : catalog_unavailable_reason -> string
+(** Short bounded-cardinality token suitable for log lines and
+    [cascade_catalog_unavailable_count{reason=…}] metric labels. *)
+
+val catalog_metadata_query
+  :  ?config_path:string
+  -> unit
+  -> catalog_metadata catalog_query_result
+(** Typed catalog metadata accessor.  The [Catalog_unavailable]
+    payload carries both the typed [reason] (suitable for routing
+    logic and metric labels) and the original [message] (suitable
+    for operator-facing logs). *)

@@ -190,56 +190,64 @@ let initial = {
 (* ── Cross-Dimension Invariants ─────────────────────────── *)
 
 let check_invariants (state : product) : (unit, string) result =
-  let violations = ref [] in
-  let add v = violations := v :: !violations in
-
-  (* I1: Ready implies not booting *)
-  (match state.readiness with
-   | Readiness.Ready ->
-     (match state.lifecycle with
-      | Lifecycle.Booting ->
-        add "readiness=Ready but lifecycle=Booting (cannot be ready while booting)"
-      | Lifecycle.Serving | Lifecycle.Draining | Lifecycle.Stopped -> ())
-   | Readiness.NotReady -> ());
-
-  (* I2: Stopped implies not ready *)
-  (match state.lifecycle with
-   | Lifecycle.Stopped ->
-     (match state.readiness with
-      | Readiness.Ready ->
-        add "lifecycle=Stopped but readiness=Ready (stopped server is never ready)"
-      | Readiness.NotReady -> ())
-   | Lifecycle.Booting | Lifecycle.Serving | Lifecycle.Draining -> ());
-
-  (* I3: Pending tasks block stop *)
-  (match state.lazy_tasks with
-   | Lazy_task_queue.Pending _ ->
-     (match state.lifecycle with
-      | Lifecycle.Stopped ->
-        add "lazy_tasks=Pending but lifecycle=Stopped (cannot stop with pending tasks)"
-      | Lifecycle.Booting | Lifecycle.Serving | Lifecycle.Draining -> ())
-   | Lazy_task_queue.Complete -> ());
-
-  (* I4: Degraded backend => not ready *)
-  (match state.backend with
-   | Backend.Degraded ->
-     (match state.readiness with
-      | Readiness.Ready ->
-        add "backend=Degraded but readiness=Ready (degraded backend must not serve traffic)"
-      | Readiness.NotReady -> ())
-   | Backend.Uninitialized | Backend.Filesystem -> ());
-
-  (* I5: Booting => backend uninitialized *)
-  (match state.lifecycle with
-   | Lifecycle.Booting ->
-     (match state.backend with
-      | Backend.Uninitialized -> ()
-      | _ ->
-        add (Printf.sprintf "lifecycle=Booting but backend=%s (expected Uninitialized)"
-               (Backend.phase_to_string state.backend)))
-   | Lifecycle.Serving | Lifecycle.Draining | Lifecycle.Stopped -> ());
-
-  match List.rev !violations with
+  let ready_implies_not_booting =
+    match state.readiness with
+    | Readiness.Ready ->
+      (match state.lifecycle with
+       | Lifecycle.Booting ->
+         Some "readiness=Ready but lifecycle=Booting (cannot be ready while booting)"
+       | Lifecycle.Serving | Lifecycle.Draining | Lifecycle.Stopped -> None)
+    | Readiness.NotReady -> None
+  in
+  let stopped_implies_not_ready =
+    match state.lifecycle with
+    | Lifecycle.Stopped ->
+      (match state.readiness with
+       | Readiness.Ready ->
+         Some "lifecycle=Stopped but readiness=Ready (stopped server is never ready)"
+       | Readiness.NotReady -> None)
+    | Lifecycle.Booting | Lifecycle.Serving | Lifecycle.Draining -> None
+  in
+  let pending_blocks_stop =
+    match state.lazy_tasks with
+    | Lazy_task_queue.Pending _ ->
+      (match state.lifecycle with
+       | Lifecycle.Stopped ->
+         Some "lazy_tasks=Pending but lifecycle=Stopped (cannot stop with pending tasks)"
+       | Lifecycle.Booting | Lifecycle.Serving | Lifecycle.Draining -> None)
+    | Lazy_task_queue.Complete -> None
+  in
+  let degraded_implies_not_ready =
+    match state.backend with
+    | Backend.Degraded ->
+      (match state.readiness with
+       | Readiness.Ready ->
+         Some "backend=Degraded but readiness=Ready (degraded backend must not serve traffic)"
+       | Readiness.NotReady -> None)
+    | Backend.Uninitialized | Backend.Filesystem -> None
+  in
+  (* Backend.Filesystem | Backend.Degraded are enumerated explicitly so a new
+     Backend variant fails compilation here rather than silently passing. *)
+  let booting_implies_uninitialized_backend =
+    match state.lifecycle with
+    | Lifecycle.Booting ->
+      (match state.backend with
+       | Backend.Uninitialized -> None
+       | (Backend.Filesystem | Backend.Degraded) as b ->
+         Some (Printf.sprintf "lifecycle=Booting but backend=%s (expected Uninitialized)"
+                 (Backend.phase_to_string b)))
+    | Lifecycle.Serving | Lifecycle.Draining | Lifecycle.Stopped -> None
+  in
+  let violations =
+    List.filter_map Fun.id
+      [ ready_implies_not_booting
+      ; stopped_implies_not_ready
+      ; pending_blocks_stop
+      ; degraded_implies_not_ready
+      ; booting_implies_uninitialized_backend
+      ]
+  in
+  match violations with
   | [] -> Ok ()
   | vs -> Error (String.concat "; " vs)
 

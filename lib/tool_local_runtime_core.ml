@@ -22,7 +22,7 @@ type context = {
   agent_name : string;
 }
 
-type tool_result = bool * string
+type tool_result = Tool_result.result
 
 type llama_process = {
   pid : int option;
@@ -43,29 +43,17 @@ type bench_sample = {
   error : string option;
 }
 
-let json_error message =
-  Yojson.Safe.to_string
-    (`Assoc [ ("status", `String "error"); ("message", `String message) ])
-
-let json_ok fields =
-  Yojson.Safe.to_string (`Assoc (("status", `String "ok") :: fields))
-
-let int_opt_to_json = Json_util.int_opt_to_json
-let string_opt_to_json = Json_util.string_opt_to_json
-let float_opt_to_json = Json_util.float_opt_to_json
-
 let parse_int_opt value =
   Stdlib.int_of_string_opt ((String.trim value))
 
-let unique_preserve_order = Json_util.dedupe_keep_order
 
 let split_ws text =
-  text
-  |> String.split_on_char ' '
-  |> List.map String.trim
-  |> List.filter (fun item -> not (String.equal item ""))
+  match Exec_policy.parse_string_to_ir ~mode:Strict text with
+  | Error _ ->
+      let trimmed = String.trim text in
+      if String.equal trimmed "" then [] else [ trimmed ]
+  | Ok ir -> Exec_policy.flat_stage_words ir
 
-let string_contains_substring = String_util.contains_substring
 
 let parse_pid_and_command line =
   let trimmed = String.trim line in
@@ -108,15 +96,15 @@ let server_port_of_url url =
 let process_to_yojson (process : llama_process) =
   `Assoc
     [
-      ("pid", int_opt_to_json process.pid);
+      ("pid", Json_util.int_opt_to_json process.pid);
       ("command", `String process.command);
-      ("port", int_opt_to_json process.port);
-      ("host", string_opt_to_json process.host);
-      ("alias", string_opt_to_json process.alias);
-      ("model_path", string_opt_to_json process.model_path);
-      ("ctx_size", int_opt_to_json process.ctx_size);
-      ("batch_size", int_opt_to_json process.batch_size);
-      ("ubatch_size", int_opt_to_json process.ubatch_size);
+      ("port", Json_util.int_opt_to_json process.port);
+      ("host", Json_util.string_opt_to_json process.host);
+      ("alias", Json_util.string_opt_to_json process.alias);
+      ("model_path", Json_util.string_opt_to_json process.model_path);
+      ("ctx_size", Json_util.int_opt_to_json process.ctx_size);
+      ("batch_size", Json_util.int_opt_to_json process.batch_size);
+      ("ubatch_size", Json_util.int_opt_to_json process.ubatch_size);
       ("slots_enabled", `Bool process.slots_enabled);
     ]
 
@@ -129,7 +117,7 @@ let discover_processes () =
   let argv = [ "ps"; "-ax"; "-o"; "pid=,command=" ] in
   let status, body =
     Masc_exec.Exec_gate.run_argv_with_status
-      ~actor:"tool/local_runtime"
+      ~actor:(Masc_exec.Agent_id.of_string "tool/local_runtime")
       ~raw_source:(String.concat " " (List.map Filename.quote argv))
       ~summary:"tool local runtime process discovery"
       ~timeout_sec:(Env_config_exec_timeout.timeout_sec ~caller:(Unknown "misc") ())
@@ -142,7 +130,7 @@ let discover_processes () =
         |> String.split_on_char '\n'
         |> List.filter_map (fun line ->
                let pid, command = parse_pid_and_command line in
-               if String.equal command "" || not (string_contains_substring command "llama-server") then
+               if String.equal command "" || not (String_util.contains_substring command "llama-server") then
                  None
                else
                  let tokens = split_ws command in
@@ -191,7 +179,7 @@ let fetch_models_at base_url =
   let argv = [ "curl"; "-sS"; "--max-time"; "10"; url ] in
   let status, body =
     Masc_exec.Exec_gate.run_argv_with_status
-      ~actor:"tool/local_runtime"
+      ~actor:(Masc_exec.Agent_id.of_string "tool/local_runtime")
       ~raw_source:(String.concat " " (List.map Filename.quote argv))
       ~summary:"tool local runtime fetch models"
       ~timeout_sec:(Env_config_exec_timeout.timeout_sec ~caller:(Unknown "misc") ())
@@ -220,4 +208,4 @@ let fetch_models_at base_url =
   | Unix.WSTOPPED sig_num ->
       Error (Printf.sprintf "llama models request stopped by signal %d" sig_num)
 
-let fetch_models () = fetch_models_at Env_config.Llama.server_url
+let fetch_models () = fetch_models_at Env_config.Local_runtime.server_url

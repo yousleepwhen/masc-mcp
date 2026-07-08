@@ -4,6 +4,10 @@
 open Agent_sdk
 open Masc_mcp
 
+let tool_ok ?(tool_name = "") message =
+  Tool_result.make_ok ~tool_name ~start_time:0.0 ~data:(`String message) ()
+;;
+
 (* Helper: find tool by name from tool list *)
 let find_tool name tools =
   List.find (fun (t : Tool.t) -> t.schema.name = name) tools
@@ -17,6 +21,119 @@ let contains_substring s needle =
     else loop (i + 1)
   in
   if n_len = 0 then true else loop 0
+
+let load_source rel =
+  let source_root =
+    match Sys.getenv_opt "DUNE_SOURCEROOT" with
+    | Some root -> root
+    | None -> Sys.getcwd ()
+  in
+  In_channel.with_open_text (Filename.concat source_root rel) In_channel.input_all
+
+let with_env name value f =
+  let previous = Sys.getenv_opt name in
+  Unix.putenv name value;
+  Fun.protect
+    ~finally:(fun () ->
+      match previous with
+      | Some prior -> Unix.putenv name prior
+      | None -> Unix.putenv name "")
+    f
+
+let validate_command_tool_execute_text ?caller cmd =
+  match Exec_policy.parse_string_to_ir ~mode:Tool_execute cmd with
+  | Ok ir -> Worker_dev_tools.validate_command_tool_execute ?caller ir
+  | Error reason -> Error reason
+
+let validate_command_tool_execute_with_allowlist_text
+      ?caller
+      ?allow_pipes
+      ~allowed_commands
+      cmd
+  =
+  match Exec_policy.parse_string_to_ir ~mode:Tool_execute cmd with
+  | Ok ir ->
+    Worker_dev_tools.validate_command_tool_execute_with_allowlist
+      ?caller
+      ?allow_pipes
+      ~allowed_commands
+      ir
+  | Error reason -> Error reason
+
+let rec ensure_dir path =
+  if path = "" || path = "." || path = "/" || Sys.file_exists path then ()
+  else (
+    ensure_dir (Filename.dirname path);
+    Unix.mkdir path 0o755)
+
+let rec cleanup_path path =
+  if Sys.file_exists path then
+    match Unix.lstat path with
+    | { Unix.st_kind = Unix.S_DIR; _ } ->
+      Array.iter
+        (fun name -> cleanup_path (Filename.concat path name))
+        (Sys.readdir path);
+      Unix.rmdir path
+    | _ -> Sys.remove path
+
+let registered_repo id local_path : Repo_manager_types.repository =
+  { id
+  ; name = id
+  ; url = "https://github.com/example/" ^ id ^ ".git"
+  ; local_path
+  ; aliases = []
+  ; default_branch = "main"
+  ; credential_id = ""
+  ; keepers = []
+  ; status = Repo_manager_types.Active
+  ; auto_sync = false
+  ; sync_interval = 0
+  ; created_at = 0L
+  ; updated_at = 0L
+  }
+
+let with_registered_repo_fixture f =
+  let base_path =
+    Filename.concat
+      (Sys.getcwd ())
+      (Printf.sprintf "_worker_dev_tools_repo_mapping_%d" (Unix.getpid ()))
+  in
+  let workdir = Filename.temp_file "wdt_repo_mapping_cwd_" "" in
+  Fun.protect
+    ~finally:(fun () ->
+      (try cleanup_path base_path with _ -> ());
+      try cleanup_path workdir with _ -> ())
+    (fun () ->
+       if Sys.file_exists base_path then cleanup_path base_path;
+       Sys.remove workdir;
+       Unix.mkdir workdir 0o755;
+       let repo_a_dir = Filename.concat base_path "repo-a" in
+       let repo_b_dir = Filename.concat base_path "repo-b" in
+       let target = Filename.concat repo_a_dir "lib/foo.ml" in
+       ensure_dir (Filename.dirname target);
+       ensure_dir repo_b_dir;
+       ensure_dir workdir;
+       (match
+          Repo_store.save_all
+            ~base_path
+            [ registered_repo "repo-a" repo_a_dir
+            ; registered_repo "repo-b" repo_b_dir
+            ]
+        with
+        | Ok () -> ()
+        | Error msg -> Alcotest.fail ("repo store setup failed: " ^ msg));
+       let save_mapping keeper_id repository_ids =
+         match
+           Keeper_repo_mapping.save_mapping
+             ~base_path
+             { keeper_id; repository_ids; mapped_credential_id = None }
+         with
+         | Ok () -> ()
+         | Error msg -> Alcotest.fail ("mapping setup failed: " ^ msg)
+       in
+       save_mapping "keeper-1" [ "repo-a" ];
+       save_mapping "keeper-2" [ "repo-b" ];
+       f ~base_path ~workdir ~target)
 
 (* --- Tool structure tests --- *)
 
@@ -264,6 +381,69 @@ let test_shell_exec_echo () =
    | Error { Agent_sdk.Types.message = e; _ } ->
      Alcotest.fail (Printf.sprintf "expected Ok, got Error: %s" e))
 
+let test_shell_exec_uses_shell_ir_dispatch_cwd () =
+  Eio_main.run @@ fun env ->
+  Fs_compat.set_fs (Eio.Stdenv.fs env);
+  let proc_mgr = Eio.Stdenv.process_mgr env in
+  let clock = Eio.Stdenv.clock env in
+  let workdir = Filename.temp_file "wdt_shell_exec_cwd_" "" in
+  Fun.protect
+    ~finally:(fun () ->
+      Exec_tap.disable ();
+      try cleanup_path workdir with _ -> ())
+    (fun () ->
+       Sys.remove workdir;
+       Unix.mkdir workdir 0o755;
+       let captured = ref [] in
+       Exec_tap.enable ~writer:(fun line -> captured := line :: !captured);
+       let tools = Worker_dev_tools.make_tools ~proc_mgr ~clock ~workdir () in
+       let tool = find_tool "shell_exec" tools in
+       match Tool.execute tool (`Assoc [ ("command", `String "pwd") ]) with
+       | Error { Agent_sdk.Types.message = e; _ } ->
+         Alcotest.fail (Printf.sprintf "shell_exec failed: %s" e)
+       | Ok { Agent_sdk.Types.content = output } ->
+         Alcotest.(check string) "pwd output" (Unix.realpath workdir ^ "\n") output;
+         let process_line =
+           List.find_opt
+             (fun line ->
+                contains_substring
+                  line
+                  "\"kind\":\"Process_eio.run_argv_with_status\"")
+             !captured
+         in
+         (match process_line with
+          | None -> Alcotest.fail "shell_exec did not route through Exec_gate/Process_eio"
+          | Some line ->
+            Alcotest.(check bool)
+              "cwd recorded"
+              true
+              (contains_substring line ("\"cwd\":\"" ^ workdir ^ "\""));
+            Alcotest.(check bool)
+              "direct pwd argv"
+              true
+              (contains_substring line "\"argv\":[\"pwd\"]");
+            Alcotest.(check bool)
+              "no sh -c wrapper"
+              false
+              (contains_substring line "\"-c\"");
+            Alcotest.(check bool) "no cd wrapper" false (contains_substring line "cd ")))
+
+let test_shell_exec_timeout_floor_for_load_bearing_commands () =
+  let check command requested expected =
+    Alcotest.(check (float 0.001))
+      command
+      expected
+      (Worker_dev_tools.effective_shell_exec_timeout_sec ~command ~requested)
+  in
+  check "git status -sb" 5.0 15.0;
+  check "git branch -a" 5.0 15.0;
+  check "grep -rn \"timeout\" lib" 5.0 15.0;
+  check "find lib -name \"*.ml\" -type f" 5.0 15.0;
+  check "scripts/dune-local.sh build lib/cascade" 5.0 15.0;
+  check "echo hello" 5.0 5.0;
+  check "git status -sb" 30.0 30.0
+;;
+
 let test_shell_exec_blocked_command () =
   Eio_main.run @@ fun env ->
   Fs_compat.set_fs (Eio.Stdenv.fs env);
@@ -278,6 +458,49 @@ let test_shell_exec_blocked_command () =
      Alcotest.(check bool) "mentions blocked" true
        (String.length msg > 0)
    | Ok _ -> Alcotest.fail "should reject rm -rf /")
+
+let test_shell_exec_blocks_env_wrapped_disallowed_command () =
+  let validate_command_text cmd =
+    match Exec_policy.parse_string_to_ir ~mode:Strict cmd with
+    | Ok ir -> Worker_dev_tools.validate_command ir
+    | Error reason -> Error reason
+  in
+  let cases =
+    [
+      ("env rm -rf /", "rm");
+      ("env", "env");
+      ("opam exec -- rm -rf /", "rm");
+      ("env opam exec -- rm -rf /", "rm");
+      ("opam exec -- env rm -rf /", "rm");
+    ]
+  in
+  List.iter
+    (fun (cmd, blocked) ->
+      match validate_command_text cmd with
+      | Error (Worker_dev_tools.Command_not_allowed got) when String.equal got blocked -> ()
+      | Error reason ->
+        Alcotest.fail
+          ("wrong rejection for " ^ cmd ^ ": "
+           ^ Worker_dev_tools.block_reason_to_string reason)
+      | Ok () -> Alcotest.fail ("env command should be blocked: " ^ cmd))
+    cases
+
+let test_shell_exec_blocks_outside_path_arg () =
+  Eio_main.run @@ fun env ->
+  Fs_compat.set_fs (Eio.Stdenv.fs env);
+  let proc_mgr = Eio.Stdenv.process_mgr env in
+  let clock = Eio.Stdenv.clock env in
+  let tools = Worker_dev_tools.make_tools ~proc_mgr ~clock () in
+  let tool = find_tool "shell_exec" tools in
+  match Tool.execute tool (`Assoc [ "command", `String "cat /etc/passwd" ]) with
+  | Error { Agent_sdk.Types.message = msg; _ } ->
+    Alcotest.(check bool)
+      "mentions path outside whitelist"
+      true
+      (String_util.contains_substring_ci msg "outside")
+  | Ok { Agent_sdk.Types.content } ->
+    Alcotest.fail
+      ("shell_exec should block outside path before execution: " ^ content)
 
 let test_tool_exec_observer_bridges_to_telemetry () =
   Eio_main.run @@ fun env ->
@@ -408,6 +631,61 @@ let test_readonly_shell_exec_blocks_git () =
   | Error _ -> ()
   | Ok _ -> Alcotest.fail "readonly shell should block git"
 
+let test_shell_exec_respects_resource_gate () =
+  Eio_main.run @@ fun env ->
+  Fs_compat.set_fs (Eio.Stdenv.fs env);
+  let proc_mgr = Eio.Stdenv.process_mgr env in
+  let clock = Eio.Stdenv.clock env in
+  Fun.protect
+    ~finally:Tool_resource_gate.For_testing.reset
+    (fun () ->
+       Tool_resource_gate.For_testing.set_limits ~shell:1 ();
+       with_env "MASC_TOOL_GATE_WAIT_TIMEOUT_SEC" "0.05" (fun () ->
+         let blocker_started, unblock_blocker = Eio.Promise.create () in
+         let release_blocker, resolve_release = Eio.Promise.create () in
+         Eio.Fiber.both
+           (fun () ->
+              let result =
+                Tool_resource_gate.with_permit
+                  ~clock
+                  ~tool_name:"tool_execute"
+                  ~arguments:(`Assoc [ "cmd", `String "sleep 1" ])
+                  ~is_read_only:false
+                  ~start_time:(Eio.Time.now clock)
+                  (fun () ->
+                     Eio.Promise.resolve unblock_blocker ();
+                     Eio.Promise.await release_blocker;
+                     tool_ok ~tool_name:"tool_execute" "released")
+              in
+              Alcotest.(check bool) "blocker acquired shell lane" true (Tool_result.is_success result))
+           (fun () ->
+              Eio.Promise.await blocker_started;
+              Fun.protect
+                ~finally:(fun () -> Eio.Promise.resolve resolve_release ())
+                (fun () ->
+                   let tools = Worker_dev_tools.make_tools ~proc_mgr ~clock () in
+                   let tool = find_tool "shell_exec" tools in
+                   let result =
+                     Tool.execute tool
+                       (`Assoc [ "command", `String "echo gate-should-not-run" ])
+                   in
+                   match result with
+                   | Error { Agent_sdk.Types.message = msg; recoverable; _ } ->
+                     Alcotest.(check bool) "gate rejection is recoverable" true recoverable;
+                     Alcotest.(check bool)
+                       "message names resource gate saturation"
+                       true
+                       (contains_substring msg "tool_resource_gate_saturated");
+                     Alcotest.(check bool)
+                       "message names shell lane"
+                       true
+                       (contains_substring msg "class=shell")
+                   | Ok { Agent_sdk.Types.content = output } ->
+                     Alcotest.fail
+                       (Printf.sprintf
+                          "shell_exec bypassed saturated resource gate: %s"
+                          output)))))
+
 let test_workdir_enforcement () =
   Eio_main.run @@ fun env ->
   Fs_compat.set_fs (Eio.Stdenv.fs env);
@@ -436,6 +714,11 @@ let test_workdir_enforcement () =
   (* Cleanup *)
   (if Sys.file_exists ok_path then Sys.remove ok_path);
   (try Unix.rmdir "/tmp/test_workdir" with _ -> ())
+
+let is_destructive cmd =
+  match Masc_exec_bash_parser.Bash.parse_string cmd with
+  | Masc_exec.Parsed.Parsed ir -> Worker_dev_tools.is_destructive_bash_operation ir
+  | _ -> false
 
 (* --- Test runner --- *)
 
@@ -466,7 +749,15 @@ let () =
     ];
     "shell_exec", [
       Alcotest.test_case "echo hello" `Quick test_shell_exec_echo;
+      Alcotest.test_case "uses Shell IR dispatch cwd" `Quick
+        test_shell_exec_uses_shell_ir_dispatch_cwd;
+      Alcotest.test_case "timeout floor for load-bearing commands" `Quick
+        test_shell_exec_timeout_floor_for_load_bearing_commands;
       Alcotest.test_case "blocked command" `Quick test_shell_exec_blocked_command;
+      Alcotest.test_case "env wrapper blocked command" `Quick
+        test_shell_exec_blocks_env_wrapped_disallowed_command;
+      Alcotest.test_case "outside path arg blocked" `Quick
+        test_shell_exec_blocks_outside_path_arg;
       Alcotest.test_case "observer bridges to telemetry" `Quick
         test_tool_exec_observer_bridges_to_telemetry;
       Alcotest.test_case "reject shell metacharacters" `Quick
@@ -475,88 +766,281 @@ let () =
       Alcotest.test_case "missing param" `Quick test_shell_exec_missing_param;
       Alcotest.test_case "readonly shell blocks git" `Quick
         test_readonly_shell_exec_blocks_git;
+      Alcotest.test_case "resource gate saturation" `Quick
+        test_shell_exec_respects_resource_gate;
     ];
     "workdir", [
       Alcotest.test_case "workdir enforcement" `Quick test_workdir_enforcement;
     ];
-    "validate_command_coding", [
+    "validate_command_tool_execute", [
       Alcotest.test_case "allows pipe" `Quick (fun () ->
-        match Worker_dev_tools.validate_command_coding "git log | head -5" with
+        match validate_command_tool_execute_text "git log | head -5" with
         | Ok () -> ()
         | Error e -> Alcotest.fail ("should allow pipe: " ^ Worker_dev_tools.block_reason_to_string e));
-      Alcotest.test_case "allows redirect" `Quick (fun () ->
-        match Worker_dev_tools.validate_command_coding "dune build 2>&1" with
+      Alcotest.test_case "keeps escaped pipe inside quoted rg pattern" `Quick (fun () ->
+        match
+          validate_command_tool_execute_text
+            {|rg -n "task-259\|task-270\|task-272" repos/masc-mcp/.masc/backlog.json|}
+        with
         | Ok () -> ()
-        | Error e -> Alcotest.fail ("should allow redirect: " ^ Worker_dev_tools.block_reason_to_string e));
+        | Error e ->
+          Alcotest.fail
+            ("escaped regex pipe should not start a new command: "
+             ^ Worker_dev_tools.block_reason_to_string e));
+      Alcotest.test_case "keeps literal pipe inside single-quoted grep pattern"
+        `Quick
+        (fun () ->
+          match
+            validate_command_tool_execute_text
+              {|grep -E 'task-259|task-270' repos/masc-mcp/.masc/backlog.json|}
+          with
+          | Ok () -> ()
+          | Error e ->
+            Alcotest.fail
+              ("quoted regex pipe should not start a new command: "
+               ^ Worker_dev_tools.block_reason_to_string e));
+      Alcotest.test_case "allows quoted regex alternation under typed gate" `Quick (fun () ->
+        match
+          validate_command_tool_execute_text
+            "rg \"tool_policy\\|tool_preset\\|preset_policy\\|toolset\" --type=ml -l"
+        with
+        | Ok () -> ()
+        | Error e ->
+          Alcotest.fail
+            ("typed gate should allow quoted regex alternation: "
+             ^ Worker_dev_tools.block_reason_to_string e));
+      Alcotest.test_case "allows quoted regex alternation before real pipe" `Quick (fun () ->
+        match
+          validate_command_tool_execute_text
+            "rg 'keeper.*tool|tool.*keeper' --type=ml -l | head -20"
+        with
+        | Ok () -> ()
+        | Error e ->
+          Alcotest.fail
+            ("typed gate should allow quoted regex plus real pipe: "
+             ^ Worker_dev_tools.block_reason_to_string e));
+      Alcotest.test_case "allows three-stage regex pipeline" `Quick (fun () ->
+        match
+          validate_command_tool_execute_text
+            "rg 'keeper.*tool|tool.*keeper' --type=ml -l | head -20 | wc -l"
+        with
+        | Ok () -> ()
+        | Error e ->
+          Alcotest.fail
+            ("typed gate should allow quoted regex pipeline: "
+             ^ Worker_dev_tools.block_reason_to_string e));
+      Alcotest.test_case "rejects wrapper redirect" `Quick (fun () ->
+        match
+          validate_command_tool_execute_text
+            "scripts/dune-local.sh build 2>&1"
+        with
+        | Error _ -> ()
+        | Ok () -> Alcotest.fail "strict gate should reject fd redirect syntax");
+      Alcotest.test_case "blocks parser-supported direct dune" `Quick (fun () ->
+        match validate_command_tool_execute_text "dune build" with
+        | Error Worker_dev_tools.Direct_dune_invocation -> ()
+        | Error e -> Alcotest.fail ("wrong rejection: " ^ Worker_dev_tools.block_reason_to_string e)
+        | Ok () -> Alcotest.fail "should reject bare dune");
+      Alcotest.test_case "blocks direct dune" `Quick (fun () ->
+        match validate_command_tool_execute_text "dune build 2>&1" with
+        | Error _ -> ()
+        | Ok () -> Alcotest.fail "should reject bare dune");
+      Alcotest.test_case "blocks env-wrapped direct dune" `Quick (fun () ->
+        match
+          validate_command_tool_execute_text
+            "env DUNE_JOBS=1 dune build 2>&1"
+        with
+        | Error _ -> ()
+        | Ok () -> Alcotest.fail "should reject env-wrapped bare dune");
+      Alcotest.test_case "blocks env option wrapped direct dune" `Quick (fun () ->
+        List.iter
+          (fun cmd ->
+            match validate_command_tool_execute_text cmd with
+            | Error _ -> ()
+            | Ok () -> Alcotest.fail ("should reject env-wrapped bare dune: " ^ cmd))
+          [
+            "env -- dune build";
+            "env -C repos/masc-mcp dune build";
+            "env --chdir repos/masc-mcp -- dune build";
+            "env -i -- DUNE_JOBS=1 dune build";
+          ]);
+      Alcotest.test_case "blocks env-wrapped disallowed command" `Quick (fun () ->
+        List.iter
+          (fun cmd ->
+            match validate_command_tool_execute_text cmd with
+            | Error (Worker_dev_tools.Command_not_allowed "rm") -> ()
+            | Error e ->
+              Alcotest.fail
+                ("wrong rejection for " ^ cmd ^ ": "
+                 ^ Worker_dev_tools.block_reason_to_string e)
+            | Ok () ->
+              Alcotest.fail ("should reject env-wrapped disallowed command: " ^ cmd))
+          [
+            "env rm -rf /";
+            "env -- rm -rf /";
+            "env FOO=bar rm -rf /";
+            "env -S 'rm -rf /'";
+            "env --split-string='rm -rf /'";
+            "env opam exec -- rm -rf /";
+            "git status | env rm -rf /";
+          ]);
+      Alcotest.test_case "blocks standalone env dump" `Quick (fun () ->
+        match validate_command_tool_execute_text "env" with
+        | Error (Worker_dev_tools.Command_not_allowed "env") -> ()
+        | Error e ->
+          Alcotest.fail
+            ("wrong rejection: " ^ Worker_dev_tools.block_reason_to_string e)
+        | Ok () -> Alcotest.fail "standalone env should be blocked");
+      Alcotest.test_case "allows env-wrapped allowed command" `Quick (fun () ->
+        List.iter
+          (fun cmd ->
+            match validate_command_tool_execute_text cmd with
+            | Ok () -> ()
+            | Error e ->
+              Alcotest.fail
+                ("should allow env-wrapped allowed command " ^ cmd ^ ": "
+                 ^ Worker_dev_tools.block_reason_to_string e))
+          [
+            "env FOO=bar git status";
+            "env -- git status";
+            "env -S 'git status'";
+            "env --split-string='git status'";
+            "env -i -- FOO=bar git status | head -5";
+          ]);
+      Alcotest.test_case "blocks opam-exec direct dune" `Quick (fun () ->
+        match
+          validate_command_tool_execute_text
+            "opam exec -- dune build 2>&1"
+        with
+        | Error _ -> ()
+        | Ok () -> Alcotest.fail "should reject opam-exec bare dune");
+      Alcotest.test_case "blocks opam exec option wrapped direct dune" `Quick (fun () ->
+        List.iter
+          (fun cmd ->
+            match validate_command_tool_execute_text cmd with
+            | Error _ -> ()
+            | Ok () -> Alcotest.fail ("should reject opam-exec bare dune: " ^ cmd))
+          [
+            "opam exec --switch default -- dune build";
+            "opam exec --switch=default -- dune build";
+            "opam exec --color never -- dune build";
+          ]);
+      Alcotest.test_case "blocks opam-exec wrapped disallowed command" `Quick
+        (fun () ->
+           List.iter
+             (fun cmd ->
+               match validate_command_tool_execute_text cmd with
+               | Error (Worker_dev_tools.Command_not_allowed "rm") -> ()
+               | Error e ->
+                 Alcotest.fail
+                   ("wrong rejection for " ^ cmd ^ ": "
+                    ^ Worker_dev_tools.block_reason_to_string e)
+               | Ok () ->
+                 Alcotest.fail
+                   ("should reject opam-exec wrapped disallowed command: " ^ cmd))
+             [
+               "opam exec -- rm -rf /";
+               "opam exec --switch default -- rm -rf /";
+               "opam exec -- env rm -rf /";
+               "env opam exec -- rm -rf /";
+               "git status | opam exec -- rm -rf /";
+             ]);
+      Alcotest.test_case "allows opam-exec wrapped allowed command" `Quick
+        (fun () ->
+           List.iter
+             (fun cmd ->
+               match validate_command_tool_execute_text cmd with
+               | Ok () -> ()
+               | Error e ->
+                 Alcotest.fail
+                   ("should allow opam-exec wrapped allowed command " ^ cmd ^ ": "
+                    ^ Worker_dev_tools.block_reason_to_string e))
+             [
+               "opam exec -- git status";
+               "opam exec --switch default -- git status";
+               "env opam exec -- git status";
+               "opam exec -- env FOO=bar git status";
+               "opam exec -- git status | head -5";
+             ]);
       Alcotest.test_case "blocks semicolon" `Quick (fun () ->
-        match Worker_dev_tools.validate_command_coding "ls; rm -rf /" with
+        match validate_command_tool_execute_text "ls; rm -rf /" with
         | Error _ -> ()
         | Ok () -> Alcotest.fail "should block semicolon");
       Alcotest.test_case "blocks backtick" `Quick (fun () ->
-        match Worker_dev_tools.validate_command_coding "echo `whoami`" with
+        match validate_command_tool_execute_text "echo `whoami`" with
         | Error _ -> ()
         | Ok () -> Alcotest.fail "should block backtick");
       Alcotest.test_case "blocks dollar" `Quick (fun () ->
-        match Worker_dev_tools.validate_command_coding "echo $HOME" with
+        match validate_command_tool_execute_text "echo $HOME" with
         | Error _ -> ()
         | Ok () -> Alcotest.fail "should block dollar");
       Alcotest.test_case "validates first command in pipe" `Quick (fun () ->
-        match Worker_dev_tools.validate_command_coding "evil_cmd | head" with
+        match validate_command_tool_execute_text "evil_cmd | head" with
         | Error _ -> ()
         | Ok () -> Alcotest.fail "should block unknown first command");
       Alcotest.test_case "blocks unknown command after pipe" `Quick (fun () ->
-        match Worker_dev_tools.validate_command_coding "git status | rm -rf /" with
+        match validate_command_tool_execute_text "git status | rm -rf /" with
         | Error _ -> ()
         | Ok () -> Alcotest.fail "should block unknown command after pipe");
       Alcotest.test_case "blocks ampersand chaining" `Quick (fun () ->
-        match Worker_dev_tools.validate_command_coding "git log && rm -rf /" with
+        match validate_command_tool_execute_text "git log && rm -rf /" with
         | Error _ -> ()
         | Ok () -> Alcotest.fail "should block && chaining");
       Alcotest.test_case "blocks double-pipe chaining" `Quick (fun () ->
-        match Worker_dev_tools.validate_command_coding "git status || rm -rf /" with
+        match validate_command_tool_execute_text "git status || rm -rf /" with
         | Error _ -> ()
         | Ok () -> Alcotest.fail "should block || chaining");
       Alcotest.test_case "blocks process substitution" `Quick (fun () ->
-        match Worker_dev_tools.validate_command_coding "git diff >(/tmp/out)" with
+        match validate_command_tool_execute_text "git diff >(/tmp/out)" with
         | Error _ -> ()
         | Ok () -> Alcotest.fail "should block process substitution");
       Alcotest.test_case "blocks file output redirect" `Quick (fun () ->
-        match Worker_dev_tools.validate_command_coding "echo hi > /tmp/out.txt" with
+        match validate_command_tool_execute_text "echo hi > /tmp/out.txt" with
         | Error _ -> ()
         | Ok () -> Alcotest.fail "should block file output redirect");
       Alcotest.test_case "blocks file input redirect" `Quick (fun () ->
-        match Worker_dev_tools.validate_command_coding "cat < /etc/passwd" with
+        match validate_command_tool_execute_text "cat < /etc/passwd" with
         | Error _ -> ()
         | Ok () -> Alcotest.fail "should block file input redirect");
-      Alcotest.test_case "allows 2>&1 redirect" `Quick (fun () ->
-        match Worker_dev_tools.validate_command_coding "dune test 2>&1" with
-        | Ok () -> ()
-        | Error e -> Alcotest.fail ("should allow 2>&1: " ^ Worker_dev_tools.block_reason_to_string e));
+      Alcotest.test_case "rejects 2>&1 redirect" `Quick (fun () ->
+        match
+          validate_command_tool_execute_text
+            "scripts/dune-local.sh test 2>&1"
+        with
+        | Error _ -> ()
+        | Ok () -> Alcotest.fail "strict gate should reject fd redirect syntax");
+      Alcotest.test_case "rejects /dev/null fd sink through pipe" `Quick
+        (fun () ->
+           match
+             validate_command_tool_execute_text
+               "rg \"task-317\" repos/masc-mcp/ --files-with-matches 2>/dev/null | head -5"
+           with
+           | Error _ -> ()
+           | Ok () -> Alcotest.fail "strict gate should reject fd sink syntax");
       Alcotest.test_case "single-command contract rejects pipe" `Quick (fun () ->
         match
-          Worker_dev_tools.validate_command_coding_with_allowlist
+          validate_command_tool_execute_with_allowlist_text
             ~allow_pipes:false
-            ~allowed_commands:["dune"; "git"; "head"]
-            "dune build 2>&1 | tail -5"
+            ~allowed_commands:["dune-local.sh"; "git"; "head"]
+            "scripts/dune-local.sh build 2>&1 | tail -5"
         with
-        | Error Worker_dev_tools.Pipes_not_allowed -> ()
-        | Error reason -> Alcotest.fail ("wrong rejection: " ^ Worker_dev_tools.block_reason_to_string reason)
+        | Error _ -> ()
         | Ok () -> Alcotest.fail "should reject pipe under single-command contract");
-      Alcotest.test_case "single-command contract keeps redirect" `Quick (fun () ->
+      Alcotest.test_case "single-command contract rejects redirect" `Quick (fun () ->
         match
-          Worker_dev_tools.validate_command_coding_with_allowlist
+          validate_command_tool_execute_with_allowlist_text
             ~allow_pipes:false
-            ~allowed_commands:["dune"; "git"; "head"]
-            "dune build 2>&1"
+            ~allowed_commands:["dune-local.sh"; "git"; "head"]
+            "scripts/dune-local.sh build 2>&1"
         with
-        | Ok () -> ()
-        | Error e -> Alcotest.fail ("should allow direct build with fd redirect: " ^ Worker_dev_tools.block_reason_to_string e));
+        | Error _ -> ()
+        | Ok () -> Alcotest.fail "single-command contract should reject fd redirect");
       Alcotest.test_case "single-command contract enforces custom allowlist" `Quick (fun () ->
         match
-          Worker_dev_tools.validate_command_coding_with_allowlist
+          validate_command_tool_execute_with_allowlist_text
             ~allow_pipes:false
             ~allowed_commands:["git"]
-            "dune build"
+            "scripts/dune-local.sh build"
         with
         | Error _ -> ()
         | Ok () -> Alcotest.fail "should reject command outside custom allowlist");
@@ -564,76 +1048,58 @@ let () =
     "is_destructive_bash_operation", [
       Alcotest.test_case "blocks force push" `Quick (fun () ->
         Alcotest.(check bool) "force push" true
-          (Worker_dev_tools.is_destructive_bash_operation "git push --force"));
+          (is_destructive "git push --force"));
       Alcotest.test_case "blocks push -f" `Quick (fun () ->
         Alcotest.(check bool) "push -f" true
-          (Worker_dev_tools.is_destructive_bash_operation "git push -f origin feature"));
+          (is_destructive "git push -f origin feature"));
       Alcotest.test_case "blocks push to main" `Quick (fun () ->
         Alcotest.(check bool) "push main" true
-          (Worker_dev_tools.is_destructive_bash_operation "git push origin main"));
+          (is_destructive "git push origin main"));
       Alcotest.test_case "blocks push to master" `Quick (fun () ->
         Alcotest.(check bool) "push master" true
-          (Worker_dev_tools.is_destructive_bash_operation "git push origin master"));
+          (is_destructive "git push origin master"));
       Alcotest.test_case "blocks push refspec to main" `Quick (fun () ->
         Alcotest.(check bool) "push refspec main" true
-          (Worker_dev_tools.is_destructive_bash_operation "git push origin HEAD:main"));
+          (is_destructive "git push origin HEAD:main"));
+      Alcotest.test_case "blocks quoted push refspec to main" `Quick (fun () ->
+        Alcotest.(check bool) "quoted push refspec main" true
+          (is_destructive "git push origin 'HEAD:main'"));
       Alcotest.test_case "blocks push refs heads main" `Quick (fun () ->
         Alcotest.(check bool) "push refs/heads/main" true
-          (Worker_dev_tools.is_destructive_bash_operation "git push origin refs/heads/main"));
+          (is_destructive "git push origin refs/heads/main"));
       Alcotest.test_case "blocks force with lease" `Quick (fun () ->
         Alcotest.(check bool) "force with lease" true
-          (Worker_dev_tools.is_destructive_bash_operation "git push --force-with-lease origin feature/fix-1"));
+          (is_destructive "git push --force-with-lease origin feature/fix-1"));
       Alcotest.test_case "allows push to feature branch" `Quick (fun () ->
         Alcotest.(check bool) "push feature" false
-          (Worker_dev_tools.is_destructive_bash_operation "git push origin feature/fix-1"));
+          (is_destructive "git push origin feature/fix-1"));
       Alcotest.test_case "blocks git reset --hard" `Quick (fun () ->
         Alcotest.(check bool) "reset hard" true
-          (Worker_dev_tools.is_destructive_bash_operation "git reset --hard HEAD~1"));
+          (is_destructive "git reset --hard HEAD~1"));
+      Alcotest.test_case "blocks quoted git reset --hard" `Quick (fun () ->
+        Alcotest.(check bool) "quoted reset hard" true
+          (is_destructive "git reset '--hard' HEAD~1"));
       Alcotest.test_case "allows git reset (soft)" `Quick (fun () ->
         Alcotest.(check bool) "reset soft" false
-          (Worker_dev_tools.is_destructive_bash_operation "git reset HEAD~1"));
+          (is_destructive "git reset HEAD~1"));
       Alcotest.test_case "blocks rm -rf" `Quick (fun () ->
         Alcotest.(check bool) "rm -rf" true
-          (Worker_dev_tools.is_destructive_bash_operation "rm -rf /"));
+          (is_destructive "rm -rf /"));
       Alcotest.test_case "blocks rm -fr" `Quick (fun () ->
         Alcotest.(check bool) "rm -fr" true
-          (Worker_dev_tools.is_destructive_bash_operation "rm -fr build"));
+          (is_destructive "rm -fr build"));
       Alcotest.test_case "allows rm single file" `Quick (fun () ->
         Alcotest.(check bool) "rm single" false
-          (Worker_dev_tools.is_destructive_bash_operation "rm foo.txt"));
+          (is_destructive "rm foo.txt"));
       Alcotest.test_case "allows rm -f single file" `Quick (fun () ->
         Alcotest.(check bool) "rm -f single file" false
-          (Worker_dev_tools.is_destructive_bash_operation "rm -f foo.txt"));
+          (is_destructive "rm -f foo.txt"));
       Alcotest.test_case "allows rm -f report txt" `Quick (fun () ->
         Alcotest.(check bool) "rm -f report.txt" false
-          (Worker_dev_tools.is_destructive_bash_operation "rm -f report.txt"));
+          (is_destructive "rm -f report.txt"));
       Alcotest.test_case "allows git commit" `Quick (fun () ->
         Alcotest.(check bool) "git commit" false
-          (Worker_dev_tools.is_destructive_bash_operation "git commit -m 'fix'"));
-    ];
-    "gh_pr_merge_target", [
-      Alcotest.test_case "extracts numeric pr id" `Quick (fun () ->
-        Alcotest.(check (option string)) "numeric target" (Some "5934")
-          (Worker_dev_tools.gh_pr_merge_target "pr merge 5934"));
-      Alcotest.test_case "extracts explicit branch target" `Quick (fun () ->
-        Alcotest.(check (option string)) "branch target" (Some "feature/review-gate")
-          (Worker_dev_tools.gh_pr_merge_target "pr merge feature/review-gate"));
-      Alcotest.test_case "extracts explicit url target" `Quick (fun () ->
-        Alcotest.(check (option string)) "url target"
-          (Some "https://github.com/jeong-sik/masc-mcp/pull/5934")
-          (Worker_dev_tools.gh_pr_merge_target
-             "pr merge https://github.com/jeong-sik/masc-mcp/pull/5934"));
-      Alcotest.test_case "skips repo flag value" `Quick (fun () ->
-        Alcotest.(check (option string)) "repo flag skipped" (Some "5934")
-          (Worker_dev_tools.gh_pr_merge_target
-             "pr merge --repo jeong-sik/masc-mcp 5934"));
-      Alcotest.test_case "returns none for current branch merge" `Quick (fun () ->
-        Alcotest.(check (option string)) "implicit current branch" None
-          (Worker_dev_tools.gh_pr_merge_target "pr merge --squash --delete-branch"));
-      Alcotest.test_case "skips match-head-commit value" `Quick (fun () ->
-        Alcotest.(check (option string)) "match-head-commit skipped" (Some "5934")
-          (Worker_dev_tools.gh_pr_merge_target
-             "pr merge --match-head-commit abc123 5934"));
+          (is_destructive "git commit -m 'fix'"));
     ];
     "sanitize_command_for_log", [
       Alcotest.test_case "redacts url credentials" `Quick (fun () ->
@@ -663,271 +1129,35 @@ let () =
           (contains_substring redacted "secret-value");
         Alcotest.(check bool) "placeholder added" true
           (contains_substring redacted "--token [REDACTED]"));
-    ];
-    "validate_gh_command", [
-      Alcotest.test_case "accepts allowed subcommand with no repo flag" `Quick (fun () ->
-        match Worker_dev_tools.validate_gh_command "pr list --state open" with
-        | Ok () -> ()
-        | Error msg -> Alcotest.failf "expected ok, got %s" msg);
-      Alcotest.test_case "rejects shell chaining" `Quick (fun () ->
-        match Worker_dev_tools.validate_gh_command "pr list && echo done" with
-        | Ok () -> Alcotest.fail "expected chaining to be blocked"
-        | Error msg ->
-          Alcotest.(check bool) "chaining message" true
-            (contains_substring msg "chaining"));
-      Alcotest.test_case "rejects unknown top-level command" `Quick (fun () ->
-        match Worker_dev_tools.validate_gh_command "auth token" with
-        | Ok () -> Alcotest.fail "expected unknown to be blocked"
-        | Error msg ->
-          Alcotest.(check bool) "not in approved" true
-            (contains_substring msg "not in the approved"));
-      Alcotest.test_case "rejects repo delete" `Quick (fun () ->
-        match Worker_dev_tools.validate_gh_command "repo delete jeong-sik/foo" with
-        | Ok () -> Alcotest.fail "expected repo delete blocked"
-        | Error msg ->
-          Alcotest.(check bool) "blocked for safety" true
-            (contains_substring msg "blocked for safety"));
-      Alcotest.test_case "rejects repo archive (parity with legacy guard)" `Quick (fun () ->
-        match Worker_dev_tools.validate_gh_command "repo archive jeong-sik/foo" with
-        | Ok () -> Alcotest.fail "expected archive blocked"
-        | Error msg ->
-          Alcotest.(check bool) "archive blocked" true
-            (contains_substring msg "blocked for safety"));
-      Alcotest.test_case "skips org check when allowed_orgs empty" `Quick (fun () ->
-        match
-          Worker_dev_tools.validate_gh_command ~allowed_orgs:[]
-            "pr view --repo evil/repo 1"
-        with
-        | Ok () -> ()
-        | Error msg -> Alcotest.failf "expected ok (empty orgs), got %s" msg);
-      Alcotest.test_case "allows repo in allowed_orgs" `Quick (fun () ->
-        match
-          Worker_dev_tools.validate_gh_command ~allowed_orgs:["jeong-sik"]
-            "pr view --repo jeong-sik/masc-mcp 123"
-        with
-        | Ok () -> ()
-        | Error msg -> Alcotest.failf "expected ok, got %s" msg);
-      Alcotest.test_case "rejects repo outside allowed_orgs" `Quick (fun () ->
-        match
-          Worker_dev_tools.validate_gh_command ~allowed_orgs:["jeong-sik"]
-            "pr view --repo evil-org/payload 1"
-        with
-        | Ok () -> Alcotest.fail "expected org outside allowlist to be blocked"
-        | Error msg ->
-          Alcotest.(check bool) "mentions not in allowed_orgs" true
-            (contains_substring msg "not in allowed_orgs");
-          Alcotest.(check bool) "mentions offending owner" true
-            (contains_substring msg "evil-org"));
-      Alcotest.test_case "rejects --repo=OWNER/NAME form" `Quick (fun () ->
-        match
-          Worker_dev_tools.validate_gh_command ~allowed_orgs:["jeong-sik"]
-            "pr view --repo=evil-org/payload 1"
-        with
-        | Ok () -> Alcotest.fail "expected --repo= form to be blocked"
-        | Error msg ->
-          Alcotest.(check bool) "blocked" true
-            (contains_substring msg "not in allowed_orgs"));
-      Alcotest.test_case "rejects -R short flag outside allowlist" `Quick (fun () ->
-        match
-          Worker_dev_tools.validate_gh_command ~allowed_orgs:["jeong-sik"]
-            "issue list -R evil-org/payload"
-        with
-        | Ok () -> Alcotest.fail "expected -R form to be blocked"
-        | Error msg ->
-          Alcotest.(check bool) "blocked" true
-            (contains_substring msg "not in allowed_orgs"));
-      Alcotest.test_case "allows no --repo flag with orgs configured" `Quick (fun () ->
-        match
-          Worker_dev_tools.validate_gh_command ~allowed_orgs:["jeong-sik"]
-            "pr list --state open"
-        with
-        | Ok () -> ()
-        | Error msg -> Alcotest.failf "expected ok (no --repo), got %s" msg);
-    ];
-    "extract_gh_repo_owner", [
-      Alcotest.test_case "extracts from --repo flag" `Quick (fun () ->
-        Alcotest.(check (option string)) "owner" (Some "jeong-sik")
-          (Worker_dev_tools.extract_gh_repo_owner
-             "pr view --repo jeong-sik/masc-mcp 1"));
-      Alcotest.test_case "extracts from --repo= form" `Quick (fun () ->
-        Alcotest.(check (option string)) "owner" (Some "jeong-sik")
-          (Worker_dev_tools.extract_gh_repo_owner
-             "pr view --repo=jeong-sik/masc-mcp 1"));
-      Alcotest.test_case "extracts from -R short flag" `Quick (fun () ->
-        Alcotest.(check (option string)) "owner" (Some "jeong-sik")
-          (Worker_dev_tools.extract_gh_repo_owner
-             "issue list -R jeong-sik/masc-mcp"));
-      Alcotest.test_case "returns None without --repo flag" `Quick (fun () ->
-        Alcotest.(check (option string)) "no flag" None
-          (Worker_dev_tools.extract_gh_repo_owner "pr list --state open"));
-      Alcotest.test_case "returns None for malformed slug" `Quick (fun () ->
-        Alcotest.(check (option string)) "no slash" None
-          (Worker_dev_tools.extract_gh_repo_owner "pr view --repo malformed"));
-    ];
-    "classify_gh_reversibility", [
-      (* R0 — read-only *)
-      Alcotest.test_case "R0: pr list" `Quick (fun () ->
-        Alcotest.(check bool) "R0" true
-          (Worker_dev_tools.classify_gh_reversibility "pr list --state open"
-           = Worker_dev_tools.R0_Read));
-      Alcotest.test_case "R0: pr view 123" `Quick (fun () ->
-        Alcotest.(check bool) "R0" true
-          (Worker_dev_tools.classify_gh_reversibility "pr view 123"
-           = Worker_dev_tools.R0_Read));
-      Alcotest.test_case "R0: issue list" `Quick (fun () ->
-        Alcotest.(check bool) "R0" true
-          (Worker_dev_tools.classify_gh_reversibility "issue list --state all"
-           = Worker_dev_tools.R0_Read));
-      Alcotest.test_case "R0: api GET (default)" `Quick (fun () ->
-        Alcotest.(check bool) "R0" true
-          (Worker_dev_tools.classify_gh_reversibility "api repos/jeong-sik/foo"
-           = Worker_dev_tools.R0_Read));
-      Alcotest.test_case "R0: status" `Quick (fun () ->
-        Alcotest.(check bool) "R0" true
-          (Worker_dev_tools.classify_gh_reversibility "status"
-           = Worker_dev_tools.R0_Read));
-      Alcotest.test_case "R0: search issues" `Quick (fun () ->
-        Alcotest.(check bool) "R0" true
-          (Worker_dev_tools.classify_gh_reversibility "search issues --sort created"
-           = Worker_dev_tools.R0_Read));
-
-      (* R1 — reversible mutation *)
-      Alcotest.test_case "R1: pr create" `Quick (fun () ->
-        Alcotest.(check bool) "R1" true
-          (Worker_dev_tools.classify_gh_reversibility
-             "pr create --title foo --body bar"
-           = Worker_dev_tools.R1_Reversible));
-      Alcotest.test_case "R1: pr merge" `Quick (fun () ->
-        Alcotest.(check bool) "R1" true
-          (Worker_dev_tools.classify_gh_reversibility "pr merge 123 --squash"
-           = Worker_dev_tools.R1_Reversible));
-      Alcotest.test_case "R1: issue close" `Quick (fun () ->
-        Alcotest.(check bool) "R1" true
-          (Worker_dev_tools.classify_gh_reversibility "issue close 456"
-           = Worker_dev_tools.R1_Reversible));
-      Alcotest.test_case "R1: api --method POST" `Quick (fun () ->
-        Alcotest.(check bool) "R1" true
-          (Worker_dev_tools.classify_gh_reversibility
-             "api --method POST repos/jeong-sik/foo/issues"
-           = Worker_dev_tools.R1_Reversible));
-      Alcotest.test_case "R1: api with -f field (implicit POST)" `Quick (fun () ->
-        Alcotest.(check bool) "R1" true
-          (Worker_dev_tools.classify_gh_reversibility
-             "api repos/jeong-sik/foo/issues -f title=test"
-           = Worker_dev_tools.R1_Reversible));
-      Alcotest.test_case "R1: label create" `Quick (fun () ->
-        Alcotest.(check bool) "R1" true
-          (Worker_dev_tools.classify_gh_reversibility "label create bug --color red"
-           = Worker_dev_tools.R1_Reversible));
-      Alcotest.test_case "R1: run cancel" `Quick (fun () ->
-        Alcotest.(check bool) "R1" true
-          (Worker_dev_tools.classify_gh_reversibility "run cancel 42"
-           = Worker_dev_tools.R1_Reversible));
-
-      (* R2 — irreversible *)
-      Alcotest.test_case "R2: repo delete" `Quick (fun () ->
-        Alcotest.(check bool) "R2" true
-          (Worker_dev_tools.classify_gh_reversibility "repo delete jeong-sik/foo"
-           = Worker_dev_tools.R2_Irreversible));
-      Alcotest.test_case "R2: repo archive" `Quick (fun () ->
-        Alcotest.(check bool) "R2" true
-          (Worker_dev_tools.classify_gh_reversibility "repo archive jeong-sik/foo"
-           = Worker_dev_tools.R2_Irreversible));
-      Alcotest.test_case "R2: repo transfer" `Quick (fun () ->
-        Alcotest.(check bool) "R2" true
-          (Worker_dev_tools.classify_gh_reversibility "repo transfer jeong-sik/foo x"
-           = Worker_dev_tools.R2_Irreversible));
-      Alcotest.test_case "R2: release delete" `Quick (fun () ->
-        Alcotest.(check bool) "R2" true
-          (Worker_dev_tools.classify_gh_reversibility "release delete v1.0"
-           = Worker_dev_tools.R2_Irreversible));
-      Alcotest.test_case "R2: secret delete" `Quick (fun () ->
-        Alcotest.(check bool) "R2" true
-          (Worker_dev_tools.classify_gh_reversibility "secret delete MY_TOKEN"
-           = Worker_dev_tools.R2_Irreversible));
-      Alcotest.test_case "R2: ssh-key delete" `Quick (fun () ->
-        Alcotest.(check bool) "R2" true
-          (Worker_dev_tools.classify_gh_reversibility "ssh-key delete 42"
-           = Worker_dev_tools.R2_Irreversible));
-      Alcotest.test_case "R2: workflow disable" `Quick (fun () ->
-        Alcotest.(check bool) "R2" true
-          (Worker_dev_tools.classify_gh_reversibility "workflow disable ci.yml"
-           = Worker_dev_tools.R2_Irreversible));
-      Alcotest.test_case "R2: auth logout" `Quick (fun () ->
-        Alcotest.(check bool) "R2" true
-          (Worker_dev_tools.classify_gh_reversibility "auth logout"
-           = Worker_dev_tools.R2_Irreversible));
-      Alcotest.test_case "R2: api --method DELETE" `Quick (fun () ->
-        Alcotest.(check bool) "R2" true
-          (Worker_dev_tools.classify_gh_reversibility
-             "api --method DELETE repos/jeong-sik/foo/issues/1"
-           = Worker_dev_tools.R2_Irreversible));
-      Alcotest.test_case "R2: graphql mutation deletePullRequest" `Quick (fun () ->
-        Alcotest.(check bool) "R2" true
-          (Worker_dev_tools.classify_gh_reversibility
-             "api graphql -f query=mutation{deletePullRequest(input:{pullRequestId:abc}){clientMutationId}}"
-           = Worker_dev_tools.R2_Irreversible));
-      Alcotest.test_case "R2: graphql mutation transferRepository" `Quick (fun () ->
-        Alcotest.(check bool) "R2" true
-          (Worker_dev_tools.classify_gh_reversibility
-             "api graphql -f query=mutation{transferRepository(input:{}){clientMutationId}}"
-           = Worker_dev_tools.R2_Irreversible));
-    ];
-    "validate_command_paths_redirect", [
-      (* Field evidence (2026-04-17/18): 62 keeper_bash calls were rejected
-         because the command mixed '/' paths with glob/brace/backslash/
-         quote syntax. The terse rejection did not name the offending
-         character or the correct tool, so small-LLM keepers retried the
-         same pattern. Each new branch must point the keeper at the
-         concrete replacement. *)
-      Alcotest.test_case "glob path suggests masc_code_search file_pattern"
-        `Quick (fun () ->
-          match Worker_dev_tools.validate_command_paths
-                  ~workdir:"/tmp" "ls repos/*.ml" with
-          | Error msg ->
-            Alcotest.(check bool) "names glob char" true
-              (contains_substring msg "Glob expansion");
-            Alcotest.(check bool) "names masc_code_search" true
-              (contains_substring msg "masc_code_search")
-          | Ok () -> Alcotest.fail "glob with path must be blocked");
-      Alcotest.test_case "brace path suggests per-target / rg" `Quick
-        (fun () ->
-          match Worker_dev_tools.validate_command_paths
-                  ~workdir:"/tmp" "cat lib/{a,b}.ml" with
-          | Error msg ->
-            Alcotest.(check bool) "names brace" true
-              (contains_substring msg "Brace expansion")
-          | Ok () -> Alcotest.fail "brace with path must be blocked");
-      Alcotest.test_case "backslash path names masc_code_search is_regex"
-        `Quick (fun () ->
-          match Worker_dev_tools.validate_command_paths
-                  ~workdir:"/tmp" "grep '\\.ml$' repos/" with
-          | Error msg ->
-            Alcotest.(check bool) "names escape" true
-              (contains_substring msg "Backslash escaping");
-            Alcotest.(check bool) "points at is_regex" true
-              (contains_substring msg "is_regex")
-          | Ok () -> Alcotest.fail "backslash with path must be blocked");
-      Alcotest.test_case "plain path with no rewrite syntax is allowed"
-        `Quick (fun () ->
-          match Worker_dev_tools.validate_command_paths
-                  ~workdir:"/tmp" "cat lib/foo.ml" with
-          | Ok () -> ()
-          | Error msg ->
-            Alcotest.fail ("plain path unexpectedly rejected: " ^ msg));
+      Alcotest.test_case "redacts quoted sensitive flag values" `Quick (fun () ->
+        let redacted =
+          Worker_dev_tools.sanitize_command_for_log
+            "gh api --token 'secret value' /user"
+        in
+        Alcotest.(check bool) "quoted secret removed" false
+          (contains_substring redacted "secret value");
+        Alcotest.(check bool) "placeholder added" true
+          (contains_substring redacted "--token [REDACTED]"));
+      Alcotest.test_case "fail-closes malformed sensitive command" `Quick (fun () ->
+        let redacted =
+          Worker_dev_tools.sanitize_command_for_log
+            "gh api --token 'secret value"
+        in
+        Alcotest.(check string) "malformed sensitive command redacted"
+          "[REDACTED]" redacted);
     ];
     "command_blocked_hint_redirects", [
-      (* Field evidence (2026-04-17/18): keeper_bash rejected `gh`, `docker`,
+      (* Field evidence (2026-04-17/18): tool_execute rejected `gh`, `docker`,
          `kubectl`, `ssh` calls with no redirect hint, which kept small-LLM
          keepers retrying the same blocked command. The new branches return a
          concrete alternative tool or an escalation path. *)
-      Alcotest.test_case "gh → keeper_pr_* redirect" `Quick (fun () ->
+      Alcotest.test_case "gh -> Execute redirect" `Quick (fun () ->
         let msg =
           Worker_dev_tools.block_reason_to_string
             (Worker_dev_tools.Command_not_allowed "gh")
         in
-        Alcotest.(check bool) "mentions keeper_pr_*" true
-          (contains_substring msg "keeper_pr_");
+        Alcotest.(check bool) "mentions Execute" true
+          (contains_substring msg "Use Execute from a repo worktree");
         Alcotest.(check bool) "mentions masc_board_" true
           (contains_substring msg "masc_board_"));
       Alcotest.test_case "docker → escalation hint" `Quick (fun () ->
@@ -956,34 +1186,9 @@ let () =
           Worker_dev_tools.block_reason_to_string
             (Worker_dev_tools.Command_not_allowed "Foo.bar")
         in
-        Alcotest.(check bool) "still suggests masc_code_edit for A.B names"
+        Alcotest.(check bool) "still suggests tool_edit_file for A.B names"
           true
-          (contains_substring msg "masc_code_"));
-    ];
-    "structured_tool_hint_for_r2", [
-      Alcotest.test_case "repo delete → board-post hint" `Quick (fun () ->
-        match Worker_dev_tools.structured_tool_hint_for_r2 "repo delete x/y" with
-        | Some msg ->
-          Alcotest.(check bool) "mentions operator" true
-            (contains_substring msg "operator")
-        | None -> Alcotest.fail "expected Some hint");
-      Alcotest.test_case "credential op → operator-only hint" `Quick (fun () ->
-        match Worker_dev_tools.structured_tool_hint_for_r2 "secret delete TOK" with
-        | Some msg ->
-          Alcotest.(check bool) "mentions operator-only" true
-            (contains_substring msg "operator-only")
-        | None -> Alcotest.fail "expected Some hint");
-      Alcotest.test_case "api R2 → generic hint" `Quick (fun () ->
-        match Worker_dev_tools.structured_tool_hint_for_r2
-                "api --method DELETE repos/x/y/releases/1" with
-        | Some msg ->
-          Alcotest.(check bool) "mentions gh api" true
-            (contains_substring msg "gh api")
-        | None -> Alcotest.fail "expected Some hint");
-      Alcotest.test_case "no hint for unmapped R2" `Quick (fun () ->
-        Alcotest.(check (option string)) "none"
-          None
-          (Worker_dev_tools.structured_tool_hint_for_r2 "workflow disable x.yml"));
+          (contains_substring msg "EditFile"));
     ];
     "attribution", [
       Alcotest.test_case "Ok () → Passed with cmd in evidence" `Quick (fun () ->
@@ -1025,7 +1230,7 @@ let () =
              | Some (`String s) -> Some s
              | _ -> None)
         | _ -> Alcotest.fail "evidence must be object");
-      Alcotest.test_case "all 7 block_reason variants → Policy_failed" `Quick
+      Alcotest.test_case "all 8 block_reason variants → Policy_failed" `Quick
         (fun () ->
         let variants =
           [
@@ -1035,6 +1240,7 @@ let () =
             Worker_dev_tools.Process_substitution;
             Worker_dev_tools.Unsafe_redirect;
             Worker_dev_tools.Pipes_not_allowed;
+            Worker_dev_tools.Direct_dune_invocation;
             Worker_dev_tools.Command_not_allowed "foo";
           ]
         in
@@ -1048,5 +1254,52 @@ let () =
              | Attribution.Policy_failed _ -> true
              | _ -> false)
         ) variants);
+    ];
+    "exec_policy_split", [
+      Alcotest.test_case "worker_dev_tools delegates shared shell policy" `Quick
+        (fun () ->
+        let worker_source = load_source "lib/worker_dev_tools.ml" in
+        let shell_adapter_source = load_source "lib/exec_shell_adapter.ml" in
+        let exec_policy_source = load_source "lib/exec_policy.ml" in
+        let tool_execute_source = load_source "lib/keeper/agent_tool_execute_runtime.ml" in
+        let agent_tool_execute_shell_ir_source = load_source "lib/keeper/agent_tool_execute_shell_ir.ml" in
+        Alcotest.(check bool) "worker delegates command context" true
+          (contains_substring
+             worker_source
+             "let command_context_with_allowlist = Exec_policy.command_context_with_allowlist");
+        Alcotest.(check bool) "worker delegates Shell IR paths" true
+          (contains_substring
+             worker_source
+             "let validate_shell_ir_paths = Exec_policy.validate_shell_ir_paths");
+        Alcotest.(check bool) "policy owns command hint" true
+          (contains_substring exec_policy_source "let command_blocked_hint");
+        Alcotest.(check bool) "worker no longer owns command hint" false
+          (contains_substring worker_source "let command_blocked_hint");
+        Alcotest.(check bool) "Execute dispatches through Shell IR facade" true
+          (contains_substring
+             tool_execute_source
+             "Agent_tool_execute_shell_ir.dispatch_classified");
+        Alcotest.(check bool) "shell IR facade owns Execute command context" true
+          (contains_substring agent_tool_execute_shell_ir_source "let tool_execute_command_context");
+        Alcotest.(check bool) "policy helper names are no longer worker-owned" false
+          (contains_substring exec_policy_source "Worker_dev_tools_paths");
+        Alcotest.(check bool) "policy uses renamed path helper" true
+          (contains_substring exec_policy_source "module Paths = Exec_policy_paths");
+        Alcotest.(check bool) "shell adapter owns cwd default helper" true
+          (contains_substring shell_adapter_source "let shell_ir_with_default_cwd");
+        Alcotest.(check bool) "worker delegates cwd default helper" true
+          (contains_substring
+             worker_source
+             "Exec_shell_adapter.shell_ir_with_default_cwd");
+        Alcotest.(check bool) "worker no longer owns cwd default helper" false
+          (contains_substring worker_source "let shell_ir_with_default_cwd");
+        Alcotest.(check bool) "shell adapter owns dispatch output helper" true
+          (contains_substring shell_adapter_source "let output_for_dispatch_status");
+        Alcotest.(check bool) "worker delegates dispatch output helper" true
+          (contains_substring
+             worker_source
+             "Exec_shell_adapter.output_for_dispatch_status");
+        Alcotest.(check bool) "worker no longer owns dispatch output helper" false
+          (contains_substring worker_source "let output_for_dispatch_status"));
     ];
   ]

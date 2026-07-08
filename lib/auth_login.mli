@@ -5,7 +5,8 @@
     1. Initialises the Mirage RNG idempotently.
     2. Ensures the auth config has bearer auth required (creating
        it when absent, flipping [require_token] when not yet on).
-    3. Mints a bearer token via {!Auth.create_token}.
+    3. Mints a bearer token via {!Auth.create_token} (or the
+       no-expiry variant when [~token_lifetime] is [`Long_lived]).
     4. Persists the raw token to a per-agent file under
        [<base_path>/.masc/auth/<agent_name>.token].
     5. Renders dashboard / MCP URLs using URL-encoded query params.
@@ -14,9 +15,15 @@
        {!render_text}).
 
     All internal helpers (URL encoding, shell quoting, RNG init,
-    config-flip, token persistence, hard-coded codex constants) stay
-    private — the four entry points cover every documented [masc-mcp
-    login] consumer (CLI, JSON API, shell-export). *)
+    config-flip, token persistence) stay private — the four entry
+    points cover every documented [masc-mcp login] consumer (CLI,
+    JSON API, shell-export).
+
+    The server is client-agnostic: the caller (CLI / API consumer)
+    supplies the env var name ([~token_env_var]) and the
+    token-lifetime policy ([~token_lifetime]). This module holds
+    no list of "known" MCP clients — those conventions live in the
+    operator's wrapper scripts and the runbook, not in server code. *)
 
 (** {1 Auth configuration change taxonomy} *)
 
@@ -28,6 +35,19 @@ type auth_change =
   | Require_token_enabled
         (** Bearer auth was enabled but [require_token] was off;
             this call flipped it on. *)
+
+(** {1 Token lifetime policy} *)
+
+type token_lifetime =
+  | With_expiry
+        (** Token uses the default expiry window from the auth
+            config (see {!Auth.create_token}). Appropriate for
+            short-lived operator sessions. *)
+  | Long_lived
+        (** Token has no [expires_at]; appropriate for long-running
+            local MCP daemons that cannot easily refresh on expiry.
+            The decision to use this lifetime is the caller's —
+            this module never infers it from [agent_name]. *)
 
 (** {1 Login report} *)
 
@@ -42,12 +62,9 @@ type t = {
   dashboard_url : string;
   mcp_url : string;
   mcp_token_env_var : string;
-  codex_server_name : string;
-  codex_token_env_var : string;
-  codex_login_supported : bool;
 }
 (** Concrete record because the test suite ({!test_auth_login}) and
-    the CLI ({!Bin.Main_eio}) read individual fields
+    the CLI entrypoint read individual fields
     ([report.agent_name], [report.bearer_token], [report.raw_token_file]).
 
     Field invariants:
@@ -55,18 +72,10 @@ type t = {
       written to [raw_token_file] (operator-readable, mode 0600).
     - [dashboard_url] always carries [agent] + [token] query params,
       both URL-encoded.
-    - [mcp_token_env_var] is the client-specific bearer env var for
-      known MCP clients ([claude] -> [MASC_CLAUDE_MCP_TOKEN],
-      [gemini] -> [MASC_GEMINI_MCP_TOKEN], Codex ->
-      [MASC_MCP_TOKEN]).
-    - [codex_server_name] is the constant [["masc"]] and
-      [codex_token_env_var] is [["MASC_MCP_TOKEN"]]; both pinned at
-      this level so the operator runbook for `codex` integration
-      surfaces them through the login output rather than via runtime
-      string lookup.
-    - [codex_login_supported] is currently always [false] —
-      {!render_text} explains the OAuth-only `codex mcp login` and
-      directs operators to the bearer-token export instead. *)
+    - [mcp_token_env_var] is exactly the value the caller passed to
+      {!mint} via [~token_env_var]. The server does not interpret
+      or validate this string — it is rendered verbatim into the
+      [export] statements and JSON output. *)
 
 (** {1 Mint entry point} *)
 
@@ -76,10 +85,21 @@ val mint :
   port:int ->
   agent_name:string ->
   role:Masc_domain.agent_role ->
+  token_env_var:string ->
+  token_lifetime:token_lifetime ->
   unit ->
   (t, Masc_error.t) result
-(** [mint ~base_path ~host ~port ~agent_name ~role ()] runs the full
-    login lifecycle.
+(** [mint ~base_path ~host ~port ~agent_name ~role ~token_env_var
+        ~token_lifetime ()] runs the full login lifecycle.
+
+    {2 Required arguments}
+    - [~token_env_var] is the operator's chosen env var name (e.g.
+      ["MASC_MCP_TOKEN"] or any operator-chosen variant). The server
+      does not pick a default — the caller decides. The string is
+      embedded verbatim in shell / JSON / text output.
+    - [~token_lifetime] selects between expiring and long-lived
+      credentials. The server does not infer this from
+      [agent_name] — the caller decides.
 
     {2 Side effects}
     - Initialises Mirage's default RNG on first call (idempotent
@@ -111,15 +131,7 @@ val to_yojson : t -> Yojson.Safe.t
 (** [to_yojson report] renders the canonical JSON-RPC result
     object with fields [status: "ok"] / [base_path] / [auth_config_path]
     / [auth_change] / [agent_name] / [role] / [bearer_token] /
-    [raw_token_file] / [dashboard_url] / [mcp_url] / [mcp_client] /
-    [codex_mcp].
-
-    The [codex_mcp] sub-object pins five fields: [server_name],
-    [auth_model: "bearer_token_env"], [token_env_var],
-    [login_supported], and a [login_note] explaining the OAuth-only
-    `codex mcp login`.  The literal note string is part of the
-    operator-visible contract — runbooks reference it by exact
-    wording. *)
+    [raw_token_file] / [dashboard_url] / [mcp_url] / [mcp_client]. *)
 
 val render_shell : t -> string
 (** [render_shell report] returns four newline-separated [export]
@@ -127,7 +139,7 @@ val render_shell : t -> string
 
     - [MASC_OPERATOR_AGENT]
     - [MASC_OPERATOR_TOKEN]
-    - [<mcp_token_env_var>] (client-specific for Claude/Gemini/Codex)
+    - [<mcp_token_env_var>] (caller-supplied env var name)
     - [MASC_DASHBOARD_URL]
 
     All values are POSIX-quoted (single-quoted with embedded
@@ -139,8 +151,8 @@ val render_text : t -> string
     suitable for terminal display: status / base_path /
     auth_config_path / auth_change / agent_name / role /
     raw_token_file / dashboard_url / mcp_url, then the shell
-    [exports:] block (from {!render_shell}), then [mcp_client:] and
-    [codex_mcp:] blocks describing the bearer-token-env auth model.
+    [exports:] block (from {!render_shell}), then [mcp_client:]
+    block describing the bearer-token-env auth model.
 
     The bearer token itself is intentionally NOT included as a
     standalone line in the text output — it appears only inside

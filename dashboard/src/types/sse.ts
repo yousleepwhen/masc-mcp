@@ -68,7 +68,6 @@ export type SSEEventType =
   | `oas:${string}`
   // Server-push snapshot events (proactive cache broadcasts)
   | 'project_snapshot'
-  | 'room_truth_snapshot'
   | 'namespace_truth_snapshot'
   | 'execution_snapshot'
   | 'operator_snapshot'
@@ -81,7 +80,11 @@ export type SSEEventType =
   | 'oas:masc:audit_event'
 
 export type JournalSeverity = 'debug' | 'info' | 'warn' | 'error' | 'unknown'
-export type JournalSource = 'structured' | 'legacy_stderr' | 'legacy_traceln' | 'sse'
+// Closed set of journal sources. `'unknown'` is a first-class variant
+// (mirroring JournalSeverity) so that `normalizeJournalSource` can fail
+// loud on unrecognized wire data instead of silently coercing it to
+// `'sse'`. Source of truth: see `normalizeJournalSource` in journal-entry.ts.
+export type JournalSource = 'structured' | 'legacy_stderr' | 'legacy_traceln' | 'sse' | 'unknown'
 
 // --- Attribution envelope ---
 // Structured verdict metadata for gate decisions. Emitted alongside existing
@@ -175,6 +178,11 @@ export interface SSEEvent {
   duration_ms?: number
   success?: boolean
   error_text?: string
+  tool_args?: unknown
+  tool_result?: unknown
+  tool_args_preview?: string
+  tool_output_preview?: string
+  tool_io_redacted?: boolean
   reason_code?: string
   turn?: number
   phase?: string

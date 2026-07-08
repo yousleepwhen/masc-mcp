@@ -29,6 +29,11 @@ let raw_schema_by_name name =
   Config.raw_all_tool_schemas
   |> List.find_opt (fun (schema : Masc_domain.tool_schema) -> String.equal schema.name name)
 
+let ensure_runtime_tool_registry_loaded () =
+  ignore
+    (Mcp_server_eio.create_state ~test_mode:true
+       ~base_path:"/tmp/masc-tool-surface-ssot" ())
+
 (* {1 Parity Tests — each compares legacy hardcoded list vs surface SSOT} *)
 
 let test_public_mcp_parity () =
@@ -73,9 +78,10 @@ let test_keeper_denied_parity () =
 (* {1 Structural Invariants — hold regardless of migration phase} *)
 
 let test_session_min_and_local_worker_share_core () =
-  (* Session_min (worker container fallback) and Local_worker (team-session
-     bridge) serve different purposes and are NOT in a subset relationship.
-     Instead we verify they share the expected coordination core. *)
+  (* Session_min (worker container fallback) and Local_worker (mission
+     execution bridge) serve different purposes and are NOT in a subset
+     relationship.  Instead we verify they share the expected coordination
+     core. *)
   let min_set = set_of (Tool_catalog.tools_for_surface Tool_catalog.Session_min) in
   let worker_set = set_of (Tool_catalog.tools_for_surface Tool_catalog.Local_worker) in
   let shared = SS.inter min_set worker_set in
@@ -125,7 +131,22 @@ let test_keeper_internal_contains_known_tools () =
   List.iter
     (fun name ->
       Alcotest.(check bool) (name ^ " is internal") true (SS.mem name internal))
-    [ "keeper_time_now"; "keeper_board_post"; "keeper_bash"; "keeper_memory_search" ]
+    [
+      "keeper_time_now";
+      "keeper_board_post";
+      "tool_execute";
+      "keeper_memory_search";
+    ]
+
+let test_retired_pr_tools_are_not_active_schemas () =
+  let retired_review_tool suffix = "keeper_" ^ "pr_" ^ "review_" ^ suffix in
+  List.iter
+    (fun name ->
+      Alcotest.(check bool) (name ^ " removed from raw schema universe") false
+        (Option.is_some (raw_schema_by_name name));
+      Alcotest.(check bool) (name ^ " not keeper-internal surface") false
+        (Tool_catalog.is_on_surface Tool_catalog.Keeper_internal name))
+    [ retired_review_tool "read"; retired_review_tool "comment"; retired_review_tool "reply" ]
 
 let test_keeper_voice_replacement_contract () =
   Alcotest.(check (option string))
@@ -166,8 +187,8 @@ let test_is_on_surface_consistent () =
 (* {1 Cross-classification invariants — independent concern lists stay consistent} *)
 
 let destructive_tools =
-  ["keeper_bash"; "keeper_fs_edit";
-   "shell_exec"; "masc_code_shell"; "masc_code_git"; "masc_code_delete"]
+  ["tool_execute"; "tool_edit_file";
+   "shell_exec"; "tool_write_file"]
 
 let test_destructive_check_tools_are_privileged () =
   (* Every tool registered as destructive should also be in the
@@ -206,14 +227,12 @@ let test_replacement_targets_have_schemas () =
   ) internal
 
 let test_keeper_internal_tools_have_schemas () =
-  (* Every tool in keeper_internal_tools should have a schema in
-     keeper shards (model_tools + voice shard). A name without a schema
+  (* Every tool in keeper_internal_tools should have a schema in the
+     keeper-facing schema SSOT. A name without a schema
      means the LLM can never select it — a silent capability gap. *)
-  let voice_schemas = match Tool_shard.get_shard "voice" with
-    | Some shard -> shard.tools | None -> [] in
-  let standalone_schemas = [ Keeper_exec_tools.keeper_tool_search_schema ] in
+  let standalone_schemas = [ Agent_tool_dispatch_runtime.keeper_tool_search_schema ] in
   let schema_names =
-    (Tool_shard.keeper_model_tools @ voice_schemas @ standalone_schemas)
+    (Tool_shard.all_keeper_tool_schemas @ standalone_schemas)
     |> List.map (fun (s : Masc_domain.tool_schema) -> s.name)
     |> SS.of_list
   in
@@ -228,41 +247,92 @@ let test_keeper_internal_tools_have_schemas () =
   Alcotest.(check bool) "all internal tools have schemas" true
     (SS.is_empty missing)
 
-(* {1 SSOT Validation — Phase 4: no orphans, surface constraints} *)
+(* {1 SSOT Validation — active tools must be surfaced and routed} *)
+
+type surface_audit_row =
+  { name : string
+  ; registered_schema : bool
+  ; dispatch_registered : bool
+  ; surfaces : string list
+  ; lifecycle : string
+  ; replacement : string option
+  }
+
+let surface_audit_row_of_schema (schema : Masc_domain.tool_schema) =
+  let meta = Tool_catalog.metadata schema.name in
+  { name = schema.name
+  ; registered_schema = true
+  ; dispatch_registered = Option.is_some (Tool_dispatch.lookup_tag schema.name)
+  ; surfaces =
+      Tool_catalog_surfaces.surfaces_for_tool schema.name
+      |> List.map Tool_catalog_surfaces.surface_to_string
+  ; lifecycle = Tool_catalog.lifecycle_to_string meta.lifecycle
+  ; replacement = meta.replacement
+  }
+
+let format_surface_audit_row row =
+  Printf.sprintf
+    "%s lifecycle=%s registered_schema=%b dispatch_registered=%b surfaces=[%s] replacement=%s"
+    row.name row.lifecycle row.registered_schema row.dispatch_registered
+    (String.concat "," row.surfaces)
+    (Option.value ~default:"" row.replacement)
+
+let schema_surface_audit_rows () =
+  ensure_runtime_tool_registry_loaded ();
+  Config.raw_all_tool_schemas
+  |> List.map surface_audit_row_of_schema
+
+let is_active row = String.equal row.lifecycle "active"
+let has_surface row = row.surfaces <> []
+let has_named_surface name row = List.exists (String.equal name) row.surfaces
+
+let requires_auth_permission row =
+  List.exists
+    (fun surface ->
+      List.mem surface
+        [ "public_mcp"; "spawned_agent_mcp"; "local_worker"; "session_min"; "admin" ])
+    row.surfaces
+  && not (has_named_surface "system_internal" row)
+  && not (has_named_surface "keeper_internal" row)
 
 let test_no_orphaned_tools () =
-  (* Every registered tool schema must belong to at least one surface,
-     except Deprecated tools which are intentionally removed from all surfaces,
-     and known orphans from the tool-registry-pruning batch whose schemas
-     will be cleaned up in a follow-up PR. *)
-  let on_any_surface name =
-    List.exists (fun surface ->
-      Tool_catalog.is_on_surface surface name
-    ) Tool_catalog.all_surfaces
-  in
-  let is_deprecated name =
-    List.exists (fun (n, _) -> String.equal n name) Tool_catalog.deprecated_tool_entries
-  in
-  (* Schemas left behind after surface pruning. Tracked for follow-up removal. *)
-  let known_orphans =
-    [ "masc_note_add"; "masc_register_capabilities";
-      "masc_board_stats"; "masc_board_profile"; "masc_board_hearths";
-      "masc_board_delete"; "masc_keeper_compact";
-      "masc_keeper_clear"; "masc_runtime_verify" ]
-  in
-  let is_known_orphan name = List.mem name known_orphans in
+  (* Every active registered schema must belong to at least one catalog
+     surface. *)
   let orphaned =
-    Config.raw_all_tool_schemas
-    |> List.filter (fun (schema : Masc_domain.tool_schema) ->
-         not (on_any_surface schema.name)
-         && not (is_deprecated schema.name)
-         && not (is_known_orphan schema.name))
-    |> List.map (fun (schema : Masc_domain.tool_schema) -> schema.name)
+    schema_surface_audit_rows ()
+    |> List.filter (fun row ->
+         row.registered_schema && is_active row && not (has_surface row))
   in
   if orphaned <> [] then
-    Alcotest.failf "Orphaned tools (no surface): {%s}"
-      (String.concat ", " orphaned);
-  Alcotest.(check bool) "zero orphans" true (orphaned = [])
+    Alcotest.failf "Active tools without any surface:\n%s"
+      (String.concat "\n" (List.map format_surface_audit_row orphaned));
+  Alcotest.(check bool) "zero active orphans" true (orphaned = [])
+
+let test_active_surfaced_tools_are_routable_and_permissioned () =
+  let active_surfaced =
+    schema_surface_audit_rows ()
+    |> List.filter (fun row -> is_active row && has_surface row)
+  in
+  let missing_dispatch =
+    active_surfaced
+    |> List.filter (fun row -> not row.dispatch_registered)
+  in
+  let missing_permission =
+    active_surfaced
+    |> List.filter (fun row ->
+         requires_auth_permission row
+         && Option.is_none (Tool_permission_map.permission_for_tool row.name))
+  in
+  if missing_dispatch <> [] then
+    Alcotest.failf "Active surfaced tools without dispatch:\n%s"
+      (String.concat "\n" (List.map format_surface_audit_row missing_dispatch));
+  if missing_permission <> [] then
+    Alcotest.failf "Active surfaced tools without required permission:\n%s"
+      (String.concat "\n" (List.map format_surface_audit_row missing_permission));
+  Alcotest.(check bool) "active surfaced tools are routable" true
+    (missing_dispatch = []);
+  Alcotest.(check bool) "active surfaced tools are permissioned" true
+    (missing_permission = [])
 
 let test_public_mcp_count_cap () =
   (* Public_mcp surface should not exceed 80 tools to control LLM token cost. *)
@@ -284,6 +354,62 @@ let test_system_internal_not_visible () =
       (String.concat ", " visible);
   Alcotest.(check bool) "all system_internal hidden" true (visible = [])
 
+let test_keeper_internal_descriptions_no_cross_leak () =
+  (* Keeper-internal tool descriptions should not reference other internal
+     tool names.  The LLM sees these descriptions and will attempt to call
+     whatever name it finds — referencing [tool_search_files] in the [tool_execute]
+     description causes the LLM to emit [tool_search_files] calls that bypass
+     the alias routing layer (Keeper_tool_alias only routes public names
+     like [Execute], [SearchFiles], etc.). *)
+  let contains_substring haystack needle =
+    let hlen = String.length haystack in
+    let nlen = String.length needle in
+    if nlen = 0 then true
+    else if nlen > hlen then false
+    else
+      let rec loop i =
+        i + nlen <= hlen
+        && (String.sub haystack i nlen = needle || loop (i + 1))
+      in
+      loop 0
+  in
+  let internal_names_to_check =
+    [ "tool_execute"; "tool_search_files"; "tool_edit_file"; "tool_read_file"
+    ; "keeper_memory_search"; "keeper_memory_write"; "keeper_board_post"
+    ; "keeper_board_list"; "tool_execute"; "shell_exec"; "worker_dev_tools"
+    ]
+  in
+  let internal_schemas =
+    Config.raw_all_tool_schemas
+    |> List.filter (fun (s : Masc_domain.tool_schema) ->
+           Tool_catalog.is_on_surface Tool_catalog.Keeper_internal s.name)
+  in
+  let violations = ref [] in
+  List.iter (fun (schema : Masc_domain.tool_schema) ->
+    List.iter (fun leaked_name ->
+      if String.length leaked_name > 0
+         && String.equal schema.name leaked_name = false
+         && contains_substring schema.description leaked_name
+      then
+        violations :=
+          (schema.name, leaked_name) :: !violations
+    ) internal_names_to_check
+  ) internal_schemas;
+  if !violations <> [] then begin
+    let msg =
+      !violations
+      |> List.map (fun (host, leak) ->
+             Printf.sprintf "  %s.description contains \"%s\"" host leak)
+      |> String.concat "\n"
+    in
+    Alcotest.failf
+      "Keeper-internal description cross-leak:\n%s\n\
+       Internal names should not appear in descriptions; use public-facing \
+       terms (Execute, SearchFiles, EditFile, WriteFile, ReadFile) instead." msg
+  end
+  else
+    Alcotest.(check bool) "no cross-leak" true (!violations = [])
+
 let test_system_internal_callable () =
   (* System_internal tools must be callable via tools/call. *)
   let system_tools = Tool_catalog.tools_for_surface Tool_catalog.System_internal in
@@ -297,26 +423,6 @@ let test_system_internal_callable () =
       (String.concat ", " uncallable);
   Alcotest.(check bool) "all system_internal callable" true (uncallable = [])
 
-let test_pruned_tools_registered_as_deprecated () =
-  (* Tools pruned from user-facing surfaces are registered as Deprecated
-     in explicit_metadata (#5039). They stay hidden from tools/list and
-     remain callable for in-flight sessions. Some may be fully removed
-     from surfaces when no backward compat is needed. *)
-  let deprecated_names =
-    List.map fst Tool_catalog.deprecated_tool_entries
-  in
-  List.iter
-    (fun name ->
-      Alcotest.(check bool) (name ^ " is Deprecated") true
-        (List.mem name deprecated_names);
-      Alcotest.(check bool) (name ^ " hidden") false
-        (Tool_catalog.is_visible name);
-      Alcotest.(check bool) (name ^ " callable") true
-        (Tool_catalog.allow_direct_call name))
-    [
-      "masc_webrtc_answer";
-      "masc_webrtc_offer";
-    ]
 let test_workspace_mutating_canonical_used () =
   (* workspace_mutating_tool_names in tool_catalog_surfaces is the canonical list.
      Verify no empty or phantom entries. *)
@@ -350,21 +456,6 @@ let test_role_catalogs_drop_stale_entries_when_built () =
   Alcotest.(check bool) "coordinator role excludes portal_open" false
     (List.mem "masc_portal_open" coordinator_tools)
 
-let test_local_worker_compat_passthrough_schemas_match_registry () =
-  List.iter (fun (schema : Masc_domain.tool_schema) ->
-    match raw_schema_by_name schema.name with
-    | None ->
-        Alcotest.failf "missing raw schema for passthrough tool %s" schema.name
-    | Some raw_schema ->
-        Alcotest.(check string)
-          (schema.name ^ " passthrough description")
-          raw_schema.description schema.description;
-        Alcotest.(check bool)
-          (schema.name ^ " passthrough input_schema")
-          true
-          (Yojson.Safe.equal raw_schema.input_schema schema.input_schema))
-    Agent_tool_surfaces.local_worker_compat_passthrough_schemas
-
 let () =
   Alcotest.run "tool_surface_ssot"
     [
@@ -388,6 +479,8 @@ let () =
             test_keeper_internal_disjoint_from_public_mcp;
           Alcotest.test_case "Keeper_internal contains known tools" `Quick
             test_keeper_internal_contains_known_tools;
+          Alcotest.test_case "retired PR review tools are not active schemas" `Quick
+            test_retired_pr_tools_are_not_active_schemas;
           Alcotest.test_case "Keeper voice replacement contract" `Quick
             test_keeper_voice_replacement_contract;
           Alcotest.test_case "is_on_surface consistent" `Quick
@@ -409,20 +502,20 @@ let () =
              test_role_catalogs_only_expose_available_tools;
            Alcotest.test_case "built role catalogs drop stale entries" `Quick
              test_role_catalogs_drop_stale_entries_when_built;
-           Alcotest.test_case "local worker passthrough schemas use registry"
-             `Quick test_local_worker_compat_passthrough_schemas_match_registry;
          ] );
       ( "ssot_validation",
         [
           Alcotest.test_case "no orphaned tools" `Quick
             test_no_orphaned_tools;
+          Alcotest.test_case "active surfaced tools have dispatch + permission" `Quick
+            test_active_surfaced_tools_are_routable_and_permissioned;
           Alcotest.test_case "Public_mcp count cap <= 80" `Quick
             test_public_mcp_count_cap;
+          Alcotest.test_case "Keeper_internal descriptions no cross-leak" `Quick
+            test_keeper_internal_descriptions_no_cross_leak;
           Alcotest.test_case "System_internal not visible" `Quick
             test_system_internal_not_visible;
           Alcotest.test_case "System_internal callable" `Quick
             test_system_internal_callable;
-          Alcotest.test_case "pruned tools registered as Deprecated" `Quick
-            test_pruned_tools_registered_as_deprecated;
         ] );
     ]

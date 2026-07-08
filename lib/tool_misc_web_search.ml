@@ -81,13 +81,6 @@ let html_entity_replacements =
   |> List.map (fun (entity, replacement) ->
          (Re.str entity |> Re.compile, replacement))
 
-let json_error message =
-  Yojson.Safe.to_string
-    (`Assoc [ ("status", `String "error"); ("message", `String message) ])
-
-let json_ok fields =
-  Yojson.Safe.to_string (`Assoc (("status", `String "ok") :: fields))
-
 let normalize_spaces text =
   text |> Re.replace_string whitespace_re ~by:" " |> String.trim
 
@@ -151,9 +144,6 @@ let decode_html_entities text =
 let clean_search_text text =
   text |> strip_cdata |> strip_html_tags |> decode_html_entities |> normalize_spaces
 
-let trim_nonempty text =
-  let trimmed = String.trim text in
-  if String.equal trimmed "" then None else Some trimmed
 
 let valid_search_result_url url =
   let trimmed = String.trim url in
@@ -208,7 +198,7 @@ let parse_json_search_results ~results_path ~title_field ~snippet_field payload 
   let open Yojson.Safe.Util in
   let str_of item key =
     Safe_ops.protect ~default:None (fun () ->
-      Option.bind (member key item |> to_string_option) trim_nonempty)
+      Option.bind (member key item |> to_string_option) String_util.trim_nonempty)
   in
   Safe_ops.protect ~default:[] (fun () ->
     let root = Yojson.Safe.from_string payload in
@@ -428,7 +418,7 @@ let result_json ~query ~search_url ~engine hits =
                ("published_at", Json_util.string_opt_to_json hit.published_at);
              ])
   in
-  json_ok
+  Tool_args.ok_response
     [
       ( "result",
         `Assoc
@@ -473,14 +463,7 @@ let endpoint_error ~fallback detail =
 
 let searxng_default_url = Masc_network_defaults.searxng_default_url
 
-let strip_trailing_slashes s =
-  let rec find_last_non_slash i =
-    if i < 0 then -1
-    else if Char.equal s.[i] '/' then find_last_non_slash (i - 1)
-    else i
-  in
-  let last = find_last_non_slash (String.length s - 1) in
-  if last < 0 then "" else String.sub s 0 (last + 1)
+let strip_trailing_slashes = Env_config_core.strip_trailing_slashes
 
 let searxng_base_url () =
   let url =
@@ -541,7 +524,7 @@ let fetch_bing_rss ~timeout_sec ~query =
   | Ok (None, _) -> Error "search endpoint returned no HTTP status"
 
 let fetch_brave ~timeout_sec ~query ~limit =
-  match Sys.getenv_opt "BRAVE_SEARCH_API_KEY" |> Stdlib.Fun.flip Option.bind trim_nonempty with
+  match Sys.getenv_opt "BRAVE_SEARCH_API_KEY" |> Stdlib.Fun.flip Option.bind String_util.trim_nonempty with
   | None -> Error "missing BRAVE_SEARCH_API_KEY"
   | Some api_key ->
       let search_url =
@@ -572,7 +555,7 @@ let fetch_brave ~timeout_sec ~query ~limit =
       | Ok (None, _) -> Error "provider returned no HTTP status"
 
 let fetch_tavily ~timeout_sec ~query ~limit =
-  match Sys.getenv_opt "TAVILY_API_KEY" |> Stdlib.Fun.flip Option.bind trim_nonempty with
+  match Sys.getenv_opt "TAVILY_API_KEY" |> Stdlib.Fun.flip Option.bind String_util.trim_nonempty with
   | None -> Error "missing TAVILY_API_KEY"
   | Some api_key ->
       let search_url = "https://api.tavily.com/search" in
@@ -612,7 +595,7 @@ let fetch_tavily ~timeout_sec ~query ~limit =
       | Ok (None, _) -> Error "provider returned no HTTP status"
 
 let fetch_exa ~timeout_sec ~query ~limit =
-  match Sys.getenv_opt "EXA_API_KEY" |> Stdlib.Fun.flip Option.bind trim_nonempty with
+  match Sys.getenv_opt "EXA_API_KEY" |> Stdlib.Fun.flip Option.bind String_util.trim_nonempty with
   | None -> Error "missing EXA_API_KEY"
   | Some api_key ->
       let search_url = "https://api.exa.ai/search" in
@@ -650,9 +633,9 @@ let fetch_exa ~timeout_sec ~query ~limit =
 
 let fetch_bing_api ~timeout_sec ~query ~limit =
   let api_key =
-    match Sys.getenv_opt "BING_SEARCH_API_KEY" |> Stdlib.Fun.flip Option.bind trim_nonempty with
+    match Sys.getenv_opt "BING_SEARCH_API_KEY" |> Stdlib.Fun.flip Option.bind String_util.trim_nonempty with
     | Some key -> Some key
-    | None -> Sys.getenv_opt "AZURE_BING_SEARCH_API_KEY" |> Stdlib.Fun.flip Option.bind trim_nonempty
+    | None -> Sys.getenv_opt "AZURE_BING_SEARCH_API_KEY" |> Stdlib.Fun.flip Option.bind String_util.trim_nonempty
   in
   match api_key with
   | None -> Error "missing BING_SEARCH_API_KEY or AZURE_BING_SEARCH_API_KEY"
@@ -793,19 +776,73 @@ let search_impl ~query ~limit =
   in
   loop [] (provider_order ())
 
-let handle args =
+(* RFC-0189 PR-1b.9 — typed result. Failure-class mapping at the
+   handle boundary (source-typed at each construction site; no
+   substring matching):
+
+   - [Workflow_rejection]: [validate_query] rejection — caller
+     violated query rules (empty, > 500 chars, secret-like
+     pattern). Caller controls the input.
+   - [Transient_error]:    rate-limit hit ("retry shortly"
+     semantics). Retry after window unlocks.
+   - [Runtime_failure]:    [search_impl] aggregate ("all web
+     search providers failed: ..."). The 7-provider fallback
+     chain exhausted; per-provider transport vs server
+     distinction is collapsed in the aggregate string today.
+     Lifting fetch_provider / per-fetcher errors to typed
+     variants is the natural PR-2 follow-up — the aggregate
+     boundary remains [Runtime_failure] for now because
+     blind-retry is not guaranteed safe (some providers may
+     have returned 4xx).
+
+   [simulate_for_test] uses the same boundary: empty outcomes
+   list or aggregate failure → [Runtime_failure]. *)
+
+(* When [body] is a JSON envelope string (from
+   [Tool_args.ok_response] / [result_json]) we parse-and-store the
+   structured payload. Plain strings fall back to [`String body]. *)
+let text_ok ~tool_name ~start_time body : Tool_result.result =
+  let data =
+    match Tool_result.structured_payload_of_message body with
+    | Some json -> json
+    | None -> `String body
+  in
+  Tool_result.make_ok ~tool_name ~start_time ~data ()
+
+let workflow_err ~tool_name ~start_time msg : Tool_result.result =
+  Tool_result.make_err
+    ~tool_name
+    ~class_:Tool_result.Workflow_rejection
+    ~start_time
+    msg
+
+let transient_err ~tool_name ~start_time msg : Tool_result.result =
+  Tool_result.make_err
+    ~tool_name
+    ~class_:Tool_result.Transient_error
+    ~start_time
+    msg
+
+let runtime_err ~tool_name ~start_time msg : Tool_result.result =
+  Tool_result.make_err
+    ~tool_name
+    ~class_:Tool_result.Runtime_failure
+    ~start_time
+    msg
+
+let handle ~tool_name ~start_time args : Tool_result.result =
   let query = get_string args "query" "" in
   match validate_query query with
-  | Error message -> (false, json_error message)
+  | Error message -> workflow_err ~tool_name ~start_time message
   | Ok query ->
       let limit = max 1 (min 10 (get_int args "limit" 5)) in
       let now = Unix.gettimeofday () in
       let key = cache_key ~query ~limit in
       match cache_lookup key now with
-      | Some cached -> (true, cached)
+      | Some cached -> text_ok ~tool_name ~start_time cached
       | None -> (
           match enforce_rate_limit now with
-          | Error message -> (false, json_error message)
+          | Error message -> transient_err ~tool_name ~start_time message
           | Ok () -> (
               match search_impl ~query ~limit with
               | Ok response ->
@@ -814,27 +851,26 @@ let handle args =
                       ~engine:response.engine response.hits
                   in
                   cache_store key json now;
-                  (true, json)
-              | Error message -> (false, json_error message)))
+                  text_ok ~tool_name ~start_time json
+              | Error message -> runtime_err ~tool_name ~start_time message))
 
-let simulate_for_test ~query ~limit outcomes =
+let simulate_for_test ~query ~limit outcomes : Tool_result.result =
   let normalize source tuples =
     tuples |> take_results limit |> normalize_hits ~source
   in
   let rec loop errors = function
     | [] ->
-        ( false,
-          json_error
-            (if Stdlib.List.length errors = 0 then "all web search providers failed"
-             else String.concat "; " (List.rev errors)) )
+        runtime_err ~tool_name:"masc_web_search" ~start_time:0.0
+          (if Stdlib.List.length errors = 0 then "all web search providers failed"
+           else String.concat "; " (List.rev errors))
     | (provider_name, outcome) :: rest -> (
         match outcome with
         | `Hits hits when Stdlib.List.length hits > 0 ->
-            ( true,
-              result_json ~query
-                ~search_url:("test://" ^ provider_name)
-                ~engine:provider_name
-                (normalize provider_name hits) )
+            text_ok ~tool_name:"masc_web_search" ~start_time:0.0
+              (result_json ~query
+                 ~search_url:("test://" ^ provider_name)
+                 ~engine:provider_name
+                 (normalize provider_name hits))
         | `Hits _ | `Empty ->
             loop ((provider_name ^ ": no results") :: errors) rest
         | `Error message ->

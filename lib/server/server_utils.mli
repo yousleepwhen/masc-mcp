@@ -57,8 +57,7 @@ val board_sort_order_of_request :
     param and resolves it through
     {!Board_dispatch.sort_order_of_string_opt}.  Missing or
     invalid values fall back to {!Board_dispatch.Hot} — graceful
-    UI degradation, not silent data corruption.  See issue #8449
-    PR C for the canonical aliases (new/active/comments). *)
+    UI degradation, not silent data corruption. *)
 
 val board_sort_label : Board_dispatch.sort_order -> string
 (** Thin alias over {!Board_dispatch.sort_order_to_string}. *)
@@ -101,8 +100,8 @@ val board_fetch_limit :
     lookup tiers, all operator-visible through the [source] field:
 
     1. [keeper_registry_agent_name] —
-       {!Keeper_registry.find_by_agent_name}
-    2. [keeper_registry_name] — {!Keeper_registry.find_by_name}
+       {!Keeper_registry_lookup.find_by_agent_name}
+    2. [keeper_registry_name] — {!Keeper_registry_lookup.find_by_name}
     3. [keeper_alias_contract] —
        {!Keeper_identity.canonical_keeper_name_from_agent_name}
 
@@ -171,6 +170,16 @@ val board_reactions_lookup :
   Board.reaction_target_type * string ->
   Board.reaction_summary list
 
+val board_contributor_quality_json :
+  Agent_reputation.agent_reputation -> Yojson.Safe.t
+(** [board_contributor_quality_json rep] projects the existing agent
+    reputation record into the compact board contributor-quality contract. *)
+
+val board_contributor_quality_lookup :
+  ?config:Coord.config -> unit -> string -> Yojson.Safe.t option
+(** [board_contributor_quality_lookup ?config ()] returns a request-local
+    memoized lookup by author.  Without [config], it returns [None]. *)
+
 (** {1 Dashboard helpers} *)
 
 val board_comment_dashboard_json :
@@ -190,6 +199,7 @@ val board_comment_dashboard_json :
 val board_post_dashboard_json :
   ?include_moderation:bool ->
   ?blind_votes:bool ->
+  ?contributor_quality:Yojson.Safe.t ->
   ?current_vote:Board.vote_direction option ->
   ?reactions:Board.reaction_summary list ->
   author_karma:int ->
@@ -210,6 +220,8 @@ val board_post_dashboard_json :
       only when [include_moderation] is [true].
     - [vote_blind] / [vote_blind_reason] and null score fields when
       [blind_votes] is [true] and the viewer has not voted yet.
+    - [contributor_quality] when supplied by the route layer from
+      {!Agent_reputation}.
 
     The base fields [title] / [votes] / [comment_count] /
     [created_at_iso] / [updated_at_iso] / [hearth_count] are

@@ -1,12 +1,12 @@
 open Alcotest
 
-module KEC = Masc_mcp.Keeper_exec_context
+module KEC = Masc_mcp.Keeper_context_runtime
+module KCP = Masc_mcp.Keeper_compact_policy
 module KCC = Masc_mcp.Keeper_context_core
 module KAR = Masc_mcp.Keeper_agent_run
 module KMP = Masc_mcp.Keeper_memory_policy
 module KT = Masc_mcp.Keeper_types
 module KR = Masc_mcp.Keeper_registry
-module KHS = Masc_mcp.Keeper_keepalive_signal
 module KST = Masc_mcp.Keeper_state_machine
 module KCB = Masc_mcp.Keeper_turn_cascade_budget
 module P = Masc_mcp.Prometheus
@@ -14,6 +14,27 @@ module TCG = Masc_mcp.Telemetry_coverage_gap
 
 let ctx_messages = KEC.messages_of_context
 let ctx_system_prompt = KEC.system_prompt_of_context
+
+let post_turn_lifecycle_no_resilience
+    ~on_compaction_started
+    ~on_handoff_started
+    ~base_dir
+    ~meta
+    ~model
+    ~primary_model_max_tokens
+    ~current_turn_blocker_info
+    ~checkpoint =
+  KEC.apply_post_turn_lifecycle_with_resilience_handles
+    ~resilience_audit_store:None
+    ~resilience_strategy_executor:None
+    ~on_compaction_started
+    ~on_handoff_started
+    ~base_dir
+    ~meta
+    ~model
+    ~primary_model_max_tokens
+    ~current_turn_blocker_info
+    ~checkpoint
 
 let temp_dir prefix =
   let dir = Filename.temp_file prefix "" in
@@ -43,31 +64,6 @@ let with_env key value f =
       | Some v -> Unix.putenv key v
       | None -> Unix.putenv key "")
     f
-
-let base_lifecycle ~(meta : KT.keeper_meta) : KEC.post_turn_lifecycle =
-  {
-    updated_meta = meta;
-    checkpoint = None;
-    handoff_json = None;
-    handoff_attempted = false;
-    handoff_failure_reason = None;
-    compaction =
-      {
-        attempted = false;
-        applied = false;
-        failure_reason = None;
-        trigger = None;
-        decision = KEC.Blocked_below_thresholds;
-        before_tokens = 0;
-        after_tokens = 0;
-        saved_tokens = 0;
-      };
-    turn_generation = meta.runtime.generation;
-    context_ratio = 0.0;
-    context_tokens = 0;
-    context_max = 0;
-    message_count = 0;
-  }
 
 let contains_substring haystack needle =
   let hay_len = String.length haystack in
@@ -137,7 +133,7 @@ let make_keeper_meta ?(name = "keeper-lifecycle-test")
           ("name", `String name);
           ("agent_name", `String name);
           ("trace_id", `String trace_id);
-          ("cascade_name", `String Masc_mcp.Keeper_config.default_cascade_name);
+          ("cascade_name", `String Masc_mcp.(Keeper_config.default_cascade_name ()));
           ("last_model_used", `String "llama:auto");
           ("sandbox_profile", `String "local");
           ("network_mode", `String "inherit");
@@ -189,7 +185,7 @@ let load_context ~base_dir ~trace_id ~max_tokens =
   in
   loaded_opt
 
-let test_apply_post_turn_lifecycle_without_checkpoint_records_skip () =
+let test_post_turn_lifecycle_without_checkpoint_records_skip () =
   let base_dir = temp_dir "keeper_lifecycle_none" in
   Fun.protect
     ~finally:(fun () -> cleanup_dir base_dir)
@@ -197,13 +193,13 @@ let test_apply_post_turn_lifecycle_without_checkpoint_records_skip () =
       Fs_compat.clear_fs ();
       let meta = make_keeper_meta () in
       let lifecycle =
-        KEC.apply_post_turn_lifecycle
+        post_turn_lifecycle_no_resilience
           ~on_compaction_started:(fun () -> ())
           ~on_handoff_started:(fun () -> ())
           ~base_dir ~meta
           ~model:"llama:auto"
           ~primary_model_max_tokens:512
-          ~current_turn_overflow_blocker:None
+          ~current_turn_blocker_info:None
           ~checkpoint:None
       in
       check bool "compaction not attempted" false lifecycle.compaction.attempted;
@@ -244,7 +240,109 @@ let test_load_context_prefers_live_primary_max_tokens_over_checkpoint_limit () =
             (KEC.max_tokens_of_context loaded)
       | None -> fail "expected checkpoint context to load")
 
-let test_apply_post_turn_lifecycle_compacts_and_updates_continuity () =
+let checkpoint_context_with_generation generation =
+  let context = Agent_sdk.Context.create () in
+  Agent_sdk.Context.set_scoped context Agent_sdk.Context.Session
+    "keeper_generation" (`Int generation);
+  context
+
+let test_checkpoint_helpers_ignore_legacy_working_context_sidecar () =
+  let checkpoint =
+    KEC.create ~system_prompt:"sidecar" ~max_tokens:2048
+    |> KEC.checkpoint_of_context
+  in
+  let legacy_sidecar =
+    Some (`Assoc [ ("max_tokens", `Int 4096); ("generation", `Int 99) ])
+  in
+  let legacy_only =
+    {
+      checkpoint with
+      max_total_tokens = None;
+      context = Agent_sdk.Context.create ();
+      working_context = legacy_sidecar;
+    }
+  in
+  check int "legacy sidecar max_tokens ignored" 1234
+    (KEC.checkpoint_max_tokens legacy_only ~fallback:1234);
+  check int "legacy sidecar generation ignored" 7
+    (KCC.checkpoint_generation legacy_only ~fallback:7);
+  let canonical =
+    {
+      legacy_only with
+      context = checkpoint_context_with_generation 42;
+    }
+  in
+  check int "canonical context generation preserved" 42
+    (KCC.checkpoint_generation canonical ~fallback:7)
+
+let test_post_turn_lifecycle_no_state_advances_cooldown_ts () =
+  let base_dir = temp_dir "keeper_lifecycle_no_state" in
+  Fun.protect
+    ~finally:(fun () -> cleanup_dir base_dir)
+    (fun () ->
+      Fs_compat.clear_fs ();
+      Eio_main.run @@ fun env ->
+      Fs_compat.set_fs (Eio.Stdenv.fs env);
+      let now_ts = Time_compat.now () in
+      let stale_ts = now_ts -. 5_000.0 in
+      let meta =
+        let base = make_keeper_meta ~name:"keeper-no-state-test" () in
+        {
+          base with
+          compaction =
+            {
+              base.compaction with
+              ratio_gate = 0.99;
+              cooldown_sec = 60;
+            };
+          runtime =
+            {
+              base.runtime with
+              last_continuity_update_ts = stale_ts;
+            };
+        }
+      in
+      (* Reply emits no [STATE] block, so [apply_continuity_summary] sees
+         [snapshot = None] when the checkpoint's working_context also lacks
+         a state snapshot. *)
+      let reply_without_state = "all good, nothing to checkpoint" in
+      let ctx =
+        build_dense_context ~turns:2 ~max_tokens:4096
+          ~state_reply:reply_without_state
+      in
+      let checkpoint = save_checkpoint ~base_dir ~meta ~ctx in
+      let labels = [ "keeper", meta.name ] in
+      let before =
+        Masc_mcp.Prometheus.get_metric_value
+          Masc_mcp.Keeper_metrics.(to_string StateSnapshotSkippedNoState)
+          ~labels ()
+        |> Option.value ~default:0.0
+      in
+      let lifecycle =
+        post_turn_lifecycle_no_resilience
+          ~on_compaction_started:(fun () -> ())
+          ~on_handoff_started:(fun () -> ())
+          ~base_dir ~meta
+          ~model:"llama:auto"
+          ~primary_model_max_tokens:4096
+          ~current_turn_blocker_info:None
+          ~checkpoint:(Some checkpoint)
+      in
+      let after =
+        Masc_mcp.Prometheus.get_metric_value
+          Masc_mcp.Keeper_metrics.(to_string StateSnapshotSkippedNoState)
+          ~labels ()
+        |> Option.value ~default:0.0
+      in
+      let advanced_ts =
+        lifecycle.updated_meta.runtime.last_continuity_update_ts
+      in
+      check bool "cooldown ts advanced past stale value" true
+        (advanced_ts > stale_ts);
+      check bool "skipped_no_state counter incremented" true
+        (after -. before >= 1.0))
+
+let test_post_turn_lifecycle_compacts_and_updates_continuity () =
   let base_dir = temp_dir "keeper_lifecycle_compact" in
   Fun.protect
     ~finally:(fun () -> cleanup_dir base_dir)
@@ -283,13 +381,13 @@ let test_apply_post_turn_lifecycle_compacts_and_updates_continuity () =
       let checkpoint = save_checkpoint ~base_dir ~meta ~ctx:original_ctx in
       let compaction_started = ref 0 in
       let lifecycle =
-        KEC.apply_post_turn_lifecycle
+        post_turn_lifecycle_no_resilience
           ~on_handoff_started:(fun () -> ())
           ~base_dir ~meta
           ~on_compaction_started:(fun () -> incr compaction_started)
           ~model:"llama:auto"
           ~primary_model_max_tokens:320
-          ~current_turn_overflow_blocker:None
+          ~current_turn_blocker_info:None
           ~checkpoint:(Some checkpoint)
       in
       check int "compaction start hook called once" 1 !compaction_started;
@@ -364,19 +462,19 @@ let test_compaction_callback_failure_records_coverage_gap () =
       let labels = [ ("callback", "on_compaction_started") ] in
       let before =
         P.metric_value_or_zero
-          P.metric_keeper_lifecycle_callback_failures
+          Masc_mcp.Keeper_metrics.(to_string LifecycleCallbackFailures)
           ~labels
           ()
       in
       let lifecycle =
-        KEC.apply_post_turn_lifecycle
+        post_turn_lifecycle_no_resilience
           ~on_handoff_started:(fun () -> ())
           ~base_dir ~meta
           ~on_compaction_started:(fun () ->
             failwith "synthetic callback failure")
           ~model:"llama:auto"
           ~primary_model_max_tokens:320
-          ~current_turn_overflow_blocker:None
+          ~current_turn_blocker_info:None
           ~checkpoint:(Some checkpoint)
       in
       check bool "compaction still applied" true
@@ -386,7 +484,7 @@ let test_compaction_callback_failure_records_coverage_gap () =
       check (float 0.0001) "callback failure metric increments"
         (before +. 1.0)
         (P.metric_value_or_zero
-           P.metric_keeper_lifecycle_callback_failures
+           Masc_mcp.Keeper_metrics.(to_string LifecycleCallbackFailures)
            ~labels
            ());
       match TCG.read_recent ~masc_root:base_dir ~n:1 with
@@ -408,7 +506,7 @@ let test_compaction_callback_failure_records_coverage_gap () =
              "synthetic callback failure")
       | _ -> fail "expected one telemetry coverage gap row")
 
-let test_apply_post_turn_lifecycle_keeps_checkpoint_when_compaction_skips () =
+let test_post_turn_lifecycle_keeps_checkpoint_when_compaction_skips () =
   let base_dir = temp_dir "keeper_lifecycle_skip_compaction" in
   Fun.protect
     ~finally:(fun () -> cleanup_dir base_dir)
@@ -444,13 +542,13 @@ let test_apply_post_turn_lifecycle_keeps_checkpoint_when_compaction_skips () =
       let original_count = List.length (ctx_messages original_ctx) in
       let checkpoint = save_checkpoint ~base_dir ~meta ~ctx:original_ctx in
       let lifecycle =
-        KEC.apply_post_turn_lifecycle
+        post_turn_lifecycle_no_resilience
           ~on_compaction_started:(fun () -> ())
           ~on_handoff_started:(fun () -> ())
           ~base_dir ~meta
           ~model:"llama:auto"
           ~primary_model_max_tokens:4096
-          ~current_turn_overflow_blocker:None
+          ~current_turn_blocker_info:None
           ~checkpoint:(Some checkpoint)
       in
       check bool "compaction not attempted" false lifecycle.compaction.attempted;
@@ -466,7 +564,80 @@ let test_apply_post_turn_lifecycle_keeps_checkpoint_when_compaction_skips () =
             (List.length (ctx_messages loaded))
       | None -> fail "expected original checkpoint to remain available")
 
-let test_apply_post_turn_lifecycle_handoffs_after_compaction () =
+let test_post_turn_lifecycle_no_state_advances_continuity_cooldown ()
+    =
+  let base_dir = temp_dir "keeper_lifecycle_no_state_cooldown" in
+  Fun.protect
+    ~finally:(fun () -> cleanup_dir base_dir)
+    (fun () ->
+      Fs_compat.clear_fs ();
+      Eio_main.run @@ fun env ->
+      Fs_compat.set_fs (Eio.Stdenv.fs env);
+      let meta =
+        let base =
+          make_keeper_meta ~name:"no-state-cooldown-keeper"
+            ~trace_id:"trace-no-state-cooldown" ()
+        in
+        {
+          base with
+          auto_handoff = false;
+          continuity_summary = "previous summary";
+          compaction =
+            {
+              base.compaction with
+              ratio_gate = 1.0;
+              message_gate = 0;
+              token_gate = 0;
+              cooldown_sec = 60;
+            };
+          runtime =
+            {
+              base.runtime with
+              last_continuity_update_ts = 0.0;
+            };
+        }
+      in
+      let ctx =
+        KEC.create ~system_prompt:"keeper lifecycle" ~max_tokens:4096
+        |> fun ctx ->
+        KEC.append ctx
+          (Agent_sdk.Types.assistant_msg "plain reply without state")
+        |> KEC.sync_oas_context
+      in
+      let checkpoint = save_checkpoint ~base_dir ~meta ~ctx in
+      let labels = [ ("keeper", meta.name) ] in
+      let before =
+        P.metric_value_or_zero
+          Masc_mcp.Keeper_metrics.(to_string ContinuityNoState)
+          ~labels
+          ()
+      in
+      let lifecycle =
+        post_turn_lifecycle_no_resilience
+          ~on_compaction_started:(fun () -> ())
+          ~on_handoff_started:(fun () -> ())
+          ~base_dir ~meta
+          ~model:"llama:auto"
+          ~primary_model_max_tokens:4096
+          ~current_turn_blocker_info:None
+          ~checkpoint:(Some checkpoint)
+      in
+      check bool "compaction not attempted" false lifecycle.compaction.attempted;
+      check bool "compaction skipped" false lifecycle.compaction.applied;
+      check string "skip decision recorded" "blocked:below_thresholds"
+        (KEC.compaction_decision_to_string lifecycle.compaction.decision);
+      check string "continuity summary unchanged" meta.continuity_summary
+        lifecycle.updated_meta.continuity_summary;
+      check bool "no-state advances continuity cooldown" true
+        (lifecycle.updated_meta.runtime.last_continuity_update_ts > 0.0);
+      check (float 0.0001) "no-state metric increments"
+        (before +. 1.0)
+        (P.metric_value_or_zero
+           Masc_mcp.Keeper_metrics.(to_string ContinuityNoState)
+           ~labels
+           ()))
+
+let test_post_turn_lifecycle_handoffs_after_compaction () =
   let base_dir = temp_dir "keeper_lifecycle_handoff" in
   Fun.protect
     ~finally:(fun () -> cleanup_dir base_dir)
@@ -506,12 +677,12 @@ let test_apply_post_turn_lifecycle_handoffs_after_compaction () =
       let compaction_started = ref 0 in
       let handoff_started = ref 0 in
       let lifecycle =
-        KEC.apply_post_turn_lifecycle ~base_dir ~meta
+        post_turn_lifecycle_no_resilience ~base_dir ~meta
           ~on_compaction_started:(fun () -> incr compaction_started)
           ~on_handoff_started:(fun () -> incr handoff_started)
           ~model:"llama:auto"
           ~primary_model_max_tokens:256
-          ~current_turn_overflow_blocker:None
+          ~current_turn_blocker_info:None
           ~checkpoint:(Some checkpoint)
       in
       check int "compaction start hook called once" 1 !compaction_started;
@@ -585,19 +756,19 @@ let test_handoff_callback_failure_records_coverage_gap () =
       let labels = [ ("callback", "on_handoff_started") ] in
       let before =
         P.metric_value_or_zero
-          P.metric_keeper_lifecycle_callback_failures
+          Masc_mcp.Keeper_metrics.(to_string LifecycleCallbackFailures)
           ~labels
           ()
       in
       let lifecycle =
-        KEC.apply_post_turn_lifecycle
+        post_turn_lifecycle_no_resilience
           ~on_compaction_started:(fun () -> ())
           ~on_handoff_started:(fun () ->
             failwith "synthetic handoff callback failure")
           ~base_dir ~meta
           ~model:"llama:auto"
           ~primary_model_max_tokens:4096
-          ~current_turn_overflow_blocker:None
+          ~current_turn_blocker_info:None
           ~checkpoint:(Some checkpoint)
       in
       check bool "handoff attempted" true lifecycle.handoff_attempted;
@@ -608,7 +779,7 @@ let test_handoff_callback_failure_records_coverage_gap () =
       check (float 0.0001) "handoff callback failure metric increments"
         (before +. 1.0)
         (P.metric_value_or_zero
-           P.metric_keeper_lifecycle_callback_failures
+           Masc_mcp.Keeper_metrics.(to_string LifecycleCallbackFailures)
            ~labels
            ());
       match TCG.read_recent ~masc_root:base_dir ~n:1 with
@@ -630,7 +801,7 @@ let test_handoff_callback_failure_records_coverage_gap () =
              "synthetic handoff callback failure")
       | _ -> fail "expected one telemetry coverage gap row")
 
-let test_apply_post_turn_lifecycle_handoffs_on_current_turn_overflow_signal ()
+let test_post_turn_lifecycle_handoffs_on_current_turn_overflow_signal ()
     =
   let base_dir = temp_dir "keeper_lifecycle_overflow_signal_handoff" in
   Fun.protect
@@ -665,13 +836,17 @@ let test_apply_post_turn_lifecycle_handoffs_on_current_turn_overflow_signal ()
         |> fun ctx -> save_checkpoint ~base_dir ~meta ~ctx
       in
       let lifecycle =
-        KEC.apply_post_turn_lifecycle ~base_dir ~meta
+        post_turn_lifecycle_no_resilience ~base_dir ~meta
           ~on_compaction_started:(fun () -> ())
           ~on_handoff_started:(fun () -> ())
           ~model:"llama:auto"
           ~primary_model_max_tokens:4096
-          ~current_turn_overflow_blocker:
-            (Some "Invalid request: Prompt exceeds max length")
+          ~current_turn_blocker_info:
+            (Some
+               KT.{
+                 klass = Sdk_token_budget_exceeded;
+                 detail = "Invalid request: Prompt exceeds max length";
+               })
           ~checkpoint:(Some checkpoint)
       in
       check bool "ratio stays below threshold" true
@@ -681,7 +856,7 @@ let test_apply_post_turn_lifecycle_handoffs_on_current_turn_overflow_signal ()
       check int "generation advanced" 1
         lifecycle.updated_meta.runtime.generation)
 
-let test_apply_post_turn_lifecycle_passes_resilience_handles () =
+let test_post_turn_lifecycle_passes_resilience_handles () =
   let base_dir = temp_dir "keeper_lifecycle_resilience" in
   let audit_dir = temp_dir "keeper_lifecycle_resilience_audit" in
   Fun.protect
@@ -746,7 +921,7 @@ let test_apply_post_turn_lifecycle_passes_resilience_handles () =
           ~on_handoff_started:(fun () -> ())
           ~model:"llama:auto"
           ~primary_model_max_tokens:4096
-          ~current_turn_overflow_blocker:None
+          ~current_turn_blocker_info:None
           ~checkpoint:(Some checkpoint)
       in
       Unix.chmod base_dir 0o755;
@@ -781,49 +956,11 @@ let test_apply_post_turn_lifecycle_passes_resilience_handles () =
           | _ -> fail "expected assoc working context")
       | None -> fail "expected checkpoint")
 
-(* Reviewer #13214: pin the legacy compatibility guarantee that
-   apply_post_turn_lifecycle (which forwards to the resilience-handle
-   variant with both arguments [None]) does not invoke any recovery
-   side effect, even when the meta has handoff thresholds tripped.
-   Without this, a future change that accidentally activates
-   recovery from the legacy seam would slip past the existing tests
-   (which only exercise the fully wired Some/Some path). *)
-let test_apply_post_turn_lifecycle_legacy_path_skips_executor () =
-  let base_dir = temp_dir "keeper_lifecycle_legacy_skip_executor" in
-  Fun.protect
-    ~finally:(fun () -> cleanup_dir base_dir)
-    (fun () ->
-      Eio_main.run @@ fun env ->
-      Fs_compat.set_fs (Eio.Stdenv.fs env);
-      let now_ts = Time_compat.now () in
-      let meta =
-        let base = make_keeper_meta () in
-        {
-          base with
-          auto_handoff = false;
-          runtime =
-            { base.runtime with last_continuity_update_ts = now_ts -. 60.0 };
-        }
-      in
-      let lifecycle =
-        KEC.apply_post_turn_lifecycle
-          ~base_dir ~meta
-          ~on_compaction_started:(fun () -> ())
-          ~on_handoff_started:(fun () -> ())
-          ~model:"llama:auto"
-          ~primary_model_max_tokens:4096
-          ~current_turn_overflow_blocker:None
-          ~checkpoint:None
-      in
-      check bool "no handoff attempted" false lifecycle.handoff_attempted;
-      check (option string) "no handoff failure" None
-        lifecycle.handoff_failure_reason)
-
 (* Reviewer #13214: pin the invariant that an executor without an
    audit store is rejected at the seam, not silently allowed (which
    would skip the RecoveryAttempted envelope and break durable
    auditability). *)
-let test_apply_post_turn_lifecycle_rejects_executor_without_audit () =
+let test_post_turn_lifecycle_rejects_executor_without_audit () =
   let base_dir = temp_dir "keeper_lifecycle_executor_without_audit" in
   Fun.protect
     ~finally:(fun () -> cleanup_dir base_dir)
@@ -852,7 +989,7 @@ let test_apply_post_turn_lifecycle_rejects_executor_without_audit () =
                ~on_handoff_started:(fun () -> ())
                ~model:"llama:auto"
                ~primary_model_max_tokens:4096
-               ~current_turn_overflow_blocker:None
+               ~current_turn_blocker_info:None
                ~checkpoint:None);
           false
         with Invalid_argument _ -> true
@@ -919,7 +1056,7 @@ let test_post_turn_resilience_runtime_executor_pauses_handoff () =
           ~on_handoff_started:(fun () -> ())
           ~model:"llama:auto"
           ~primary_model_max_tokens:4096
-          ~current_turn_overflow_blocker:None
+          ~current_turn_blocker_info:None
           ~checkpoint:(Some checkpoint)
         |> handles.sync_lifecycle_meta
       in
@@ -1005,7 +1142,7 @@ let test_rollover_aborts_on_save_failure () =
           ~base_dir ~meta
           ~model:"llama:auto"
           ~primary_model_max_tokens:256
-          ~current_turn_overflow_blocker:None
+          ~current_turn_blocker_info:None
           ~checkpoint:(Some checkpoint)
       in
       (* Restore permissions before assertions *)
@@ -1053,41 +1190,6 @@ let test_recover_latest_checkpoint_for_overflow_retry_compacts_oas_checkpoint ()
                 (KEC.max_tokens_of_context loaded);
           | None -> fail "expected compacted OAS checkpoint")
       | None -> fail "expected overflow retry recovery from OAS checkpoint")
-
-let test_recover_latest_checkpoint_for_overflow_retry_uses_legacy_checkpoint () =
-  let base_dir = temp_dir "keeper_lifecycle_overflow_retry_legacy" in
-  Fun.protect
-    ~finally:(fun () -> cleanup_dir base_dir)
-    (fun () ->
-      Fs_compat.clear_fs ();
-      Eio_main.run @@ fun env ->
-      Fs_compat.set_fs (Eio.Stdenv.fs env);
-      let meta = make_keeper_meta ~trace_id:"trace-overflow-retry-legacy" () in
-      let session =
-        KEC.create_session ~session_id:(Masc_mcp.Keeper_id.Trace_id.to_string meta.runtime.trace_id) ~base_dir
-      in
-      let legacy_ctx =
-        build_dense_context ~turns:18 ~max_tokens:2048
-          ~state_reply:
-            "done\n\n[STATE]\nGoal: recover legacy checkpoint\nProgress: ready\n[/STATE]"
-      in
-      ignore (KEC.save_checkpoint session legacy_ctx ~generation:3);
-      match
-        KEC.recover_latest_checkpoint_for_overflow_retry ~base_dir ~meta
-          ~model:"llama:auto" ~primary_model_max_tokens:192
-      with
-      | Some recovery ->
-          check int "legacy generation preserved" 3 recovery.turn_generation;
-          check bool "legacy recovery compacts" true recovery.compaction.applied;
-          (match
-             load_context ~base_dir ~trace_id:(Masc_mcp.Keeper_id.Trace_id.to_string meta.runtime.trace_id)
-               ~max_tokens:192
-           with
-          | Some loaded ->
-              check int "legacy retry max tokens clamped" 192
-                (KEC.max_tokens_of_context loaded);
-          | None -> fail "expected compacted checkpoint after legacy recovery")
-      | None -> fail "expected overflow retry recovery from legacy checkpoint")
 
 let test_recover_latest_checkpoint_for_overflow_retry_ignores_checkpoint_system_prompt_in_history_budget () =
   let base_dir = temp_dir "keeper_lifecycle_overflow_retry_system_prompt" in
@@ -1261,7 +1363,7 @@ let test_rollover_repairs_orphan_tool_result () =
           ~meta
           ~model:"llama:auto"
           ~primary_model_max_tokens:256
-          ~current_turn_overflow_blocker:None
+          ~current_turn_blocker_info:None
           ~checkpoint:(Some checkpoint)
       in
       check bool "rollover attempted" true rollover.attempted;
@@ -1349,6 +1451,24 @@ let oversized_user_message ?(prompt = "긴 텍스트도 저장되면 안 돼") (
     tool_call_id = None;
       metadata = [];
   }
+
+let checkpoint_counted_content_chars messages =
+  List.fold_left
+    (fun total (msg : Agent_sdk.Types.message) ->
+      List.fold_left
+        (fun total block ->
+          match block with
+          | Agent_sdk.Types.Text text -> total + String.length text
+          | Agent_sdk.Types.ToolResult { content; _ } ->
+              total + String.length content
+          | Agent_sdk.Types.Thinking { content; _ } ->
+              total + String.length content
+          | Agent_sdk.Types.RedactedThinking text -> total + String.length text
+          | _ -> total)
+        total
+        msg.content)
+    0
+    messages
 
 let summarized_contaminated_text =
   "[Summary of 2 earlier messages]\n\
@@ -1477,7 +1597,7 @@ let test_save_oas_checkpoint_strips_ephemeral_world_state () =
           ~max_checkpoint_messages:120
           ~session
           ~agent_name:"keeper-lifecycle"
-          ~model:"glm:glm-5.1"
+          ~model:"provider_k:provider_k-5.1"
           ~ctx
           ~generation:1
       with
@@ -1513,7 +1633,7 @@ let test_save_oas_checkpoint_caps_oversized_text () =
           ~max_checkpoint_messages:120
           ~session
           ~agent_name:"keeper-lifecycle"
-          ~model:"glm:glm-5.1"
+          ~model:"provider_k:provider_k-5.1"
           ~ctx
           ~generation:1
       with
@@ -1530,6 +1650,54 @@ let test_save_oas_checkpoint_caps_oversized_text () =
             (contains_substring text "[capped]");
           check bool "text was compacted" true
             (String.length text < String.length oversized_checkpoint_text))
+
+let test_save_oas_checkpoint_caps_total_content () =
+  let base_dir = temp_dir "keeper_lifecycle_save_total_cap" in
+  Fun.protect
+    ~finally:(fun () -> cleanup_dir base_dir)
+    (fun () ->
+      let session =
+        KEC.create_session ~session_id:"trace-save-total-cap" ~base_dir
+      in
+      let large_text =
+        String.make (KCC.default_max_checkpoint_content_chars_total / 8) 'q'
+      in
+      let messages =
+        List.init 40 (fun i ->
+            Agent_sdk.Types.user_msg
+              (Printf.sprintf "bulk-checkpoint-%02d %s" i large_text))
+      in
+      let ctx =
+        KEC.create ~system_prompt:"keeper lifecycle" ~max_tokens:64_000
+        |> fun ctx -> KEC.append_many ctx messages
+        |> KEC.sync_oas_context
+      in
+      match
+        KEC.save_oas_checkpoint
+          ~max_checkpoint_messages:120
+          ~session
+          ~agent_name:"keeper-lifecycle"
+          ~model:"provider_k:provider_k-5.1"
+          ~ctx
+          ~generation:1
+      with
+      | Error e ->
+          Alcotest.fail
+            (Printf.sprintf "save_oas_checkpoint failed: %s" e)
+      | Ok checkpoint ->
+          check bool "global content cap enforced" true
+            (checkpoint_counted_content_chars checkpoint.messages
+             <= KCC.default_max_checkpoint_content_chars_total);
+          check bool "older messages dropped at total cap" true
+            (List.length checkpoint.messages < List.length messages);
+          let newest =
+            checkpoint.messages
+            |> List.rev
+            |> List.hd
+            |> Agent_sdk.Types.text_of_message
+          in
+          check bool "newest message retained" true
+            (contains_substring newest "bulk-checkpoint-39"))
 
 let test_sanitize_checkpoint_message_caps_oversized_tool_result () =
   let oversized =
@@ -1601,8 +1769,17 @@ let test_sanitize_checkpoint_message_caps_tool_result_aggregate_budget () =
              (contains_substring first KCC.checkpoint_text_cap_marker);
            check bool "second tool result truncated" true
              (contains_substring second KCC.checkpoint_text_cap_marker);
-           check string "aggregate overflow gets stubbed"
-             "[tool result cleared]" third
+           (* The stubbed payload carries the compaction reason and
+              the originating [tool_use_id] so an LLM reading the
+              checkpoint later (and an operator scanning the log)
+              knows the placeholder is intentional and which cap
+              tripped it. *)
+           check bool "aggregate overflow gets stubbed" true
+             (contains_substring third "[tool result cleared:");
+           check bool "stub names the over-aggregate-bytes reason" true
+             (contains_substring third "reason=over_aggregate_bytes");
+           check bool "stub preserves tool_use_id for traceability" true
+             (contains_substring third "tool_use_id=tool-agg-3")
        | _ -> fail "expected three ToolResult blocks after aggregate cap");
       check int "aggregate cap records truncated blocks" 2
         stats.truncated_blocks;
@@ -1641,7 +1818,7 @@ let test_save_oas_checkpoint_stubs_old_tool_results () =
           ~max_checkpoint_messages:120
           ~session
           ~agent_name:"keeper-lifecycle"
-          ~model:"glm:glm-5.1"
+          ~model:"provider_k:provider_k-5.1"
           ~ctx
           ~generation:1
       with
@@ -1700,7 +1877,7 @@ let test_save_oas_checkpoint_repairs_orphaned_tool_result_after_cap () =
           ~max_checkpoint_messages:2
           ~session
           ~agent_name:"keeper-lifecycle"
-          ~model:"glm:glm-5.1"
+          ~model:"provider_k:provider_k-5.1"
           ~ctx
           ~generation:1
       with
@@ -1904,7 +2081,7 @@ let test_save_oas_checkpoint_strips_summarized_world_state () =
           ~max_checkpoint_messages:120
           ~session
           ~agent_name:"keeper-lifecycle"
-          ~model:"glm:glm-5.1"
+          ~model:"provider_k:provider_k-5.1"
           ~ctx
           ~generation:1
       with
@@ -2185,7 +2362,7 @@ let test_compact_if_needed_ts_zero_bypasses_cooldown () =
   let meta = make_gate_only_meta ~last_continuity_update_ts:0.0 ~cooldown_sec:3600 () in
   let ctx = KEC.create ~system_prompt:"sp" ~max_tokens:4096 in
   let now_ts = 1000.0 in (* well within the 3600s cooldown window *)
-  let (_ctx, trigger, decision) = KEC.compact_if_needed ~meta ~now_ts ctx in
+  let (_ctx, trigger, decision) = KCP.compact_if_needed ~meta ~now_ts ctx in
   check (option string) "no compaction triggered (ratio_gate=1.0)" None trigger;
   check string "ts=0.0 bypasses cooldown, not skipped" "blocked:below_thresholds" decision
 
@@ -2209,7 +2386,7 @@ let test_compact_if_needed_emergency_bypass_ignores_cooldown () =
   in
   let ratio = KCC.context_ratio ctx in
   check bool "context ratio is above emergency threshold" true (ratio >= 0.8);
-  let (_ctx, trigger, decision) = KEC.compact_if_needed ~meta ~now_ts ctx in
+  let (_ctx, trigger, decision) = KCP.compact_if_needed ~meta ~now_ts ctx in
   (* Emergency ratio bypasses cooldown → compaction fires (ratio >= ratio_gate=1.0) *)
   check bool "compaction was triggered (emergency bypass)" true (Option.is_some trigger);
   check bool "decision starts with applied:" true (String.starts_with ~prefix:"applied:" decision)
@@ -2234,17 +2411,17 @@ let test_compact_if_needed_records_saved_tokens_metric () =
   let labels = [ ("keeper", meta.name) ] in
   let before_metric =
     Masc_mcp.Prometheus.get_metric_value
-      Masc_mcp.Prometheus.metric_keeper_compaction_saved_tokens
+      Masc_mcp.Keeper_metrics.(to_string CompactionSavedTokens)
       ~labels
       ()
     |> Option.value ~default:0.0
   in
   let (compacted_ctx, trigger, decision) =
-    KEC.compact_if_needed ~meta ~now_ts ctx
+    KCP.compact_if_needed ~meta ~now_ts ctx
   in
   let after_metric =
     Masc_mcp.Prometheus.get_metric_value
-      Masc_mcp.Prometheus.metric_keeper_compaction_saved_tokens
+      Masc_mcp.Keeper_metrics.(to_string CompactionSavedTokens)
       ~labels
       ()
     |> Option.value ~default:0.0
@@ -2306,6 +2483,79 @@ let test_pre_dispatch_resume_checkpoint_uses_loaded_working_context () =
   in
   check bool "fresh context does not force Agent.resume" false
     (Option.is_some fresh_result.resume_checkpoint)
+
+let test_pre_dispatch_resume_checkpoint_caps_loaded_context_without_save () =
+  let base_meta = make_keeper_meta () in
+  let meta =
+    {
+      base_meta with
+      compaction =
+        {
+          base_meta.compaction with
+          ratio_gate = 1.0;
+          message_gate = 0;
+          token_gate = 0;
+          max_checkpoint_messages = 120;
+        };
+    }
+  in
+  let large_text =
+    String.make (KCC.default_max_checkpoint_content_chars_total / 8) 'q'
+  in
+  let messages =
+    List.init 40 (fun i ->
+      Agent_sdk.Types.user_msg
+        (Printf.sprintf "resume-bulk-checkpoint-%02d %s" i large_text))
+  in
+  let ctx =
+    KEC.create ~system_prompt:"sp" ~max_tokens:10_000_000
+    |> fun c -> KEC.append_many c messages
+    |> KEC.sync_oas_context
+  in
+  let checkpoint =
+    {
+      (KEC.checkpoint_of_context ctx) with
+      turn_count = 13;
+      messages = KEC.messages_of_context ctx;
+    }
+  in
+  let ctx = { ctx with checkpoint } in
+  let save_called = ref false in
+  let result =
+    KAR.prepare_resume_checkpoint_for_dispatch
+      ~meta
+      ~now_ts:1000.0
+      ~loaded_checkpoint_present:true
+      ~save_checkpoint:(fun _ ->
+        save_called := true;
+        Error "unexpected save without compaction")
+      ctx
+  in
+  check bool "no compaction save for below-threshold bulk context" false
+    !save_called;
+  check bool "bulk context stays below compaction gates" false result.applied;
+  let resume_checkpoint =
+    match result.resume_checkpoint with
+    | Some checkpoint -> checkpoint
+    | None -> Alcotest.fail "expected capped resume checkpoint"
+  in
+  check int "resume turn count is preserved" 13 resume_checkpoint.turn_count;
+  check bool "resume checkpoint enforces total content cap" true
+    (checkpoint_counted_content_chars resume_checkpoint.messages
+     <= KCC.default_max_checkpoint_content_chars_total);
+  check bool "older messages dropped at resume total cap" true
+    (List.length resume_checkpoint.messages < List.length messages);
+  let newest =
+    resume_checkpoint.messages
+    |> List.rev
+    |> List.hd
+    |> Agent_sdk.Types.text_of_message
+  in
+  check bool "newest message retained in resume checkpoint" true
+    (contains_substring newest "resume-bulk-checkpoint-39");
+  check int "context carries capped resume checkpoint"
+    (List.length resume_checkpoint.messages)
+    (List.length result.context.checkpoint.messages)
 
 let test_pre_dispatch_resume_checkpoint_saves_compacted_context () =
   Eio_main.run @@ fun env ->
@@ -2425,176 +2675,43 @@ let test_pre_dispatch_resume_checkpoint_blocks_unsaved_compaction () =
   check bool "unsaved checkpoint is not used for resume" false
     (Option.is_some result.resume_checkpoint)
 
-let test_dispatch_keeper_phase_event_uses_room_base_path () =
-  let base_dir = temp_dir "keeper_lifecycle_registry_phase" in
-  Fun.protect
-    ~finally:(fun () -> cleanup_dir base_dir)
-    (fun () ->
-      Eio_main.run @@ fun env ->
-      Fs_compat.set_fs (Eio.Stdenv.fs env);
-      KR.clear ();
-      let config = Masc_mcp.Coord.default_config base_dir in
-      let meta = make_keeper_meta ~name:"keeper-phase-regression" () in
-      ignore (KR.register ~base_path:config.base_path meta.name meta);
-      KEC.dispatch_keeper_phase_event
-        ~config
-        ~keeper_name:meta.name
-        KST.Compaction_started;
-      match KR.get ~base_path:config.base_path meta.name with
-      | Some entry ->
-          check string "compaction start reaches registry" "compacting"
-            (KST.phase_to_string entry.phase)
-      | None -> fail "expected registered keeper after compaction dispatch")
-
-let test_dispatch_post_turn_lifecycle_events_uses_room_base_path () =
-  let base_dir = temp_dir "keeper_lifecycle_registry_outcome" in
-  Fun.protect
-    ~finally:(fun () -> cleanup_dir base_dir)
-    (fun () ->
-      Eio_main.run @@ fun env ->
-      Fs_compat.set_fs (Eio.Stdenv.fs env);
-      KR.clear ();
-      let config = Masc_mcp.Coord.default_config base_dir in
-      let meta = make_keeper_meta ~name:"keeper-outcome-regression" () in
-      ignore (KR.register ~base_path:config.base_path meta.name meta);
-      KEC.dispatch_keeper_phase_event
-        ~config
-        ~keeper_name:meta.name
-        KST.Compaction_started;
-      let lifecycle =
-        {
-          (base_lifecycle ~meta) with
-          compaction =
-            {
-              attempted = true;
-              applied = true;
-              failure_reason = None;
-              trigger = Some "test";
-              decision = KEC.Applied "test";
-              before_tokens = 42;
-              after_tokens = 21;
-              saved_tokens = 21;
-            };
-        }
-      in
-      KEC.dispatch_post_turn_lifecycle_events
-        ~config
-        ~keeper_name:meta.name
-        lifecycle;
-      match KR.get ~base_path:config.base_path meta.name with
-      | Some entry ->
-          check string "compaction completion reaches registry" "running"
-            (KST.phase_to_string entry.phase)
-      | None -> fail "expected registered keeper after lifecycle dispatch")
-
-let test_dispatch_keeper_phase_event_rejection_increments_metric () =
-  let base_dir = temp_dir "keeper_lifecycle_registry_rejection" in
-  Fun.protect
-    ~finally:(fun () -> cleanup_dir base_dir)
-    (fun () ->
-      Eio_main.run @@ fun env ->
-      Fs_compat.set_fs (Eio.Stdenv.fs env);
-      let config = Masc_mcp.Coord.default_config base_dir in
-      let labels =
-        [ ("keeper", "missing-keeper"); ("event", "compaction_started") ]
-      in
-      let before =
-        Masc_mcp.Prometheus.get_metric_value
-          Masc_mcp.Prometheus.metric_keeper_lifecycle_dispatch_rejections
-          ~labels ()
-        |> Option.value ~default:0.0
-      in
-      KEC.dispatch_keeper_phase_event
-        ~config
-        ~keeper_name:"missing-keeper"
-        KST.Compaction_started;
-      let after =
-        Masc_mcp.Prometheus.get_metric_value
-          Masc_mcp.Prometheus.metric_keeper_lifecycle_dispatch_rejections
-          ~labels ()
-        |> Option.value ~default:0.0
-      in
-      check bool "rejection metric increments" true (after > before))
-
-let test_keepalive_dispatch_event_rejection_increments_metric () =
-  let base_dir = temp_dir "keeper_lifecycle_keepalive_rejection" in
-  Fun.protect
-    ~finally:(fun () ->
-      KR.clear ();
-      cleanup_dir base_dir)
-    (fun () ->
-      Eio_main.run @@ fun env ->
-      Eio.Switch.run @@ fun sw ->
-      Fs_compat.set_fs (Eio.Stdenv.fs env);
-      KR.clear ();
-      let config = Masc_mcp.Coord.default_config base_dir in
-      let ctx : _ KT.context =
-        {
-          config;
-          agent_name = "test-operator";
-          sw;
-          clock = Eio.Stdenv.clock env;
-          proc_mgr = Some (Eio.Stdenv.process_mgr env);
-          net = None;
-        }
-      in
-      let labels =
-        [ ("keeper", "missing-keeper"); ("reason", "invalid_transition") ]
-      in
-      let before =
-        Masc_mcp.Prometheus.get_metric_value
-          Masc_mcp.Prometheus.metric_keeper_dispatch_event_failures
-          ~labels ()
-        |> Option.value ~default:0.0
-      in
-      KHS.dispatch_keepalive_event
-        ~ctx
-        ~keeper_name:"missing-keeper"
-        KST.Compaction_started;
-      let after =
-        Masc_mcp.Prometheus.get_metric_value
-          Masc_mcp.Prometheus.metric_keeper_dispatch_event_failures
-          ~labels ()
-        |> Option.value ~default:0.0
-      in
-      check bool "keepalive registry rejection metric increments" true
-        (after > before))
-
 let () =
   run "keeper_lifecycle"
     [
       ( "post_turn_lifecycle",
         [
           test_case "no checkpoint records skip state" `Quick
-            test_apply_post_turn_lifecycle_without_checkpoint_records_skip;
+            test_post_turn_lifecycle_without_checkpoint_records_skip;
           test_case "restore prefers live primary max tokens" `Quick
             test_load_context_prefers_live_primary_max_tokens_over_checkpoint_limit;
+          test_case "checkpoint helpers ignore legacy sidecar" `Quick
+            test_checkpoint_helpers_ignore_legacy_working_context_sidecar;
+          test_case "no STATE still advances cooldown ts + counter" `Quick
+            test_post_turn_lifecycle_no_state_advances_cooldown_ts;
           test_case "compaction persists checkpoint and continuity" `Quick
-            test_apply_post_turn_lifecycle_compacts_and_updates_continuity;
+            test_post_turn_lifecycle_compacts_and_updates_continuity;
           test_case "compaction callback failure records coverage gap" `Quick
             test_compaction_callback_failure_records_coverage_gap;
           test_case "skip compaction keeps checkpoint" `Quick
-            test_apply_post_turn_lifecycle_keeps_checkpoint_when_compaction_skips;
+            test_post_turn_lifecycle_keeps_checkpoint_when_compaction_skips;
+          test_case "no STATE advances continuity cooldown" `Quick
+            test_post_turn_lifecycle_no_state_advances_continuity_cooldown;
           test_case "handoff runs after compaction" `Quick
-            test_apply_post_turn_lifecycle_handoffs_after_compaction;
+            test_post_turn_lifecycle_handoffs_after_compaction;
           test_case "handoff callback failure records coverage gap" `Quick
             test_handoff_callback_failure_records_coverage_gap;
           test_case "handoff runs on current-turn overflow signal" `Quick
-            test_apply_post_turn_lifecycle_handoffs_on_current_turn_overflow_signal;
+            test_post_turn_lifecycle_handoffs_on_current_turn_overflow_signal;
           test_case "resilience handles reach bridge" `Quick
-            test_apply_post_turn_lifecycle_passes_resilience_handles;
-          test_case "legacy path skips executor side effects" `Quick
-            test_apply_post_turn_lifecycle_legacy_path_skips_executor;
+            test_post_turn_lifecycle_passes_resilience_handles;
           test_case "executor without audit store rejected" `Quick
-            test_apply_post_turn_lifecycle_rejects_executor_without_audit;
+            test_post_turn_lifecycle_rejects_executor_without_audit;
           test_case "runtime executor pauses handoff" `Quick
             test_post_turn_resilience_runtime_executor_pauses_handoff;
           test_case "rollover aborts on save failure" `Quick
             test_rollover_aborts_on_save_failure;
           test_case "overflow retry compacts OAS checkpoint" `Quick
             test_recover_latest_checkpoint_for_overflow_retry_compacts_oas_checkpoint;
-          test_case "overflow retry falls back to legacy checkpoint" `Quick
-            test_recover_latest_checkpoint_for_overflow_retry_uses_legacy_checkpoint;
           test_case
             "overflow retry history budget ignores checkpoint system prompt"
             `Quick
@@ -2616,6 +2733,8 @@ let () =
             test_save_oas_checkpoint_strips_ephemeral_world_state;
           test_case "save caps oversized text" `Quick
             test_save_oas_checkpoint_caps_oversized_text;
+          test_case "save caps total checkpoint content" `Quick
+            test_save_oas_checkpoint_caps_total_content;
           test_case "save caps oversized tool result" `Quick
             test_sanitize_checkpoint_message_caps_oversized_tool_result;
           test_case "save caps aggregate tool result budget" `Quick
@@ -2663,20 +2782,11 @@ let () =
             test_compact_if_needed_records_saved_tokens_metric;
           test_case "pre-dispatch resume uses loaded working context" `Quick
             test_pre_dispatch_resume_checkpoint_uses_loaded_working_context;
+          test_case "pre-dispatch resume caps loaded context without save" `Quick
+            test_pre_dispatch_resume_checkpoint_caps_loaded_context_without_save;
           test_case "pre-dispatch resume saves compacted context" `Quick
             test_pre_dispatch_resume_checkpoint_saves_compacted_context;
           test_case "pre-dispatch resume blocks unsaved compaction" `Quick
             test_pre_dispatch_resume_checkpoint_blocks_unsaved_compaction;
-        ] );
-      ( "registry_dispatch",
-        [
-          test_case "phase event uses room base_path" `Quick
-            test_dispatch_keeper_phase_event_uses_room_base_path;
-          test_case "post-turn lifecycle events use room base_path" `Quick
-            test_dispatch_post_turn_lifecycle_events_uses_room_base_path;
-          test_case "phase event rejection increments metric" `Quick
-            test_dispatch_keeper_phase_event_rejection_increments_metric;
-          test_case "keepalive event rejection increments metric" `Quick
-            test_keepalive_dispatch_event_rejection_increments_metric;
         ] );
     ]

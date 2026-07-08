@@ -64,10 +64,67 @@ let add_strict_task config =
     required_evidence = [];
     inspect_gate_evidence = [];
     verify_gate_evidence = ["output.json"];
-    links = { operation_id = None; session_id = None; autoresearch_loop_id = None };
+    required_evidence_typed = [];
+    links = { operation_id = None; session_id = None };
   } in
   let _msg = Coord.add_task ~contract config ~title
     ~priority:3 ~description:"needs verification" in
+  let backlog = Coord.read_backlog config in
+  match
+    List.find_opt
+      (fun (t : Masc_domain.task) -> not (List.mem t.id existing_ids))
+      backlog.tasks
+  with
+  | Some t -> t.id
+  | None -> Alcotest.fail "new task not found after add_task"
+
+let add_required_evidence_only_task config =
+  let existing_ids =
+    Coord.read_backlog config
+    |> fun backlog -> List.map (fun (t : Masc_domain.task) -> t.id) backlog.tasks
+  in
+  let contract : Masc_domain.task_contract = {
+    strict = true;
+    completion_contract = [];
+    required_tools = [];
+    required_evidence = ["artifact://coverage.json"];
+    inspect_gate_evidence = [];
+    verify_gate_evidence = [];
+    required_evidence_typed = [];
+    links = { operation_id = None; session_id = None };
+  } in
+  let _msg =
+    Coord.add_task ~contract config ~title:"required evidence only"
+      ~priority:3 ~description:"requires a named evidence artifact"
+  in
+  let backlog = Coord.read_backlog config in
+  match
+    List.find_opt
+      (fun (t : Masc_domain.task) -> not (List.mem t.id existing_ids))
+      backlog.tasks
+  with
+  | Some t -> t.id
+  | None -> Alcotest.fail "new task not found after add_task"
+
+let add_placeholder_evidence_task config =
+  let existing_ids =
+    Coord.read_backlog config
+    |> fun backlog -> List.map (fun (t : Masc_domain.task) -> t.id) backlog.tasks
+  in
+  let contract : Masc_domain.task_contract = {
+    strict = true;
+    completion_contract = ["tests pass"];
+    required_tools = [];
+    required_evidence = ["completion_notes"];
+    inspect_gate_evidence = [];
+    verify_gate_evidence = ["pr_url_or_artifact_ref"];
+    required_evidence_typed = [];
+    links = { operation_id = None; session_id = None };
+  } in
+  let _msg =
+    Coord.add_task ~contract config ~title:"placeholder evidence task"
+      ~priority:3 ~description:"placeholder evidence must not open verification"
+  in
   let backlog = Coord.read_backlog config in
   match
     List.find_opt
@@ -237,6 +294,130 @@ let test_submit_prepare_failure_keeps_task_in_progress () =
       in
       Alcotest.(check int) "no orphan request" 0 (List.length reqs))
 
+let test_submit_phase_e_no_substring_reject_at_transition () =
+  (* RFC-0109 Phase E (2026-05-27): the transition layer no longer
+     applies a substring classifier to reject submissions with
+     "placeholder-only" notes. Gating for contracted tasks lives in
+     [Cdal_evidence_gate.decide] (see test/test_cdal_evidence_gate.ml).
+     transition_task_r called directly forwards typed evidence refs as
+     observability metadata and lets the verifier protocol observe what
+     the keeper actually wrote. *)
+  with_temp_config ~fsm_enabled:true (fun config ->
+    let task_id = add_placeholder_evidence_task config in
+    claim_and_start config "worker" task_id;
+    let prepare_called = ref false in
+    let captured_refs = ref [] in
+    let result =
+      Coord.transition_task_r config ~agent_name:"worker"
+        ~task_id ~action:Masc_domain.Submit_for_verification
+        ~notes:"implementation complete"
+        ~prepare_verification_request:
+          (fun ~task:_ ~assignee:_ ~verification_id:_ ~evidence_refs ->
+             prepare_called := true;
+             captured_refs := evidence_refs;
+             Ok ())
+        ()
+    in
+    match result with
+    | Error e ->
+      Alcotest.fail ("submit should pass at transition layer in Phase E: "
+                     ^ Masc_domain.show_masc_error e)
+    | Ok _ ->
+      Alcotest.(check bool) "prepare called" true !prepare_called;
+      Alcotest.(check string) "status moved to awaiting_verification"
+        "awaiting_verification" (status_string config task_id);
+      Alcotest.(check bool) "contract spec strings carried as observability"
+        true
+        (List.mem "pr_url_or_artifact_ref" !captured_refs
+         && List.mem "completion_notes" !captured_refs))
+
+let test_submit_retry_records_request_created_backlog_orphan_policy () =
+  with_temp_config ~fsm_enabled:true (fun config ->
+    let task_id = add_strict_task config in
+    claim_and_start config "worker" task_id;
+    let orphan_request_id = "vrf-request-created-backlog-write-failed" in
+    ignore
+      (create_pending_request
+         config
+         ~task_id
+         ~worker:"worker"
+         ~request_id:orphan_request_id);
+    (* Simulates the observable orphan left when the verification request
+       was already persisted, but the following backlog status write failed
+       before the task left InProgress.  Current recovery policy is a retry
+       with a fresh verification request; the old request stays as audit
+       evidence instead of being mutated implicitly. *)
+    Alcotest.(check string)
+      "orphaned task still in progress"
+      "in_progress"
+      (status_string config task_id);
+    let retry_request_id = ref None in
+    (match
+       Coord.transition_task_r
+         config
+         ~agent_name:"worker"
+         ~task_id
+         ~action:Masc_domain.Submit_for_verification
+         ~prepare_verification_request:
+           (fun ~task:_ ~assignee ~verification_id ~evidence_refs ->
+             retry_request_id := Some verification_id;
+             match
+               Verification.create_request
+                 ~base_path:config.Coord.base_path
+                 ~task_id
+                 ~output:
+                   (`Assoc
+                     [ ( "evidence_refs"
+                       , `List (List.map (fun s -> `String s) evidence_refs) )
+                     ])
+                 ~criteria:[]
+                 ~worker:assignee
+                 ~request_id:verification_id
+                 ()
+             with
+             | Ok _ -> Ok ()
+             | Error e -> Error e)
+         ()
+     with
+     | Ok _ -> ()
+     | Error e -> Alcotest.fail ("submit retry failed: " ^ Masc_domain.show_masc_error e));
+    let new_request_id = verification_id_of_task config task_id in
+    Alcotest.(check bool)
+      "retry uses a fresh request id"
+      true
+      (not (String.equal new_request_id orphan_request_id));
+    Alcotest.(check (option string))
+      "prepare saw retry request id"
+      (Some new_request_id)
+      !retry_request_id;
+    let reqs =
+      Verification.list_requests config.Coord.base_path
+      |> List.filter (fun (r : Verification.verification_request) -> r.task_id = task_id)
+    in
+    Alcotest.(check int) "orphan plus retry request remain visible" 2 (List.length reqs);
+    Alcotest.(check bool)
+      "original orphan remains pending for audit"
+      true
+      (List.exists
+         (fun (r : Verification.verification_request) ->
+           String.equal r.id orphan_request_id
+           &&
+           match r.status with
+           | Pending -> true
+           | _ -> false)
+         reqs);
+    Alcotest.(check bool)
+      "retry request is pending"
+      true
+      (List.exists
+         (fun (r : Verification.verification_request) ->
+           String.equal r.id new_request_id
+           &&
+           match r.status with
+           | Pending -> true
+           | _ -> false)
+         reqs))
+
 (* Regression for the criteria ← completion_contract vs
    evidence_refs ← verify_gate_evidence split. Prior to the fix both
    sides pulled from verify_gate_evidence, so criteria ended up
@@ -281,12 +462,44 @@ let test_submit_populates_criteria_from_completion_contract () =
     Alcotest.(check (list string)) "evidence_refs from verify_gate_evidence"
       ["output.json"] persisted_refs)
 
+let test_submit_uses_required_evidence_when_verify_refs_empty () =
+  with_temp_config ~fsm_enabled:true (fun config ->
+    let task_id = add_required_evidence_only_task config in
+    claim_and_start config "worker" task_id;
+    let captured_refs = ref None in
+    let result =
+      Coord.transition_task_r
+        config
+        ~agent_name:"worker"
+        ~task_id
+        ~action:Masc_domain.Submit_for_verification
+        ~notes:"implementation complete"
+        ~prepare_verification_request:
+          (fun ~task:_ ~assignee:_ ~verification_id:_ ~evidence_refs ->
+             captured_refs := Some evidence_refs;
+             Ok ())
+        ()
+    in
+    (match result with
+     | Ok _ -> ()
+     | Error e ->
+       Alcotest.fail
+         (Printf.sprintf "submit failed: %s" (Masc_domain.show_masc_error e)));
+    (* Phase E (2026-05-27): notes survives the typed concat alongside
+       the contract's required_evidence. Pre-Phase-E the substring
+       classifier would have dropped "implementation complete" — now
+       observability metadata reflects what the keeper actually wrote. *)
+    Alcotest.(check (list string))
+      "required_evidence + notes carried to verification refs"
+      ["artifact://coverage.json"; "implementation complete"]
+      (Option.value ~default:[] !captured_refs))
+
 let test_submit_marks_conflict_triage_when_deliverable_claims_completion () =
   with_temp_config ~fsm_enabled:true (fun config ->
     let task_id = add_strict_task config in
     ignore
       (Planning_eio.set_deliverable config ~task_id
-         ~content:"Task-001 completed. Exercised masc_observe_operations.");
+         ~content:"Task-001 completed. Exercised masc_operator_snapshot.");
     let task =
       match get_task config task_id with
       | Some t -> t
@@ -454,7 +667,148 @@ let test_reject_prepare_failure_keeps_task_awaiting () =
        | Error err -> Alcotest.fail ("load_request failed: " ^ err)
        | Ok updated ->
          Alcotest.(check bool) "request remains pending" true
-           (match updated.status with Pending -> true | _ -> false)))
+         (match updated.status with Pending -> true | _ -> false)))
+
+let test_approve_retry_recovers_completed_verdict_orphan () =
+  with_temp_config ~fsm_enabled:true (fun config ->
+    let task_id = add_strict_task config in
+    claim_and_start config "worker" task_id;
+    (match
+       Coord.transition_task_r
+         config
+         ~agent_name:"worker"
+         ~task_id
+         ~action:Masc_domain.Submit_for_verification
+         ()
+     with
+     | Ok _ -> ()
+     | Error e -> Alcotest.fail ("submit failed: " ^ Masc_domain.show_masc_error e));
+    let verification_id = verification_id_of_task config task_id in
+    ignore (create_pending_request config ~task_id ~worker:"worker" ~request_id:verification_id);
+    (* Simulates the observable orphan left when the verifier callback
+       persisted its verdict, then the subsequent backlog status write
+       failed or was lost before the task left AwaitingVerification. *)
+    (match
+       Verification_protocol.record_approve_verification
+         ~config
+         ~task_id
+         ~verifier:"verifier"
+         ~verification_id
+         ~notes:"verified"
+     with
+     | Ok () -> ()
+     | Error e -> Alcotest.fail ("record approve failed: " ^ e));
+    Alcotest.(check string)
+      "orphan status remains awaiting"
+      "awaiting_verification"
+      (status_string config task_id);
+    (match
+       Coord.transition_task_r
+         config
+         ~agent_name:"verifier"
+         ~task_id
+         ~action:Masc_domain.Approve_verification
+         ~notes:"retry after orphan"
+         ~prepare_verification_verdict:
+           (fun ~task:_ ~verifier ~verification_id ~decision ->
+              match decision with
+              | `Approve notes ->
+                Verification_protocol.record_approve_verification
+                  ~config
+                  ~task_id
+                  ~verifier
+                  ~verification_id
+                  ~notes
+              | `Reject _ ->
+                Error "unexpected reject decision in approve recovery")
+         ()
+     with
+     | Ok _ -> ()
+     | Error e -> Alcotest.fail ("approve retry failed: " ^ Masc_domain.show_masc_error e));
+    Alcotest.(check string)
+      "retry moves task done"
+      "done"
+      (status_string config task_id);
+    match Verification.load_request config.Coord.base_path verification_id with
+    | Error e -> Alcotest.fail ("load_request failed: " ^ e)
+    | Ok updated ->
+      Alcotest.(check bool)
+        "request remains completed pass"
+        true
+        (match updated.status, updated.verifier with
+         | Completed Pass, Some "verifier" -> true
+         | _ -> false))
+
+let test_reject_retry_recovers_completed_verdict_orphan () =
+  with_temp_config ~fsm_enabled:true (fun config ->
+    let task_id = add_strict_task config in
+    claim_and_start config "worker" task_id;
+    (match
+       Coord.transition_task_r
+         config
+         ~agent_name:"worker"
+         ~task_id
+         ~action:Masc_domain.Submit_for_verification
+         ()
+     with
+     | Ok _ -> ()
+     | Error e -> Alcotest.fail ("submit failed: " ^ Masc_domain.show_masc_error e));
+    let verification_id = verification_id_of_task config task_id in
+    ignore (create_pending_request config ~task_id ~worker:"worker" ~request_id:verification_id);
+    (* Same orphan shape as the approve case, but the persisted verdict
+       is a rejection and the backlog retry should return ownership to
+       the worker's in-progress task. *)
+    (match
+       Verification_protocol.record_reject_verification
+         ~config
+         ~task_id
+         ~verifier:"verifier"
+         ~verification_id
+         ~reason:"missing evidence"
+     with
+     | Ok () -> ()
+     | Error e -> Alcotest.fail ("record reject failed: " ^ e));
+    Alcotest.(check string)
+      "orphan status remains awaiting"
+      "awaiting_verification"
+      (status_string config task_id);
+    (match
+       Coord.transition_task_r
+         config
+         ~agent_name:"verifier"
+         ~task_id
+         ~action:Masc_domain.Reject_verification
+         ~reason:"retry after orphan"
+         ~prepare_verification_verdict:
+           (fun ~task:_ ~verifier ~verification_id ~decision ->
+              match decision with
+              | `Reject reason ->
+                Verification_protocol.record_reject_verification
+                  ~config
+                  ~task_id
+                  ~verifier
+                  ~verification_id
+                  ~reason
+              | `Approve _ ->
+                Error "unexpected approve decision in reject recovery")
+         ()
+     with
+     | Ok _ -> ()
+     | Error e -> Alcotest.fail ("reject retry failed: " ^ Masc_domain.show_masc_error e));
+    Alcotest.(check string)
+      "retry moves task in_progress"
+      "in_progress"
+      (status_string config task_id);
+    match Verification.load_request config.Coord.base_path verification_id with
+    | Error e -> Alcotest.fail ("load_request failed: " ^ e)
+    | Ok updated ->
+      Alcotest.(check bool)
+        "request remains completed fail"
+        true
+        (match updated.status, updated.verifier with
+         | Completed (Fail reason), Some "verifier" ->
+           Astring.String.is_infix ~affix:"retry after orphan" reason
+         | _ -> false))
 
 let test_claim_next_skips_pending_verification_tasks () =
   with_temp_config ~fsm_enabled:true (fun config ->
@@ -475,7 +829,7 @@ let test_claim_next_skips_pending_verification_tasks () =
     Coord.claim_next_r config ~agent_name:"other" ()
     |> expect_claim_next_no_unclaimed)
 
-let test_claim_next_skips_rejected_verification_tasks () =
+let test_claim_next_preserves_rejected_verification_owner_task () =
   with_temp_config ~fsm_enabled:true (fun config ->
     let task_1 = add_strict_task config in
     let task_2 = add_strict_task config in
@@ -499,9 +853,9 @@ let test_claim_next_skips_rejected_verification_tasks () =
      | Ok _ -> ()
      | Error e -> Alcotest.fail ("submit_verdict failed: " ^ e));
     Coord.claim_next_r config ~agent_name:"worker" ()
-    |> expect_claim_next_claimed ~task_id:task_2 ~released_task_id:(Some task_1);
+    |> expect_claim_next_claimed ~task_id:task_1 ~released_task_id:None;
     Coord.claim_next_r config ~agent_name:"other" ()
-    |> expect_claim_next_no_eligible)
+    |> expect_claim_next_claimed ~task_id:task_2 ~released_task_id:None)
 
 let test_claim_next_blocks_pending_requests_stored_only_under_masc_root () =
   with_temp_config ~fsm_enabled:true (fun config ->
@@ -643,6 +997,31 @@ let force_deadline_past config task_id =
   in
   Coord.write_backlog config { backlog with tasks = new_tasks }
 
+let force_missing_deadline_submitted_at_past config task_id =
+  let backlog = Coord.read_backlog config in
+  let timeout = Env_config_runtime.Verification.timeout_deadline_seconds () in
+  let submitted_at =
+    Masc_domain.iso8601_of_unix_seconds
+      (Time_compat.now () -. timeout -. 3600.0)
+  in
+  let new_tasks =
+    List.map
+      (fun (t : Masc_domain.task) ->
+         if t.id <> task_id
+         then t
+         else
+           match t.task_status with
+           | Masc_domain.AwaitingVerification fields ->
+             { t with
+               task_status =
+                 Masc_domain.AwaitingVerification
+                   { fields with submitted_at; deadline = None }
+             }
+           | _ -> t)
+      backlog.tasks
+  in
+  Coord.write_backlog config { backlog with tasks = new_tasks }
+
 let test_check_timeouts_transitions_awaiting_to_cancelled () =
   with_temp_config ~fsm_enabled:true (fun config ->
     let task_id = add_strict_task config in
@@ -664,6 +1043,33 @@ let test_check_timeouts_transitions_awaiting_to_cancelled () =
       Alcotest.(check bool)
         "reason mentions verification deadline" true
         (Astring.String.is_infix ~affix:"verification deadline" reason_str)
+    | _ -> Alcotest.fail "task is not Cancelled after check_timeouts")
+
+let test_check_timeouts_transitions_legacy_missing_deadline () =
+  with_temp_config ~fsm_enabled:true (fun config ->
+    let task_id = add_strict_task config in
+    claim_and_start config "worker" task_id;
+    (match
+       Coord.transition_task_r
+         config
+         ~agent_name:"worker"
+         ~task_id
+         ~action:Masc_domain.Submit_for_verification
+         ()
+     with
+     | Error e -> Alcotest.fail ("submit failed: " ^ Masc_domain.show_masc_error e)
+     | Ok _ -> ());
+    force_missing_deadline_submitted_at_past config task_id;
+    Verification_protocol.check_timeouts ~config;
+    Alcotest.(check string) "post-check status" "cancelled"
+      (status_string config task_id);
+    match get_task config task_id with
+    | Some { task_status = Masc_domain.Cancelled { reason; _ }; _ } ->
+      let reason_str = Option.value reason ~default:"" in
+      Alcotest.(check bool)
+        "reason records fallback source"
+        true
+        (Astring.String.is_infix ~affix:"source=submitted_at_fallback" reason_str)
     | _ -> Alcotest.fail "task is not Cancelled after check_timeouts")
 
 let test_check_timeouts_idempotent_after_cancel () =
@@ -697,8 +1103,16 @@ let () =
         `Quick test_submit_for_verification_from_claimed_moves_to_awaiting;
       Alcotest.test_case "submit prepare failure keeps task in_progress"
         `Quick test_submit_prepare_failure_keeps_task_in_progress;
+      Alcotest.test_case "phase E: transition layer no longer substring-rejects submit"
+        `Quick test_submit_phase_e_no_substring_reject_at_transition;
+      Alcotest.test_case
+        "submit retry records request-created backlog orphan policy"
+        `Quick
+        test_submit_retry_records_request_created_backlog_orphan_policy;
       Alcotest.test_case "submit splits criteria/evidence by contract field"
         `Quick test_submit_populates_criteria_from_completion_contract;
+      Alcotest.test_case "submit carries required_evidence into verifier refs"
+        `Quick test_submit_uses_required_evidence_when_verify_refs_empty;
       Alcotest.test_case "submit marks conflict triage from completed deliverable"
         `Quick test_submit_marks_conflict_triage_when_deliverable_claims_completion;
       Alcotest.test_case "cross-agent approve moves to done" `Quick
@@ -709,10 +1123,18 @@ let () =
         test_approve_prepare_failure_keeps_task_awaiting;
       Alcotest.test_case "reject prepare failure keeps task awaiting" `Quick
         test_reject_prepare_failure_keeps_task_awaiting;
+      Alcotest.test_case
+        "approve retry recovers completed verdict orphan"
+        `Quick
+        test_approve_retry_recovers_completed_verdict_orphan;
+      Alcotest.test_case
+        "reject retry recovers completed verdict orphan"
+        `Quick
+        test_reject_retry_recovers_completed_verdict_orphan;
       Alcotest.test_case "claim_next skips pending verification tasks" `Quick
         test_claim_next_skips_pending_verification_tasks;
-      Alcotest.test_case "claim_next skips rejected verification tasks" `Quick
-        test_claim_next_skips_rejected_verification_tasks;
+      Alcotest.test_case "claim_next preserves rejected owner task" `Quick
+        test_claim_next_preserves_rejected_verification_owner_task;
       Alcotest.test_case ".masc pending verification blocks claim_next" `Quick
         test_claim_next_blocks_pending_requests_stored_only_under_masc_root;
       Alcotest.test_case "self-approval blocked" `Quick
@@ -733,6 +1155,10 @@ let () =
     ("timeout_check", [
       Alcotest.test_case "check_timeouts transitions AwaitingVerification to Cancelled"
         `Quick test_check_timeouts_transitions_awaiting_to_cancelled;
+      Alcotest.test_case
+        "check_timeouts expires legacy AwaitingVerification without deadline"
+        `Quick
+        test_check_timeouts_transitions_legacy_missing_deadline;
       Alcotest.test_case "check_timeouts is idempotent after cancellation"
         `Quick test_check_timeouts_idempotent_after_cancel;
     ]);

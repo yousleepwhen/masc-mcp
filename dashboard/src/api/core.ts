@@ -8,6 +8,7 @@ import type {
   OperatorSnapshot,
 } from '../types'
 import { sanitizeDashboardActorName } from '../lib/dashboard-actor'
+import { isAbortError } from '../lib/async-state'
 import {
   currentDashboardActorName,
   setCanonicalDashboardActor,
@@ -26,6 +27,10 @@ const TOKEN_META_STORAGE_KEY = 'masc_bearer_token_meta'
 
 type StoredTokenSource = 'dev' | 'manual' | 'url'
 
+const STORED_TOKEN_SOURCES = ['dev', 'manual', 'url'] as const
+
+const DEFAULT_STORED_TOKEN_SOURCE: StoredTokenSource = 'manual'
+
 export interface StoredTokenMeta {
   source: StoredTokenSource
   actor?: string | null
@@ -36,7 +41,7 @@ function normalizeStoredTokenMeta(value: unknown): StoredTokenMeta | null {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return null
   const record = value as Record<string, unknown>
   const source = typeof record.source === 'string' ? record.source : null
-  if (source !== 'dev' && source !== 'manual' && source !== 'url') return null
+  if (source === null || !(STORED_TOKEN_SOURCES as readonly string[]).includes(source)) return null
   const actor = sanitizeDashboardActorName(
     typeof record.actor === 'string' ? record.actor : null,
   )
@@ -44,7 +49,7 @@ function normalizeStoredTokenMeta(value: unknown): StoredTokenMeta | null {
     typeof record.scope === 'string' && record.scope.trim() !== ''
       ? record.scope.trim()
       : null
-  return { source, actor, scope }
+  return { source: source as StoredTokenSource, actor, scope }
 }
 
 function initTokenFromUrl(): void {
@@ -70,6 +75,10 @@ export function getStoredToken(): string | null {
   }
 }
 
+export function dashboardBearerToken(): string | null {
+  return getStoredToken()
+}
+
 export function getStoredTokenMeta(): StoredTokenMeta | null {
   try {
     const raw = sessionStorage.getItem(TOKEN_META_STORAGE_KEY)
@@ -90,7 +99,7 @@ export function setStoredToken(
     return
   }
   const nextMeta = normalizeStoredTokenMeta({
-    source: meta.source ?? 'manual',
+    source: meta.source ?? DEFAULT_STORED_TOKEN_SOURCE,
     actor: meta.actor ?? null,
     scope: meta.scope ?? null,
   })
@@ -130,7 +139,7 @@ type HeaderOptions = {
 
 export function authHeaders(options: HeaderOptions = {}): Record<string, string> {
   const headers: Record<string, string> = {}
-  const token = getStoredToken()
+  const token = dashboardBearerToken()
   const agent = options.actorName !== undefined
     ? sanitizeDashboardActorName(options.actorName)
     : currentDashboardActor()
@@ -159,6 +168,7 @@ import {
 export {
   DEFAULT_GET_TIMEOUT_MS,
   DEFAULT_POST_TIMEOUT_MS,
+  KEEPER_LIFECYCLE_TIMEOUT_MS,
   DEFAULT_MCP_TIMEOUT_MS,
   NAMESPACE_TRUTH_GET_TIMEOUT_MS,
 } from '../config/constants'
@@ -242,10 +252,11 @@ export async function fetchWithTimeout(path: string, init: RequestInit, timeoutM
   try {
     return await fetch(path, {
       ...init,
+      cache: init.cache ?? 'no-store',
       signal: controller.signal,
     })
   } catch (err) {
-    if (err instanceof Error && err.name === 'AbortError') {
+    if (isAbortError(err)) {
       if (upstreamSignal?.aborted) {
         throw err
       }
@@ -274,9 +285,7 @@ const DASHBOARD_BOOTSTRAP_WARM_PATHS = new Set([
   '/api/v1/dashboard/mission',
 ])
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
+import { isRecord } from '../lib/type-guards'
 
 interface ErrorResponseInfo {
   detail?: string
@@ -492,10 +501,21 @@ export function defaultBoardVoter(): string {
 
 // --- Generic fetcher ---
 
-export type GetOptions = {
+/**
+ * Minimal request contract: the caller may pass an AbortSignal to cancel
+ * the underlying fetch. Several api/* modules (dashboard, dashboard-hot,
+ * transport-health) had defined this byte-for-byte locally; lifting it
+ * here makes the abort contract single-sourced and lets callers compose
+ * extensions like `AbortableRequestOptions & { light?: boolean }` against
+ * a stable base.
+ */
+export type AbortableRequestOptions = {
+  signal?: AbortSignal
+}
+
+export type GetOptions = AbortableRequestOptions & {
   timeoutMs?: number
   includeActorHeader?: boolean
-  signal?: AbortSignal
 }
 
 export async function get<T>(path: string, opts: GetOptions = {}): Promise<T> {
@@ -650,6 +670,44 @@ export async function patch<T>(
     throw await apiRequestErrorFromResponse('PATCH', path, res)
   }
   return parseJsonResponse<T>('PATCH', path, res)
+}
+
+export async function del<T>(
+  path: string,
+  extraHeaders?: Record<string, string>,
+  timeoutMs = DEFAULT_POST_TIMEOUT_MS,
+): Promise<T> {
+  const res = await fetchWithTimeout(path, {
+    method: 'DELETE',
+    headers: {
+      ...jsonHeaders(),
+      ...(extraHeaders ?? {}),
+    },
+  }, timeoutMs)
+  if (!res.ok) {
+    throw await apiRequestErrorFromResponse('DELETE', path, res)
+  }
+  return parseJsonResponse<T>('DELETE', path, res)
+}
+
+export async function put<T>(
+  path: string,
+  body: unknown,
+  extraHeaders?: Record<string, string>,
+  timeoutMs = DEFAULT_POST_TIMEOUT_MS,
+): Promise<T> {
+  const res = await fetchWithTimeout(path, {
+    method: 'PUT',
+    headers: {
+      ...jsonHeaders(),
+      ...(extraHeaders ?? {}),
+    },
+    body: JSON.stringify(body),
+  }, timeoutMs)
+  if (!res.ok) {
+    throw await apiRequestErrorFromResponse('PUT', path, res)
+  }
+  return parseJsonResponse<T>('PUT', path, res)
 }
 
 // --- Operator ---

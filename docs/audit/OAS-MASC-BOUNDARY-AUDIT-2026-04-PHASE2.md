@@ -1,7 +1,7 @@
 # OAS ↔ MASC Boundary Audit — Phase 2 (Layer C sweep + Phase 1 refinement)
 
 > Status: Phase 2 of 4. Refines Phase 1's Layer C verdict (`NEEDS SWEEP` → mostly `PASS`).
-> Author: Vincent (jeong-sik) with Claude
+> Author: Vincent (jeong-sik) with Agent-LLM-A
 > Created: 2026-04-30
 > Tracks: Q-P0-3 follow-up
 > Related: PR #12112 (Phase 1), PR #12102 (`track2_sync_boundary` MERGED, `track2_sync_boundary.ml` 107 lines + `.mli` 56 lines)
@@ -22,7 +22,7 @@ That metric was **too coarse**. A per-reference inspection during Phase 2 shows 
 | **C1. Type names** | `Oas.Tool.t list`, `Oas.Hooks.hooks`, `Oas.Agent.t option ref` | Acceptable. OCaml type system requires the type name at the use site. |
 | **C2. Variant constructors** | `Oas.Hooks.Approve`, `Oas.Hooks.Edit _`, `Oas.Hooks.Reject reason` | Acceptable. Pattern matching against an exposed ADT is the SDK's *intended* extension surface. |
 | **C3. Pure-function reuse** | `Oas.Types.text_of_message`, `Oas.Context_reducer.estimate_char_tokens` | Acceptable. No side effect, no ambient state, callable from anywhere. |
-| **C4. Side-effecting runtime calls** | `Oas.Agent.run`, `Oas.Tool.dispatch` | Must go through Layer B (`Masc_oas_bridge.run_with_caller`, `Oas_worker.t`, `Keeper_tools_oas`, etc.). |
+| **C4. Side-effecting runtime calls** | `Oas.Agent.run`, `Oas.Tool.dispatch` | Must go through Layer B (`Masc_oas_bridge.run_with_caller`, `Keeper_turn_driver.t`, `Keeper_tools_oas`, etc.). |
 
 The boundary discipline that matters is **C4**, not C1–C3. Phase 1's count conflated all four.
 

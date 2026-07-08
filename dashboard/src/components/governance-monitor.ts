@@ -2,16 +2,18 @@ import { html } from 'htm/preact'
 import { useEffect, useMemo } from 'preact/hooks'
 import { useSignal } from '@preact/signals'
 import { ActionButton } from './common/button'
-import { Card } from './common/card'
-import { EmptyState } from './common/empty-state'
+import { SectionCard } from './common/card'
+import { EmptyState } from './common/feedback-state'
 import { ErrorState, LoadingState } from './common/feedback-state'
 import { Select } from './common/select'
 import { TextInput } from './common/input'
 import { StatTile } from './common/stat-tile'
+import { isRecord } from './common/normalize'
 import { StatusChip } from './common/status-chip'
 import { TELEMETRY_AUTO_REFRESH_MS } from '../config/constants'
 import { formatAutoRefreshLabel, setupVisibleAutoRefresh } from '../lib/auto-refresh'
 import { useSavedSignal } from '../lib/saved-signal'
+import { MISSING_DATA_DASH } from '../lib/format-string'
 import { useManagedAsyncResource } from '../lib/use-managed-async-resource'
 import { get, type GetOptions } from '../api/core'
 
@@ -59,10 +61,6 @@ interface GovernanceToolEvents {
   approval_queue: ApprovalQueue
 }
 
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null && !Array.isArray(v)
-}
-
 async function fetchGovernanceToolEvents(
   windowMinutes = 60,
   opts?: GetOptions,
@@ -94,7 +92,7 @@ async function fetchGovernanceToolEvents(
 }
 
 function fmtSec(value: number | null): string {
-  if (value == null || Number.isNaN(value)) return '--'
+  if (value == null || Number.isNaN(value)) return MISSING_DATA_DASH
   if (value < 60) return `${value.toFixed(1)}s`
   return `${(value / 60).toFixed(1)}m`
 }
@@ -163,7 +161,7 @@ export function GovernanceMonitor() {
         ? html`<${LoadingState}>governance metrics 불러오는 중...<//>`
         : null}
 
-      <${Card} title="승인 대기열">
+      <${SectionCard} label="승인 대기열">
         ${data ? html`
           <div class="grid grid-cols-4 gap-3">
             <${StatTile}
@@ -198,7 +196,7 @@ export function GovernanceMonitor() {
         ` : null}
       <//>
 
-      <${Card} title="도구 거부 (${data?.window_minutes ?? windowMinutes.value}m)">
+      <${SectionCard} label="도구 거부 (${data?.window_minutes ?? windowMinutes.value}m)">
         <div class="flex flex-col gap-2">
           <${TextInput}
             type="search"

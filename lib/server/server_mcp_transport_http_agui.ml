@@ -61,6 +61,8 @@ let handle_ag_ui_events ~deps request reqd =
         ~reason ~retry_after_s reqd
   | Ok () ->
       stop_sse_session_preserve_guard session_id;
+      if Option.is_some last_event_id then
+        Transport_metrics.inc_sse_reconnect ();
       let headers =
         Httpun.Headers.of_list
           (sse_stream_headers ~deps session_id protocol_version origin)
@@ -72,9 +74,14 @@ let handle_ag_ui_events ~deps request reqd =
       let client_id, event_stream, evicted =
         Sse.register ~kind:Sse.Observer session_id
           ~last_event_id:(Option.value ~default:0 last_event_id)
+          ~on_disconnect:(fun () -> stop_sse_session session_id)
       in
       (match evicted with
-      | Some evicted_sid -> stop_sse_session evicted_sid
+      | Some evicted_sid ->
+          (* RFC-0099 PR-3: cap-exceeded eviction publishes typed
+             close frame + Evict/Close event pair. *)
+          stop_sse_session_evict evicted_sid
+            ~reason:Session_lifecycle_event.Cap_exceeded
       | None -> ());
       let info =
         {
@@ -165,7 +172,7 @@ let handle_presence_events ~deps request reqd =
   let base_path = deps.get_base_path () in
   match deps.verify_mcp_observer_stream_auth ~base_path request with
   | Error msg ->
-      respond_mcp_auth_error ~deps request reqd ~session_id:raw_session_id
+      respond_mcp_error ~code:Mcp_error_code.Auth_error ~deps request reqd ~session_id:raw_session_id
         ~protocol_version msg
   | Ok () -> (
       match check_sse_connect_guard session_id with
@@ -182,9 +189,15 @@ let handle_presence_events ~deps request reqd =
           let mutex = Eio.Mutex.create () in
           let client_id, event_stream, evicted =
             Sse.register ~kind:Sse.Presence session_id ~last_event_id:0
+              ~on_disconnect:(fun () ->
+                stop_sse_session_preserve_guard session_id)
           in
           (match evicted with
-          | Some evicted_sid -> stop_sse_session evicted_sid
+          | Some evicted_sid ->
+              (* RFC-0099 PR-3: cap-exceeded eviction publishes typed
+                 close frame + Evict/Close event pair. *)
+              stop_sse_session_evict evicted_sid
+                ~reason:Session_lifecycle_event.Cap_exceeded
           | None -> ());
           let info =
             {

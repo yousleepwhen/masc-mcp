@@ -5,31 +5,25 @@
     Authoritative spec mirror is
     [specs/keeper-state-machine/KeeperMemoryLifecycle.tla] (#8642 family).
 
-    Spec lines 17-35 already cite this module field-by-field:
+    The spec preamble cites this module field-by-field:
       short_mem / mid_mem / long_mem  -> rows with [horizon] in
                                          {"short_term", "mid_term",
                                           "long_term"}, see the
-                                         constants
-                                           [short_term_horizon] (~line 165)
-                                           [mid_term_horizon]   (next)
-                                           [long_term_horizon]  (next)
+                                         constants [short_term_horizon],
+                                         [mid_term_horizon],
+                                         [long_term_horizon].
       provenanced  -> rows with non-empty trace_id / source
                       (lives in keeper_memory_bank, not this file).
-      producer     -> [memory_horizon_of_kind_opt] (~line 171, strict)
-                      and [memory_horizon_of_kind] (~line 182,
-                      back-compat wrapper that defaults unknown kinds
-                      to mid_term with a warn — see #8826 drift note).
+      producer     -> [memory_horizon_of_kind_opt] (strict).
 
     This block is the reverse-direction citation so code search for
-    "KeeperMemoryLifecycle" lands here.
-
-    Spec line drift correction:
-      Spec line 19-21 cites "ml:155 / ml:156 / ml:157" for the three
-      horizon constants; current actual line is 165 (+10 drift).  The
-      shift is because new `compaction_outcome` record fields were
-      inserted between the spec citation and the constants.  The
-      function-name citations ([memory_horizon_of_kind_opt],
-      [memory_horizon_of_kind]) remain stable.
+    "KeeperMemoryLifecycle" lands here.  Citations are by symbol name,
+    not line number: the spec preamble used to carry "ml:155 / ml:156 /
+    ml:157" for the horizon constants but those drifted (>+30 once
+    `compaction_outcome` fields were inserted between the citation and
+    the constants) and were removed — symbol names are the stable anchor
+    (iter 64 N-2.a; guarded by scripts/audit-ocaml-spec-nav-line-refs.sh,
+    iter 72 R-1.a).
 
     Spec safety goals (line 9-13):
       - every persisted note has provenance
@@ -172,9 +166,32 @@ type keeper_memory_summary = {
   recent_notes: keeper_memory_line list;
 }
 
+type compaction_source =
+  | Pre_dispatch_hygiene
+  | MASC_policy
+  | OAS_proactive
+  | OAS_emergency
+  | Memory_bank
+
+let compaction_source_to_string = function
+  | Pre_dispatch_hygiene -> "pre_dispatch_hygiene"
+  | MASC_policy -> "masc_policy"
+  | OAS_proactive -> "oas_proactive"
+  | OAS_emergency -> "oas_emergency"
+  | Memory_bank -> "memory_bank"
+
+let compaction_source_of_string_opt (s : string) : compaction_source option =
+  match s with
+  | "pre_dispatch_hygiene" -> Some Pre_dispatch_hygiene
+  | "masc_policy" -> Some MASC_policy
+  | "oas_proactive" -> Some OAS_proactive
+  | "oas_emergency" -> Some OAS_emergency
+  | "memory_bank" -> Some Memory_bank
+  | _ -> None
+
 type memory_bank_compaction = {
   performed: bool;
-  reason: string option;
+  source: compaction_source option;
   target_notes: int;
   before_notes: int;
   after_notes: int;
@@ -186,7 +203,7 @@ type memory_bank_compaction = {
 
 let no_memory_bank_compaction = {
   performed = false;
-  reason = None;
+  source = None;
   target_notes = 0;
   before_notes = 0;
   after_notes = 0;
@@ -214,22 +231,8 @@ let memory_horizon_of_kind_opt (kind : string) : string option =
   | "long_term" -> Some long_term_horizon
   | _ -> None
 
-(* Back-compat wrapper: warns once per unknown kind and falls back to
-   [mid_term_horizon] (the legacy permissive default). The explicit warn
-   converts the silent #8605-family fallback into an observable signal
-   without changing the legacy classification result. *)
-let memory_horizon_of_kind (kind : string) : string =
-  match memory_horizon_of_kind_opt kind with
-  | Some h -> h
-  | None ->
-      Log.Memory.warn
-        "memory_horizon_of_kind: unknown kind %S -> mid_term (drift; see #8826)"
-        kind;
-      mid_term_horizon
-
 (* Strict JSON horizon parser: returns [None] for missing or unknown
-   horizon strings so callers can decide whether to consult [kind] or
-   reject the row. *)
+   horizon strings so callers can reject non-canonical rows. *)
 let memory_horizon_of_json_opt (json : Yojson.Safe.t) : string option =
   match
     Safe_ops.json_string ~default:"" "horizon" json
@@ -241,18 +244,6 @@ let memory_horizon_of_json_opt (json : Yojson.Safe.t) : string option =
   | "long_term" -> Some long_term_horizon
   | _ -> None
 
-(* Back-compat wrapper: when the JSON [horizon] is absent or unknown we
-   fall through to [memory_horizon_of_kind kind] (which itself warns on
-   unknown). The cascade is preserved exactly; the new wrapper just
-   exposes a strict variant for new callers. *)
-let memory_horizon_of_json ~(kind : string) (json : Yojson.Safe.t) : string =
-  match memory_horizon_of_json_opt json with
-  | Some h -> h
-  | None -> memory_horizon_of_kind kind
-
-let trim_nonempty (s : string) : string option =
-  let t = String.trim s in
-  if t = "" then None else Some t
 
 let split_state_items (s : string) : string list =
   s
@@ -290,19 +281,19 @@ let state_snapshot_of_lines (lines : string list) : keeper_state_snapshot option
     List.fold_left
       (fun acc line ->
         match strip_prefix_ci ~prefix:"Goal:" line with
-        | Some v -> { acc with goal = trim_nonempty v }
+        | Some v -> { acc with goal = String_util.trim_nonempty v }
         | None ->
             (match strip_prefix_ci ~prefix:"DONE:" line with
-            | Some v -> { acc with done_summary = trim_nonempty v;
+            | Some v -> { acc with done_summary = String_util.trim_nonempty v;
                                    progress = (match acc.progress with
-                                               | None -> trim_nonempty v
+                                               | None -> String_util.trim_nonempty v
                                                | existing -> existing) }
             | None ->
             (match strip_prefix_ci ~prefix:"Progress:" line with
-            | Some v -> { acc with progress = trim_nonempty v }
+            | Some v -> { acc with progress = String_util.trim_nonempty v }
             | None ->
                 (match strip_prefix_ci ~prefix:"NEXT:" line with
-                | Some v -> { acc with next_summary = trim_nonempty v;
+                | Some v -> { acc with next_summary = String_util.trim_nonempty v;
                                        next_items = (match acc.next_items with
                                                      | [] -> split_state_items v
                                                      | existing -> existing) }
@@ -441,6 +432,7 @@ let keeper_state_snapshot_to_summary_text (snapshot : keeper_state_snapshot) : s
 let default_max_string_chars = 400
 let default_max_list_items = 5
 let default_max_item_chars = 200
+let default_continuity_summary_max_chars = 5_600
 
 let cap_string ~max_chars = function
   | None -> None
@@ -478,6 +470,15 @@ let cap_snapshot
       cap_list ~max_items:max_list_items ~max_item_chars snapshot.constraints;
   }
 
+let cap_continuity_summary_text
+    ?(max_chars = default_continuity_summary_max_chars)
+    (text : string) : string =
+  let trimmed = String.trim text in
+  if trimmed = "" then ""
+  else
+    String_util.utf8_safe ~max_bytes:(max_chars + 3) ~suffix:"…" trimmed
+    |> String_util.to_string
+
 (* RFC-MASC-001 Phase 1 post-mortem (Gen3 2026-04-17):
    [keeper_state_snapshot_to_summary_text] renders every field for audit/persistence.
    Injecting it verbatim into the next prompt creates a prose-level echo loop:
@@ -485,86 +486,8 @@ let cap_snapshot
    near-identical one. Strip backward-looking fields at prompt assembly so the
    LLM sees only forward-looking context (Goal, Next plan, Next, OpenQuestions,
    Constraints). Persistence still retains the full summary. *)
-let filter_forward_looking_summary (summary : string) : string =
-  let backward_labels = [ "Done"; "Progress"; "Decisions" ] in
-  let inert_next_markers =
-    [
-      "stay_silent";
-      "stay silent";
-      "wait for new actionable work";
-      "nothing to do";
-      "no actionable work";
-      "do nothing";
-      "all non-destructive actions exhausted";
-      "대기 유지";
-      "침묵";
-      "할 일 없음";
-      "아무것도 하지";
-    ]
-  in
-  let stale_tool_surface_markers =
-    [
-      "masc_* only";
-      "mcp__masc__ only";
-      "no keeper_* tools";
-      "no keeper tools";
-      "tool surface: masc";
-      "tool-surface: masc";
-    ]
-  in
-  let strip_labeled_value ~prefixes line =
-    let trimmed = String.trim line in
-    let rec loop = function
-      | [] -> None
-      | prefix :: rest -> (
-          match strip_prefix_ci ~prefix trimmed with
-          | Some value -> Some value
-          | None -> loop rest)
-    in
-    loop prefixes
-  in
-  let is_backward_line line =
-    let trimmed = String.trim line in
-    List.exists
-      (fun label ->
-        let prefix = label ^ ":" in
-        String.starts_with trimmed ~prefix)
-      backward_labels
-  in
-  let is_inert_next_line line =
-    match strip_labeled_value ~prefixes:[ "Next plan:"; "Next:" ] line with
-    | None -> false
-    | Some value ->
-        let payload = String.trim value in
-        payload <> ""
-        && List.exists
-             (fun marker -> String_util.contains_substring_ci payload marker)
-             inert_next_markers
-  in
-  let is_stale_tool_surface_line line =
-    let payload = String.trim line in
-    String_util.contains_substring_ci payload "tool"
-    && (List.exists
-          (fun marker -> String_util.contains_substring_ci payload marker)
-          stale_tool_surface_markers
-        || (String_util.contains_substring_ci payload "only"
-            && (String_util.contains_substring_ci payload "allowed tool"
-                || String_util.contains_substring_ci payload "available tool"
-                || String_util.contains_substring_ci payload "visible tool"
-                || String_util.contains_substring_ci payload "tool surface"
-                || String_util.contains_substring_ci payload "tool-surface")))
-  in
-  let kept =
-    summary
-    |> String.split_on_char '\n'
-    |> List.filter (fun line -> not (is_backward_line line))
-    |> List.filter (fun line -> not (is_inert_next_line line))
-    |> List.filter (fun line -> not (is_stale_tool_surface_line line))
-    |> List.filter (fun line -> String.trim line <> "")
-  in
-  match kept with
-  | [] -> ""
-  | _ -> String.concat "\n" kept
+let filter_forward_looking_summary =
+  Keeper_memory_policy_summary_filter.filter_forward_looking_summary
 
 let progress_markdown_of_snapshot
     ?generation
@@ -679,7 +602,7 @@ let prompt_memory_sections_of_snapshot
 let read_progress_snapshot ~(config : Coord.config) ~(name : string)
     : keeper_state_snapshot option =
   match
-    let path = keeper_progress_path config name in
+    let path = Keeper_types_support.keeper_progress_path config name in
     if not (Fs_compat.file_exists path) then
       None
     else
@@ -693,7 +616,7 @@ let read_progress_snapshot ~(config : Coord.config) ~(name : string)
 
 let read_progress_snapshot_cache ~(config : Coord.config) ~(name : string)
     : progress_snapshot_cache option =
-  let path = keeper_progress_path config name in
+  let path = Keeper_types_support.keeper_progress_path config name in
   if not (Fs_compat.file_exists path) then
     None
   else
@@ -719,6 +642,7 @@ let continuity_fallback_summary_text
   if trimmed = "" then
     "No continuity snapshot available."
   else
+    let bounded = cap_continuity_summary_text trimmed in
     let freshness_line =
       if last_continuity_update_ts > 0.0 then
         let age_s = max 0.0 (Time_compat.now () -. last_continuity_update_ts) in
@@ -732,7 +656,7 @@ let continuity_fallback_summary_text
         freshness_line;
         "Checkpoint note: latest checkpoint [STATE] snapshot unavailable.";
         "Treat the following as prior context only and re-verify blockers, constraints, and repo state against the live world state before acting.";
-        trimmed;
+        bounded;
       ]
 
 let keeper_state_snapshot_to_json (snapshot : keeper_state_snapshot) : Yojson.Safe.t =

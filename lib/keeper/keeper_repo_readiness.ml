@@ -21,13 +21,23 @@ let read_only_probe_timeout_sec = 15.0
 let run_git ~timeout_sec ~clone_path args =
   let argv = [ "git"; "-C"; clone_path; "--no-optional-locks" ] @ args in
   let status, output =
-    Process_eio.run_argv_with_status ~timeout_sec argv
+    Masc_exec.Exec_gate.run_argv_with_status
+      ~actor:`Coord_git
+      ~raw_source:(String.concat " " argv)
+      ~summary:"keeper repo readiness git probe"
+      ~timeout_sec argv
   in
   { ok = status = Unix.WEXITED 0; output = String.trim output; status }
 
 let safe_is_dir path =
   try Sys.file_exists path && Sys.is_directory path with
   | Sys_error _ -> false
+
+let normalize_path path =
+  Keeper_alerting_path.normalize_path_for_check path
+  |> Keeper_alerting_path.strip_trailing_slashes
+
+let same_path a b = String.equal (normalize_path a) (normalize_path b)
 
 let safe_repo_component s =
   s <> "" && s <> "." && s <> ".."
@@ -128,84 +138,25 @@ let inspect
         "has_origin", `Bool false;
       ]
   else if not (safe_is_dir clone_path) then
-    let workspace_matches =
-      Coord_worktree.workspace_repo_matches ~search_root:project_root
-        ~repo_name:derived_repo_name
-    in
-    (match workspace_matches with
-     | [ source_root ] ->
-         (match Coord_worktree.git_origin_url source_root with
-          | Some origin_url -> (
-              match
-                Tool_code_write.validate_clone_url
-                  ~base_path:config.base_path origin_url
-              with
-              | Ok () ->
-                  common_fields "auto_provisionable" true
-                    (Printf.sprintf
-                       "Call masc_worktree_create with repo_name=%S; the sandbox clone \
-                        will be auto-provisioned from origin %s discovered via workspace repo %s."
-                       derived_repo_name origin_url source_root)
-                    [
-                      "exists", `Bool false;
-                      "is_git_repo", `Bool false;
-                      "has_origin", `Bool false;
-                      "workspace_repo_match", `String source_root;
-                      "workspace_repo_origin", `String origin_url;
-                      "auto_provision_on_worktree_create", `Bool true;
-                    ]
-              | Error err ->
-                  common_fields "workspace_origin_not_allowed" false
-                    (Printf.sprintf
-                       "Workspace repo %s points at origin %s, but clone policy rejected it: %s. \
-                        Update allowlist or use an approved repo."
-                       source_root origin_url err)
-                    [
-                      "exists", `Bool false;
-                      "is_git_repo", `Bool false;
-                      "has_origin", `Bool true;
-                      "workspace_repo_match", `String source_root;
-                      "workspace_repo_origin", `String origin_url;
-                      "auto_provision_on_worktree_create", `Bool false;
-                    ])
-          | None ->
-              common_fields "workspace_origin_unavailable" false
-                (Printf.sprintf
-                   "Workspace repo %s has no origin remote. Sandbox auto-provision requires cloning from origin."
-                   source_root)
-                [
-                  "exists", `Bool false;
-                  "is_git_repo", `Bool false;
-                  "has_origin", `Bool false;
-                  "workspace_repo_match", `String source_root;
-                  "auto_provision_on_worktree_create", `Bool false;
-                ])
-     | _ :: _ as matches ->
-         common_fields "ambiguous_workspace_repo" false
-           (Printf.sprintf
-              "Multiple workspace repos named %s exist under %s. Use \
-               keeper_shell op=git_clone explicitly or disambiguate repo_name."
-              derived_repo_name project_root)
-           [
-             "exists", `Bool false;
-             "is_git_repo", `Bool false;
-             "has_origin", `Bool false;
-             ( "workspace_repo_matches",
-               `List (List.map (fun path -> `String path) matches) );
-           ]
-     | [] ->
-         common_fields "missing_clone" false
-           "Clone the repo into sandbox repos/ first with keeper_shell op=git_clone, then create a worktree."
-           [
-             "exists", `Bool false;
-             "is_git_repo", `Bool false;
-             "has_origin", `Bool false;
-           ])
+    common_fields "missing_clone" false
+      "Create or clone the repo under sandbox repos/ before starting code work."
+      [
+        "exists", `Bool false;
+        "is_git_repo", `Bool false;
+        "has_origin", `Bool false;
+      ]
   else
     let inside =
       run_git ~timeout_sec:read_only_probe_timeout_sec ~clone_path [ "rev-parse"; "--is-inside-work-tree" ]
     in
-    if not inside.ok then
+    let top =
+      if inside.ok then
+        run_git ~timeout_sec:read_only_probe_timeout_sec ~clone_path
+          [ "rev-parse"; "--show-toplevel" ]
+      else { inside with ok = false; output = "" }
+    in
+    if (not inside.ok) || (not top.ok) || not (same_path clone_path top.output)
+    then
       common_fields "not_git_repo" false
         "This sandbox repo directory is not a git clone; reclone it under repos/."
         [
@@ -213,6 +164,7 @@ let inspect
           "is_git_repo", `Bool false;
           "has_origin", `Bool false;
           "git_error", `String inside.output;
+          "git_toplevel", (if top.ok then `String top.output else `Null);
         ]
     else
       let status =
@@ -257,7 +209,7 @@ let inspect
       let state, ok, next_action =
         if not status.ok then
           "status_failed", false,
-          "Run keeper_shell op=git_status in this repo; repair git status before starting work."
+          "Run Execute executable='git' argv=['status','--short'] in this repo; repair git status before starting work."
         else if not has_origin then
           "missing_origin", false,
           "Set or reclone origin before worktree creation; latest cannot be verified without origin."

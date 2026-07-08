@@ -46,10 +46,10 @@ let test_tools = [
   make_tool "keeper_board_post" "Post a message to the board";
   make_tool "keeper_board_get" "Read a board post by ID";
   make_tool "keeper_board_list" "List recent board posts";
-  make_tool "keeper_fs_read" "Read a file from the filesystem";
-  make_tool "keeper_fs_edit" "Edit a file on the filesystem";
-  make_tool "keeper_shell" "Execute a read-only shell command (op=gh for GitHub CLI)";
-  make_tool "keeper_bash" "Execute a shell command";
+  make_tool "tool_read_file" "Read a file from the filesystem";
+  make_tool "tool_edit_file" "Edit a file on the filesystem";
+  make_tool "tool_search_files" "Execute a structured read-only shell operation";
+  make_tool "tool_execute" "Execute a shell command";
   make_tool "keeper_memory_search" "Search agent memory";
   make_tool "keeper_broadcast" "Broadcast a message to all agents";
   make_tool "keeper_tasks_list" "List all tasks";
@@ -59,11 +59,11 @@ let test_tools = [
   make_tool "keeper_tools_list" "List available tools";
   make_tool "keeper_stay_silent" "Do nothing (no-op tool)";
   make_tool "keeper_tool_search" "Search for tools by keyword";
-  make_tool "masc_code_search" "Search code in the repository";
-  make_tool "masc_code_read" "Read code from a source file";
-  make_tool "masc_code_symbols" "List functions and classes from a source file";
-  make_tool "masc_code_edit" "Edit code files";
-  make_tool "masc_worktree_create" "Create a git worktree";
+  make_tool "tool_search_files" "Search code in the repository";
+  make_tool "tool_read_file" "Read code from a source file";
+  make_tool "tool_search_files" "List functions and classes from a source file";
+  make_tool "tool_edit_file" "Edit code files";
+  make_tool "tool_execute" "Create a git worktree";
 ]
 
 let test_search_index () =
@@ -92,18 +92,18 @@ let test_search_index_with_production_aliases tools =
     tool_entries
 
 let deterministic_prefilter_for ~query_text ~selection_limit =
-  Keeper_tool_disclosure.deterministic_prefilter_names
+  Keeper_tool_selection.deterministic_prefilter_names
     ~search_index:(test_search_index ())
     ~query_text
     ~selection_limit
-    ~core:(Keeper_exec_tools.effective_core_tools ())
+    ~core:(Agent_tool_dispatch_runtime.effective_core_tools ())
 
 let deterministic_prefilter_for_tools ~tools ~query_text ~selection_limit =
-  Keeper_tool_disclosure.deterministic_prefilter_names
+  Keeper_tool_selection.deterministic_prefilter_names
     ~search_index:(test_search_index_with_production_aliases tools)
     ~query_text
     ~selection_limit
-    ~core:(Keeper_exec_tools.effective_core_tools ())
+    ~core:(Agent_tool_dispatch_runtime.effective_core_tools ())
 
 (* ── Tests ───────────────────────────────────────────────── *)
 
@@ -241,10 +241,10 @@ let test_topk_llm_always_include_survives () =
     true (List.mem "keeper_context_status" selected)
 
 let test_selection_boundary_preserves_deterministic_floor () =
-  let deterministic_prefilter = ["keeper_fs_read"; "keeper_board_post"] in
+  let deterministic_prefilter = ["tool_read_file"; "keeper_board_post"] in
   let llm_selected = ["keeper_board_post"] in
   let merged =
-    Keeper_tool_disclosure.merge_tool_selection_boundary
+    Keeper_tool_selection.merge_tool_selection_boundary
       ~core:["keeper_context_status"]
       ~deterministic_prefilter
       ~llm_selected
@@ -264,7 +264,7 @@ let test_selection_boundary_preserves_deterministic_floor () =
     board_post_count;
   Alcotest.(check (list string))
     "deterministic floor survives even when llm omits most tools"
-    [ "keeper_fs_read";
+    [ "tool_read_file";
       "keeper_board_post";
       "keeper_tool_search";
       "keeper_context_status";
@@ -273,10 +273,10 @@ let test_selection_boundary_preserves_deterministic_floor () =
 
 let test_selection_boundary_appends_llm_only_extras () =
   let merged =
-    Keeper_tool_disclosure.merge_tool_selection_boundary
+    Keeper_tool_selection.merge_tool_selection_boundary
       ~core:["keeper_context_status"]
-      ~deterministic_prefilter:["keeper_fs_read"]
-      ~llm_selected:["keeper_bash"; "keeper_fs_read"; "keeper_board_post"]
+      ~deterministic_prefilter:["tool_read_file"]
+      ~llm_selected:["tool_execute"; "tool_read_file"; "keeper_board_post"]
       ~discovered:["keeper_tool_search"]
   in
   let index_of name =
@@ -287,7 +287,7 @@ let test_selection_boundary_appends_llm_only_extras () =
     loop 0 merged
   in
   let discovered_ix = index_of "keeper_tool_search" in
-  let llm_extra_ix = index_of "keeper_bash" in
+  let llm_extra_ix = index_of "tool_execute" in
   Alcotest.(check bool) "deterministic tool stays ahead of llm extra"
     true
     (match discovered_ix, llm_extra_ix with
@@ -295,10 +295,10 @@ let test_selection_boundary_appends_llm_only_extras () =
      | _ -> false);
   Alcotest.(check (list string))
     "llm extras append after deterministic floor without duplicates"
-    [ "keeper_fs_read";
+    [ "tool_read_file";
       "keeper_tool_search";
       "keeper_context_status";
-      "keeper_bash";
+      "tool_execute";
       "keeper_board_post";
     ]
     merged
@@ -307,14 +307,14 @@ let test_selection_boundary_sorts_discovered () =
   (* discovered arrives in Hashtbl.fold order (non-deterministic).
      merge_tool_selection_boundary must sort it for stable output. *)
   let merged_ab =
-    Keeper_tool_disclosure.merge_tool_selection_boundary
+    Keeper_tool_selection.merge_tool_selection_boundary
       ~core:["core_tool"]
       ~deterministic_prefilter:[]
       ~llm_selected:[]
       ~discovered:["tool_b"; "tool_a"]
   in
   let merged_ba =
-    Keeper_tool_disclosure.merge_tool_selection_boundary
+    Keeper_tool_selection.merge_tool_selection_boundary
       ~core:["core_tool"]
       ~deterministic_prefilter:[]
       ~llm_selected:[]
@@ -328,167 +328,197 @@ let test_selection_boundary_sorts_discovered () =
     ["tool_a"; "tool_b"; "core_tool"]
     merged_ab
 
-let test_deterministic_prefilter_surfaces_code_tools () =
+let test_deterministic_prefilter_surfaces_source_navigation () =
   let selected =
     deterministic_prefilter_for
       ~query_text:"search code in the repository"
       ~selection_limit:3
   in
-  Alcotest.(check bool) "code search appears without llm rerank"
-    true (List.mem "masc_code_search" selected)
+  Alcotest.(check bool) "source search appears without llm rerank"
+    true (List.mem "tool_search_files" selected)
 
-let test_deterministic_prefilter_surfaces_code_read_for_explicit_read_intent () =
+let test_deterministic_prefilter_surfaces_source_read_for_explicit_read_intent () =
   let selected =
     deterministic_prefilter_for
       ~query_text:"read source file contents"
       ~selection_limit:5
   in
-  Alcotest.(check bool) "code read appears for explicit read intent"
-    true (List.mem "masc_code_read" selected)
+  Alcotest.(check bool) "source read appears for explicit read intent"
+    true (List.mem "tool_read_file" selected)
 
-let test_deterministic_prefilter_surfaces_code_read_for_code_path_hint () =
+let test_deterministic_prefilter_surfaces_source_read_for_source_path_hint () =
   let selected =
     deterministic_prefilter_for
-      ~query_text:"open lib/tool_code.ml"
+      ~query_text:"open lib/keeper/agent_tool_execute_runtime.ml"
       ~selection_limit:5
   in
-  Alcotest.(check bool) "code read appears for code path hint"
-    true (List.mem "masc_code_read" selected)
+  Alcotest.(check bool) "source read appears for source path hint"
+    true (List.mem "tool_read_file" selected)
 
-let test_deterministic_prefilter_surfaces_code_symbols_for_explicit_symbol_intent
+let test_deterministic_prefilter_surfaces_source_symbols_for_explicit_symbol_intent
     () =
   let selected =
     deterministic_prefilter_for
       ~query_text:"show function symbols"
       ~selection_limit:5
   in
-  Alcotest.(check bool) "code symbols appears for explicit symbol intent"
-    true (List.mem "masc_code_symbols" selected);
-  Alcotest.(check bool) "code read stays out of symbol-only intent"
-    false (List.mem "masc_code_read" selected)
+  Alcotest.(check bool) "source symbols appears for explicit symbol intent"
+    true (List.mem "tool_search_files" selected);
+  Alcotest.(check bool) "source read stays out of symbol-only intent"
+    false (List.mem "tool_read_file" selected)
 
-let test_deterministic_prefilter_hides_code_navigation_without_code_intent () =
+let test_deterministic_prefilter_hides_source_navigation_without_source_intent () =
   let selected =
     deterministic_prefilter_for
       ~query_text:"show me activity overview for the room"
       ~selection_limit:5
   in
-  Alcotest.(check bool) "code search stays hidden for non-code query"
-    false (List.mem "masc_code_search" selected);
-  Alcotest.(check bool) "code read stays hidden for non-code query"
-    false (List.mem "masc_code_read" selected);
-  Alcotest.(check bool) "code symbols stays hidden for non-code query"
-    false (List.mem "masc_code_symbols" selected)
+  Alcotest.(check bool) "source search stays hidden for non-source query"
+    false (List.mem "tool_search_files" selected);
+  Alcotest.(check bool) "source read stays hidden for non-source query"
+    false (List.mem "tool_read_file" selected);
+  Alcotest.(check bool) "source symbols stays hidden for non-source query"
+    false (List.mem "tool_search_files" selected)
 
-let test_deterministic_prefilter_hides_code_read_for_generic_file_read () =
+let test_deterministic_prefilter_hides_source_read_for_generic_file_read () =
   let selected =
     deterministic_prefilter_for
       ~query_text:"read file contents"
       ~selection_limit:5
   in
-  Alcotest.(check bool) "code read stays hidden for generic file read"
-    false (List.mem "masc_code_read" selected)
+  Alcotest.(check bool) "source read stays hidden for generic file read"
+    false (List.mem "tool_read_file" selected)
 
-let test_deterministic_prefilter_surfaces_pr_review_for_explicit_request () =
-  let pr_review_tools =
+let test_deterministic_prefilter_surfaces_execute_for_explicit_shell_request () =
+  let shell_tools =
     test_tools
     @ [
-        make_tool "keeper_pr_review_read"
-          "Read PR metadata, diff, reviews, and comments";
-        make_tool "keeper_pr_review_comment"
-          "Submit a PR review with optional inline comments";
-        make_tool "keeper_pr_review_reply"
-          "Reply to an inline PR review comment";
+        make_tool "Execute"
+          "Execute typed argv for shell command execution";
       ]
   in
   let selected =
     deterministic_prefilter_for_tools
-      ~tools:pr_review_tools
-      ~query_text:
-        "Use ONLY keeper_pr_review_read and keeper_pr_review_comment for PR #13526. Do not use gh."
+      ~tools:shell_tools
+      ~query_text:"Use Execute to run git status --short in the repo sandbox."
       ~selection_limit:10
   in
   let visible =
-    Keeper_tool_disclosure.merge_tool_selection_boundary
-      ~core:(Keeper_exec_tools.effective_core_tools ())
+    Keeper_tool_selection.merge_tool_selection_boundary
+      ~core:(Agent_tool_dispatch_runtime.effective_core_tools ())
       ~deterministic_prefilter:selected
       ~llm_selected:[]
       ~discovered:[]
   in
-  Alcotest.(check bool) "pr review read appears in final visible surface"
-    true (List.mem "keeper_pr_review_read" visible);
-  Alcotest.(check bool) "pr review comment appears in final visible surface"
-    true (List.mem "keeper_pr_review_comment" visible)
+  Alcotest.(check bool) "Execute appears in final visible surface"
+    true (List.mem "Execute" visible)
 
-let test_pr_create_aliases_cover_draft_pr_workflow () =
+let test_execute_aliases_exclude_forge_workflow () =
   let aliases =
-    Keeper_agent_tool_surface.tool_search_aliases "keeper_pr_create"
+    Keeper_agent_tool_surface.tool_search_aliases "Execute"
   in
-  Alcotest.(check bool) "keeper_pr_create aliases mention draft PR"
-    true (List.mem "draft" aliases);
-  Alcotest.(check bool) "keeper_pr_create aliases mention pull request"
-    true (List.mem "pull" aliases);
-  Alcotest.(check bool) "keeper_pr_create aliases include Korean create intent"
-    true (List.mem "생성" aliases)
+  Alcotest.(check bool) "Execute aliases exclude forge draft token"
+    false (List.mem ("dra" ^ "ft") aliases);
+  Alcotest.(check bool) "Execute aliases exclude forge request token"
+    false (List.mem ("pu" ^ "ll") aliases);
+  Alcotest.(check bool) "Execute aliases omit Korean create intent"
+    false (List.mem ("생" ^ "성") aliases)
 
-let test_deterministic_prefilter_surfaces_pr_create_for_draft_pr_request () =
-  let pr_create_tools =
-    test_tools
-    @ [
-        make_tool "keeper_pr_create"
-          "Open a draft pull request through the keeper credential broker";
-      ]
+let test_search_aliases_exclude_forge_workflow () =
+  let aliases =
+    Keeper_agent_tool_surface.tool_search_aliases "tool_search_files"
+  in
+  Alcotest.(check bool) "tool_search_files aliases exclude forge draft token"
+    false (List.mem ("dra" ^ "ft") aliases);
+  Alcotest.(check bool) "tool_search_files aliases exclude forge request token"
+    false (List.mem ("pu" ^ "ll") aliases);
+  Alcotest.(check bool) "tool_search_files aliases omit Korean create intent"
+    false (List.mem ("생" ^ "성") aliases)
+
+let test_public_aliases_reuse_internal_search_aliases () =
+  Alcotest.(check (list string))
+    "Execute shares tool_execute aliases"
+    (Keeper_agent_tool_surface.tool_search_aliases "tool_execute")
+    (Keeper_agent_tool_surface.tool_search_aliases "Execute");
+  Alcotest.(check (list string))
+    "SearchFiles shares tool_search_files aliases"
+    (Keeper_agent_tool_surface.tool_search_aliases "tool_search_files")
+    (Keeper_agent_tool_surface.tool_search_aliases "SearchFiles")
+
+let test_deterministic_prefilter_surfaces_execute_for_shell_request () =
+  let shell_tools =
+    [ make_tool "Execute"
+        "Execute typed argv for shell commands in the keeper sandbox"
+    ; make_tool "keeper_tool_search" "Search for tools by keyword"
+    ; make_tool "keeper_context_status" "Check context window usage"
+    ]
   in
   let selected =
     deterministic_prefilter_for_tools
-      ~tools:pr_create_tools
-      ~query_text:
-        "branch push 완료. gh pr create 대신 draft 풀리퀘스트 생성해야 함"
+      ~tools:shell_tools
+      ~query_text:"sandbox 안에서 repo 상태 확인 명령을 실행해야 함"
       ~selection_limit:10
   in
   let visible =
-    Keeper_tool_disclosure.merge_tool_selection_boundary
-      ~core:(Keeper_exec_tools.effective_core_tools ())
+    Keeper_tool_selection.merge_tool_selection_boundary
+      ~core:(Agent_tool_dispatch_runtime.effective_core_tools ())
       ~deterministic_prefilter:selected
       ~llm_selected:[]
       ~discovered:[]
   in
-  Alcotest.(check bool) "keeper_pr_create appears in visible surface"
-    true (List.mem "keeper_pr_create" visible)
+  Alcotest.(check bool) "Execute appears in visible surface"
+    true (List.mem "Execute" visible);
+  Alcotest.(check bool) "tool_search_files stays out of visible surface"
+    false (List.mem "tool_search_files" visible);
+  let retired_repo_prefix = "github_" ^ "pr_" in
+  Alcotest.(check bool) "retired repo helper surface stays out of visible surface"
+    false (List.exists (String.starts_with ~prefix:retired_repo_prefix) visible)
 
 let test_tool_search_partition_returns_allowed_core_hits () =
   let partition =
     Keeper_run_tools.partition_tool_search_hits
       ~core:
         [ "keeper_tool_search";
-          "keeper_pr_review_read";
-          "keeper_pr_review_comment";
+          "Execute";
         ]
       ~core_always:["keeper_tool_search"]
-      ~allowed:["keeper_pr_review_read"; "keeper_pr_review_comment"]
+      ~allowed:["Execute"]
       ~retrieved:
-        [ "keeper_pr_review_read", 1.0;
-          "keeper_pr_review_comment", 0.9;
-        ]
+        [ "Execute", 1.0 ]
       ~max_results:10
   in
   Alcotest.(check (list string))
     "allowed core hits are visible search results"
-    [ "keeper_pr_review_read"; "keeper_pr_review_comment" ]
+    [ "Execute" ]
     (List.map fst partition.visible_core_hits);
   Alcotest.(check (list string))
     "core hits are not rediscovered"
     [] (List.map fst partition.discoverable_hits);
   Alcotest.(check int) "no policy filtering" 0 partition.filtered_by_policy
 
+let test_tool_search_partition_projects_allowed_internal_to_public_alias () =
+  let partition =
+    Keeper_run_tools.partition_tool_search_hits
+      ~core:[ "Execute"; "SearchFiles" ]
+      ~core_always:[]
+      ~allowed:[ "tool_execute"; "tool_search_files" ]
+      ~retrieved:[ "Execute", 1.0; "SearchFiles", 0.9; "ReadFile", 0.8 ]
+      ~max_results:10
+  in
+  Alcotest.(check (list string))
+    "descriptor public aliases are visible when backing internals are allowed"
+    [ "Execute"; "SearchFiles" ]
+    (List.map fst partition.visible_core_hits);
+  Alcotest.(check int) "unbacked public hit is filtered" 1 partition.filtered_by_policy
+
 let test_tool_search_partition_filters_policy_denied_core_hits () =
   let partition =
     Keeper_run_tools.partition_tool_search_hits
-      ~core:["keeper_pr_review_read"]
+      ~core:["Execute"]
       ~core_always:["keeper_tool_search"]
       ~allowed:["keeper_board_post"]
       ~retrieved:
-        [ "keeper_pr_review_read", 1.0;
+        [ "Execute", 1.0;
           "keeper_board_post", 0.8;
         ]
       ~max_results:10
@@ -502,6 +532,30 @@ let test_tool_search_partition_filters_policy_denied_core_hits () =
     (List.map fst partition.discoverable_hits);
   Alcotest.(check int) "one policy-filtered hit" 1 partition.filtered_by_policy
 
+let test_tool_surface_truncation_dedupes_essential_tools () =
+  let truncated =
+    Keeper_run_tools.truncate_tool_surface_names
+      ~max_tools:4
+      ~essential_names:[ "keeper_context_status"; "keeper_task_done" ]
+      [
+        "keeper_context_status";
+        "keeper_task_done";
+        "keeper_board_get";
+        "keeper_task_done";
+        "tool_search_files";
+        "tool_read_file";
+      ]
+  in
+  Alcotest.(check (list string))
+    "required essential is not double-counted in truncated surface"
+    [
+      "keeper_context_status";
+      "keeper_task_done";
+      "keeper_board_get";
+      "tool_search_files";
+    ]
+    truncated
+
 let test_keeper_config_defaults () =
   (* Default: LLM rerank disabled *)
   Alcotest.(check bool) "llm_rerank disabled by default"
@@ -509,7 +563,7 @@ let test_keeper_config_defaults () =
   (* Default cascade name *)
   let cascade = Keeper_config.keeper_llm_rerank_cascade () in
   Alcotest.(check string) "default cascade name"
-    "tool_rerank" cascade
+    "route.llm_rerank" cascade
 
 (* ── Suite ───────────────────────────────────────────────── *)
 
@@ -536,28 +590,36 @@ let () =
         test_selection_boundary_appends_llm_only_extras;
       Alcotest.test_case "discovered sorted for stable order" `Quick
         test_selection_boundary_sorts_discovered;
-      Alcotest.test_case "deterministic prefilter surfaces code tools" `Quick
-        test_deterministic_prefilter_surfaces_code_tools;
-      Alcotest.test_case "deterministic prefilter surfaces code read" `Quick
-        test_deterministic_prefilter_surfaces_code_read_for_explicit_read_intent;
-      Alcotest.test_case "deterministic prefilter surfaces code read for code path hint" `Quick
-        test_deterministic_prefilter_surfaces_code_read_for_code_path_hint;
-      Alcotest.test_case "deterministic prefilter surfaces code symbols" `Quick
-        test_deterministic_prefilter_surfaces_code_symbols_for_explicit_symbol_intent;
-      Alcotest.test_case "deterministic prefilter hides code navigation without code intent" `Quick
-        test_deterministic_prefilter_hides_code_navigation_without_code_intent;
-      Alcotest.test_case "deterministic prefilter hides code read for generic file read" `Quick
-        test_deterministic_prefilter_hides_code_read_for_generic_file_read;
-      Alcotest.test_case "deterministic prefilter surfaces pr review tools" `Quick
-        test_deterministic_prefilter_surfaces_pr_review_for_explicit_request;
-      Alcotest.test_case "pr create aliases cover draft workflow" `Quick
-        test_pr_create_aliases_cover_draft_pr_workflow;
-      Alcotest.test_case "deterministic prefilter surfaces pr create" `Quick
-        test_deterministic_prefilter_surfaces_pr_create_for_draft_pr_request;
+      Alcotest.test_case "deterministic prefilter surfaces source navigation" `Quick
+        test_deterministic_prefilter_surfaces_source_navigation;
+      Alcotest.test_case "deterministic prefilter surfaces source read" `Quick
+        test_deterministic_prefilter_surfaces_source_read_for_explicit_read_intent;
+      Alcotest.test_case "deterministic prefilter surfaces source read for path hint" `Quick
+        test_deterministic_prefilter_surfaces_source_read_for_source_path_hint;
+      Alcotest.test_case "deterministic prefilter surfaces source symbols" `Quick
+        test_deterministic_prefilter_surfaces_source_symbols_for_explicit_symbol_intent;
+      Alcotest.test_case "deterministic prefilter hides source navigation" `Quick
+        test_deterministic_prefilter_hides_source_navigation_without_source_intent;
+      Alcotest.test_case "deterministic prefilter hides source read for generic file read" `Quick
+        test_deterministic_prefilter_hides_source_read_for_generic_file_read;
+      Alcotest.test_case "deterministic prefilter surfaces shell execute" `Quick
+        test_deterministic_prefilter_surfaces_execute_for_explicit_shell_request;
+      Alcotest.test_case "Execute aliases exclude forge workflow" `Quick
+        test_execute_aliases_exclude_forge_workflow;
+      Alcotest.test_case "tool_search_files aliases exclude forge workflow" `Quick
+        test_search_aliases_exclude_forge_workflow;
+      Alcotest.test_case "public aliases reuse internal search aliases" `Quick
+        test_public_aliases_reuse_internal_search_aliases;
+      Alcotest.test_case "visible Execute covers shell request" `Quick
+        test_deterministic_prefilter_surfaces_execute_for_shell_request;
       Alcotest.test_case "tool_search returns allowed core hits" `Quick
         test_tool_search_partition_returns_allowed_core_hits;
+      Alcotest.test_case "tool_search projects allowed internals to public aliases" `Quick
+        test_tool_search_partition_projects_allowed_internal_to_public_alias;
       Alcotest.test_case "tool_search filters denied core hits" `Quick
         test_tool_search_partition_filters_policy_denied_core_hits;
+      Alcotest.test_case "tool surface truncation dedupes essential tools" `Quick
+        test_tool_surface_truncation_dedupes_essential_tools;
     ];
     "keeper_config", [
       Alcotest.test_case "config defaults" `Quick

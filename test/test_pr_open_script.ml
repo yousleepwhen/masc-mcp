@@ -8,8 +8,6 @@ let source_root () =
 let script_path () =
   Filename.concat (source_root ()) "scripts/pr-open.sh"
 
-let quote = Filename.quote
-
 let contains_substring haystack needle =
   let hlen = String.length haystack in
   let nlen = String.length needle in
@@ -24,6 +22,26 @@ let read_file path =
 
 let write_file path content =
   Out_channel.with_open_bin path (fun oc -> output_string oc content)
+
+let valid_pr_body =
+  "## Summary\n\
+   Test body\n\n\
+   ## Product impact\n\
+   - Promise affected: `none/internal`\n\
+   - User-visible change: none\n\n\
+   ## Evidence\n\
+   - local script test\n\n\
+   ## Direct evidence\n\n\
+   ```yaml\n\
+   schema_version: 1\n\
+   direct_ratio: 0/0\n\
+   provenance: n/a\n\
+   stages: []\n\
+   ```\n\n\
+   ## Review evidence\n\
+   - not applicable for script test\n\n\
+   ## Linked issue\n\
+   - Refs #1234\n"
 
 let rec rm_rf path =
   if Sys.file_exists path then
@@ -50,36 +68,66 @@ let with_temp_dir prefix f =
   Unix.mkdir dir 0o755;
   Fun.protect ~finally:(fun () -> rm_rf dir) (fun () -> f dir)
 
-let run_shell ?(env = []) ~cwd cmd =
-  let env_prefix =
-    env
-    |> List.map (fun (k, v) -> Printf.sprintf "%s=%s" k (quote v))
-    |> String.concat " "
-  in
-  let full =
-    if env_prefix = "" then
-      Printf.sprintf "cd %s && %s" (quote cwd) cmd
-    else
-      Printf.sprintf "cd %s && %s %s" (quote cwd) env_prefix cmd
-  in
+let env_array overrides =
+  let table = Hashtbl.create 64 in
+  Unix.environment ()
+  |> Array.iter (fun entry ->
+         match String.index_opt entry '=' with
+         | None -> ()
+         | Some idx ->
+             let key = String.sub entry 0 idx in
+             let value =
+               String.sub entry (idx + 1) (String.length entry - idx - 1)
+             in
+             Hashtbl.replace table key value);
+  List.iter (fun (key, value) -> Hashtbl.replace table key value) overrides;
+  Hashtbl.fold
+    (fun key value acc -> Printf.sprintf "%s=%s" key value :: acc)
+    table []
+  |> Array.of_list
+
+let run_process ?(env = []) ~cwd prog argv =
   let out = Filename.temp_file "pr-open-out" ".txt" in
   let err = Filename.temp_file "pr-open-err" ".txt" in
-  let wrapped =
-    Printf.sprintf "%s > %s 2> %s" full (quote out) (quote err)
+  let out_fd = Unix.openfile out [ Unix.O_WRONLY; Unix.O_TRUNC ] 0o600 in
+  let err_fd = Unix.openfile err [ Unix.O_WRONLY; Unix.O_TRUNC ] 0o600 in
+  let original_cwd = Sys.getcwd () in
+  let pid =
+    Fun.protect
+      ~finally:(fun () ->
+        Sys.chdir original_cwd;
+        Unix.close out_fd;
+        Unix.close err_fd)
+      (fun () ->
+        Sys.chdir cwd;
+        Unix.create_process_env prog argv (env_array env) Unix.stdin out_fd
+          err_fd)
   in
-  let code = Sys.command wrapped in
+  let _, status = Unix.waitpid [] pid in
+  let code =
+    match status with
+    | Unix.WEXITED code -> code
+    | Unix.WSIGNALED _ | Unix.WSTOPPED _ -> 255
+  in
   let stdout = read_file out in
   let stderr = read_file err in
   Sys.remove out;
   Sys.remove err;
   (code, stdout, stderr)
 
-let run_shell_ok ?(env = []) ~cwd cmd =
-  let code, stdout, stderr = run_shell ~env ~cwd cmd in
+let run_process_ok ?(env = []) ~cwd prog argv =
+  let code, stdout, stderr = run_process ~env ~cwd prog argv in
   if code <> 0 then
-    failf "command failed (%d): %s\nstdout:\n%s\nstderr:\n%s" code cmd stdout
+    failf "command failed (%d): %s\nstdout:\n%s\nstderr:\n%s" code prog stdout
       stderr;
   (stdout, stderr)
+
+let git_ok ~cwd args =
+  ignore (run_process_ok ~cwd "git" (Array.of_list ("git" :: args)))
+
+let run_pr_open ?(env = []) ~cwd args =
+  run_process ~env ~cwd "/bin/bash"
+    (Array.of_list ("/bin/bash" :: script_path () :: args))
 
 let make_fake_gh dir =
   let bin_dir = Filename.concat dir "bin" in
@@ -91,7 +139,9 @@ let make_fake_gh dir =
 set -eu
 log_file="${FAKE_GH_LOG:?}"
 labels_file="${FAKE_GH_LABELS:?}"
+statuses_file="${FAKE_GH_STATUSES:-$labels_file.statuses}"
 draft_file="${FAKE_GH_DRAFT_STATE_FILE:-$labels_file.draft}"
+edit_body_file="${FAKE_GH_EDIT_BODY:-$labels_file.body}"
 cmd1="${1:-}"
 cmd2="${2:-}"
 printf '%s %s\n' "$cmd1" "$cmd2" >>"$log_file"
@@ -111,8 +161,16 @@ case "${cmd1}:${cmd2}" in
     args="$*"
     draft_state="$(cat "$draft_file" 2>/dev/null || printf 'true\n')"
     case "$args" in
+      *"body,commits,headRefName,baseRefName"*)
+        cat <<'JSON'
+{"body":"## Summary\nFake body\n","headRefName":"feature/macos-pr-open","baseRefName":"main","commits":[{"oid":"abcdef1234567890","messageHeadline":"feature commit","committedDate":"2026-05-21T00:00:00Z"}]}
+JSON
+        ;;
       *"state,isDraft,mergeStateStatus,headRefOid,url"*)
         printf 'state=OPEN draft=%s mergeState=CLEAN head=abc123\nurl=https://github.com/example/test/pull/42\n' "$draft_state"
+        ;;
+      *"url,headRefOid"*)
+        printf 'https://github.com/example/test/pull/42 abc123\n'
         ;;
       *"state,isDraft"*)
         printf 'OPEN %s\n' "$draft_state"
@@ -129,11 +187,22 @@ case "${cmd1}:${cmd2}" in
         ;;
     esac
     ;;
+  pr:edit)
+    cat >"$edit_body_file"
+    ;;
   pr:ready)
     printf 'true\n' >"$draft_file"
     ;;
   api:*)
-    cat >"$labels_file"
+    case "${2:-}" in
+      */statuses/*)
+        cat >>"$statuses_file"
+        printf '\n' >>"$statuses_file"
+        ;;
+      *)
+        cat >"$labels_file"
+        ;;
+    esac
     ;;
   label:list)
     printf '[]\n'
@@ -161,29 +230,25 @@ esac
 
 let init_repo_with_remote dir =
   let remote_dir = Filename.concat dir "remote.git" in
-  ignore (run_shell_ok ~cwd:dir "git init -q");
-  ignore (run_shell_ok ~cwd:dir "git config user.email test@example.com");
-  ignore (run_shell_ok ~cwd:dir "git config user.name tester");
-  ignore (run_shell_ok ~cwd:dir "git checkout -qb main");
+  git_ok ~cwd:dir [ "init"; "-q" ];
+  git_ok ~cwd:dir [ "config"; "user.email"; "test@example.com" ];
+  git_ok ~cwd:dir [ "config"; "user.name"; "tester" ];
+  git_ok ~cwd:dir [ "checkout"; "-qb"; "main" ];
   mkdir_p (Filename.concat dir "docs");
   mkdir_p (Filename.concat dir "lib");
   write_file (Filename.concat dir "README.md") "# temp\n";
-  ignore
-    (run_shell_ok ~cwd:dir
-       "git add README.md && git -c core.hooksPath=/dev/null commit -q -m base");
-  ignore
-    (run_shell_ok ~cwd:dir
-       (Printf.sprintf "git init --bare -q %s" (quote remote_dir)));
-  ignore
-    (run_shell_ok ~cwd:dir
-       (Printf.sprintf "git remote add origin %s" (quote remote_dir)));
-  ignore (run_shell_ok ~cwd:dir "git push -u origin main");
-  ignore (run_shell_ok ~cwd:dir "git checkout -qb feature/macos-pr-open");
+  git_ok ~cwd:dir [ "add"; "README.md" ];
+  git_ok ~cwd:dir
+    [ "-c"; "core.hooksPath=/dev/null"; "commit"; "-q"; "-m"; "base" ];
+  git_ok ~cwd:dir [ "init"; "--bare"; "-q"; remote_dir ];
+  git_ok ~cwd:dir [ "remote"; "add"; "origin"; remote_dir ];
+  git_ok ~cwd:dir [ "push"; "-u"; "origin"; "main" ];
+  git_ok ~cwd:dir [ "checkout"; "-qb"; "feature/macos-pr-open" ];
   write_file (Filename.concat dir "lib/example.ml") "let value = 1\n";
-  ignore
-    (run_shell_ok ~cwd:dir
-       "git add lib/example.ml && git -c core.hooksPath=/dev/null commit -q -m feature");
-  ignore (run_shell_ok ~cwd:dir "git push -u origin feature/macos-pr-open")
+  git_ok ~cwd:dir [ "add"; "lib/example.ml" ];
+  git_ok ~cwd:dir
+    [ "-c"; "core.hooksPath=/dev/null"; "commit"; "-q"; "-m"; "feature" ];
+  git_ok ~cwd:dir [ "push"; "-u"; "origin"; "feature/macos-pr-open" ]
 
 let test_source_avoids_mapfile_only_bash4_features () =
   let content = read_file (script_path ()) in
@@ -201,8 +266,7 @@ let test_script_runs_under_system_bash_without_watch () =
       let gh_log = Filename.concat dir "gh.log" in
       let gh_labels = Filename.concat dir "gh-labels.json" in
       let body_file = Filename.concat dir "body.md" in
-      write_file body_file
-        "## Summary\nTest body\n\n## Product impact\n- Promise affected: `none/internal`\n- User-visible change: none\n\n## Evidence\n- local script test\n\n## Review evidence\n- not applicable for script test\n\n## Linked issue\n- Refs #1234\n";
+      write_file body_file valid_pr_body;
       let path =
         Printf.sprintf "%s:%s" fake_gh_dir
           (match Sys.getenv_opt "PATH" with Some p -> p | None -> "")
@@ -214,14 +278,18 @@ let test_script_runs_under_system_bash_without_watch () =
           ("FAKE_GH_LABELS", gh_labels);
         ]
       in
-      let cmd =
-        Printf.sprintf "/bin/bash %s --repo %s --title %s --body-file %s --no-watch"
-          (quote (script_path ()))
-          (quote "example/test")
-          (quote "fix: macOS bash compatibility")
-          (quote body_file)
+      let code, stdout, stderr =
+        run_pr_open ~cwd:dir ~env
+          [
+            "--repo";
+            "example/test";
+            "--title";
+            "fix: macOS bash compatibility";
+            "--body-file";
+            body_file;
+            "--no-watch";
+          ]
       in
-      let code, stdout, stderr = run_shell ~cwd:dir ~env cmd in
       if code <> 0 then
         failf "pr-open failed (%d)\nstdout:\n%s\nstderr:\n%s" code stdout stderr;
       check bool "prints PR url" true
@@ -230,8 +298,20 @@ let test_script_runs_under_system_bash_without_watch () =
         (contains_substring stderr "mapfile: command not found");
       let log = read_file gh_log in
       check bool "creates draft PR" true (contains_substring log "pr create");
+      check bool "arms immediate draft guard status" true
+        (contains_substring log "api repos/example/test/statuses/abc123");
       check bool "skips watched checks with --no-watch" false
         (contains_substring log "pr checks");
+      check bool "sets draft guard status failure" true
+        (contains_substring (read_file (gh_labels ^ ".statuses"))
+           "Draft Auto-Merge Guard");
+      check bool "syncs commit lineage" true
+        (contains_substring log "pr edit");
+      let synced_body = read_file (gh_labels ^ ".body") in
+      check bool "writes commit lineage marker" true
+        (contains_substring synced_body "<!-- COMMIT-LINEAGE:START -->");
+      check bool "writes commit lineage commit subject" true
+        (contains_substring synced_body "feature commit");
       let labels = read_file gh_labels in
       check bool "adds enhancement label for code changes" true
         (contains_substring labels "\"enhancement\"");
@@ -249,8 +329,7 @@ let test_script_restores_draft_when_create_returns_ready () =
       let gh_log = Filename.concat dir "gh.log" in
       let gh_labels = Filename.concat dir "gh-labels.json" in
       let body_file = Filename.concat dir "body.md" in
-      write_file body_file
-        "## Summary\nTest body\n\n## Product impact\n- Promise affected: `none/internal`\n- User-visible change: none\n\n## Evidence\n- local script test\n\n## Review evidence\n- not applicable for script test\n\n## Linked issue\n- Refs #13253\n";
+      write_file body_file valid_pr_body;
       let path =
         Printf.sprintf "%s:%s" fake_gh_dir
           (match Sys.getenv_opt "PATH" with Some p -> p | None -> "")
@@ -263,14 +342,18 @@ let test_script_restores_draft_when_create_returns_ready () =
           ("FAKE_GH_CREATE_READY", "1");
         ]
       in
-      let cmd =
-        Printf.sprintf "/bin/bash %s --repo %s --title %s --body-file %s --no-watch"
-          (quote (script_path ()))
-          (quote "example/test")
-          (quote "fix: restore ready pr to draft")
-          (quote body_file)
+      let code, stdout, stderr =
+        run_pr_open ~cwd:dir ~env
+          [
+            "--repo";
+            "example/test";
+            "--title";
+            "fix: restore ready pr to draft";
+            "--body-file";
+            body_file;
+            "--no-watch";
+          ]
       in
-      let code, stdout, stderr = run_shell ~cwd:dir ~env cmd in
       if code <> 0 then
         failf "pr-open failed (%d)\nstdout:\n%s\nstderr:\n%s" code stdout stderr;
       let log = read_file gh_log in
@@ -291,8 +374,7 @@ let test_script_prints_final_status_after_watch () =
       let gh_log = Filename.concat dir "gh.log" in
       let gh_labels = Filename.concat dir "gh-labels.json" in
       let body_file = Filename.concat dir "body.md" in
-      write_file body_file
-        "## Summary\nTest body\n\n## Product impact\n- Promise affected: `none/internal`\n- User-visible change: none\n\n## Evidence\n- local script test\n\n## Review evidence\n- not applicable for script test\n\n## Linked issue\n- Refs #1234\n";
+      write_file body_file valid_pr_body;
       let path =
         Printf.sprintf "%s:%s" fake_gh_dir
           (match Sys.getenv_opt "PATH" with Some p -> p | None -> "")
@@ -305,14 +387,17 @@ let test_script_prints_final_status_after_watch () =
           ("FAKE_GH_ALLOW_CHECKS", "1");
         ]
       in
-      let cmd =
-        Printf.sprintf "/bin/bash %s --repo %s --title %s --body-file %s"
-          (quote (script_path ()))
-          (quote "example/test")
-          (quote "fix: print final status")
-          (quote body_file)
+      let code, stdout, stderr =
+        run_pr_open ~cwd:dir ~env
+          [
+            "--repo";
+            "example/test";
+            "--title";
+            "fix: print final status";
+            "--body-file";
+            body_file;
+          ]
       in
-      let code, stdout, stderr = run_shell ~cwd:dir ~env cmd in
       if code <> 0 then
         failf "pr-open failed (%d)\nstdout:\n%s\nstderr:\n%s" code stdout stderr;
       check bool "runs watched checks" true
@@ -343,36 +428,52 @@ let test_script_rejects_body_missing_required_sections () =
           ("FAKE_GH_LABELS", gh_labels);
         ]
       in
-      let cmd =
-        Printf.sprintf "/bin/bash %s --repo %s --title %s --body-file %s --no-watch"
-          (quote (script_path ()))
-          (quote "example/test")
-          (quote "fix: reject incomplete PR body")
-          (quote body_file)
+      let code, stdout, stderr =
+        run_pr_open ~cwd:dir ~env
+          [
+            "--repo";
+            "example/test";
+            "--title";
+            "fix: reject incomplete PR body";
+            "--body-file";
+            body_file;
+            "--no-watch";
+          ]
       in
-      let code, stdout, stderr = run_shell ~cwd:dir ~env cmd in
       check bool "command fails" true (code <> 0);
       check bool "stdout empty" true (String.trim stdout = "");
       check bool "mentions hygiene failure" true
         (contains_substring stderr "body file is missing required PR hygiene sections:");
       check bool "mentions product impact heading" true
         (contains_substring stderr "## Product impact");
+      check bool "mentions direct evidence heading" true
+        (contains_substring stderr "## Direct evidence");
       check bool "mentions linked issue heading" true
         (contains_substring stderr "## Linked issue");
       check bool "gh never invoked before validation" false
         (Sys.file_exists gh_log))
 
-let test_script_rejects_staged_changes_before_push () =
-  with_temp_dir "pr-open-script-staged-changes" (fun dir ->
+let test_script_rejects_body_missing_direct_evidence_schema () =
+  with_temp_dir "pr-open-script-missing-direct-evidence-schema" (fun dir ->
       init_repo_with_remote dir;
       let fake_gh_dir = make_fake_gh dir in
       let gh_log = Filename.concat dir "gh.log" in
       let gh_labels = Filename.concat dir "gh-labels.json" in
       let body_file = Filename.concat dir "body.md" in
       write_file body_file
-        "## Summary\nTest body\n\n## Product impact\n- Promise affected: `none/internal`\n- User-visible change: none\n\n## Evidence\n- local script test\n\n## Review evidence\n- not applicable for script test\n\n## Linked issue\n- Refs #1234\n";
-      write_file (Filename.concat dir "lib/staged.ml") "let staged = true\n";
-      ignore (run_shell_ok ~cwd:dir "git add lib/staged.ml");
+        "## Summary\n\
+         Test body\n\n\
+         ## Product impact\n\
+         - Promise affected: `none/internal`\n\
+         - User-visible change: none\n\n\
+         ## Evidence\n\
+         - local script test\n\n\
+         ## Direct evidence\n\
+         - direct proof not classified yet\n\n\
+         ## Review evidence\n\
+         - not applicable for script test\n\n\
+         ## Linked issue\n\
+         - Refs #1234\n";
       let path =
         Printf.sprintf "%s:%s" fake_gh_dir
           (match Sys.getenv_opt "PATH" with Some p -> p | None -> "")
@@ -384,14 +485,61 @@ let test_script_rejects_staged_changes_before_push () =
           ("FAKE_GH_LABELS", gh_labels);
         ]
       in
-      let cmd =
-        Printf.sprintf "/bin/bash %s --repo %s --title %s --body-file %s --no-watch"
-          (quote (script_path ()))
-          (quote "example/test")
-          (quote "fix: reject staged changes")
-          (quote body_file)
+      let code, stdout, stderr =
+        run_pr_open ~cwd:dir ~env
+          [
+            "--repo";
+            "example/test";
+            "--title";
+            "fix: reject direct evidence drift";
+            "--body-file";
+            body_file;
+            "--no-watch";
+          ]
       in
-      let code, stdout, stderr = run_shell ~cwd:dir ~env cmd in
+      check bool "command fails" true (code <> 0);
+      check bool "stdout empty" true (String.trim stdout = "");
+      check bool "mentions direct evidence schema failure" true
+        (contains_substring stderr
+           "body file is missing required Direct evidence schema fields:");
+      check bool "mentions direct_ratio" true
+        (contains_substring stderr "direct_ratio");
+      check bool "gh never invoked before direct evidence validation" false
+        (Sys.file_exists gh_log))
+
+let test_script_rejects_staged_changes_before_push () =
+  with_temp_dir "pr-open-script-staged-changes" (fun dir ->
+      init_repo_with_remote dir;
+      let fake_gh_dir = make_fake_gh dir in
+      let gh_log = Filename.concat dir "gh.log" in
+      let gh_labels = Filename.concat dir "gh-labels.json" in
+      let body_file = Filename.concat dir "body.md" in
+      write_file body_file valid_pr_body;
+      write_file (Filename.concat dir "lib/staged.ml") "let staged = true\n";
+      git_ok ~cwd:dir [ "add"; "lib/staged.ml" ];
+      let path =
+        Printf.sprintf "%s:%s" fake_gh_dir
+          (match Sys.getenv_opt "PATH" with Some p -> p | None -> "")
+      in
+      let env =
+        [
+          ("PATH", path);
+          ("FAKE_GH_LOG", gh_log);
+          ("FAKE_GH_LABELS", gh_labels);
+        ]
+      in
+      let code, stdout, stderr =
+        run_pr_open ~cwd:dir ~env
+          [
+            "--repo";
+            "example/test";
+            "--title";
+            "fix: reject staged changes";
+            "--body-file";
+            body_file;
+            "--no-watch";
+          ]
+      in
       check bool "command fails" true (code <> 0);
       check bool "stdout empty" true (String.trim stdout = "");
       check bool "mentions staged changes" true
@@ -416,6 +564,8 @@ let () =
             test_script_prints_final_status_after_watch;
           test_case "rejects body missing required sections" `Quick
             test_script_rejects_body_missing_required_sections;
+          test_case "rejects body missing direct evidence schema" `Quick
+            test_script_rejects_body_missing_direct_evidence_schema;
           test_case "rejects staged changes before push" `Quick
             test_script_rejects_staged_changes_before_push;
         ] );

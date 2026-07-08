@@ -92,7 +92,7 @@ check "V6-oas-orchestration" 3 \
 # Eval_gate destructive detection and keeper deny list should be
 # injected via OAS hook config, not hardcoded in hook callbacks.
 check "V7-masc-hook-gates" 4 \
-  'Eval_gate\.detect_destructive\|keeper_denied_tools' \
+  'Eval_gate\.detect_destructive\|[^[]keeper_denied_tools' \
   "lib/keeper/keeper_hooks_oas.ml"
 
 # V8: Direct OAS Agent.state mutation from keeper code
@@ -117,14 +117,20 @@ check_forbidden_outside "V10-provider-filter-ownership" \
   "lib/keeper/keeper_types.ml" \
   "lib/keeper/keeper_types.mli" \
   "lib/keeper/keeper_meta_json_scrub.ml" \
-  "lib/keeper/keeper_meta_json_scrub.mli"
+  "lib/keeper/keeper_meta_json_scrub.mli" \
+  "lib/keeper/keeper_config.ml" \
+  "lib/keeper/keeper_config_text.ml" \
+  "lib/keeper/keeper_config_text.mli"
 
-# V11: proof-store layout knowledge must stay inside the proof reader adapter.
+# V11: proof-store layout knowledge must stay inside the CDAL proof-store owner
+# and proof reader adapter.
 check_forbidden_outside "V11-proof-store-layout" \
   'Filename\.concat .*"proofs"' \
   "lib/" \
-  "lib/proof_artifact_reader.ml" \
-  "lib/proof_artifact_reader.mli"
+  "lib/cdal_runtime/proof_store.ml" \
+  "lib/cdal_runtime/proof_store.mli" \
+  "lib/cdal/proof_artifact_reader.ml" \
+  "lib/cdal/proof_artifact_reader.mli"
 
 # V12: oas-runtime session root literal must stay inside the runtime path adapter.
 check_forbidden_outside "V12-oas-runtime-layout" \

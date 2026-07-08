@@ -17,17 +17,20 @@ module Float = Stdlib.Float
 
 (** Central Tool Dispatch Registry.
 
-    Production MCP tool names route through {!Tool_name} and an exhaustive
-    module-tag match. Mutable registries remain for direct-handler
-    compatibility, schemas, and test/dynamic tools.
+    Production MCP tool names route through {!Tool_name} and the module-tag
+    registry. Mutable handler registrations remain only for dispatch
+    execution; they are not used for token validation or discovery.
 
-    Activated by MASC_DISPATCH_V2=1; the legacy match chain is the
-    default fallback. *)
+    RFC-0084 host-config-cleanup-J removed the [MASC_DISPATCH_V2]
+    feature flag and the alternate match chain it gated.  The Hashtbl dispatch
+    path is now the only code path. *)
 
 (** Unified handler type: every tool call is [name * args -> result option].
     [None] means "this handler does not know this tool" (should not happen
-    when lookups go through the registry, but kept for compatibility). *)
-type handler = name:string -> args:Yojson.Safe.t -> (bool * string) option
+    when lookups go through the registry, but kept for compatibility).
+    RFC-0189 PR-2: handlers return the typed {!Tool_result.result}; the
+    legacy {!Tool_result.result} record is gone. *)
+type handler = name:string -> args:Yojson.Safe.t -> Tool_result.result option
 
 (** Central registry — populated once during server initialisation. *)
 let registry : (string, handler) Hashtbl.t = Hashtbl.create 256
@@ -53,40 +56,73 @@ let register_module ~(schemas : Masc_domain.tool_schema list) ~(handler : handle
         Hashtbl.replace registry schema.name handler)
       schemas)
 
-(** {2 Dispatch Hooks}
+(** {2 Dispatch Hooks And Observers}
 
-    Pre-hooks run before the handler; post-hooks run after.
+    Pre-hooks run before the handler; observers run after the typed outcome is
+    known.
     Multiple hooks are supported — they execute in registration order.
 
     - Pre-hook returning [Some result] short-circuits (handler is skipped).
       Use case: permission checks (Sprint 3), request logging.
-    - Post-hook transforms the result.  Identity function when observing only.
-      Use case: tracing spans (Sprint 2), metrics collection. *)
+    - Dispatch observers receive the final typed outcome for telemetry,
+      metrics, and audit logging. *)
 
 (** Pre-hook action: determines how dispatch proceeds after a hook runs. *)
 type pre_hook_action =
-  | Pass                        (** This hook has no opinion — continue *)
-  | Proceed of Yojson.Safe.t   (** Replace args (e.g. type coercion) and continue *)
-  | Reject of Tool_result.t    (** Short-circuit with error result *)
+  | Pass                            (** This hook has no opinion — continue *)
+  | Proceed of Yojson.Safe.t       (** Replace args (e.g. type coercion) and continue *)
+  | Reject of Tool_result.result   (** Short-circuit with error result *)
 
 (** Pre-hook: receives tool name and args before handler runs. *)
 type pre_hook = name:string -> args:Yojson.Safe.t -> pre_hook_action
 
-(** Post-hook: receives result after handler completes.
-    Return the (possibly transformed) tool result. *)
-type post_hook = Tool_result.t -> Tool_result.t
+(** Observer called after dispatch finalization.
+
+    Receives the typed {!Dispatch_outcome.t} together with the
+    handler-produced {!Tool_result.result} (when the [Handled] arm ran)
+    once dispatch completes — regardless of which arm fired
+    ([Handled] / [Rejected_by_capability] / [Rejected_by_pre_hook] /
+    [No_handler] / [Handler_error]).
+
+    The optional [Tool_result.result] is [Some _] only on the [Handled]
+    arm; other arms receive [None] so observers can pattern-match on
+    the typed outcome first and read [tool_name] / [success] /
+    [duration_ms] from the result only when relevant.
+
+    Returns [unit] because typed hooks are *observers* (metrics,
+    spans, audit log) — they cannot mutate the dispatch outcome. *)
+type dispatch_observer = Dispatch_outcome.t -> Tool_result.result option -> unit
 
 let pre_hooks : pre_hook list ref = ref []
-let post_hooks : post_hook list ref = ref []
+let dispatch_observers : dispatch_observer list ref = ref []
 
 let register_pre_hook (hook : pre_hook) =
   with_dispatch_rw (fun () -> pre_hooks := !pre_hooks @ [hook])
 
-let register_post_hook (hook : post_hook) =
-  with_dispatch_rw (fun () -> post_hooks := !post_hooks @ [hook])
+let register_dispatch_observer (hook : dispatch_observer) =
+  with_dispatch_rw (fun () -> dispatch_observers := !dispatch_observers @ [hook])
+
+(** Result transformer surface.  Today there is exactly one transformer in
+    tree ([Tool_output_validation.transform_result] which caps oversized
+    payloads); the single-ref shape reflects that. *)
+type result_transformer = Tool_result.result -> Tool_result.result
+
+let result_transformer_ref : result_transformer option ref = ref None
+
+let set_result_transformer (t : result_transformer) =
+  with_dispatch_rw (fun () -> result_transformer_ref := Some t)
+
+let apply_result_transformer (r : Tool_result.result) : Tool_result.result =
+  match !result_transformer_ref with
+  | None -> r
+  | Some t -> t r
+;;
 
 let clear_hooks () =
-  with_dispatch_rw (fun () -> pre_hooks := []; post_hooks := [])
+  with_dispatch_rw (fun () ->
+    pre_hooks := [];
+    dispatch_observers := [];
+    result_transformer_ref := None)
 
 (** Run pre-hooks in order, threading coerced args through the chain.
     First [Reject] wins (short-circuit). [Proceed] replaces args for
@@ -102,56 +138,77 @@ let run_pre_hooks ~name ~args =
   in
   go args !pre_hooks
 
-(** Run post-hooks in order, threading the result through. *)
-let run_post_hooks result =
-  List.fold_left (fun r hook -> hook r) result !post_hooks
+(** Run observers in order against the typed dispatch outcome.
+    Each hook is invoked for its side-effects; mutation of the
+    outcome is not permitted (see [dispatch_observer] above).
 
-(** O(1) dispatch.  Returns [Some (success, message)] when a handler is
-    found, [None] when the tool name is unknown to the registry.
-    Handler exceptions are caught and returned as error tuples so the
-    caller gets a consistent result shape.
+    [result] is [Some r] only on the [Handled] arm; other arms
+    pass [None] so observers can branch on the typed outcome first. *)
+let run_dispatch_observers
+    (outcome : Dispatch_outcome.t)
+    (result : Tool_result.result option) : unit =
+  List.iter (fun hook -> hook outcome result) !dispatch_observers
 
-    Post-hooks fire as a side-effect after the handler completes,
-    enabling tool metrics and usage logging for all dispatch paths
-    (keeper, MCP, tag-dispatch). *)
-let dispatch ~(token : Tool_token.t) ~args : Tool_result.t option =
-  let name = token.name in
-  match Hashtbl.find_opt registry name with
-  | Some handler ->
-    let start_time = Time_compat.now () in
-    let result =
-      try handler ~name ~args
-      with Eio.Cancel.Cancelled _ as e -> raise e | exn ->
-        Some
-          ( false,
-            Printf.sprintf "dispatch_v2 handler error for %s: %s" name
-              (Stdlib.Printexc.to_string exn) )
-    in
-    (match result with
-     | Some (success, message) ->
-       let tr = Tool_result.wrap ~tool_name:name ~start_time (success, message) in
-       Some (run_post_hooks tr)
-     | None -> None)
-  | None -> None
+(** RFC-0084 §2.2 + RFC-0085 PR-14 — Single dispatch entry.
 
-(** Structured dispatch with hook support.
+    Inlines what used to be a three-step file-private chain
+    ([dispatch] -> [dispatch_structured] -> [guarded_dispatch]) into
+    one function so the lifecycle reads top-to-bottom:
 
-    Execution order: pre-hooks → handler (with post-hooks) → result.
+      1. [Tool_telemetry.with_span]   (4-tuple emission wrapper)
+      2. pre-hook chain                (reject / coerce-args)
+      3. registry lookup + handler     (handler exception capture)
+      4. result transformer            ([apply_result_transformer])
+      5. observer fan-out              ([run_dispatch_observers])
 
-    Pre-hooks may short-circuit with a rejection result or coerce args.
-    Post-hooks are fired inside [dispatch].
+    PR-11 already removed the three-step chain from the public mli.
+    PR-14 finishes the consolidation by removing the file-private
+    indirection — each step had exactly one caller, so the layering
+    was pure overhead. *)
+let guarded_dispatch ~(token : Tool_token.t) ~args () : Tool_result.result option =
+  let result, _outcome =
+    Tool_telemetry.with_span ~tool_name:token.name (fun _trace_id_thunk ->
+      let name = token.name in
+      let r =
+        match run_pre_hooks ~name ~args with
+        | (Some _ as blocked, _) -> blocked
+        | (None, coerced_args) ->
+          (match Hashtbl.find_opt registry name with
+           | Some handler ->
+             let start_time = Time_compat.now () in
+             (try handler ~name ~args:coerced_args
+              with
+              | Eio.Cancel.Cancelled _ as e -> raise e
+              | exn -> Some (Tool_result.make_err_of_exn ~tool_name:name ~start_time exn))
+           | None -> None)
+      in
+      (* Finalization is done inline here because [Tool_dispatch] cannot
+         depend on [Tool_dispatch_emit] without creating a dependency
+         cycle.  Keep the ordering aligned with
+         [Tool_dispatch_emit.finalize].
 
-    Returns [None] when the tool is unknown to the registry. *)
-let dispatch_structured ~(token : Tool_token.t) ~args : Tool_result.t option =
-  let name = token.name in
-  match run_pre_hooks ~name ~args with
-  | (Some _ as blocked, _) -> blocked
-  | (None, coerced_args) ->
-    dispatch ~token ~args:coerced_args
-
-(** Feature flag: use the new dispatch path.
-    Default ON since v2.102 — use MASC_DISPATCH_V2=0 to disable. *)
-let v2_enabled = Env_config.Tools.dispatch_v2_enabled
+         Order: transformer first (mutates the Tool_result.result inside the
+         [Handled] arm), then typed observer fan-out. *)
+      let r' =
+        match r with
+        | Some tr -> Some (apply_result_transformer tr)
+        | None -> r
+      in
+      let typed_outcome : Dispatch_outcome.t =
+        match r' with
+        | Some _ -> Handled
+        | None -> No_handler
+      in
+      run_dispatch_observers typed_outcome r';
+      let outcome =
+        match r' with
+        | Some _ -> "handled"
+        | None -> "no_handler"
+      in
+      r', outcome)
+  in
+  result
+;;
 
 (** Number of registered tool names. *)
 let registered_count () = Hashtbl.length registry
@@ -159,58 +216,20 @@ let registered_count () = Hashtbl.length registry
 (** Check whether a tool name is registered. *)
 let is_registered name = Hashtbl.mem registry name
 
-(** --- Hashtbl sets for dispatch capability checks --- *)
-
-let read_only_set : (string, unit) Hashtbl.t = Hashtbl.create 32
-let requires_join_set : (string, unit) Hashtbl.t = Hashtbl.create 64
-let mcp_context_required_set : (string, unit) Hashtbl.t = Hashtbl.create 64
-let destructive_set : (string, unit) Hashtbl.t = Hashtbl.create 16
-let idempotent_set : (string, unit) Hashtbl.t = Hashtbl.create 32
-
-let init_read_only_set (names : string list) =
-  with_dispatch_rw (fun () ->
-    List.iter (fun name -> Hashtbl.replace read_only_set name ()) names)
-
-let init_requires_join_set (names : string list) =
-  with_dispatch_rw (fun () ->
-    List.iter (fun name -> Hashtbl.replace requires_join_set name ()) names)
-
-let init_mcp_context_required_set (names : string list) =
-  with_dispatch_rw (fun () ->
-    List.iter (fun name -> Hashtbl.replace mcp_context_required_set name ()) names)
-
-let init_destructive_set (names : string list) =
-  with_dispatch_rw (fun () ->
-    List.iter (fun name -> Hashtbl.replace destructive_set name ()) names)
-
-let init_idempotent_set (names : string list) =
-  with_dispatch_rw (fun () ->
-    List.iter (fun name -> Hashtbl.replace idempotent_set name ()) names)
-
-let is_read_only name = with_dispatch_ro (fun () -> Hashtbl.mem read_only_set name)
-let is_join_required name = with_dispatch_ro (fun () -> Hashtbl.mem requires_join_set name)
-let is_mcp_context_required name =
-  with_dispatch_ro (fun () -> Hashtbl.mem mcp_context_required_set name)
-let is_destructive name = with_dispatch_ro (fun () -> Hashtbl.mem destructive_set name)
-let is_idempotent name = with_dispatch_ro (fun () -> Hashtbl.mem idempotent_set name)
-
 (** {2 Module Tag Dispatch}
 
-    Known tool names map to module tags through a compile-time match.
-    Runtime registrations remain as a fallback for test/dynamic tools. *)
+    Known tool names map to module tags through a compile-time match or the
+    tag registry. Handler registration does not authorize tool names. *)
 
 type module_tag =
   | Mod_plan | Mod_operator
   | Mod_local_runtime
-  | Mod_worktree
-  | Mod_code | Mod_code_write
   | Mod_run
   | Mod_compact
   | Mod_agent | Mod_task | Mod_room
-  | Mod_control | Mod_agent_timeline | Mod_misc | Mod_suspend
+  | Mod_control | Mod_agent_timeline | Mod_misc
   | Mod_library | Mod_keeper
   | Mod_inline
-  | Mod_autoresearch
   | Mod_shard
 
 let static_tag_of_tool_name (tool : Tool_name.t) : module_tag option =
@@ -220,20 +239,9 @@ let static_tag_of_tool_name (tool : Tool_name.t) : module_tag option =
   | Tool_name.Masc m ->
     let open Tool_name.Masc in
     match m with
-    | Cancel_task
-    | Complete_task
-    | Dispatch_plan
-    | List_tasks
-    | Operation_pause
-    | Operation_start
-    | Operation_status
-    | Operation_stop
-    | Release_task
-    | Set_current_task -> None
     | Add_task
     | Batch_add_tasks
     | Claim_next
-    | Claim_task
     | Task_history
     | Tasks
     | Transition
@@ -242,15 +250,7 @@ let static_tag_of_tool_name (tool : Tool_name.t) : module_tag option =
     | Agent_card
     | Agent_update
     | Agents
-    | Get_metrics
-    | Register_capabilities -> Some Mod_agent
-    | Autoresearch_cycle
-    | Autoresearch_inject
-    | Autoresearch_record_finding
-    | Autoresearch_search_findings
-    | Autoresearch_start
-    | Autoresearch_status
-    | Autoresearch_stop -> Some Mod_autoresearch
+    | Get_metrics -> Some Mod_agent
     | Board_cleanup
     | Board_comment
     | Board_comment_vote
@@ -265,31 +265,29 @@ let static_tag_of_tool_name (tool : Tool_name.t) : module_tag option =
     | Board_reaction
     | Board_search
     | Board_stats
+    | Board_sub_board_create
+    | Board_sub_board_delete
+    | Board_sub_board_get
+    | Board_sub_board_list
+    | Board_sub_board_update
     | Board_vote
-    | Approval_pending
     | Approval_get
+    | Approval_pending
     | Broadcast
     | Join
     | Leave
     | Mcp_session
     | Messages
-    | Spawn
     | Start
     | Who -> Some Mod_inline
     | Check
-    | Coord_status
-    | Coordination_fsm_snapshot
     | Goal_list
-    | Goal_review
     | Goal_transition
     | Goal_upsert
     | Goal_verify
     | Heartbeat
     | Reset
-    | Status
-    | Workflow_guide -> Some Mod_room
-    | Code_read | Code_search | Code_symbols -> Some Mod_code
-    | Code_delete | Code_edit | Code_git | Code_shell | Code_write -> Some Mod_code_write
+    | Status -> Some Mod_room
     | Config
     | Cleanup_zombies
     | Dashboard
@@ -298,9 +296,8 @@ let static_tag_of_tool_name (tool : Tool_name.t) : module_tag option =
     | Tool_admin_update
     | Tool_help
     | Tool_stats
-    | Web_search
-    | Webrtc_answer
-    | Webrtc_offer -> Some Mod_misc
+    | Web_fetch
+    | Web_search -> Some Mod_misc
     | Deliver
     | Note_add
     | Plan_clear_task
@@ -312,7 +309,6 @@ let static_tag_of_tool_name (tool : Tool_name.t) : module_tag option =
     | Operator_action | Operator_confirm | Operator_digest | Operator_snapshot -> Some Mod_operator
     | Pause | Resume -> Some Mod_control
     | Tool_grant | Tool_list | Tool_revoke -> Some Mod_shard
-    | Worktree_create | Worktree_list | Worktree_remove -> Some Mod_worktree
 
 let tag_registry : (string, module_tag) Hashtbl.t = Hashtbl.create 512
 let tag_registry_initialized = Atomic.make false
@@ -345,38 +341,31 @@ let tag_registry_count () = with_dispatch_ro (fun () -> Hashtbl.length tag_regis
 let mark_tag_registry_initialized () = with_dispatch_rw (fun () -> Atomic.set tag_registry_initialized true)
 let is_tag_registry_initialized () = with_dispatch_ro (fun () -> Atomic.get tag_registry_initialized)
 
-(** Mint a [Tool_token.t] validated against static routes or registries.
+(** Mint a [Tool_token.t] validated against static routes or the tag registry.
     Protected by dispatch_mu for thread safety (Copilot review).
-    Checks known typed tool names first, then the runtime tag/handler registries.
-    In production both are populated at startup; in test binaries
-    only the handler registry may be populated. *)
+    Checks known typed tool names first, then runtime tag registrations.
+    Handler-only registrations are executable only after a caller already
+    holds a token minted through the canonical route registry. *)
 let mint_token ~name =
   with_dispatch_ro (fun () ->
     Tool_token.mint_with
       ~validate:(fun n ->
         match Tool_name.of_string n with
         | Some tool -> Option.is_some (static_tag_of_tool_name tool)
-        | None -> Hashtbl.mem tag_registry n || Hashtbl.mem registry n)
+        | None -> Hashtbl.mem tag_registry n)
       ~name)
 
-(** Enumerate every tool name registered in either the tag_registry (primary)
-    or the handler registry (fallback). Used by [find_similar_names] to
-    drive "did you mean" suggestions for Unknown tool errors (#9784). *)
+(** Enumerate every tool name registered in the tag registry. Used by
+    [find_similar_names] to drive "did you mean" suggestions for Unknown tool
+    errors (#9784). Handler-only registrations are intentionally invisible. *)
 let all_registered_names () =
-  with_dispatch_ro (fun () ->
-    let acc =
-      Hashtbl.fold (fun n _ a -> n :: a) tag_registry []
-    in
-    Hashtbl.fold
-      (fun n _ a -> if List.mem n a then a else n :: a)
-      registry acc)
+  with_dispatch_ro (fun () -> Hashtbl.fold (fun n _ a -> n :: a) tag_registry [])
 
 (* #9784: Unknown tool errors must include closest-name suggestions so the
    LLM can self-correct on the next turn. Jaccard works well for snake_case
    tool names because Text_similarity tokenizes on non-alphanumeric and
    captures shared morphemes via byte n-grams. The default min_score 0.4
-   excludes unrelated names while accepting near-misses like
-   masc_claim_task -> masc_claim_next (Jaccard >= 0.5). *)
+   excludes unrelated names while accepting close task-tool typos. *)
 let find_similar_names ?(limit = 3) ?(min_score = 0.4) ~query () =
   let candidates = all_registered_names () in
   let scored =

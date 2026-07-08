@@ -1,131 +1,202 @@
 (** Worker_dev_tools — file_read / file_write / shell_exec for Fleet
-    autonomous-coding agents.
+    autonomous execution agents.
 
     Surface composition:
 
-    - {!Gate_diff_types} re-exported via [include] (line 13 of the .ml).
-      Provides [destructive_class], [legacy_verdict], [shadow_verdict],
-      [gate_diff] + their tag/diff helpers.
-    - {!Gh_command_validation} re-exported via [include] (line 712 of
-      the .ml). Provides [gh_reversibility] + [gh] command validators.
-    - This module's own surface: [block_reason] type, command-validation
-      gates, attribution helper, log-redaction helpers, and the OAS tool
+    - {!Shell_safety_types} re-exported via [include] (line 13 of the .ml).
+      Provides [destructive_class], destructive pattern metadata, and
+      command-log hash helpers.
+    - {!Exec_policy} re-exported for compatibility. Provides [block_reason],
+      command-validation gates, Shell IR path validation, mutation classifiers,
+      and log-redaction helpers.
+    - This module's own surface: attribution helper and the Agent SDK tool
       factories ({!make_tools}, {!make_readonly_tools}).
 
-    Internal helpers stay hidden: path resolution, character-class
-    classifiers, pipeline tokenization, command-name extraction,
-    URL/credential redaction, [mkdir_p], the underlying file_read/
-    file_write/shell_exec tool builders, parser-reason tag helpers,
-    and the [classify_legacy] / [classify_shadow] private classifiers
-    used by {!diff_command}. *)
+    Internal helpers stay hidden: [mkdir_p], the underlying file_read/
+    file_write/shell_exec tool builders, and parser-reason tag helpers. *)
 
-include module type of Gate_diff_types
+include module type of Shell_safety_types
 
 (** {1 Command validation} *)
 
 (** Closed taxonomy of reasons {!validate_command} /
-    {!validate_command_coding} reject a candidate shell command.  The
+    {!validate_command_tool_execute} reject a candidate shell command.  The
     [Command_not_allowed] payload carries the offending command name
     so the caller can render an actionable hint. *)
-type block_reason =
+type block_reason = Exec_policy.block_reason =
   | Empty_command
   | Chain_or_redirect
   | Injection
   | Process_substitution
   | Unsafe_redirect
   | Pipes_not_allowed
+  | Direct_dune_invocation
   | Command_not_allowed of string
 
-val block_reason_to_string : block_reason -> string
 (** Render a {!block_reason} as the operator-visible error string
     embedded in tool result payloads.  Wording is pinned (LLM
     prompt-conditioning depends on the exact alternatives listed for
     {!Chain_or_redirect}, {!Injection}, etc.). *)
+val block_reason_to_string : block_reason -> string
 
-val validate_command : string -> (unit, block_reason) result
+val block_reason_to_string_with_allowlist :
+  allowed_commands:string list -> block_reason -> string
+(** Render a {!block_reason} with a caller-specific allowlist in the
+    [Command_not_allowed] hint. Use this when the caller deliberately
+    passes a narrower allowlist than {!validate_command_tool_execute}; otherwise
+    the generic hint can name commands that the caller still rejects. *)
+
+(** The default dev allowlist (cat, cargo, dune-local.sh, git, rg, ...).  Used by
+    {!validate_command} internally and by the Shell IR Execute gate.  Order is
+    the source of truth; do not re-sort without confirming all validation
+    consumers are tolerant. *)
+val dev_allowed_commands : string list
+
 (** Strict (allowlist + no shell metacharacters) validator used by the
     default [shell_exec] tool.  Rejects empty input, chaining, and any
-    command outside the dev allowlist (rg / grep / dune / git / ...). *)
+    command outside the dev allowlist (rg / grep / dune-local.sh / git / ...).
+    Bare [dune] is intentionally rejected; local agents must use
+    [scripts/dune-local.sh] so builds share the host-wide lock.
+    [?caller] is accepted for call-site compatibility; strict validation
+    keeps the existing single-command wire shape. *)
+val validate_command
+  :  ?caller:Masc_exec_command_gate.Shell_command_gate.caller
+  -> Masc_exec.Shell_ir.t
+  -> (unit, block_reason) result
 
-val validate_command_coding : string -> (unit, block_reason) result
-(** Relaxed validator for Coding/Full preset keepers.  Allows pipes
-    and fd redirects; still blocks shell injection, process
-    substitution, and unsafe redirects.  Validates every segment of
-    the pipeline against the dev allowlist. *)
+(** Relaxed validator for Delivery/Full preset keepers.  The authoritative
+    verdict comes from {!Masc_exec_command_gate.Shell_command_gate.gate}:
+    parsed pipelines validate every stage against the dev allowlist,
+    redirects are rejected for the Execute shell path, and parser
+    bailouts fail closed with the existing {!block_reason} wire shape. *)
+val validate_command_tool_execute
+  :  ?caller:Masc_exec_command_gate.Shell_command_gate.caller
+  -> Masc_exec.Shell_ir.t
+  -> (unit, block_reason) result
+(** [?caller] is forwarded to {!Masc_exec_command_gate.Shell_command_gate.gate}
+    for telemetry partitioning.  It does not select a fallback: the
+    Shell IR facade verdict is authoritative for all callers. *)
 
-val validate_command_coding_with_allowlist :
-  ?allow_pipes:bool ->
-  allowed_commands:string list ->
-  string ->
-  (unit, block_reason) result
-(** Customizable variant of {!validate_command_coding} for callers that
+(** Customizable variant of {!validate_command_tool_execute} for callers that
     need a non-default allowlist.  [allow_pipes] defaults to [true];
     setting it to [false] yields {!Pipes_not_allowed} for any pipeline
-    longer than one segment. *)
+    longer than one segment.  [?caller] is forwarded to
+    {!Masc_exec_command_gate.Shell_command_gate.gate} for telemetry partitioning. *)
+val validate_command_tool_execute_with_allowlist
+  :  ?caller:Masc_exec_command_gate.Shell_command_gate.caller
+  -> ?allow_pipes:bool
+  -> allowed_commands:string list
+  -> Masc_exec.Shell_ir.t
+  -> (unit, block_reason) result
 
-val validate_command_paths :
-  ?workdir:string -> string -> (unit, string) result
-(** When [workdir] is supplied, gate every path-bearing token in [cmd]
-    against {!Path_compat.validate_path}.  Returns [Error msg] with the
-    rejected token (or a path-rewrite-syntax reminder) when a token
-    escapes [workdir].  Returns [Ok ()] unconditionally when
-    [workdir = None]. *)
+(** Variant of {!validate_command_tool_execute_with_allowlist} for callers that need
+    to keep the authoritative Shell IR context for execution or follow-up
+    validation. *)
+val command_context_tool_execute_with_allowlist
+  :  ?caller:Masc_exec_command_gate.Shell_command_gate.caller
+  -> ?allow_pipes:bool
+  -> allowed_commands:string list
+  -> Masc_exec.Shell_ir.t
+  -> (Masc_exec_command_gate.Shell_command_gate.parsed_context, block_reason) result
 
-(** {1 Bash safety classifiers} *)
+(** When [workdir] is supplied, gate every literal path-bearing argv/redirect
+    value in [shell_ir] against the path allowlist.
+    Values may stay under [workdir],
+    [/tmp], the owning worktree repo root, or a registered repository path
+    allowed by {!Keeper_repo_mapping} when both [keeper_id] and [base_path]
+    are supplied. Returns [Error msg] with the rejected value when a path
+    escapes the allowlist.
+    Returns [Ok ()] unconditionally when [workdir = None]. *)
+val validate_shell_ir_paths
+  :  ?keeper_id:string
+  -> ?base_path:string
+  -> ?workdir:string
+  -> Masc_exec.Shell_ir.t
+  -> (unit, string) result
 
-val is_write_operation : string -> bool
-(** [true] iff the command performs a write/mutating operation
-    (git push/commit, dune clean, npm publish, mv, cp, mkdir,
-    chmod, ...).  Read-only commands (git status, dune build, rg)
-    return [false]. *)
+(** Return literal path values in [cmd] that should have their containing
+    sandbox materialized before execution. This includes explicit existing-directory
+    requirements (for example [git -C <dir>] and [--work-tree=<dir>]) and
+    path arguments to read/list/search commands such as [cat], [find], [ls],
+    and [rg]. Callers may use this to repair an expected sandbox directory
+    before delegating to {!validate_shell_ir_paths}; the validator remains
+    the authority for out-of-sandbox paths. *)
+val existing_dir_path_values_of_shell_ir : Masc_exec.Shell_ir.t -> string list
 
-val is_git_branch_switch : string -> bool
-(** [true] iff [cmd] is a git branch-switch / branch-mutation command
-    (checkout, switch, branch -c/-m/-D, ...).  Used by the keeper bash
-    sandbox guard to redirect such operations to the explicit worktree
-    flow.  Read-only listing forms are allowed (return [false]). *)
+(** {1 Execute safety classifiers} *)
 
-val is_destructive_bash_operation : string -> bool
-(** [true] iff [cmd] is destructive at the bash layer: [rm -rf],
-    forced [git push --force] / [git reset --hard], [git clean -fd],
-    or anything {!Eval_gate.detect_destructive} flags.  Distinct from
-    {!classify_destructive} (Gate_diff_types) which classifies the
-    *kind* of destruction; this returns a boolean for the bash gate. *)
+(** [true] iff [ir] is a git branch-switch / branch-mutation command
+    (checkout, switch, branch -c/-m/-D, ...). *)
+val is_git_branch_switch : Masc_exec.Shell_ir.t -> bool
+
+(** [true] iff [ir] is *structurally* destructive at the bash layer:
+    [rm -rf], forced [git push --force] / protected-branch push,
+    [git reset --hard].
+
+    RFC-0160 S1: dropped {!Eval_gate.detect_destructive} evasion
+    fallback — typed argv eliminates raw-shell evasion by construction.
+    Callers receiving raw strings must run [Eval_gate.detect_destructive]
+    separately {i before} parsing. *)
+val is_destructive_bash_operation : Masc_exec.Shell_ir.t -> bool
+
+val flat_stage_words : Masc_exec.Shell_ir.t -> string list
 
 (** {1 Logging redaction} *)
 
-val sanitize_command_for_log : string -> string
 (** Redact embedded credentials before a command is committed to a log
     line.  Strips [https://user:pw@] URL credentials, inline
     [token=]/[password=]/[api-key=] assignments, and the value
     following [--token]/[--password]/[--auth-token]/[--api-key]
     flags.  The result is suitable for human/log consumption but not
     for re-execution. *)
+val sanitize_command_for_log : string -> string
 
-val truncate_for_log : ?max_len:int -> string -> string
 (** UTF-8-safe truncation to [max_len] characters (default [240]),
     appending [...] when truncated. *)
+val truncate_for_log : ?max_len:int -> string -> string
 
 (** {1 Attribution} *)
 
-val attribution_of_validation :
-  cmd:string -> (unit, block_reason) result -> Attribution.t
 (** Convert the result of {!validate_command} (or any validator that
     yields [block_reason]) into the {!Attribution} envelope consumed by
     the dashboard.  [Ok ()] yields a [passed] attribution; [Error br]
     yields a [policy_failed] attribution carrying the block reason tag,
     the offending command name (when {!Command_not_allowed}), and the
     operator-visible error string. *)
+val attribution_of_validation : cmd:string -> (unit, block_reason) result -> Attribution.t
+
+(** Effective [shell_exec] timeout after applying load-bearing timeout floors.
+    Caller-supplied short timeouts are preserved for trivial commands, but
+    git, recursive scans, and local Dune wrapper invocations are floored at the
+    shared [Tool_dispatch] timeout floor. *)
+val effective_shell_exec_timeout_sec : command:string -> requested:float -> float
 
 (** {1 OAS tool factories} *)
+
+(** Closed sum classifying the producer error categories emitted by the
+    in-tree shell/file tools. Five variants mirror the categorised tags:
+    [Path_blocked], [File_read_error], [File_write_error],
+    [Command_blocked], [Shell_error].
+
+    Raw strings stay only at the telemetry/wire boundary
+    ([tool_exec_error_kind_to_string]); adding a new variant becomes a
+    compile obligation at every observer call site. *)
+type tool_exec_error_kind =
+  | Path_blocked
+  | File_read_error
+  | File_write_error
+  | Command_blocked
+  | Shell_error
+
+val tool_exec_error_kind_to_string : tool_exec_error_kind -> string
 
 (** Per-call observer hook invoked at the end of every tool execution.
 
     Receives the tool name, success flag, elapsed wall-clock duration,
     and (on failure) a categorized [error_kind] tag plus the
     operator-visible [error_message].  Both error fields are
-    [None] on success and on legacy failure paths that have not yet
-    been wired (the consumer should treat absence as
+    [None] on success and on failure paths that have not yet been
+    wired (the consumer should treat absence as
     [error_kind="unknown"] in metric labels).
 
     The categorized tags this module produces are:
@@ -137,75 +208,35 @@ val attribution_of_validation :
 
     Issue #10358: closes the 17.3% blank-error gap for tool_called
     rows fed via [worker_container.build_local_shell_tools]. *)
-type tool_exec_error_kind = private Tool_exec_error_kind of string
-(** Typed boundary wrapper for the observer's categorized error label.
-
-    Keep raw strings at the telemetry/wire boundary; do not expose
-    raw-string error-kind callback signatures from this module. *)
-
-val tool_exec_error_kind_of_string : string -> tool_exec_error_kind
-val tool_exec_error_kind_to_string : tool_exec_error_kind -> string
-
 type tool_exec_observer =
-  tool_name:string ->
-  success:bool ->
-  duration_ms:int ->
-  ?error_kind:tool_exec_error_kind ->
-  ?error_message:string ->
-  unit ->
-  unit
+  tool_name:string
+  -> success:bool
+  -> duration_ms:int
+  -> ?error_kind:tool_exec_error_kind
+  -> ?error_message:string
+  -> unit
+  -> unit
 
-val make_tools :
-  proc_mgr:_ Eio.Process.mgr ->
-  clock:_ Eio.Time.clock ->
-  ?workdir:string ->
-  ?on_exec:tool_exec_observer ->
-  unit ->
-  Agent_sdk.Tool.t list
 (** Build the full Fleet dev toolset: [file_read], [file_write], and
     [shell_exec].  [shell_exec] uses the strict {!validate_command}
     gate and the dev allowlist.  All tools resolve paths relative to
     [workdir] when supplied; absolute paths still pass the
     in-allowed-directories check. *)
+val make_tools
+  :  proc_mgr:_ Eio.Process.mgr
+  -> clock:_ Eio.Time.clock
+  -> ?workdir:string
+  -> ?on_exec:tool_exec_observer
+  -> unit
+  -> Agent_sdk.Tool.t list
 
-val make_readonly_tools :
-  proc_mgr:_ Eio.Process.mgr ->
-  clock:_ Eio.Time.clock ->
-  ?workdir:string ->
-  ?on_exec:tool_exec_observer ->
-  unit ->
-  Agent_sdk.Tool.t list
 (** Build the read-only subset: [file_read] + a [shell_exec] gated to
     a smaller read-only command allowlist (rg, grep, ls, cat, ...).
     [file_write] is intentionally absent. *)
-
-(** {1 Shadow AST gate observability} *)
-
-val shadow_parse_outcome : string -> string
-(** Parse [cmd] with {!Masc_exec_bash_parser.Bash.parse_string} and
-    return a stable, telemetry-suitable tag:
-
-    - ["parsed_simple"] — grammar accepts the command
-    - ["parse_error"] — Menhir/Lex error
-    - ["parse_aborted:<reason>"] — timeout/depth/token-limit
-    - ["too_complex:<reason>"] — recognised-but-unsupported construct
-
-    Never raises; the parser catches every internal exception. *)
-
-val cross_check_command : legacy:'a -> string -> 'a * string
-(** Pair the supplied [legacy] verdict with the {!shadow_parse_outcome}
-    tag for [cmd].  Polymorphic in [legacy] — callers pass either the
-    typed {!legacy_verdict} or the boolean form used by older test
-    sites.  Pure (no side effects); dashboards consume the tuple to
-    spot legacy/shadow drift without two parse passes. *)
-
-val diff_command :
-  string -> gate_diff * legacy_verdict * shadow_verdict
-(** Run both the legacy substring gate and the shadow AST gate on
-    [cmd], returning their reconciliation outcome alongside both
-    verdicts.  Wraps {!classify_legacy} / {!classify_shadow} (private)
-    and {!diff_of_verdicts} (Gate_diff_types). *)
-
-(** {1 Gh CLI cascade} *)
-
-include module type of Gh_command_validation
+val make_readonly_tools
+  :  proc_mgr:_ Eio.Process.mgr
+  -> clock:_ Eio.Time.clock
+  -> ?workdir:string
+  -> ?on_exec:tool_exec_observer
+  -> unit
+  -> Agent_sdk.Tool.t list

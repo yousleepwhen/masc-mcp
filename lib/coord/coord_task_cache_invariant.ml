@@ -18,7 +18,7 @@ type cache_signal_check =
   | Terminal_tasks of stale_terminal_task list
 
 let task_ref_re = lazy (Re.Pcre.re "\\btask-[0-9]+\\b" |> Re.compile)
-let invalidation_memory_ttl_s = 3600.0
+let invalidation_memory_ttl_s = Masc_time_constants.hour
 let invalidation_memory : (string, float) Hashtbl.t = Hashtbl.create 64
 let invalidation_memory_lock = Mutex.create ()
 
@@ -74,7 +74,7 @@ let check_cache_signal ~config ~content =
   if task_ids = [] || not (active_cache_language_present content)
   then No_cache_signal
   else
-    match Coord_state.read_backlog_r config with
+    match Coord_backlog.read_backlog_r config with
     | Error msg ->
       Log.Misc.warn "task cache invariant: backlog read failed before broadcast: %s" msg;
       Backlog_unavailable { task_ids; error = msg }
@@ -176,13 +176,11 @@ let stale_active_task_signal_present ~config ~from_agent ~module_name ~content =
   then false
   else match check_cache_signal ~config ~content with
   | No_cache_signal | No_terminal_task -> false
-  | stale_tasks ->
-    (match stale_tasks with
-     | Terminal_tasks stale_tasks ->
-       record_cache_desync_cleared ~config ~module_name stale_tasks
-     | Backlog_unavailable { task_ids; _ } ->
-       record_backlog_unavailable ~config ~module_name task_ids
-     | No_cache_signal | No_terminal_task -> ());
+  | Terminal_tasks stale_tasks ->
+    record_cache_desync_cleared ~config ~module_name stale_tasks;
+    true
+  | Backlog_unavailable { task_ids; _ } ->
+    record_backlog_unavailable ~config ~module_name task_ids;
     true
 ;;
 

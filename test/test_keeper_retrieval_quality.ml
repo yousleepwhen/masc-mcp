@@ -30,8 +30,8 @@ let make_meta () =
 let build_keeper_index () =
   let meta = make_meta () in
   (* Inject masc_* schemas so the universe includes governance, agent, etc. *)
-  Keeper_exec_tools.inject_masc_schemas Config.raw_all_tool_schemas;
-  let tool_schemas = Keeper_exec_tools.keeper_universe_model_tools meta in
+  Agent_tool_dispatch_runtime.inject_masc_schemas Config.raw_all_tool_schemas;
+  let tool_schemas = Agent_tool_dispatch_runtime.keeper_universe_model_tools meta in
   let tool_index_config =
     { Agent_sdk.Tool_index.default_config with top_k = 20 } in
   let tool_entries =
@@ -68,7 +68,7 @@ let assert_retrieves ~label index query expected_tool =
 let test_file_read_en () =
   let idx = build_keeper_index () in
   ignore (assert_retrieves ~label:"file_read_en" idx
-    "read the contents of lib/types.ml" "keeper_fs_read")
+    "read the contents of lib/types.ml" "tool_read_file")
 
 (* Korean queries use exact keyword overlap with BM25 aliases.
    Natural Korean queries like "파일 내용을 확인해봐" fail because
@@ -80,27 +80,27 @@ let test_file_read_en () =
 let test_file_read_kr () =
   let idx = build_keeper_index () in
   ignore (assert_retrieves ~label:"file_read_kr" idx
-    "파일 읽기" "keeper_fs_read")
+    "파일 읽기" "tool_read_file")
 
 let test_file_write_en () =
   let idx = build_keeper_index () in
   ignore (assert_retrieves ~label:"file_write_en" idx
-    "write a new config file with updated settings" "keeper_fs_edit")
+    "write a new config file with updated settings" "tool_edit_file")
 
 let test_file_write_kr () =
   let idx = build_keeper_index () in
   ignore (assert_retrieves ~label:"file_write_kr" idx
-    "파일 쓰기 편집" "keeper_fs_edit")
+    "파일 쓰기 편집" "tool_edit_file")
 
 let test_file_search_en () =
   let idx = build_keeper_index () in
   ignore (assert_retrieves ~label:"file_search_en" idx
-    "search for all occurrences of keeper_fs_edit in the codebase" "keeper_shell")
+    "search for all occurrences of tool_edit_file in the codebase" "tool_search_files")
 
 let test_file_search_kr () =
   let idx = build_keeper_index () in
   ignore (assert_retrieves ~label:"file_search_kr" idx
-    "명령어 검색 탐색" "keeper_shell")
+    "명령어 검색 탐색" "tool_search_files")
 
 (* ================================================================ *)
 (* Scenarios: knowledge lookup                                      *)
@@ -147,12 +147,12 @@ let test_board_read_kr () =
 let test_build_en () =
   let idx = build_keeper_index () in
   ignore (assert_retrieves ~label:"build_en" idx
-    "run dune build to check if the code compiles" "keeper_bash")
+    "run dune build to check if the code compiles" "tool_execute")
 
 let test_build_kr () =
   let idx = build_keeper_index () in
   ignore (assert_retrieves ~label:"build_kr" idx
-    "명령어 실행 빌드 테스트" "keeper_bash")
+    "명령어 실행 빌드 테스트" "tool_execute")
 
 (* ================================================================ *)
 (* Scenarios: tasks                                                 *)
@@ -186,36 +186,29 @@ let test_voice_speak_kr () =
 (* Scenarios: github                                                *)
 (* ================================================================ *)
 
-let test_github_pr_en () =
+let test_forge_pr_en () =
   let idx = build_keeper_index () in
-  ignore (assert_retrieves ~label:"github_pr_en" idx
-    "check the status of open pull requests" "keeper_shell")
+  ignore (assert_retrieves ~label:"forge_pr_en" idx
+    "check the status of open pull requests" "tool_execute")
 
 let test_github_issue_kr () =
   let idx = build_keeper_index () in
   ignore (assert_retrieves ~label:"github_issue_kr" idx
-    "깃허브 이슈 풀리퀘스트" "keeper_shell")
+    "깃허브 이슈 풀리퀘스트" "tool_search_files")
 
 (* ================================================================ *)
 (* Scenarios: masc_* tools (Korean BM25 retrieval — #4520)          *)
 (* ================================================================ *)
 
-let test_masc_code_search_kr () =
+let test_tool_search_files_kr () =
   let idx = build_keeper_index () in
-  ignore (assert_retrieves ~label:"masc_code_kr" idx
-    "코드 검색 소스코드" "masc_code_search")
+  ignore (assert_retrieves ~label:"tool_search_files_kr" idx
+    "코드 검색 소스코드" "tool_search_files")
 
-let test_masc_code_search_en () =
+let test_tool_search_files_en () =
   let idx = build_keeper_index () in
-  ignore (assert_retrieves ~label:"masc_code_en" idx
-    "search the codebase for function definitions" "masc_code_search")
-
-(* masc_governance_status schema is unavailable after governance tool retirement.
-   Test replaced with autoresearch retrieval. *)
-let test_masc_autoresearch_kr () =
-  let idx = build_keeper_index () in
-  ignore (assert_retrieves ~label:"autoresearch_kr" idx
-    "자동연구 리서치 사이클" "masc_autoresearch_cycle")
+  ignore (assert_retrieves ~label:"tool_search_files_en" idx
+    "search the codebase for function definitions" "tool_search_files")
 
 (* masc_plan_get is not retrievable via BM25 with Korean queries:
    "계획", "플랜" are common terms that produce no BM25 match against
@@ -224,10 +217,10 @@ let test_masc_autoresearch_kr () =
    These tools ARE always-included via category anchors, so they remain
    accessible regardless of BM25 ranking. *)
 
-let test_masc_worktree_kr () =
+let test_tool_execute_worktree_kr () =
   let idx = build_keeper_index () in
   ignore (assert_retrieves ~label:"worktree_kr" idx
-    "워크트리 생성 브랜치" "masc_worktree_create")
+    "워크트리 생성 브랜치" "tool_execute")
 
 (* ================================================================ *)
 (* Discrimination: fs_edit vs bash for file writes                  *)
@@ -238,8 +231,8 @@ let test_prefer_fs_edit_over_bash () =
   let retrieved = Agent_sdk.Tool_index.retrieve idx
     "create a new file called notes.md with some content" in
   let names = List.map fst retrieved in
-  let fs_edit_rank = List.find_index (fun n -> String.equal n "keeper_fs_edit") names in
-  let bash_rank = List.find_index (fun n -> String.equal n "keeper_bash") names in
+  let fs_edit_rank = List.find_index (fun n -> String.equal n "tool_edit_file") names in
+  let bash_rank = List.find_index (fun n -> String.equal n "tool_execute") names in
   match fs_edit_rank, bash_rank with
   | Some fe, Some ba ->
     Alcotest.(check bool)
@@ -249,7 +242,7 @@ let test_prefer_fs_edit_over_bash () =
     (* fs_edit found, bash not — even better *)
     Alcotest.(check bool) "fs_edit present, bash absent" true true
   | None, _ ->
-    Alcotest.fail "keeper_fs_edit not in top-20 for file creation query"
+    Alcotest.fail "tool_edit_file not in top-20 for file creation query"
 
 (* ================================================================ *)
 (* Index stats                                                      *)
@@ -263,9 +256,9 @@ let test_index_size () =
 
 let test_search_alias_entries_target_keeper_universe () =
   let meta = make_meta () in
-  Keeper_exec_tools.inject_masc_schemas Config.raw_all_tool_schemas;
+  Agent_tool_dispatch_runtime.inject_masc_schemas Config.raw_all_tool_schemas;
   let tool_names =
-    Keeper_exec_tools.keeper_universe_model_tools meta
+    Agent_tool_dispatch_runtime.keeper_universe_model_tools meta
     |> List.map (fun (schema : Masc_domain.tool_schema) -> schema.name)
   in
   let missing =
@@ -286,12 +279,12 @@ let test_tool_search_self_en () =
   ignore (assert_retrieves ~label:"tool_search_self" idx
     "discover tools by describing what I need" "keeper_tool_search")
 
-(** Full-universe search should find worktree tools even for
-    a minimal-preset keeper. *)
+(** Full-universe search should find the Execute-backed worktree workflow even
+    for a minimal-preset keeper. *)
 let test_full_universe_worktree_en () =
   let idx = build_keeper_index () in
   ignore (assert_retrieves ~label:"full_worktree" idx
-    "create a git worktree for isolated development" "masc_worktree_create")
+    "create a git worktree for isolated development" "tool_execute")
 
 (* Auth tools removed during tool-registry-pruning. *)
 
@@ -301,7 +294,7 @@ let test_full_universe_worktree_en () =
 
 let () =
   let base_path = Masc_test_deps.find_project_root () in
-  ignore (Result.get_ok (Keeper_exec_tools.init_policy_config ~base_path));
+  ignore (Result.get_ok (Agent_tool_dispatch_runtime.init_policy_config ~base_path));
   Alcotest.run "keeper_retrieval_quality"
     [
       ( "file_ops",
@@ -342,15 +335,14 @@ let () =
         ] );
       ( "github",
         [
-          Alcotest.test_case "github PR (en)" `Quick test_github_pr_en;
+          Alcotest.test_case "forge PR status (en)" `Quick test_forge_pr_en;
           Alcotest.test_case "github issue (kr)" `Quick test_github_issue_kr;
         ] );
       ( "masc_tools",
         [
-          Alcotest.test_case "masc code search (kr)" `Quick test_masc_code_search_kr;
-          Alcotest.test_case "masc code search (en)" `Quick test_masc_code_search_en;
-          Alcotest.test_case "masc autoresearch (kr)" `Quick test_masc_autoresearch_kr;
-          Alcotest.test_case "masc worktree (kr)" `Quick test_masc_worktree_kr;
+          Alcotest.test_case "tool search files (kr)" `Quick test_tool_search_files_kr;
+          Alcotest.test_case "tool search files (en)" `Quick test_tool_search_files_en;
+          Alcotest.test_case "tool execute worktree (kr)" `Quick test_tool_execute_worktree_kr;
         ] );
       ( "discrimination",
         [

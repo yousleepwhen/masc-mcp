@@ -12,18 +12,19 @@ open Governance_pipeline_types
    patterns: security policy changes require code review. *)
 
 (** Per-tool capability classification.
-    A tool may belong to multiple classes (e.g. keeper_bash spans all 3). *)
+    A tool may belong to multiple classes (e.g. tool_execute spans all 3). *)
 let capability_classification : (string * capability_class list) list =
   [
     ("masc_web_search", [ External_input ]);
     ("masc_web_fetch", [ External_input ]);
-    ("keeper_bash", [ External_input; Sensitive_access; State_modification ]);
-    ("keeper_shell", [ External_input; Sensitive_access ]);
-    ("keeper_fs_read", [ Sensitive_access ]);
+    ("tool_execute", [ External_input; Sensitive_access; State_modification ]);
+    ("tool_search_files", [ External_input; Sensitive_access ]);
+    ("tool_read_file", [ Sensitive_access ]);
     ("keeper_memory_search", [ Sensitive_access ]);
     ("keeper_library_search", [ Sensitive_access ]);
     ("keeper_library_read", [ Sensitive_access ]);
-    ("keeper_fs_edit", [ State_modification ]);
+    ("tool_edit_file", [ State_modification ]);
+    ("tool_write_file", [ State_modification ]);
   ]
 
 let tool_capabilities name =
@@ -59,11 +60,11 @@ let assess_trifecta ~active_tool_names =
 let combinatorial_risk_escalation ~trifecta_active ~tool_name ~base_risk ~input =
   if trifecta_active then
     let caps = tool_capabilities tool_name in
-    let read_only_shell_gh =
-      String.equal tool_name "keeper_shell"
+    let read_only_search_tool =
+      String.equal tool_name "tool_search_files"
       && Keeper_tool_registry.is_read_only_with_input ~tool_name ~input
     in
-    if has_capability State_modification caps && not read_only_shell_gh then
+    if has_capability State_modification caps && not read_only_search_tool then
       max_risk_level base_risk High
     else
       base_risk
@@ -86,14 +87,17 @@ let combinatorial_risk_escalation ~trifecta_active ~tool_name ~base_risk ~input 
 let risk_overrides : (string * risk_level) list =
   [
     ("masc_a2a_query_skill", Low); (* "skill" contains "kill" substring *)
-    ("masc_goal_upsert", High);
-    ("masc_goal_review", High);
-    ("masc_goal_transition", High);
-    ("masc_goal_verify", High);
+    ("masc_goal_upsert", Medium);
+    ("masc_goal_verify", Medium);
     ("masc_keeper_msg", Low);
-    ("masc_claim_next", Medium); ("masc_claim_task", Medium);
-    ("masc_worktree_create", Medium); (* routine sandbox setup; removal stays Critical *)
-    ("keeper_pr_create", Medium); (* handler is draft-only; ready/merge gates stay separate *)
+    ("masc_claim_next", Medium);
+    ("keeper_task_create", Medium); (* routine keeper backlog expansion; force/delete stays gated *)
+    ("masc_keeper_reset", Medium); (* usage counter zeroing only; keeper_clear stays Critical *)
+    (* WORKAROUND: substring classifier false-positives (lib/governance_pipeline_risk.ml:101 high_patterns).
+       Removal target: RFC-0193 typed capability table (Issue #19032). Evidence: 11 approval_required/8.4h on 2026-05-27. *)
+    ("masc_plan_set_task", Low); (* "set" substring → High; payload is self-owned task plan metadata *)
+    ("keeper_memory_write", Low); (* "write" substring → High; scoped to own keeper memory *)
+    ("masc_worktree_create", Medium); (* "create" substring → High; meta tooling, no code mutation *)
   ]
 
 let critical_patterns =
@@ -108,13 +112,7 @@ let medium_patterns =
     "reject"; "cancel" ]
 
 let overwrite_sensitive_tools =
-  [
-    "masc_code_write";
-    "masc_code_edit";
-    "keeper_fs_edit";
-    "keeper_write";
-    "edit_text_file";
-  ]
+  [ "tool_edit_file"; "tool_write_file"; "edit_text_file" ]
 
 let empty_overwrite_payload_keys = [ "content"; "new_string" ]
 
@@ -148,6 +146,11 @@ let transition_action input =
            if trimmed = "" then None else Some (String.lowercase_ascii trimmed)
        | _ -> None)
   | _ -> None
+
+let goal_transition_risk input =
+  match transition_action input with
+  | Some ("request_complete" | "pause" | "resume" | "reopen") -> Medium
+  | Some _ | None -> High
 
 let rec collect_string_values ~keys json =
   match json with
@@ -209,13 +212,13 @@ let rec collect_string_list_values ~keys json =
 
     PR-J (2026-04-25): Before this split, [Eval_gate.detect_destructive]
     folded both pattern lists into a single [(string * string) option]
-    return.  A normal [keeper_bash echo "x: $(date)" && pwd] payload has
+    return.  A normal [tool_execute echo "x: $(date)" && pwd] payload has
     no destructive substring but trips the [\$[({]] evasion regex,
     causing [classify_with_payload] to escalate every keeper subprocess
     that uses command substitution to Critical — which is the bulk of
-    real-world keeper bash invocations.  Splitting the severity here lets
+    real-world Execute invocations.  Splitting the severity here lets
     governance treat the two cases differently (Critical vs Medium). *)
-let _destructive_pattern_strings =
+let destructive_pattern_strings =
   lazy (List.map fst Eval_gate.destructive_patterns)
 
 (** Outcome of inspecting a tool input payload for shell-style risk.
@@ -232,7 +235,7 @@ type payload_severity =
     canonical destructive substring — these still warrant a confirmation
     gate but should not collapse to Critical. *)
 let payload_severity input : payload_severity =
-  let dest_pats = Lazy.force _destructive_pattern_strings in
+  let dest_pats = Lazy.force destructive_pattern_strings in
   let strings = collect_all_string_values input in
   let rec loop acc = function
     | [] -> acc
@@ -246,18 +249,22 @@ let payload_severity input : payload_severity =
   loop Payload_clean strings
 
 let has_destructive_payload input =
+  (* Enumerate every [payload_severity] variant. A future severity
+     (e.g. [Payload_admin_only], [Payload_data_exfil]) added between
+     Evasion_only and Destructive should be classified deliberately —
+     the [_ -> false] catch-all would have silently inherited
+     "not destructive" for a new high-risk class. *)
   match payload_severity input with
   | Payload_destructive -> true
-  | _ -> false
+  | Payload_clean | Payload_evasion_only -> false
 
 let has_empty_overwrite_payload input =
   collect_string_values ~keys:empty_overwrite_payload_keys input
   |> List.exists (fun text -> String.trim text = "")
 
-let _tool_names_of_input ~tool_name input =
-  let (_ : string) = tool_name in
-  collect_string_list_values ~keys:[ "tool_names" ] input
-  |> List.sort_uniq String.compare
+(* RFC-0085 PR-13 — Removed unused [_tool_names_of_input]: defined
+   in this module with underscore prefix (OCaml convention for unused)
+   and confirmed 0 callers across lib/ + bin/. *)
 
 let classify_with_contract_risk ~tool_name:_ ~input:_ =
   (* Contract_risk removed *)
@@ -289,7 +296,10 @@ let baseline_risk ~tool_name ~input =
   match classify_with_metadata ~tool_name with
   | Some level -> level
   | None -> (
-      match List.assoc_opt tool_name risk_overrides with
+      if String.equal tool_name "masc_goal_transition"
+      then goal_transition_risk input
+      else
+        match List.assoc_opt tool_name risk_overrides with
       | Some level -> level
       | None ->
           if
@@ -304,10 +314,8 @@ let baseline_risk ~tool_name ~input =
 
 let keeper_mutation_requires_high_floor ~tool_name ~input =
   match tool_name with
-  | "keeper_fs_edit" | "keeper_write" -> true
-  | "keeper_shell" ->
-      Keeper_tool_registry.is_shell_gh_op input
-      && not (Keeper_tool_registry.is_read_only_with_input ~tool_name ~input)
+  | "tool_edit_file" | "tool_write_file" -> true
+  | "tool_search_files" -> false
   | _ -> false
 
 let assess_risk ~tool_name ~input =

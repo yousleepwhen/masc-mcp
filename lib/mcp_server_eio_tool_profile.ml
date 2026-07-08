@@ -21,7 +21,6 @@ Do not assume access to any other MASC tool from this endpoint."
 let managed_agent_instructions =
   "MASC managed-agent profile exposes the internal agent control surface. \
 Prefer canonical task-control tools such as masc_status, masc_tasks, masc_claim_next, masc_transition, and masc_plan_set_task. \
-Managed aliases that remain listed on this endpoint are compatibility helpers, not the recommended control plane. \
 Do not assume that the public /mcp surface and the managed-agent surface have the same inventory."
 
 let managed_agent_passthrough_tool_names =
@@ -30,14 +29,24 @@ let managed_agent_passthrough_tool_names =
          not
            (List.mem name
              [
-                "masc_status";
-                "masc_tasks";
-                "masc_transition";
                 "masc_a2a_delegate";
               ]))
 
-module StringSet = Set.Make (String)
-module StringMap = Map.Make (String)
+(* O(1) membership view of [managed_agent_passthrough_tool_names].
+   Used by [tool_schemas_for_profile Managed_agent] to filter
+   ~150 visible schemas per request — replaces a per-schema
+   [List.mem] scan over ~20 passthrough names. *)
+let managed_agent_passthrough_tool_set : (string, unit) Hashtbl.t =
+  let tbl =
+    Hashtbl.create (List.length managed_agent_passthrough_tool_names)
+  in
+  List.iter
+    (fun name -> Hashtbl.replace tbl name ())
+    managed_agent_passthrough_tool_names;
+  tbl
+
+module StringSet = Set_util.StringSet
+module StringMap = Set_util.StringMap
 
 let dedupe_tool_schemas_by_name (schemas : Masc_domain.tool_schema list) =
   let _, result =
@@ -55,13 +64,13 @@ PROJECT: Agents sharing the same base path (.masc/ folder) coordinate together. 
 CLUSTER: Set MASC_CLUSTER_NAME for multi-machine coordination (otherwise tool surfaces use the configured cluster/default label). \
 READ: use resources/list + resources/read (status/tasks/agents/events/schema) for snapshots. \
 WRITE: prefer masc_transition (claim/start/done/cancel/release) with expected_version for CAS. \
-WORKFLOW: masc_status → masc_transition(claim) → masc_worktree_create (isolation) → work → masc_transition(done). \
+WORKFLOW: masc_status → masc_transition(claim) → work in a repo-local worktree → masc_transition(done). \
 Use masc_heartbeat periodically; use @agent mentions in masc_broadcast. \
 Prefer worktrees for parallel work. \
 Use masc_tool_help to inspect tool contracts and prefer the smallest useful surface."
 
 let tool_schemas_for_profile ?(include_hidden = false)
-    ?(include_deprecated = false) ?(include_keeper_internal = false) _state
+    ?(include_keeper_internal = false) _state
     profile =
   let schemas =
     match profile with
@@ -70,17 +79,16 @@ let tool_schemas_for_profile ?(include_hidden = false)
         let keeper_internal_schemas =
           if not include_keeper_internal then []
           else
-            Tool_shard.keeper_model_tools
+            Tool_shard.all_keeper_tool_schemas
             |> List.filter (fun (schema : Masc_domain.tool_schema) ->
                    Tool_catalog.is_on_surface Tool_catalog.Keeper_internal
                      schema.name
-                   && Tool_catalog.is_visible ~include_hidden:true
-                        ~include_deprecated schema.name)
+                   && Tool_catalog.is_visible ~include_hidden:true schema.name)
         in
         let all =
           Config.visible_tool_schemas
             ~include_hidden:(show_all || include_keeper_internal)
-            ~include_deprecated ()
+            ()
           @ keeper_internal_schemas
           |> dedupe_tool_schemas_by_name
         in
@@ -98,9 +106,9 @@ let tool_schemas_for_profile ?(include_hidden = false)
         full_profile_tools
     | Managed_agent ->
         let passthrough =
-          Config.visible_tool_schemas ~include_hidden:true ~include_deprecated:false ()
+          Config.visible_tool_schemas ~include_hidden:true ()
           |> List.filter (fun (schema : Masc_domain.tool_schema) ->
-                 List.mem schema.name managed_agent_passthrough_tool_names
+                 Hashtbl.mem managed_agent_passthrough_tool_set schema.name
                  && Tool_catalog.is_visible ~include_hidden:true schema.name)
         in
         dedupe_tool_schemas_by_name
@@ -116,11 +124,16 @@ let tool_allowed_in_profile ?(internal_keeper_runtime = false) state profile
       if Tool_catalog.is_on_surface Tool_catalog.Keeper_internal tool_name then
         internal_keeper_runtime
       else
-        let allowed_schema_names =
-          Config.visible_tool_schemas ~include_hidden:true ~include_deprecated:true ()
-          |> List.map (fun (schema : Masc_domain.tool_schema) -> schema.name)
-        in
-        List.mem tool_name allowed_schema_names
+        (* Equivalent to [List.mem tool_name (names from
+           visible_tool_schemas ~include_hidden:true)]: that helper
+           composes raw schemas → dedupe → canonicalize → filter
+           is_visible.  Dedupe and
+           canonicalize do not change the name set, so the name set is
+           exactly { n | n ∈ raw_all_tool_schemas.names ∧ is_visible n }.
+           Two O(1) checks replace ~150 schema canonicalizations + a
+           List.mem per dispatch. *)
+        Config.is_raw_tool_name tool_name
+        && Tool_catalog.is_visible ~include_hidden:true tool_name
   | Managed_agent ->
       Option.is_some (Sdk_tool_contract.sdk_binding_by_name tool_name)
       || (tool_schemas_for_profile state Managed_agent
@@ -129,23 +142,15 @@ let tool_allowed_in_profile ?(internal_keeper_runtime = false) state profile
   | Operator_remote -> List.mem tool_name Tool_operator.remote_tool_names
 
 let tool_annotations_for_profile _profile tool_name =
-  let meta = Tool_catalog.metadata tool_name in
   let read_only =
-    match meta.readonly with
-    | Some v -> v
-    | None -> Tool_dispatch.is_read_only tool_name
+    Agent_tool_descriptor_resolution.capability_has Tool_capability.Read_only tool_name
   in
   let destructive =
-    match meta.destructive with
-    | Some v -> v
-    | None -> Tool_dispatch.is_destructive tool_name
+    Agent_tool_descriptor_resolution.capability_has Tool_capability.Destructive tool_name
   in
   let idempotent =
-    match meta.idempotent with
-    | Some v -> v
-    | None -> Tool_dispatch.is_idempotent tool_name || read_only
+    Agent_tool_descriptor_resolution.capability_has Tool_capability.Idempotent tool_name
   in
-  let is_deprecated = meta.lifecycle = Tool_catalog.Deprecated in
   (* MCP 2025-03-26: [openWorldHint] signals whether the tool can
      interact with systems outside the server's closed world.
      Default per spec is [true]. We emit an explicit value when we
@@ -167,15 +172,46 @@ let tool_annotations_for_profile _profile tool_name =
     @ (match open_world_hint with
        | Some v -> [ ("openWorldHint", `Bool v) ]
        | None -> [])
-    @ (if is_deprecated then [ ("deprecated", `Bool true) ] else [])
-    @ (match meta.replacement with
-       | Some r when is_deprecated -> [ ("successor", `String r) ]
-       | _ -> [])
-    @ (match meta.reason with
-       | Some r when is_deprecated -> [ ("deprecationReason", `String r) ]
-       | _ -> [])
   in
   if fields = [] then None else Some (`Assoc fields)
+
+let metadata_key_present key fields =
+  List.exists (fun (existing, _) -> String.equal existing key) fields
+;;
+
+let add_metadata_field_if_absent key value fields =
+  if metadata_key_present key fields then fields else fields @ [ key, value ]
+;;
+
+let descriptor_metadata_fields tool_name fields =
+  match Agent_tool_descriptor_resolution.descriptor_for_tool_name tool_name with
+  | None -> fields
+  | Some descriptor ->
+    let fields =
+      match descriptor.policy.effect_domain with
+      | Some effect_domain ->
+        add_metadata_field_if_absent
+          "effectDomain"
+          (`String (Tool_catalog.effect_domain_to_string effect_domain))
+          fields
+      | None -> fields
+    in
+    fields
+    |> add_metadata_field_if_absent "descriptorId" (`String descriptor.id)
+    |> add_metadata_field_if_absent "descriptorPublicName" (`String descriptor.public_name)
+    |> add_metadata_field_if_absent
+         "descriptorCanonicalName"
+         (`String descriptor.internal_name)
+    |> add_metadata_field_if_absent
+         "descriptorExecutor"
+         (`String (Agent_tool_descriptor.executor_to_string descriptor.executor))
+    |> add_metadata_field_if_absent
+         "descriptorBackend"
+         (`String (Agent_tool_descriptor.backend_to_string descriptor.backend))
+    |> add_metadata_field_if_absent
+         "descriptorSandbox"
+         (`String (Agent_tool_descriptor.sandbox_to_string descriptor.sandbox))
+;;
 
 let label_words_from_identifier ident =
   ident
@@ -198,7 +234,6 @@ let custom_tool_titles : (string * string) list = [
   ("masc_reset", "Reset Project");
   ("masc_who", "List Online Agents");
   ("masc_check", "Check Preconditions");
-  ("masc_workflow_guide", "Workflow Guide");
   (* Task management *)
   ("masc_tasks", "List Tasks");
   ("masc_add_task", "Add Task");
@@ -224,7 +259,6 @@ let custom_tool_titles : (string * string) list = [
   (* Agents *)
   ("masc_agents", "List Agent Details");
   ("masc_agent_update", "Update Agent Profile");
-  ("masc_register_capabilities", "Register Agent Capabilities");
   (* Heartbeat *)
   ("masc_heartbeat", "Send Heartbeat");
   (* Operations *)
@@ -232,12 +266,6 @@ let custom_tool_titles : (string * string) list = [
   ("masc_operator_digest", "Operator Digest");
   ("masc_operator_action", "Operator Action");
   ("masc_operator_confirm", "Operator Confirm");
-  (* Command plane *)
-  ("masc_operation_start", "Start Operation");
-  ("masc_operation_status", "Operation Status");
-  (* Worktree *)
-  ("masc_worktree_create", "Create Worktree");
-  ("masc_worktree_remove", "Remove Worktree");
   (* Keeper *)
   ("masc_keeper_up", "Start Keeper");
   ("masc_keeper_msg", "Send Keeper Message");
@@ -250,18 +278,11 @@ let custom_tool_titles : (string * string) list = [
   ("masc_keeper_compact", "Compact Keeper Context");
   ("masc_keeper_clear", "Clear Keeper Context");
   ("masc_keeper_create_from_persona", "Create Keeper from Persona");
-  (* SDK aliases *)
-  ("masc_list_tasks", "List Tasks");
-  ("masc_room_status", "Project Status");
-  ("masc_claim_task", "Claim Task");
-  ("masc_set_current_task", "Bind Current Task");
-  ("masc_complete_task", "Complete Task");
-  ("masc_release_task", "Release Task");
-  ("masc_cancel_task", "Cancel Task");
+  (* SDK projections *)
   ("masc_claim_next", "Claim Next Task");
   (* Misc *)
   ("masc_cleanup_zombies", "Clean Up Zombie Agents");
-  ("masc_dispatch_plan", "Dispatch Plan");
+
 ]
 
 let custom_title_table : string StringMap.t =
@@ -283,7 +304,7 @@ let tool_title_of_name name =
 
 let tool_icons_for_name name =
   let icon =
-    if Tool_dispatch.is_read_only name then
+    if Agent_tool_descriptor_resolution.capability_has Tool_capability.Read_only name then
       Mcp_server.themed_icon ~label:"RD" ~bg:"#0F766E" ~fg:"#F0FDFA"
     else
       Mcp_server.themed_icon ~label:"WR" ~bg:"#9A3412" ~fg:"#FFF7ED"
@@ -297,12 +318,16 @@ let maybe_assoc_field name = function
 let tool_output_schema_field _ =
   (* Public MCP tools still return text-first envelopes and only some handlers
      opportunistically emit structuredContent. Advertising outputSchema before
-     structuredContent is guaranteed breaks strict clients such as Kimi/FastMCP,
+     structuredContent is guaranteed breaks strict clients such as Provider_c/FastMCP,
      which reject the tool result as malformed. Keep outputSchema disabled until
      the call path can produce typed payloads from the handler itself. *)
   None
 
 let tool_json_for_profile ?usage_summary profile (schema : Masc_domain.tool_schema) =
+  let metadata_fields =
+    Tool_catalog.metadata_to_fields schema.name
+    |> descriptor_metadata_fields schema.name
+  in
   let base =
     [
       ("name", `String schema.name);
@@ -313,7 +338,7 @@ let tool_json_for_profile ?usage_summary profile (schema : Masc_domain.tool_sche
           (List.map Mcp_server.icon_to_json (tool_icons_for_name schema.name)) );
       ("inputSchema", schema.input_schema);
     ]
-    @ Tool_catalog.metadata_to_fields schema.name
+    @ metadata_fields
     @ maybe_assoc_field "outputSchema" (tool_output_schema_field schema.name)
     @ maybe_assoc_field "annotations" (tool_annotations_for_profile profile schema.name)
     @
@@ -330,7 +355,6 @@ type cursor_params = { cursor : string option }
 type tools_list_params = {
   names : string list option;
   include_hidden : bool;
-  include_deprecated : bool;
   include_usage : bool;
   cursor : string option;
 }
@@ -341,7 +365,10 @@ let strict_assoc_params params =
   match params with
   | None -> Ok []
   | Some (`Assoc fields) -> Ok fields
-  | Some _ -> Error "Invalid params: expected object"
+  | Some other ->
+      Error
+        (Printf.sprintf "Invalid params: expected object (received %s)"
+           (Json_util.kind_name other))
 
 let cursor_param payload =
   let open Yojson.Safe.Util in
@@ -353,21 +380,38 @@ let cursor_param payload =
         Error "Invalid params: cursor must not be empty"
       else
         Ok (Some trimmed)
-  | _ -> Error "Invalid params: cursor must be a string"
+  | other ->
+      Error
+        (Printf.sprintf "Invalid params: cursor must be a string (received %s)"
+           (Json_util.kind_name other))
 
 let bool_param payload key =
   let open Yojson.Safe.Util in
   match payload |> member key with
   | `Null -> Ok false
   | `Bool value -> Ok value
-  | _ -> Error (Printf.sprintf "Invalid params: %s must be a boolean" key)
+  | other ->
+      Error
+        (Printf.sprintf "Invalid params: %s must be a boolean (received %s)"
+           key (Json_util.kind_name other))
 
 let decode_cursor_offset = function
   | None -> Ok 0
   | Some raw -> (
       match int_of_string_opt raw with
       | Some offset when offset >= 0 -> Ok offset
-      | _ -> Error "Invalid params: cursor must be a non-negative integer string")
+      | Some offset ->
+          Error
+            (Printf.sprintf
+               "Invalid params: cursor offset must be non-negative \
+                (parsed %d from %S)"
+               offset raw)
+      | None ->
+          Error
+            (Printf.sprintf
+               "Invalid params: cursor must be a non-negative integer \
+                string (could not parse %S as an integer)"
+               raw))
 
 let rec drop_list n = function
   | xs when n <= 0 -> xs
@@ -403,20 +447,25 @@ let cursor_only_params params =
   match params with
   | None -> Ok None
   | Some (`Assoc _ as payload) -> cursor_param payload
-  | Some _ -> Error "Invalid params: expected object"
+  | Some other ->
+      Error
+        (Printf.sprintf "Invalid params: expected object (received %s)"
+           (Json_util.kind_name other))
 
 let validate_optional_meta payload =
   match Yojson.Safe.Util.member "_meta" payload with
   | `Null
   | `Assoc _ -> Ok ()
-  | _ -> Error "Invalid params: _meta must be an object"
+  | other ->
+      Error
+        (Printf.sprintf "Invalid params: _meta must be an object (received %s)"
+           (Json_util.kind_name other))
 
 let requested_tool_list_params params =
   let open Yojson.Safe.Util in
   let* fields = strict_assoc_params params in
   let allowed =
-    [ "_meta"; "names"; "include_hidden"; "include_deprecated"; "include_usage";
-      "cursor" ]
+    [ "_meta"; "names"; "include_hidden"; "include_usage"; "cursor" ]
   in
   let unknown =
     fields
@@ -440,21 +489,27 @@ let requested_tool_list_params params =
                  match (acc, item) with
                  | Error _ as err, _ -> err
                  | Ok names, `String value -> Ok (value :: names)
-                 | Ok _, _ ->
-                     Error "Invalid params: names must be an array of strings")
+                 | Ok _, bad ->
+                     Error
+                       (Printf.sprintf
+                          "Invalid params: names must be an array of strings \
+                           (received %s element)"
+                          (Json_util.kind_name bad)))
                (Ok [])
           |> Result.map (fun names -> Some (List.rev names))
-      | _ -> Error "Invalid params: names must be an array of strings"
+      | other ->
+          Error
+            (Printf.sprintf
+               "Invalid params: names must be an array of strings (received %s)"
+               (Json_util.kind_name other))
     in
     let* cursor = cursor_param payload in
     let* include_hidden = bool_param payload "include_hidden" in
-    let* include_deprecated = bool_param payload "include_deprecated" in
     let* include_usage = bool_param payload "include_usage" in
     Ok
       {
         names;
         include_hidden;
-        include_deprecated;
         include_usage;
         cursor;
       }
@@ -478,7 +533,11 @@ let parse_cursor_only_params params =
     match payload |> member "cursor" with
     | `Null -> Ok { cursor = None }
     | `String cursor -> Ok { cursor = Some cursor }
-    | _ -> Error "Invalid params: cursor must be a string"
+    | other ->
+        Error
+          (Printf.sprintf
+             "Invalid params: cursor must be a string (received %s)"
+             (Json_util.kind_name other))
 
 let list_page_size () = Env_config.Tools.list_page_size ()
 
@@ -506,7 +565,25 @@ let page_items_with_cursor ~kind items cursor =
     | Some encoded -> (
         match decode_cursor ~kind encoded with
         | Some value when value >= 0 -> Ok value
-        | _ -> Error "Invalid params: cursor is invalid")
+        | Some value ->
+            Error
+              (Printf.sprintf
+                 "Invalid params: cursor decoded to negative offset %d \
+                  (kind=%S, encoded=%S)"
+                 value kind encoded)
+        | None ->
+            (* [decode_cursor] returns [None] for three different
+               failure modes (base64 decode failed / kind-prefix
+               mismatch / int_of_string_opt failed).  Promoting it to
+               [(int, string) result] is a separate change because it
+               is the second [decode_cursor] in the tree (the other
+               lives in [graphql_api]) and the [int option] contract
+               is exercised by both. *)
+            Error
+              (Printf.sprintf
+                 "Invalid params: cursor %S could not be decoded \
+                  (expected base64-encoded \"%s:<non-negative int>\")"
+                 encoded kind))
   in
   let rec drop n xs =
     match (n, xs) with

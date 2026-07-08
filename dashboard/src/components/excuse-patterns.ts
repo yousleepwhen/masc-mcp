@@ -1,10 +1,11 @@
 import { html } from 'htm/preact'
 import { signal } from '@preact/signals'
-import { Card } from './common/card'
+import { SectionCard } from './common/card'
 import { LoadingState } from './common/feedback-state'
 import { fetchExcusePatterns, updateExcusePatterns } from '../api/dashboard'
 import type { ExcusePattern } from '../api/dashboard'
 import { createAsyncResource } from '../lib/async-state'
+import { errorToString } from '../lib/format-string'
 
 const patternsResource = createAsyncResource<ExcusePattern[]>()
 const saving = signal(false)
@@ -37,8 +38,9 @@ function handleSave(event: Event) {
     }).finally(() => {
       saving.value = false
     })
-  } catch (err: any) {
-    saveMessage.value = `잘못된 형식: ${err.message}`
+  } catch (err: unknown) {
+    const msg = errorToString(err)
+    saveMessage.value = `잘못된 형식: ${msg}`
   }
 }
 
@@ -51,17 +53,17 @@ export function ExcusePatterns() {
 
   if (s.status === 'loading') {
     return html`
-      <${Card} title="Anti-Rationalization 핑계 패턴">
+      <${SectionCard} label="Anti-Rationalization 핑계 패턴">
         <${LoadingState}>핑계 패턴 불러오는 중...<//>
-      </Card>
+      <//>
     `
   }
 
   if (s.status === 'error') {
     return html`
-      <${Card} title="Anti-Rationalization 핑계 패턴">
+      <${SectionCard} label="Anti-Rationalization 핑계 패턴">
         <div class="p-4 text-[var(--color-status-err)]" role="alert">패턴 로드 실패: ${s.message}</div>
-      </Card>
+      <//>
     `
   }
 
@@ -69,7 +71,7 @@ export function ExcusePatterns() {
   const jsonStr = data ? JSON.stringify(data, null, 2) : '[]'
 
   return html`
-    <${Card} title="Anti-Rationalization 핑계 패턴">
+    <${SectionCard} label="Anti-Rationalization 핑계 패턴">
       <div class="p-4">
         <p class="text-sm text-[var(--color-fg-muted)] mb-4">
           이 패턴들은 에이전트 completion note 와 매칭됩니다. 매칭되면 해당 task 는 거부됩니다.
@@ -100,6 +102,6 @@ export function ExcusePatterns() {
           </div>
         </form>
       </div>
-    </Card>
+    <//>
   `
 }

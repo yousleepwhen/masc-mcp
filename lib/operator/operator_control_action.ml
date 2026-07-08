@@ -15,7 +15,7 @@ let normalize_judgment_surface value =
 
 let normalize_judgment_target_type value =
   let normalized = String.trim value |> String.lowercase_ascii in
-  if Operator_digest_types.is_root_alias normalized then
+  if Operator_digest_types.is_root_target_type normalized then
     Ok ("root", Operator_judgment.Coord)
   else Error "target_type must be root"
 
@@ -35,13 +35,13 @@ let judgment_write_json (ctx : 'a context) args =
   if summary = "" then Error "summary is required"
   else
     let now_unix = Unix.gettimeofday () in
-    let generated_at = iso_of_unix now_unix in
+    let generated_at = Dashboard_utils.iso_of_unix now_unix in
     let fresh_ttl_sec =
       let default = default_fresh_ttl_sec surface in
       max 1 (get_int args "fresh_ttl_sec" default)
     in
     let fresh_until_unix = now_unix +. float_of_int fresh_ttl_sec in
-    let fresh_until = iso_of_unix fresh_until_unix in
+    let fresh_until = Dashboard_utils.iso_of_unix fresh_until_unix in
     let confidence = get_float args "confidence" 0.5 in
     let keeper_name =
       match get_string_opt args "keeper_name" with
@@ -74,11 +74,8 @@ let judgment_write_json (ctx : 'a context) args =
         ~keeper_name ()
     in
     Ok
-      (`Assoc
-        [
-          ("status", `String "ok");
-          ("judgment", Operator_judgment.to_yojson judgment);
-        ])
+      (Tool_args.ok_assoc
+         [ ("judgment", Operator_judgment.to_yojson judgment) ])
 
 let judgment_latest_json (_ctx : 'a context) args =
   let* surface = normalize_judgment_surface (get_string args "surface" "") in
@@ -97,14 +94,13 @@ let judgment_latest_json (_ctx : 'a context) args =
     | _ -> None
   in
   Ok
-    (`Assoc
-      [
-        ("status", `String "ok");
-        ( "judgment",
-          match judgment with
-          | Some value -> Operator_judgment.to_yojson value
-          | None -> `Null );
-      ])
+    (Tool_args.ok_assoc
+       [
+         ( "judgment",
+           match judgment with
+           | Some value -> Operator_judgment.to_yojson value
+           | None -> `Null );
+       ])
 
 type action_request = {
   actor : string;
@@ -114,25 +110,11 @@ type action_request = {
   payload : Yojson.Safe.t;
 }
 
-let canonical_action_type action_type =
-  match action_type with
-  | "autonomy_tick" -> "social_sweep"
-  | "room_pause" | "namespace_pause" -> "namespace_pause"
-  | "room_resume" | "namespace_resume" -> "namespace_resume"
-  | "social_sweep" -> "social_sweep"
-  | "keeper_msg" -> "keeper_message"
-  | "keeper_message" -> "keeper_message"
-  | "keeper_probe" -> "keeper_probe"
-  | "keeper_recover" -> "keeper_recover"
-  | "github_identity_login_prepare" -> "github_identity_login_prepare"
-  | "github_identity_status" -> "github_identity_status"
-  | "keeper_github_identity_login_prepare" -> "keeper_github_identity_login_prepare"
-  | "keeper_github_identity_status" -> "keeper_github_identity_status"
-  | other -> other
+let canonical_action_type action_type = action_type
 
 let normalize_action_target_type target_type =
   let normalized = String.trim target_type |> String.lowercase_ascii in
-  if Operator_digest_types.is_root_alias normalized then Ok "root"
+  if Operator_digest_types.is_root_target_type normalized then Ok "root"
   else match normalized with
   | "keeper" as value -> Ok value
   | "" -> Ok ""
@@ -141,9 +123,8 @@ let normalize_action_target_type target_type =
 let default_target_type_for action_type =
   match action_type with
   | "broadcast" | "namespace_pause" | "namespace_resume" | "task_inject" | "social_sweep"
-  | "github_identity_login_prepare" | "github_identity_status" -> "root"
-  | "keeper_message" | "keeper_probe" | "keeper_recover"
-  | "keeper_github_identity_login_prepare" | "keeper_github_identity_status" -> "keeper"
+    -> "root"
+  | "keeper_message" | "keeper_probe" | "keeper_recover" -> "keeper"
   | _ -> ""
 
 let generate_confirm_token ~(clock : _ Eio.Time.clock) config =

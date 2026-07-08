@@ -37,9 +37,9 @@ code_refs:
 │ Layer 2: Env_config_runtime     (타이머, 캐시, 세션)    │
 │ Layer 3: Env_config_governance  (모델, 추론, Autonomy)   │
 │ Layer 4: Env_config_keeper      (Keeper 부트/알림/감독)  │
-│ Layer 5: Level2/Level4_config   (메트릭, Swarm, 학습)   │
+│ Layer 5: Level2/Level4_config   (메트릭, 학습, RNG)     │
 │ Layer 6: Runtime_params         (런타임 오버라이드)       │
-│ Layer 7: config/cascade.json    (Cascade 모델 순서)     │
+│ Layer 7: config/cascade.toml    (Cascade 모델 순서)     │
 └────────────────────────────────────────────────────┘
 ```
 
@@ -56,15 +56,15 @@ code_refs:
 | 환경변수 | 타입 | 기본값 | 설명 |
 |----------|------|--------|------|
 | `MASC_BASE_PATH` | string | `.` | `.masc` 데이터 디렉토리의 기준 경로 |
-| `MASC_CONFIG_DIR` | string | 자동 탐색 | resolved config root override. 하위 항목: `cascade.json`, `prompts/`, `keepers/`, `personas/` |
+| `MASC_CONFIG_DIR` | string | 자동 탐색 | resolved config root override. 하위 항목: `cascade.toml`, `prompts/`, `keepers/`, `personas/` |
 | `MASC_PERSONAS_DIR` | string | unset | persona root override. 설정 시 resolved config root의 `personas/` 대신 이 디렉토리를 사용 |
 | `MASC_HTTP_PORT` | string | `"8935"` | HTTP 서버 포트 |
 | `MASC_HTTP_BASE_URL` | string | - | 전체 base URL (설정 시 host/port 무시) |
 | `MASC_HOST` | string | - | 바인드 호스트 (base URL 미설정 시 필수) |
 | `LIBDATACHANNEL_PATH` | string | 자동 탐색 | WebRTC 라이브러리 경로 |
 
-runtime data root는 `MASC_BASE_PATH`를 사용한다. 미설정 시 일부 경로는 현재 작업 디렉토리 기준 fallback을 사용한다.
-resolved config root는 별도 탐색 규칙을 가진다: `MASC_CONFIG_DIR` -> `<MASC_BASE_PATH>/.masc/config` -> `~/.masc/config` -> `cwd/config` -> executable-relative `config/`. repo `config/`는 체크인된 default/example source이며, 마지막 fallback으로만 사용된다.
+runtime data root는 `MASC_BASE_PATH`를 사용한다. 운영 공식은 `<base-path>/.masc`다. 미설정 시 일부 경로는 현재 작업 디렉토리 기준 fallback을 사용한다.
+resolved config root는 별도 탐색 규칙을 가진다: `MASC_CONFIG_DIR` -> `<MASC_BASE_PATH>/.masc/config` -> missing/uninitialized. repo `config/`는 체크인된 default/example seed source이며, live root fallback이 아니다.
 
 ### 3.2 Runtime (Env_config_runtime)
 
@@ -91,17 +91,16 @@ resolved config root는 별도 탐색 규칙을 가진다: `MASC_CONFIG_DIR` -> 
 | `MASC_SPAWN_TIMEOUT_SEC` | float | 600.0 | 스폰 기본 타임아웃 (10분) |
 | `MASC_SPAWN_CODING_TIMEOUT_SEC` | float | 7200.0 | 코딩 모드 타임아웃 (2시간) |
 | `MASC_SPAWN_GRACE_PERIOD_SEC` | float | 60.0 | SIGTERM 유예 기간 |
-| `LLAMA_SERVER_URL` | string | `Agent_sdk.Defaults.local_llm_url` | 로컬 OpenAI-compatible runtime URL |
+| `LLAMA_SERVER_URL` | string | `Agent_sdk.Defaults.local_llm_url` | 로컬 Provider-D-compatible runtime URL |
 | `LLAMA_DEFAULT_MODEL` | string | `explicit-model-required` | 로컬 기본 모델 |
 | `MASC_LOCAL_MAX_TOKENS` | int | 32768 | 로컬 LLM max_tokens 상한 (fallback: `MASC_LLAMA_MAX_TOKENS`) |
 | `MASC_CANCELLATION_TOKEN_MAX_AGE_SEC` | float | 3600.0 | 취소 토큰 최대 수명 |
+| `MASC_TELEMETRY_RETENTION_DAYS` | int | 30 | `.masc/telemetry/YYYY-MM/DD.jsonl` day-file retention. 양수는 override, 0 이하는 retention 비활성화 |
+| `MASC_TELEMETRY_MAX_BYTES` | int | 52428800 | `.masc/telemetry` byte cap. 오래된 완료 day-file부터 삭제하며 현재 day-file은 보존. 양수는 override, 0 이하는 cap 비활성화 |
 | `NEO4J_URI` | string | `bolt://turntable.proxy.rlwy.net:11490` | Neo4j 접속 URI |
 | `NEO4J_HTTP_URI` | string | `""` | Neo4j HTTP API URI |
 | `NEO4J_USER` | string | `"neo4j"` | Neo4j 사용자 |
 | `NEO4J_PASSWORD` | string | (필수) | Neo4j 비밀번호 |
-| `VOICE_MCP_HOST` | string | `"127.0.0.1"` | Legacy voice session fallback host. Prefer `MASC_BASE_PATH/.masc/voice_config.json` `session.endpoints`. |
-| `VOICE_MCP_PORT` | int | 8936 | Legacy voice session fallback port. Prefer `MASC_BASE_PATH/.masc/voice_config.json` `session.endpoints`. |
-
 **Voice Configuration** (`MASC_BASE_PATH/.masc/voice_config.json`):
 
 All voice paths resolve relative to `MASC_BASE_PATH/.masc/`. The config file
@@ -119,8 +118,8 @@ contains four sections: `tts`, `stt`, `session`, `local_playback`.
 | 환경변수 | 타입 | 기본값 | 설명 |
 |----------|------|--------|------|
 | `MASC_TIMEOUT_GCLOUD_AUTH_SEC` | float | 15.0 | GCP 인증 타임아웃 |
-| `MASC_TIMEOUT_ANTHROPIC_SEC` | int | 120 | Anthropic API 타임아웃 |
-| `MASC_TIMEOUT_OPENAI_COMPAT_SEC` | int | 60 | OpenAI 호환 API 타임아웃 |
+| `MASC_TIMEOUT_PROVIDER-A_SEC` | int | 120 | Provider-A API 타임아웃 |
+| `MASC_TIMEOUT_OPENAI_COMPAT_SEC` | int | 60 | Provider-D 호환 API 타임아웃 |
 | `MASC_TIMEOUT_MODEL_GRACE_SEC` | float | 5.0 | 모델 호출 네트워크 유예 |
 | `MASC_TIMEOUT_GRAPHQL_SEC` | float | 5.0 | GraphQL 쿼리 타임아웃 |
 | `MASC_TIMEOUT_KEEPER_STATUS_SEC` | float | 5.0 | Keeper 상태 확인 타임아웃 |
@@ -134,7 +133,7 @@ contains four sections: `tts`, `stt`, `session`, `local_playback`.
 | `MASC_LOG_TRUNCATION_LEN` | int | 1500 | 로그 출력 절삭 길이 |
 | `MASC_CP_CLEANUP_DAYS` | int | 14 | CP 데이터 정리 임계일 |
 | `MASC_MESSAGE_MAX_COUNT` | int | 200 | Room당 메시지 최대 보유 수 |
-| `MASC_CHAIN_JUDGE_MODEL` | string | `"gemini"` | Chain judge 모델 |
+| `MASC_CHAIN_JUDGE_MODEL` | string | `"provider-f"` | Chain judge 모델 |
 
 ### 3.3 Governance (Env_config_governance)
 
@@ -143,23 +142,22 @@ contains four sections: `tts`, `stt`, `session`, `local_playback`.
 | 환경변수 | 타입 | 기본값 | 설명 |
 |----------|------|--------|------|
 | `MASC_INFERENCE_TIMEOUT_SEC` | float | 30.0 | 모델 API 호출 타임아웃 |
-| `MASC_OPERATOR_JUDGE_TIMEOUT_SEC` | int | (inference fallback) | Operator judge 타임아웃 |
-| `MASC_DASHBOARD_GOVERNANCE_JUDGE_TIMEOUT_SEC` | int | (inference fallback) | Dashboard governance judge 타임아웃 |
 | `MASC_INFERENCE_CACHE_ENABLED` | bool | true | 추론 캐시 활성화 |
 | `MASC_INFERENCE_CACHE_TTL_SEC` | int | 300 | 캐시 TTL (초) |
 | `MASC_INFERENCE_CACHE_MAX_PROMPT_CHARS` | int | 48000 | 캐시 대상 최대 프롬프트 길이 |
 | `MASC_INFERENCE_CACHE_MAX_TEMP` | float | 0.0 | 캐시 허용 최대 온도 |
 | `MASC_INFERENCE_CACHE_L1_MAX_ENTRIES` | int | 512 | L1 인메모리 캐시 상한 |
 | `MASC_SPAWN_CACHE_POLICY` | string | `"safe_only"` | Spawn 캐시 정책 (`off`/`safe_only`) |
-| `ZAI_DEFAULT_MODEL` | string | `"glm-5.1"` | `glm` provider `auto` 기본 모델 (lib/cascade/cascade_model_resolve.ml:38) |
-| `ZAI_CODING_DEFAULT_MODEL` | string | `"glm-4.7"` | `glm-coding` provider `auto` 기본 모델 (lib/cascade/cascade_model_resolve.ml:43) |
-| `GEMINI_DEFAULT_MODEL` | string | `"gemini-3-flash-preview"` | `gemini` provider `auto` 기본 모델 (lib/cascade/cascade_model_resolve.ml:67) |
-| `MASC_GEMINI_CLI_AUTO_MODELS` | csv string | `"gemini-3-flash-preview,gemini-3.1-flash-lite-preview,gemini-2.5-flash,gemini-2.5-flash-lite,gemini-3.1-pro-preview,gemini-2.5-pro"` | `gemini_cli:auto`를 여러 concrete model 후보로 확장하는 순서. 설정 시 `GEMINI_DEFAULT_MODEL`보다 우선 |
-| `MASC_CODEX_CLI_AUTO_MODELS` | csv string | `"gpt-5.2,gpt-5.3-codex-spark,gpt-5.3-codex,gpt-5.4-mini,gpt-5.4"` | `codex_cli:auto` 확장 순서. 기본은 ChatGPT-backed Codex에서 실제 호출 성공이 확인된 후보만 포함하며, 필요하면 env override로 후보를 직접 재지정 |
-| `MASC_CLAUDE_CODE_AUTO_MODELS` | csv string | `"auto"` | `claude_code:auto` 확장 순서. 기본은 Claude Code의 사용자 기본 모델에 위임 |
-| `KIMI_DEFAULT_MODEL` | string | `"kimi-k2.5"` | `kimi` provider `auto` 기본 모델 (lib/provider_adapter.ml:505) |
-| `ANTHROPIC_DEFAULT_MODEL` | string | `"claude-sonnet-4-6-20250514"` | `claude` provider `auto` 기본 모델 (lib/cascade/cascade_model_resolve.ml:70) |
-| `OPENAI_DEFAULT_MODEL` | string | `"gpt-4.1"` | `openai` provider `auto` 기본 모델 (lib/cascade/cascade_model_resolve.ml:73) |
+| `ZAI_DEFAULT_MODEL` | string | OAS runtime binding/catalog default | 설정 시 `provider-k` provider `auto` 기본 모델로 사용. 미설정이면 OAS runtime binding/catalog default에 위임한다. |
+| `ZAI_CODING_DEFAULT_MODEL` | string | OAS runtime binding/catalog default | 설정 시 `provider-k-coding` provider `auto` 기본 모델로 사용. 미설정이면 OAS runtime binding/catalog default에 위임한다. |
+| `PROVIDER-F_DEFAULT_MODEL` | string | 없음 | 설정 시 direct `provider-f` provider `auto` 기본 모델로 사용. 미설정이면 direct 기본 동작에 위임한다. |
+| `PROVIDER-F_CLI_DEFAULT_MODEL` | string | 없음 | 설정 시 `cli-tool-b` provider `auto` 기본 모델로 사용. 미설정이면 CLI-Tool-C 기본 동작에 위임한다. |
+| `MASC_PROVIDER-F_CLI_AUTO_MODELS` | csv string | `"auto"` | 설정 시 `cli-tool-b:auto`를 operator 지정 후보 목록으로 확장. 미설정이면 CLI-Tool-C 기본 모델에 위임한다. |
+| `MASC_AGENT-CODE_CLI_AUTO_MODELS` | csv string | `"auto"` | 설정 시 `cli-tool-a:auto`를 operator 지정 후보 목록으로 확장. 미설정이면 CLI-Tool-B 기본 모델에 위임한다. |
+| `MASC_CLI_TOOL_A_AUTO_MODELS` | csv string | `"auto"` | 설정 시 `cli-tool-d:auto`를 operator 지정 후보 목록으로 확장. 미설정이면 CLI-Tool-A 기본 모델에 위임한다. |
+| `PROVIDER-C_DEFAULT_MODEL` | string | OAS runtime binding/catalog default | 설정 시 `provider-c` provider `auto` 기본 모델로 사용. |
+| `PROVIDER-A_DEFAULT_MODEL` | string | OAS runtime binding/catalog default | 설정 시 `agent-llm-a` provider `auto` 기본 모델로 사용. |
+| `OPENAI_DEFAULT_MODEL` | string | OAS runtime binding/catalog default | 설정 시 `provider-d` provider `auto` 기본 모델로 사용. |
 | `OLLAMA_DEFAULT_MODEL` | string | `""` | `ollama` provider `auto` 기본 모델 (lib/config/env_config_runtime.ml:181) |
 | `LLAMA_DEFAULT_MODEL` | string | `"explicit-model-required"` | `llama` provider legacy local runtime 기본 모델 (lib/config/env_config_runtime.ml:150) |
 | `OPENROUTER_DEFAULT_MODEL` | string | (없음) | `openrouter` provider `auto` 기본 모델 (lib/cascade/cascade_model_resolve.ml:76) |
@@ -205,7 +203,7 @@ Keeper 부트스트랩, 메트릭 로테이션, 알림 팬아웃, Supervisor 설
 
 ### 3.5 Level2 / Level4 Config
 
-L2는 메트릭/드리프트/학습 튜닝, L4는 Swarm 행동 파라미터.
+L2는 메트릭/드리프트/학습 튜닝, L4는 공유 numeric wrapper와 RNG helper다.
 
 **Level2** (`lib/level2_config.ml`):
 
@@ -223,17 +221,9 @@ L2는 메트릭/드리프트/학습 튜닝, L4는 Swarm 행동 파라미터.
 
 | 환경변수 | 타입 | 기본값 | 설명 |
 |----------|------|--------|------|
-| `MASC_SWARM_SEED` | int | (시각 기반) | RNG 시드 (재현성) |
-| `MASC_SWARM_INITIAL_FITNESS` | float | 0.5 | 신규 에이전트 초기 fitness |
-| `MASC_SWARM_SELECTION_PRESSURE` | float | 0.3 | 선택 압력 |
-| `MASC_SWARM_MUTATION_RATE` | float | 0.1 | 변이율 |
-| `MASC_SWARM_QUORUM_THRESHOLD` | float | 0.6 | 정족수 임계값 |
-| `MASC_SWARM_MAX_AGENTS` | int | 50 | Swarm 최대 에이전트 |
-| `MASC_FLOCK_SEPARATION` | float | 1.5 | 분리 가중치 |
-| `MASC_FLOCK_ALIGNMENT` | float | 1.0 | 정렬 가중치 |
-| `MASC_FLOCK_COHESION` | float | 1.0 | 응집 가중치 |
-| `MASC_STIG_DEPOSIT` | float | 0.2 | 페로몬 증착율 |
-| `MASC_STIG_THRESHOLD` | float | 0.1 | 페로몬 추종 임계값 |
+| `MASC_RANDOM_SEED` | int | current time in ms | `Level4_config` RNG seed override for reproducible tests/runs |
+
+Removed `MASC_SWARM_*`, `MASC_FLOCK_*`, and `MASC_STIG_*` knobs are not runtime inputs. Do not add them to new configs.
 
 Level4는 `Normalized.t` (0.0-1.0 범위 보장) 추상 타입을 제공한다. `of_float`는 범위 밖 입력에 `None`을 반환하고, `of_float_clamped`는 clamping한다.
 
@@ -246,7 +236,7 @@ Mode/category 기반 필터링은 제거되었다. 현재 공개 도구 표면�
 ```
 raw_all_tool_schemas (전체 등록 도구)
   -> capability_registry (surface projection: Public_mcp / Keeper / Worker)
-  -> tool_catalog (visibility: Default/Hidden, lifecycle: Active/Deprecated)
+  -> tool_catalog (visibility: Default/Hidden, lifecycle: Active)
   -> profile/auth/runtime checks
 ```
 
@@ -279,7 +269,7 @@ type surface    = Public_mcp | Spawned_agent_mcp | Local_worker
 | Spawned_agent_mcp | Spawned_managed_agent | Audited | 스폰된 에이전트 |
 | Local_worker | Local_worker_agent | Audited | 로컬 워커 |
 | Keeper_standard | Keeper_agent | Audited | Keeper 표준 도구 |
-| Keeper_privileged | Keeper_agent + Privileged_executor | Privileged | Keeper 특권 도구 (`keeper_bash` 등) |
+| Keeper_privileged | Keeper_agent + Privileged_executor | Privileged | Keeper 특권 도구 (`tool_execute` 등) |
 | Mdal_auditable | Strict_mdal_worker | Audited | MDAL 감사 대상 |
 | Privileged_executor_surface | Privileged_executor | Privileged | 특권 실행 전용 |
 
@@ -291,7 +281,7 @@ type surface    = Public_mcp | Spawned_agent_mcp | Local_worker
 
 ```ocaml
 type visibility = Default | Hidden
-type lifecycle  = Active | Deprecated
+type lifecycle  = Active
 type implementation_status = Real | Adapter | Simulation | Placeholder
 type tier = Essential | Standard | Full
 ```
@@ -302,15 +292,13 @@ type tier = Essential | Standard | Full
 |------|--------|------|
 | Active + Default | 도구 목록에 노출 | 정상 사용 |
 | Active + Hidden | 목록 비노출 | `allow_direct_call_when_hidden=true`이면 직접 호출 가능 |
-| Deprecated + Default | 목록 노출 (경고) | canonical_name/replacement 안내 |
-| Deprecated + Hidden | 목록 비노출 | 호환성 유지, 내부 호출만 |
 
 ### 6.3 3-Tier System
 
 | Tier | 도구 수 | 용도 |
 |------|---------|------|
 | Essential | ~21 | 핵심 워크플로우 (`join`, `add_task`, `broadcast`, `heartbeat`, `worktree_create` 등) |
-| Standard | ~50 | Essential + Board, Team Session, Governance V2, Handover, Spawn |
+| Standard | ~50 | Essential + Board, Governance V2, Handover, Spawn |
 | Full | 전체 | 모든 등록 도구 |
 
 Tier는 mode/category와 독립적으로 적용되는 추가 필터 레이어다.
@@ -319,28 +307,57 @@ Tier는 mode/category와 독립적으로 적용되는 추가 필터 레이어다
 
 ## 7. Cascade Configuration
 
-### 7.1 config/cascade.json 구조
+### 7.1 config/cascade.toml 구조
 
-JSON 파일로 cascade별 설정을 정의한다. 기본 키 패턴은
-`{cascade_name}_models`이며, catalog discovery는
-`Cascade_config_loader`가 알고 있는 recognized per-cascade 키 집합
-(`_models`, `_temperature`, `_max_tokens`, `_strategy`, ...)을 기준으로
-이뤄진다.
+`cascade.toml`은 RFC-0058 선언형 cascade catalog의 유일한 런타임
+소스다. Catalog discovery는 TOML의 선언형 namespace를 materialize한
+검증 결과에서 수행하며, legacy flat JSON catalog 키는 사용하지 않는다.
 
-```json
-{
-  "default_models": ["llama:qwen3.5", "glm:glm-5.1"],
-  "keeper_turn_models": ["llama:qwen3.5", "glm:glm-5.1"],
-  "briefing_models": ["llama:qwen3.5", "glm:glm-5.1", "gemini:gemini-2.5-pro"],
-  "auto_responder_claude_models": ["claude:sonnet", "glm:glm-5.1"],
-  "keeper_unified_temperature": 0.4,
-  "keeper_unified_max_tokens": 2048
-}
+구조는 다섯 레이어로 나뉜다.
+
+| 레이어 | TOML namespace | 역할 |
+|--------|----------------|------|
+| Provider | `[providers.<id>]` | transport/protocol/credential 정의 |
+| Model | `[models.<id>]` | provider-neutral model metadata/capability 정의 |
+| Binding | `[<provider>.<model>]` | provider-model 결합, capacity, pricing |
+| Alias | `[<provider>.<model>.<alias>]` | 호출 목적별 temperature/max-output override |
+| Tier/Route | `[tier.*]`, `[tier-group.*]`, `[routes.*]` | 실행 후보 묶음, fallback chain, logical route |
+
+```toml
+[providers.cli-tool-a]
+protocol = "provider-d-cli"
+command = "agent-code"
+is-non-interactive = true
+
+[models.agent-code-spark]
+api-name = "model-d-spark"
+max-context = 128000
+tools-support = true
+streaming = true
+
+[cli-tool-a.agent-code-spark]
+is-default = true
+max-concurrent = 1
+
+[tier.primary]
+members = ["cli-tool-a.agent-code-spark"]
+strategy = "failover"
+
+[tier-group.primary]
+tiers = ["primary"]
+strategy = "priority_tier"
+fallback = true
+
+[routes.keeper_turn]
+target = "tier-group.primary"
 ```
 
 ### 7.2 모델 식별자 형식
 
-`{provider}:{model_id}` 형식.
+Tier member는 `<provider_id>.<model_id>` 또는
+`<provider_id>.<model_id>.<alias>` 형식의 선언형 binding identifier를
+사용한다. Runtime adapter는 검증된 binding을 provider별 실행 spec으로
+변환한다.
 
 - checked-in repo defaults는 explicit label을 사용한다.
 - `auto`는 provider-specific runtime convenience일 수 있지만, repo에 커밋되는 cascade 기본값으로는 권장하지 않는다.
@@ -348,97 +365,120 @@ JSON 파일로 cascade별 설정을 정의한다. 기본 키 패턴은
 | Provider | Env Config 모듈 | 기본 모델 |
 |----------|----------------|----------|
 | `ollama` | `Local_runtime` | `OLLAMA_DEFAULT_MODEL` (port 11434, 262k context) |
-| `llama` | `Local_runtime` | `LLAMA_DEFAULT_MODEL` (legacy local OpenAI-compatible runtime) |
-| `glm` | `Glm` | `ZAI_DEFAULT_MODEL` |
-| `glm-coding` | `Glm` | `ZAI_CODING_DEFAULT_MODEL` |
-| `gemini` | `Gemini` | `GEMINI_DEFAULT_MODEL` |
-| `gemini_cli` | CLI transport | `MASC_GEMINI_CLI_AUTO_MODELS` when model is `auto` |
-| `codex_cli` | CLI transport | `MASC_CODEX_CLI_AUTO_MODELS` when model is `auto` |
-| `claude_code` | CLI transport | `MASC_CLAUDE_CODE_AUTO_MODELS` when model is `auto` |
-| `claude` | `Claude` | `ANTHROPIC_DEFAULT_MODEL` |
-| `openai` | `OpenAI` | `OPENAI_DEFAULT_MODEL` |
+| `llama` | `Local_runtime` | `LLAMA_DEFAULT_MODEL` (legacy local Provider-D-compatible runtime) |
+| `provider-k` | `Glm` | `ZAI_DEFAULT_MODEL` |
+| `provider-k-coding` | `Glm` | `ZAI_CODING_DEFAULT_MODEL` |
+| `provider-f` | `Provider-F` | `PROVIDER-F_DEFAULT_MODEL` |
+| `cli-tool-b` | CLI transport | `MASC_PROVIDER-F_CLI_AUTO_MODELS` when model is `auto` |
+| `cli-tool-a` | CLI transport | `MASC_AGENT-CODE_CLI_AUTO_MODELS` when model is `auto` |
+| `cli-tool-d` | CLI transport | `MASC_CLI_TOOL_A_AUTO_MODELS` when model is `auto` |
+| `agent-llm-a` | `Agent-LLM-A` | `PROVIDER-A_DEFAULT_MODEL` |
+| `provider-d` | `Provider-D` | `OPENAI_DEFAULT_MODEL` |
 | `openrouter` | `OpenRouter` | `OPENROUTER_DEFAULT_MODEL` |
 
 ### 7.3 Per-cascade 추론 파라미터
 
-`{cascade_name}_temperature`, `{cascade_name}_max_tokens` 키로 cascade별 온도와 토큰 수를 오버라이드할 수 있다. 미설정 시 호출자 기본값 사용.
+Temperature/max-output 같은 호출 목적별 override는 alias 레이어에 둔다.
+미설정 시 호출자 기본값 또는 provider/model capability 기본값을 사용한다.
+
+```toml
+[cli-tool-d.haiku.for-scoring]
+temperature = 0.1
+max-output = 1024
+```
 
 ### 7.3.1 Keeper assignability metadata
 
-`{cascade_name}_keeper_assignable`는 dashboard/cascade manager가 keeper에
-할당 가능한 profile인지 명시하는 bool metadata다. 기본값은 `true`.
+`keeper-assignable`은 dashboard/cascade manager가 keeper에 할당 가능한
+profile인지 명시하는 bool metadata다. `tier` 또는 `tier-group`에 선언할
+수 있으며 기본값은 `true`.
 
 - `true` 또는 미설정: keeper assignment dropdown에 노출 가능
 - `false`: system-only profile. cascade manager에는 보이지만 keeper에는 할당 불가
 
-예: `tool_rerank_keeper_assignable = false`
+예:
 
-### 7.4 Pluggable Strategy (Phase A~B, #7606/#7611)
+```toml
+[tier-group.scoring]
+tiers = ["scoring", "__safe_lane"]
+strategy = "priority_tier"
+fallback = true
+keeper-assignable = false
+```
 
-각 cascade는 `{cascade_name}_strategy` 키로 provider 선택 전략을 지정할 수 있다. 미설정 시 `failover`(= backward-compatible linear fallback, `max_cycles=1`)로 동작한다.
+### 7.4 Pluggable Strategy
+
+각 `tier` 또는 `tier-group`은 `strategy` 키로 provider 선택 전략을
+지정한다. 미설정 시 `failover`로 동작한다. Operator config에서
+지원되는 strategy 값은 현재 `failover`, `priority_tier` 두 개뿐이다.
 
 | 전략 | 키 값 | 설명 |
 |------|-------|------|
-| S1 Failover | `failover` | 입력 순서 유지, 재시도 없음 (기본값) |
-| S2 Capacity-aware | `capacity_aware` | endpoint capacity == 0인 provider 필터링, cycle 반복 |
-| S3 Weighted random | `weighted_random` | `config_weight × success_rate` 기반 가중 셔플 |
-| S4 Circuit-breaker cycling | `circuit_breaker_cycling` | S2 + `is_in_cooldown` 제외 + exponential backoff |
-| S5 Priority tier | `priority_tier` | tier별 그룹 진행. cycle `n` → tier `n` (마지막 tier에 clamp) |
-| S6 Sticky | `sticky` | `(keeper, cascade)` 단위로 첫 성공 provider를 `sticky_ttl_ms`동안 고정 |
-| S7 Round-robin | `round_robin` | per-cascade cursor 기반 회전 |
+| S1 Failover | `failover` | members 입력 순서 유지 |
+| S5 Priority tier | `priority_tier` | tier-group의 `tiers` 순서대로 fallback |
 
-관련 튜닝 키:
+Retired experimental strategy 값은 더 이상 `Cascade_strategy.kind`에 남기지 않는다.
+오래된 `cascade.toml`이 해당 값을 지정하면 parser 단계에서 실패한다.
+
+관련 선언형 키:
 
 | 키 | 타입 | 기본값 | 적용 전략 |
 |-----|------|--------|-----------|
-| `{name}_max_cycles` | int | 1 | 모든 전략 (S4는 3 권장) |
-| `{name}_backoff_base_ms` | int | 500 | S2 이상에서 cycle>0 시 적용 |
-| `{name}_backoff_cap_ms` | int | 10_000 | backoff 상한 |
-| `{name}_tiers` | `string list list` | `[]` | S5만 사용. 예: `[["ollama:qwen3"], ["gemini_cli:auto"]]` |
-| `{name}_sticky_ttl_ms` | int | `300_000`(5분) | S6만 사용. 0 이하 → affinity 비활성화 |
+| `members` | string list | `[]` | tier 후보 binding/alias 목록 |
+| `tiers` | string list | `[]` | tier-group fallback chain |
+| `fallback` | bool | `false` | tier-group fallback hint 노출 |
+| `strategy` | string | `failover` | tier/tier-group provider 선택 |
+| `keeper-assignable` | bool | `true` | keeper 할당 가능 여부 |
 
-Unknown strategy 값은 warn + `failover` fallback (keeper 시작은 막지 않는다).
+Unknown strategy 값은 catalog validation error로 취급한다.
 
 ### 7.5 Client Capacity (Phase A/C3, #7606/#7623)
 
-ollama HTTP 및 CLI provider(Claude_code / Gemini_cli / Codex_cli)는 endpoint slot API가 없어 **클라이언트 측 semaphore**로 throttling한다. 각 keeper 호출 전에 slot을 시도 획득하고, 실패 시 전략 filter가 해당 provider를 건너뛴다.
+Provider-model binding은 `max-concurrent`로 client-side capacity를
+선언한다. endpoint slot API가 없는 CLI provider(CLI-Tool-A / Provider-F
+CLI / CLI-Tool-B)는 이 값으로 semaphore를 구성한다. 각 keeper 호출 전에
+slot을 시도 획득하고, 실패 시 strategy filter가 해당 binding을 건너뛴다.
 
-기본 동시성 = 1. 두 keeper가 같은 cascade를 동시에 호출하면 두 번째는 자동으로 다음 provider fallback.
+`max-concurrent`는 binding 레이어에서 필수다. 두 keeper가 같은 binding을
+동시에 호출하면 두 번째 호출은 자동으로 다음 provider fallback 후보를
+시도한다.
 
-| 키 | 타입 | 기본값 | Env override |
-|-----|------|--------|-------------|
-| `{name}_ollama_max_concurrent` | int | 1 | `MASC_OLLAMA_MAX_CONCURRENT` |
-| `{name}_cli_max_concurrent` | int | 1 | `MASC_CLI_MAX_CONCURRENT` |
+```toml
+[cli-tool-a.agent-code-spark]
+is-default = true
+max-concurrent = 1
+```
 
-우선순위: per-cascade 키 > env var > 1 (min clamp 1).
+`cli-tool-b:auto`, `cli-tool-a:auto`, `cli-tool-d:auto`는 기본적으로 concrete 후보 목록을 코드에 갖지 않는다. 미설정 기본값은 `auto` 1개이며 각 CLI의 현재 기본 모델 선택에 위임한다. 특정 모델 rotation이 필요하면 `MASC_PROVIDER-F_CLI_AUTO_MODELS`, `MASC_AGENT-CODE_CLI_AUTO_MODELS`, `MASC_CLI_TOOL_A_AUTO_MODELS`에 operator가 명시한 CSV를 넣는다. Direct API provider의 concrete 후보 목록과 기본값은 OAS runtime binding/catalog가 제공하는 값을 projection해서 사용한다. binding이 supported model 목록을 제공하지 않으면 MASC는 `auto`를 임의 concrete model로 확장하지 않는다.
 
-CLI sentinel key는 내부적으로 `cli:claude_code` / `cli:gemini_cli` / `cli:codex_cli` 형태로 registry에 등록된다. 대시보드 `/api/v1/cascade/client_capacity`에서 현재 이용률 확인 가능.
+### 7.6 HTTP Probe Capacity (Phase C2, #7619)
 
-`gemini_cli:auto`, `codex_cli:auto`, `claude_code:auto`는 cascade 파싱 시 concrete 후보 목록으로 확장된다. Gemini CLI는 기본적으로 Flash/Lite 우선, Pro 후순위의 quota-aware 순서를 사용한다. Codex CLI는 기본적으로 `gpt-5.2`에서 시작해 `gpt-5.4`로 올라가는 지원 후보만 사용하며, `gpt-5.3-codex-spark`와 `gpt-5.4-mini` 같은 fast 후보도 로테이션에 포함한다. 2026-04-21 기준 ChatGPT-backed Codex CLI 실호출에서는 `gpt-5.1-codex-mini`, `gpt-5.1-codex-max`, `gpt-5.2-codex`가 모두 400 unsupported를 반환해 기본 목록에서 제외한다. Claude Code는 비용과 조직별 model policy 차이가 커서 기본값을 `auto` 1개로 유지하며, 운영자가 `MASC_CLAUDE_CODE_AUTO_MODELS`를 설정할 때만 여러 후보로 로테이션한다.
+등록된 HTTP probe provider는 provider별 probe endpoint를 가진다. MASC는 cycle 시작마다 등록된 URL들을 순차적으로 조회하여 (`Cascade_capacity_probe.refresh_many` → registered probe 내부 `refresh_many`) 실제 활성 모델 수를 capacity로 변환한다. 캐시 TTL 2초. 응답 실패 시 silent fail → Phase A client-capacity semaphore로 fallback. 병렬 fan-out이 필요해지면 probe adapter의 `refresh_many`에서 `Eio.Fiber.both` 로 전환.
 
-Codex 후보 목록은 2026-04-20 로컬 Codex CLI model picker 기준이고, 기본 순서는 5.1→5.4로 재정렬되어 있다. hosted model menu가 바뀌면 `MASC_CODEX_CLI_AUTO_MODELS`로 즉시 override하고, 코드 기본값은 별도 PR로 갱신한다.
-
-### 7.6 Ollama HTTP Probe (Phase C2, #7619)
-
-ollama provider는 `/api/ps` endpoint를 가진다. MASC는 cycle 시작마다 해당 endpoint를 병렬로 조회하여 실제 활성 모델 수를 capacity로 변환한다. 캐시 TTL 2초. 응답 실패 시 silent fail → Phase A client-capacity semaphore로 fallback.
-
-capacity 조회 순서: `Cascade_throttle` (llama-server /slots 기반) → `Cascade_ollama_probe` (discovered via /api/ps) → `Cascade_client_capacity` (declared semaphore).
+capacity 조회 순서: `Cascade_throttle` (llama-server /slots 기반) → `Cascade_capacity_probe` (discovered via registered probes, e.g. `/api/ps`) → `Cascade_client_capacity` (declared semaphore).
 
 ### 7.7 예시
 
-```json
-{
-  "keeper_unified_models": [
-    "glm-coding:auto",
-    "ollama:qwen3.5:35b-a3b-nvfp4",
-    "gemini_cli:auto"
-  ],
-  "keeper_unified_strategy": "circuit_breaker_cycling",
-  "keeper_unified_max_cycles": 3,
-  "keeper_unified_backoff_base_ms": 500,
-  "keeper_unified_ollama_max_concurrent": 1,
-  "keeper_unified_cli_max_concurrent": 1
-}
+```toml
+[provider-k-coding.provider-k-flashx]
+is-default = false
+max-concurrent = 2
+
+[cli-tool-b.provider-f-flash]
+is-default = true
+max-concurrent = 1
+
+[tier.tier_medium]
+members = ["provider-k-coding.provider-k-flashx", "cli-tool-b.provider-f-flash"]
+strategy = "failover"
+
+[tier-group.tier_medium]
+tiers = ["tier_medium", "primary"]
+strategy = "priority_tier"
+fallback = true
+
+[routes.moderate_task]
+target = "tier-group.tier_medium"
 ```
 
 ---
@@ -479,7 +519,7 @@ masc_set_param(key, value)
 |------|--------|------|
 | `-p`, `--port` | 8935 | HTTP 리스닝 포트 |
 | `--host` | `127.0.0.1` | 바인드 주소 |
-| `--base-path` | `MASC_BASE_PATH` 또는 `HOME` 기반 (`HOME` 없을 때만 `cwd`) | `.masc` 폴더 위치 |
+| `--base-path` | `MASC_BASE_PATH` 또는 `cwd` | `.masc` 폴더 위치 |
 
 ---
 
@@ -547,12 +587,10 @@ $MASC_PERSONAS_DIR
 > where resolved config root =
   $MASC_CONFIG_DIR
   > $MASC_BASE_PATH/.masc/config
-  > ~/.masc/config
-  > cwd/config
-  > executable-relative config/
+  > missing/uninitialized
 ```
 
-암묵적 secondary search(`~/.masc/personas`, `$MASC_BASE_PATH/.masc/personas`)는 사용하지 않는다.
+암묵적 secondary search(운영자 home personas, base-path root personas)는 사용하지 않는다.
 Persona, keeper TOML, prompt markdown, cascade, tool_policy는 모두 같은 resolved config root를 기준으로 해석한다.
 
 ### 12.4 Template 변경 반영
@@ -572,4 +610,4 @@ dir-local local-dev에서는 `.masc/`가 target 디렉토리 내부를 가리키
 
 ### 12.6 모델 실행
 
-모델 선택은 `cascade.json`이 유일한 권위다. keeper_meta의 `cascade_name` (기본 `"keeper_unified"`)이 cascade를 지정하고, `Oas_model_resolve`가 실행 모델을 결정한다. keeper 설정에 모델 필드를 직접 지정하지 않는다.
+모델 선택은 `cascade.toml`이 유일한 권위다. keeper_meta의 `cascade_name` (기본 `"primary"`)이 keeper-assignable profile을 지정하고, `Cascade_runtime`가 실행 모델을 결정한다. keeper 설정에 모델 필드를 직접 지정하지 않는다.

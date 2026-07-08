@@ -256,20 +256,12 @@ let resources : mcp_resource list = [
     ~mime_type:"application/json" ();
   make_resource ~uri:"masc://events?limit=50" ~name:"Recent Events"
     ~title:"Event Log"
-    ~description:"Recent event log snapshot (task/agent/worktree transitions)"
+    ~description:"Recent event log snapshot (task/agent transitions)"
     ~mime_type:"text/markdown" ();
   make_resource ~uri:"masc://events.json?limit=50"
     ~name:"Recent Events (JSON)"
     ~title:"Event Log (JSON)"
     ~description:"Recent event log snapshot as JSON"
-    ~mime_type:"application/json" ();
-  make_resource ~uri:"masc://worktrees" ~name:"Worktrees"
-    ~title:"Git Worktrees"
-    ~description:"Git worktree snapshot for the current repo"
-    ~mime_type:"text/markdown" ();
-  make_resource ~uri:"masc://worktrees.json" ~name:"Worktrees (JSON)"
-    ~title:"Git Worktrees (JSON)"
-    ~description:"Git worktree snapshot as JSON"
     ~mime_type:"application/json" ();
   make_resource ~uri:"masc://schema" ~name:"Task FSM Schema"
     ~title:"Task State Machine"
@@ -537,13 +529,13 @@ let create_state_eio ~sw ~proc_mgr ~fs ~clock ~mono_clock ~net ~base_path =
      Missed when #10664 introduced the actor model. *)
   Session.start_loop registry ~sw;
   (* Same sweep miss as Session.start_loop above: PR #10730 introduced
-     [Oas_worker_cascade] as an Eio actor (mailbox + Promise.await) but
+     [Cascade_observation] as an Eio actor (mailbox + Promise.await) but
      never wired its [start_actor_if_needed] into a bootstrap path.
      [cascade_metrics_json ()] (called from [tool_unified.ml:summary_report],
      which the dashboard tool inspector hits) does
      [Stream.add Get_metrics_json u; Promise.await p]. Without an actor
      fiber draining [stream], the await blocks forever. *)
-  Oas_worker_cascade.start_actor_if_needed ~sw;
+  Cascade_observation.start_actor_if_needed ~sw;
   (* Wire notification harness: subscription events → session queues *)
   Subscriptions.set_session_push_fn (fun event ->
     Session.push_notification_to_active_agents registry ~event

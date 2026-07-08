@@ -74,7 +74,7 @@ let contains_substring haystack needle =
 
 let with_config_dir f =
   with_temp_dir "keeper-config-ssot" @@ fun config_dir ->
-  let cascade_path = Filename.concat config_dir "cascade.json" in
+  let cascade_path = Filename.concat config_dir "cascade.toml" in
   let original = Sys.getenv_opt "MASC_CONFIG_DIR" in
   Fun.protect
     ~finally:(fun () ->
@@ -86,14 +86,31 @@ let with_config_dir f =
     (fun () ->
       write_file
         cascade_path
-        {|{
-  "big_three_models": ["test-only:model"]
-}|};
+        {|[providers.custom]
+protocol = "provider_d-http"
+endpoint = "http://127.0.0.1:9/v1"
+
+[models.mock]
+api-name = "mock"
+max-context = 128000
+tools-support = true
+
+[custom.mock]
+
+[tier.primary]
+members = ["custom.mock"]
+
+[tier-group.primary]
+tiers = ["primary"]
+
+[routes.keeper_turn]
+target = "tier-group.primary"
+|};
       Unix.putenv "MASC_CONFIG_DIR" config_dir;
       Config_dir_resolver.reset ();
       Cascade_catalog_runtime.install_snapshot_for_tests
         ~source_path:cascade_path
-        ~profile_names:[ Keeper_config.default_cascade_name ];
+        ~profile_names:[ (Keeper_config.default_cascade_name ()) ];
       f config_dir)
 
 (** Test: TOML personality fields overwrite stale runtime JSON values. *)
@@ -154,44 +171,13 @@ instructions = "TOML instructions"
       check string "desires" "TOML desires" updated.desires;
       check string "instructions" "TOML instructions" updated.instructions
 
-(** Test: TOML policy fields overwrite stale runtime JSON values. *)
-let test_policy_resync () =
-  with_temp_dir "keeper-config-ssot-room" @@ fun room_dir ->
-  with_config_dir @@ fun config_dir ->
-  Fs_compat.clear_fs ();
-  Eio_main.run @@ fun env ->
-  Fs_compat.set_fs (Eio.Stdenv.fs env);
-  let keeper_name = "policy-resync-test" in
-  let keepers_toml_dir = Filename.concat config_dir "keepers" in
-  Unix.mkdir keepers_toml_dir 0o755;
-  write_file
-    (Filename.concat keepers_toml_dir (keeper_name ^ ".toml"))
-{|[keeper]
-sandbox_profile = "docker"
-goal = "test"
-policy_voice_enabled = false
-|};
-  let config = Coord.default_config room_dir in
-  let initial_meta =
-    match
-      Masc_test_deps.meta_of_json_fixture
-        (`Assoc
-          [
-            ("name", `String keeper_name);
-            ("agent_name", `String keeper_name);
-            ("trace_id", `String "trace-policy-resync");
-            ("policy_voice_enabled", `Bool true);
-          ])
-    with
-    | Ok meta -> meta
-    | Error e -> fail ("meta_of_json failed: " ^ e)
-  in
-  seed_persisted_meta config initial_meta;
-  match Keeper_runtime.ensure_keeper_meta config keeper_name with
-  | Error e -> fail ("ensure_keeper_meta failed: " ^ e)
-  | Ok updated ->
-      check bool "policy_voice_enabled" false updated.policy_voice_enabled
-
+(* test_policy_resync removed: RFC-0164 deletion roadmap dropped
+   [policy_voice_enabled] from Keeper_types.keeper_meta. The test
+   keyed its TOML-overwrites-stale-JSON assertion on that field
+   exclusively, so once the field went away the test no longer had
+   a policy field to drive the assertion. test_sandbox_policy_resync
+   below preserves the same TOML-resync coverage on the sandbox
+   policy fields, which remain part of keeper_meta. *)
 let test_sandbox_policy_resync () =
   with_temp_dir "keeper-config-ssot-room" @@ fun room_dir ->
   with_config_dir @@ fun config_dir ->
@@ -276,8 +262,8 @@ network_mode = "inherit"
                   ("autoboot_enabled", `Bool false);
                 ])
         with
-        | Some (true, _) -> ()
-        | Some (false, err) -> fail ("keeper_up failed: " ^ err)
+        | Some result when Tool_result.is_success result -> ()
+        | Some result -> fail ("keeper_up failed: " ^ Tool_result.message result)
         | None -> fail "missing keeper_up dispatch"
       in
       match Keeper_types.read_meta config keeper_name with
@@ -309,7 +295,7 @@ allowed_paths = ["workspace/example/project"]
 [keeper.tool_access]
 kind = "preset"
 preset = "social"
-also_allow = ["keeper_bash", "keeper_shell"]
+also_allow = ["tool_execute", "tool_search_files"]
 |};
   let config = Coord.default_config room_dir in
   let initial_meta =
@@ -346,7 +332,7 @@ also_allow = ["keeper_bash", "keeper_shell"]
       check
         (list string)
         "tool_also_allow"
-        [ "keeper_bash"; "keeper_shell" ]
+        [ "tool_execute"; "tool_search_files" ]
         (Keeper_types.tool_access_also_allowlist updated.tool_access);
       check
         (list string)
@@ -928,53 +914,6 @@ goal = "minimal TOML"
       (* instructions was NOT in TOML → preserved from runtime *)
       check string "instructions preserved" "runtime instructions" updated.instructions
 
-(** Test: TOML work_discovery fields overwrite stale option-typed meta fields. *)
-let test_discovery_resync () =
-  with_temp_dir "keeper-config-ssot-room" @@ fun room_dir ->
-  with_config_dir @@ fun config_dir ->
-  Fs_compat.clear_fs ();
-  Eio_main.run @@ fun env ->
-  Fs_compat.set_fs (Eio.Stdenv.fs env);
-  let keeper_name = "discovery-resync-test" in
-  let keepers_toml_dir = Filename.concat config_dir "keepers" in
-  Unix.mkdir keepers_toml_dir 0o755;
-  write_file
-    (Filename.concat keepers_toml_dir (keeper_name ^ ".toml"))
-    {|[keeper]
-sandbox_profile = "docker"
-goal = "test"
-work_discovery_enabled = true
-work_discovery_interval_sec = 120
-work_discovery_guidance = "TOML guidance"
-|};
-  let config = Coord.default_config room_dir in
-  let initial_meta =
-    match
-      Masc_test_deps.meta_of_json_fixture
-        (`Assoc
-          [
-            ("name", `String keeper_name);
-            ("agent_name", `String keeper_name);
-            ("trace_id", `String "trace-discovery-resync");
-            ("work_discovery_enabled", `Bool false);
-            ("work_discovery_interval_sec", `Int 60);
-            ("work_discovery_guidance", `String "old guidance");
-          ])
-    with
-    | Ok meta -> meta
-    | Error e -> fail ("meta_of_json failed: " ^ e)
-  in
-  seed_persisted_meta config initial_meta;
-  match Keeper_runtime.ensure_keeper_meta config keeper_name with
-  | Error e -> fail ("ensure_keeper_meta failed: " ^ e)
-  | Ok updated ->
-      check (option bool) "work_discovery_enabled"
-        (Some true) updated.Keeper_types.work_discovery_enabled;
-      check (option int) "work_discovery_interval_sec"
-        (Some 120) updated.work_discovery_interval_sec;
-      check (option string) "work_discovery_guidance"
-        (Some "TOML guidance") updated.work_discovery_guidance
-
 (** Test: declarative keepers reset stale live cascade_name to the default
     keeper cascade when the authored config omits cascade_name. *)
 let test_cascade_defaults_resync () =
@@ -1018,7 +957,7 @@ preset = "social"
   | Ok updated ->
       check string "goal" "TOML goal" updated.Keeper_types.goal;
       check string "cascade_name reset to keeper default"
-        Keeper_config.default_cascade_name updated.cascade_name
+        ((Keeper_config.default_cascade_name ())) (Keeper_types.cascade_name_of_meta updated)
 
 let test_social_model_resynced_from_declarative_defaults () =
   with_temp_dir "keeper-config-ssot-room" @@ fun room_dir ->
@@ -1096,7 +1035,7 @@ cascade_name = "missing_profile"
   match Keeper_runtime.ensure_keeper_meta config keeper_name with
   | Ok updated ->
       failf "expected unknown cascade_name to be rejected, got %s"
-        updated.cascade_name
+        (Keeper_types.cascade_name_of_meta updated)
   | Error detail ->
       check bool "points at profile.cascade_name" true
         (contains_substring detail "profile.cascade_name");
@@ -1110,7 +1049,7 @@ let test_room_presence_syncs_capabilities () =
   Eio_main.run @@ fun env ->
   Fs_compat.set_fs (Eio.Stdenv.fs env);
   let keeper_name = "room-presence-sync-test" in
-  let agent_name = Keeper_types.keeper_agent_name keeper_name in
+  let agent_name = Keeper_identity.keeper_agent_name keeper_name in
   let config = Coord.default_config room_dir in
   let _ = Coord.init config ~agent_name:None in
   let initial_meta =
@@ -1135,7 +1074,7 @@ let test_room_presence_syncs_capabilities () =
   seed_persisted_meta config initial_meta;
   ignore
     (Coord.join config ~agent_name ~capabilities:[ "keeper"; "preset:minimal" ] ());
-  let _synced = Keeper_exec_context.ensure_keeper_room_presence config initial_meta in
+  let _synced = Keeper_context_runtime.ensure_keeper_room_presence config initial_meta in
   let agent =
     Coord.get_agents_raw config
     |> List.find_opt (fun (agent : Masc_domain.agent) -> String.equal agent.name agent_name)
@@ -1210,7 +1149,7 @@ goal = "orphan"
 (* PR-3b1: canonicalize_if_keeper redirects bare lookup names to
    their [keeper-<n>-agent] canonical form when the name belongs to
    a configured keeper, leaving non-keeper credentials (dashboard,
-   admin, codex-mcp-client, ...) untouched. Spec: AuthIdentityFSM
+   admin, agent_code-mcp-client, ...) untouched. Spec: AuthIdentityFSM
    I1 IdentityBindsToken. *)
 let test_canonicalize_if_keeper () =
   with_temp_dir "canonicalize-room" @@ fun room_dir ->
@@ -1237,9 +1176,9 @@ goal = "test goal"
   check string "non-keeper name (admin) passes through untouched"
     "admin"
     (Keeper_runtime.canonicalize_if_keeper config "admin");
-  check string "non-keeper name (codex-mcp-client) passes through untouched"
-    "codex-mcp-client"
-    (Keeper_runtime.canonicalize_if_keeper config "codex-mcp-client")
+  check string "non-keeper name (agent_code-mcp-client) passes through untouched"
+    "agent_code-mcp-client"
+    (Keeper_runtime.canonicalize_if_keeper config "agent_code-mcp-client")
 
 let () =
   run "Keeper_runtime config SSOT resync"
@@ -1253,10 +1192,6 @@ let () =
         ] );
       ( "policy",
         [
-          test_case
-            "TOML policy fields overwrite stale runtime JSON"
-            `Quick
-            test_policy_resync;
           test_case
             "TOML sandbox policy fields overwrite stale runtime JSON"
             `Quick
@@ -1317,12 +1252,8 @@ let () =
             `Quick
             test_none_preserves_runtime;
         ] );
-      ( "discovery",
+      ( "config_resync",
         [
-          test_case
-            "TOML work_discovery fields overwrite stale meta"
-            `Quick
-            test_discovery_resync;
           test_case
             "declarative keepers reset stale live cascade_name to default"
             `Quick

@@ -108,9 +108,7 @@ let percentile_int (values : int list) ~(pct : float) : int option =
       in
       List.nth_opt sorted idx
 
-let json_int_opt = function
-  | Some v -> `Int v
-  | None -> `Null
+let json_int_opt = Json_util.int_opt_to_json
 
 let safe_age_seconds_opt ~(now_ts : float) ~(event_ts : float) : int option =
   let delta = now_ts -. event_ts in
@@ -119,15 +117,30 @@ let safe_age_seconds_opt ~(now_ts : float) ~(event_ts : float) : int option =
     let bounded = max 0.0 (min delta (float_of_int max_int)) in
     Some (int_of_float bounded)
 
-let safe_member key json =
-  match json with
-  | `Assoc _ -> Yojson.Safe.Util.member key json
-  | _ -> `Null
+let safe_member = Safe_ops.safe_member
+
+let keeper_tail_lines_or_empty ~site path ~max_bytes ~max_lines =
+  match Keeper_memory_recall.read_file_tail_lines_result path ~max_bytes ~max_lines with
+  | Ok lines -> lines
+  | Error exn_class ->
+      Keeper_memory_recall.record_memory_recall_read_error ~site path exn_class;
+      []
+
+(* RFC-0142 PR-4: lift the silent [| _ -> default] catch-all through
+   [Json_field.{list,string,assoc} |> to_option] so a Wrong_shape
+   payload disappears with the same default (preserving caller
+   semantics) but the type system now distinguishes Field_absent
+   from Wrong_shape — call sites that want operator-visible drift
+   can opt into [log_wrong_shape] later without further refactor.
+   [json_int_field] is intentionally NOT migrated — it accepts
+   [`Intlit raw] (large-integer string form) that [Json_field.int]
+   rejects as Wrong_shape, so migration would silently downgrade
+   legitimate large-integer payloads to the default. *)
 
 let json_list_field key json =
-  match safe_member key json with
-  | `List items -> items
-  | _ -> []
+  Json_field.list json key
+  |> Json_field.to_option
+  |> Option.value ~default:[]
 
 let json_int_field key json ~default =
   match safe_member key json with
@@ -136,21 +149,21 @@ let json_int_field key json ~default =
   | _ -> default
 
 let json_string_field_opt key json =
-  match safe_member key json with
-  | `String value ->
+  match Json_field.string json key |> Json_field.to_option with
+  | None -> None
+  | Some value ->
       let trimmed = String.trim value in
       if trimmed = "" then None else Some trimmed
-  | _ -> None
 
 let json_assoc_field key json =
-  match safe_member key json with
-  | `Assoc _ as value -> value
-  | _ -> `Assoc []
+  match Json_field.assoc json key |> Json_field.to_option with
+  | None -> `Assoc []
+  | Some fields -> `Assoc fields
 
 let json_record_field key json =
-  match safe_member key json with
-  | `Assoc _ as value -> Some value
-  | _ -> None
+  Json_field.assoc json key
+  |> Json_field.to_option
+  |> Option.map (fun fields -> `Assoc fields)
 
 let count_where items predicate =
   List.fold_left

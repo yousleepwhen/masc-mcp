@@ -16,7 +16,7 @@ type run_result = {
   session_id : string;
   raw_trace_run : Agent_sdk.Raw_trace.run_ref option;
   api_response : Agent_sdk.Types.api_response option;
-  proof : Agent_sdk.Cdal_proof.t option;
+  proof : Masc_mcp_cdal_runtime.Cdal_proof.t option;
 }
 
 type worker_container_state =
@@ -38,6 +38,15 @@ type worker_container_meta = {
   checkpoint_path : string;
   turn_log_path : string;
   last_run_at : float option;
+  (* RFC-0084 host-config-cleanup-H — typed disclosure strategy
+     (PR-13 surface, PR-G OAS bridges).  [None] preserves today's
+     Full_schema behaviour.  A follow-up Worker_meta_json I/O
+     cleanup will add round-trip support so config-driven keepers
+     can opt-in to Hybrid disclosure via TOML/JSON; until then this
+     field is always [None] in deserialized records (no JSON key)
+     and propagates through [Worker_oas.build_agent
+     ?disclosure_strategy] when callers set it explicitly. *)
+  disclosure_strategy : Keeper_disclosure_strategy.t option;
 }
 
 let worker_container_version = 1
@@ -55,7 +64,6 @@ let strip_mcp_prefix name =
   else
     name
 
-let unique_preserve_order = Json_util.dedupe_keep_order
 
 let has_agent_name_field (schema : Masc_domain.tool_schema) =
   let open Yojson.Safe.Util in
@@ -172,7 +180,7 @@ let post_json_via_eio ~sw:_ ~(auth_token : string option) ~session_id
             | _ -> [])
         in
         let url = mcp_endpoint_url ~auth_token in
-        (match Masc_http_client.post_sync ~net ~url ~headers ~body:request_body () with
+        (match Masc_http_client.post_sync ~url ~headers ~body:request_body () with
         | Error e -> Error (sprintf "MASC HTTP request failed: %s" e)
         | Ok (status, raw_body) ->
             if Cohttp.Code.is_success status then Ok raw_body
@@ -223,7 +231,7 @@ let call_jsonrpc ~sw ~(auth_token : string option) ~session_id ~(method_name : s
       let raw_source = String.concat " " (List.map Filename.quote argv) in
       let status, raw_body =
         Masc_exec.Exec_gate.run_argv_with_stdin_and_status
-          ~actor:"system/worker_container_types"
+          ~actor:(Masc_exec.Agent_id.of_string "system/worker_container_types")
           ~raw_source
           ~summary:"worker container curl fallback"
           ~timeout_sec:(Env_config_exec_timeout.timeout_sec ~caller:(Unknown "misc") ())

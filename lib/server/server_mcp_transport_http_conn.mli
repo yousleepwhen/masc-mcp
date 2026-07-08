@@ -69,6 +69,30 @@ val stop_sse_session : string -> unit
     AND clears the connect-rate guard state for [session_id].
     Calls {!close_sse_conn} on the removed connection. *)
 
+val stop_sse_session_evict :
+  string -> reason:Session_lifecycle_event.evict_reason -> unit
+(** [stop_sse_session_evict session_id ~reason] is
+    {!stop_sse_session} *plus* (a) a best-effort SSE
+    [event: evicted] close frame written to the client before the
+    writer closes, and (b) a typed
+    {!Session_lifecycle_event.Evict}/{!Session_lifecycle_event.Close}
+    pair published on the bus topic.
+
+    Frame format: [event: evicted\\ndata: {"type":"evicted","reason":<reason>}\\n\\n]
+    where [reason] is {!Session_lifecycle_event.evict_reason_to_string}.
+    Operators and SDK clients key off the literal [event: evicted]
+    line — RFC-0099 §3.
+
+    Frame write is best-effort: a failure (writer already closed,
+    network gone) logs at debug and continues to the close + publish
+    path. Eviction does not abort on observability failure.
+
+    PR-3 (RFC-0099) introduces this variant; cap-exceeded /
+    backpressure / idle-timeout sites that previously called
+    {!stop_sse_session} silently should migrate to this when the
+    eviction is a *server-policy decision* (not a client
+    disconnect). *)
+
 val stop_sse_session_preserve_guard : string -> unit
 (** [stop_sse_session_preserve_guard session_id] removes the
     registry entry but **preserves** the connect-rate guard
@@ -122,18 +146,18 @@ val make_inline_sse_conn :
 (** {1 Connect-rate guard} *)
 
 val check_sse_connect_guard :
-  string -> (unit, string * float) result
+  string -> (unit, Sse_reject_reason.t * float) result
 (** [check_sse_connect_guard session_id] verifies that the
     session's SSE connect rate is within the configured limits
     AND records the new connect time on success.
 
     Returns:
     - [Ok ()] when the connect is allowed.
-    - [Error ("session_cooldown", wait_s)] when
+    - [Error (Sse_reject_reason.Session_cooldown, wait_s)] when
       {!sse_reconnect_min_interval_s} has not elapsed since the
       last connect on this session.
-    - [Error ("window_limit", wait_s)] when the session has
-      hit {!sse_connect_max_in_window} connects within
+    - [Error (Sse_reject_reason.Window_limit, wait_s)] when the
+      session has hit {!sse_connect_max_in_window} connects within
       {!sse_connect_window_s}.  [wait_s] is the time until the
       oldest connect-time entry leaves the window.
 

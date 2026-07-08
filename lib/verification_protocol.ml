@@ -16,12 +16,13 @@
    - [criteria]: the operator-facing "must be true" statements →
      [task.contract.completion_contract] wrapped in [Verification.Custom].
    - [evidence_refs]: the artefact list the verifier expects to see →
-     [task.contract.verify_gate_evidence], passed in by the caller at
-     [tool_task.ml] so this function does not reach into task.contract
-   twice for different fields. *)
+     [task.contract.verify_gate_evidence] plus required evidence refs,
+     passed in by the caller at [coord_task.ml] so this function does
+     not reach into task.contract twice for different fields. *)
 type submit_request_spec =
   { criteria : Verification.criterion list
   ; output : Yojson.Safe.t
+  ; cdal_verdict : Cdal_types.contract_verdict option
   ; request_kind : string
   ; request_summary : string
   ; next_action : string
@@ -48,6 +49,32 @@ let deliverable_claims_completion ~task_id deliverable =
         normalized
       || String.starts_with ~prefix:"completed" normalized)
 
+let latest_cdal_verdict ~task_id =
+  Cdal_verdict_gate.lookup_latest_verdict
+    ~warn_on_missing:false
+    ~task_id
+    ()
+
+let cdal_verdict_payload ~task_id = function
+  | None -> `Null
+  | Some verdict ->
+    (match Cdal_types.contract_verdict_to_json verdict with
+     | `Assoc fields -> `Assoc (("task_id", `String task_id) :: fields)
+     | other -> other)
+
+let cdal_verdict_payload_of_request_output = function
+  | `Assoc fields -> List.assoc_opt "cdal_verdict" fields
+  | _ -> None
+
+let persisted_cdal_verdict_payload ~base_path ~task_id ~verification_id
+    ~fallback =
+  match Verification.load_request base_path verification_id with
+  | Ok request when String.equal request.Verification.task_id task_id ->
+    (match cdal_verdict_payload_of_request_output request.output with
+     | Some payload -> payload
+     | None -> fallback)
+  | Ok _ | Error _ -> fallback
+
 let submit_request_spec ~(config : Coord.config) ~(task : Masc_domain.task)
     ~assignee ~evidence_refs =
   let request_kind, request_summary, next_action, board_type, board_title, board_content =
@@ -71,6 +98,8 @@ let submit_request_spec ~(config : Coord.config) ~(task : Masc_domain.task)
           Printf.sprintf "Verification requested for task %s (%s) by %s"
             task.id task.title assignee )
   in
+  let cdal_verdict = latest_cdal_verdict ~task_id:task.id in
+  let cdal_verdict_json = cdal_verdict_payload ~task_id:task.id cdal_verdict in
   let criteria = List.map (fun s -> Verification.Custom s)
     (match task.contract with
      | Some c -> c.completion_contract
@@ -82,10 +111,12 @@ let submit_request_spec ~(config : Coord.config) ~(task : Masc_domain.task)
       ("request_kind", `String request_kind);
       ("request_summary", `String request_summary);
       ("next_action", `String next_action);
+      ("cdal_verdict", cdal_verdict_json);
     ]
   in
   { criteria
   ; output
+  ; cdal_verdict
   ; request_kind
   ; request_summary
   ; next_action
@@ -103,13 +134,18 @@ let warn_contract_gap (task : Masc_domain.task) =
   (match task.contract with
    | None ->
      Log.Task.warn
+       ~keeper_name:task.id
        "[verification-submit] task=%s has no contract — completion_contract \
         and evidence will be empty in the verification record"
        task.id
-   | Some c when c.completion_contract = [] && c.verify_gate_evidence = [] ->
+   | Some c
+     when c.completion_contract = []
+          && c.required_evidence = []
+          && c.verify_gate_evidence = [] ->
      Log.Task.warn
+       ~keeper_name:task.id
        "[verification-submit] task=%s has a contract but both \
-       completion_contract and verify_gate_evidence are empty"
+       completion_contract and verification evidence are empty"
        task.id
    | Some _ -> ())
 
@@ -125,6 +161,7 @@ let create_submit_request ~(config : Coord.config)
   | Ok _ -> Ok ()
   | Error e ->
     Log.Task.error
+      ~keeper_name:task.id
       "verification create_request failed (task=%s vrf=%s): %s"
       task.id verification_id e;
     Error e
@@ -132,6 +169,13 @@ let create_submit_request ~(config : Coord.config)
 let notify_submit_for_verification ~(config : Coord.config)
     ~(task : Masc_domain.task) ~assignee ~verification_id ~evidence_refs =
   let spec = submit_request_spec ~config ~task ~assignee ~evidence_refs in
+  let cdal_verdict_json =
+    persisted_cdal_verdict_payload
+      ~base_path:config.Coord.base_path
+      ~task_id:task.id
+      ~verification_id
+      ~fallback:(cdal_verdict_payload ~task_id:task.id spec.cdal_verdict)
+  in
   let meta_json = `Assoc [
     ("type", `String spec.board_type);
     ("task_id", `String task.id);
@@ -141,6 +185,7 @@ let notify_submit_for_verification ~(config : Coord.config)
     ("criteria", `List (List.map Verification.criterion_to_yojson spec.criteria));
     ("request_kind", `String spec.request_kind);
     ("next_action", `String spec.next_action);
+    ("cdal_verdict", cdal_verdict_json);
   ] in
   let () =
     match Board_dispatch.create_post
@@ -156,6 +201,7 @@ let notify_submit_for_verification ~(config : Coord.config)
     | Ok _ -> ()
     | Error e ->
       Log.Task.error
+        ~keeper_name:task.id
         "board post failed (task=%s vrf=%s): %s"
         task.id verification_id (Board_types.show_board_error e)
   in
@@ -165,6 +211,7 @@ let notify_submit_for_verification ~(config : Coord.config)
     ("verification_id", `String verification_id);
     ("worker", `String assignee);
     ("evidence_refs", `List (List.map (fun s -> `String s) evidence_refs));
+    ("cdal_verdict", cdal_verdict_json);
     ("timestamp", `Float (Time_compat.now ()));
   ]);
   ()
@@ -198,6 +245,7 @@ let record_approve_verification ~(config : Coord.config)
       Ok ()
     | Error e ->
       Log.Task.error
+        ~keeper_name:task_id
         "verification submit_verdict failed (task=%s vrf=%s verifier=%s): %s"
         task_id verification_id verifier e;
       Error e
@@ -224,6 +272,7 @@ let notify_approve_verification ~task_id ~verifier ~verification_id ~notes =
     | Ok _ -> ()
     | Error e ->
       Log.Task.error
+        ~keeper_name:task_id
         "board post failed (task=%s vrf=%s): %s"
         task_id verification_id (Board_types.show_board_error e)
   in
@@ -268,6 +317,7 @@ let record_reject_verification ~(config : Coord.config)
       Ok ()
     | Error e ->
       Log.Task.error
+        ~keeper_name:task_id
         "verification submit_verdict failed (task=%s vrf=%s verifier=%s): %s"
         task_id verification_id verifier e;
       Error e
@@ -293,6 +343,7 @@ let notify_reject_verification ~task_id ~verifier ~verification_id ~reason =
     | Ok _ -> ()
     | Error e ->
       Log.Task.error
+        ~keeper_name:task_id
         "board post failed (task=%s vrf=%s): %s"
         task_id verification_id (Board_types.show_board_error e)
   in
@@ -315,6 +366,27 @@ let on_reject_verification ~(config : Coord.config)
     notify_reject_verification ~task_id ~verifier ~verification_id ~reason;
     Ok ()
 
+let awaiting_verification_deadline
+      ~(submitted_at : string)
+      ~(deadline : string option)
+  =
+  match deadline with
+  | Some deadline ->
+    (match Masc_domain.parse_iso8601_opt deadline with
+     | Some deadline_ts -> Some ("deadline", deadline, deadline_ts)
+     | None -> None)
+  | None ->
+    (match Masc_domain.parse_iso8601_opt submitted_at with
+     | Some submitted_ts ->
+       let deadline_ts =
+         submitted_ts +. Env_config_runtime.Verification.timeout_deadline_seconds ()
+       in
+       Some
+         ( "submitted_at_fallback"
+         , Masc_domain.iso8601_of_unix_seconds deadline_ts
+         , deadline_ts )
+     | None -> None)
+
 let check_timeouts ~(config : Coord.config) =
   if not (Env_config_runtime.Verification.fsm_enabled ()) then ()
   else
@@ -323,15 +395,22 @@ let check_timeouts ~(config : Coord.config) =
       let now = Time_compat.now () in
       List.iter (fun (task : Masc_domain.task) ->
         match task.task_status with
-        | Masc_domain.AwaitingVerification { assignee; verification_id; deadline = Some dl; _ } ->
-          (match Masc_domain.parse_iso8601_opt dl with
-           | Some deadline_ts when now > deadline_ts ->
+        | Masc_domain.AwaitingVerification
+            { assignee; verification_id; submitted_at; deadline } ->
+          (match awaiting_verification_deadline ~submitted_at ~deadline with
+           | Some (deadline_source, dl, deadline_ts)
+             when now > deadline_ts ->
+             let deadline_note =
+               match deadline_source with
+               | "deadline" -> dl
+               | _ -> Printf.sprintf "%s (derived from submitted_at)" dl
+             in
              let () =
                match Board_dispatch.create_post
                  ~author:"system"
                  ~content:(Printf.sprintf
                    "Verification timeout: task %s (%s) by %s — no verifier responded within deadline %s"
-                   task.id task.title assignee dl)
+                   task.id task.title assignee deadline_note)
                  ~title:(Printf.sprintf "Timeout: %s" task.title)
                  ~post_kind:Board.System_post
                  ~meta_json:(`Assoc [
@@ -339,7 +418,9 @@ let check_timeouts ~(config : Coord.config) =
                    ("task_id", `String task.id);
                    ("verification_id", `String verification_id);
                    ("assignee", `String assignee);
+                   ("submitted_at", `String submitted_at);
                    ("deadline", `String dl);
+                   ("deadline_source", `String deadline_source);
                  ])
                  ~visibility:Board.Internal
                  ~hearth:"verification"
@@ -348,6 +429,7 @@ let check_timeouts ~(config : Coord.config) =
                | Ok _ -> ()
                | Error e ->
                  Log.Task.error
+                   ~keeper_name:task.id
                    "board post failed (task=%s vrf=%s): %s"
                    task.id verification_id (Board_types.show_board_error e)
              in
@@ -356,6 +438,8 @@ let check_timeouts ~(config : Coord.config) =
                ("task_id", `String task.id);
                ("verification_id", `String verification_id);
                ("assignee", `String assignee);
+               ("deadline", `String dl);
+               ("deadline_source", `String deadline_source);
                ("timestamp", `Float now);
              ]);
              (* Transition the task out of AwaitingVerification so the next
@@ -364,8 +448,8 @@ let check_timeouts ~(config : Coord.config) =
                 cycle re-creates the same board entry. *)
              let cancel_reason =
                Printf.sprintf
-                 "verification deadline exceeded (assignee=%s, vrf=%s, deadline=%s)"
-                 assignee verification_id dl
+                 "verification deadline exceeded (assignee=%s, vrf=%s, deadline=%s, source=%s)"
+                 assignee verification_id dl deadline_source
              in
              (match
                 Coord.force_cancel_task_r
@@ -378,15 +462,17 @@ let check_timeouts ~(config : Coord.config) =
               | Ok _ -> ()
               | Error e ->
                 Log.Task.error
+                  ~keeper_name:task.id
                   "verification timeout transition failed (task=%s vrf=%s): %s"
                   task.id verification_id
                   (Masc_domain.show_masc_error e))
            | Some _ -> ()
            | None -> ())
-        | Todo | Claimed _ | InProgress _ | AwaitingVerification { deadline = None; _ } | Done _ | Cancelled _ -> ()
+        | Todo | Claimed _ | InProgress _ | Done _ | Cancelled _ -> ()
       ) backlog.tasks
     with
     | Eio.Cancel.Cancelled _ as e -> raise e
     | exn ->
       Log.Task.error "verification timeout check failed: %s"
         (Printexc.to_string exn)
+;;

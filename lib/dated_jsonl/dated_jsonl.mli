@@ -7,10 +7,20 @@
 type t
 (** Opaque handle.  Holds [base_dir] and the append mutex. *)
 
-val create : base_dir:string -> ?mutex:Eio.Mutex.t -> unit -> t
+val create :
+  base_dir:string ->
+  ?mutex:Eio.Mutex.t ->
+  ?retention_days:int ->
+  ?max_bytes:int ->
+  unit ->
+  t
 (** [create ~base_dir ()] builds a store rooted at [base_dir].
     An optional [mutex] can be injected to bypass the shared registry
-    (useful for testing). *)
+    (useful for testing).  When [?retention_days] is positive, [append]
+    performs an opportunistic once-per-process-day prune of older day-files.
+    When [?max_bytes] is positive, [append] prunes oldest completed day-files
+    until the store is at or below the cap, while preserving the current
+    day-file. *)
 
 val base_dir : t -> string
 (** Return the base directory of this store. *)
@@ -18,6 +28,12 @@ val base_dir : t -> string
 val append : t -> Yojson.Safe.t -> unit
 (** Append [json] to today's [DD.jsonl] inside [YYYY-MM/].
     Creates directories as needed.  Thread-safe via internal mutex. *)
+
+val set_append_guard : ((unit -> unit) -> unit) -> unit
+(** [set_append_guard guard] installs a process-wide wrapper around
+    {!append}.  The default guard runs the callback immediately.  Higher-level
+    runtimes can install resource accounting/backpressure without making this
+    low-level storage library depend on those policy modules. *)
 
 val read_recent : t -> int -> Yojson.Safe.t list
 (** [read_recent t n] returns the newest [n] entries in chronological order
@@ -32,6 +48,14 @@ val read_range : t -> since:string -> until:string -> Yojson.Safe.t list
     within [[since, until]] (inclusive, format ["YYYY-MM-DD"]).
     Result is in chronological order. *)
 
+val iter_all : t -> (Yojson.Safe.t -> unit) -> unit
+(** [iter_all t f] calls [f] for every parseable JSONL entry in chronological
+    order without loading a whole day-file into memory. Malformed rows are
+    skipped, matching {!read_recent} and {!read_range}. *)
+
+val iter_range : t -> since:string -> until:string -> (Yojson.Safe.t -> unit) -> unit
+(** Streaming variant of {!read_range}. Invalid dates iterate zero rows. *)
+
 val prune : t -> days:int -> int
 (** [prune t ~days] deletes day-files older than [days] days ago.
     Returns the number of files deleted.  Removes empty month directories. *)
@@ -43,7 +67,21 @@ val prune : t -> days:int -> int
 val count_entries : t -> int
 [@@@warning "+32"]
 (* [count_entries t] returns the total number of non-empty lines across all
-   day-files. Scans files by counting newlines without JSON parsing. *)
+   day-files. Scans files by counting newlines without JSON parsing.
+
+   Backed by a process-local TTL cache (RFC-0162 §3.2) keyed on
+   [base_dir]. The cached count is good for ~10 s; concurrent
+   dashboard refresh surfaces share the result so a 30 s window
+   costs one scan, not three. Tests and audit callers that need
+   the live count should use [count_entries_uncached]. *)
+
+val count_entries_uncached : t -> int
+(** Like [count_entries] but bypasses the TTL cache. Use in tests
+    or rare audit paths that must observe the live filesystem
+    count. RFC-0162 §3.2. *)
+
+val reset_count_cache_for_testing : unit -> unit
+(** Reset the [count_entries] TTL cache. Test-only. *)
 
 val load_tail_lines : string -> max_lines:int -> string list
 (** [load_tail_lines file ~max_lines] efficiently reads the last [max_lines]
@@ -61,4 +99,6 @@ module For_testing : sig
   val registry_size : unit -> int
   (** Number of distinct [base_dir] keys currently held by the
       file-scope mutex registry. *)
+
+  val reset_append_guard : unit -> unit
 end

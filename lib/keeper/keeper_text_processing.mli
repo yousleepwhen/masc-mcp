@@ -1,5 +1,5 @@
 (** Keeper_text_processing — text processing functions shared by
-    [Keeper_exec_context] and [Keeper_prompt].
+    [Keeper_context_runtime] and [Keeper_prompt].
 
     Handles reply markup stripping, proactive text normalisation,
     quality checks, and fragment detection. *)
@@ -10,7 +10,6 @@
 val strip_state_blocks_text : string -> string
 
 (** Trim whitespace; return [None] for empty strings. *)
-val trim_to_option : string -> string option
 
 (** Extract a fallback reply string from a state snapshot. *)
 val state_snapshot_reply_fallback :

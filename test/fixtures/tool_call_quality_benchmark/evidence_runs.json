@@ -2,10 +2,10 @@
   "runs": [
     {
       "case_id": "read_search_prompt_fingerprint",
-      "provider": "openai",
-      "model": "gpt-5.4",
+      "provider": "provider-d",
+      "model": "model-d-5.4",
       "keeper_profile": "bench-analyst",
-      "run_id": "run-openai-analyst-1",
+      "run_id": "run-provider-d-analyst-1",
       "repeat_index": 1,
       "prompt_fingerprint": "fp-analyst-a",
       "task_success": true,
@@ -29,7 +29,7 @@
           }
         },
         {
-          "tool_name": "keeper_fs_read",
+          "tool_name": "tool_read_file",
           "success": true,
           "duration_ms": 31.0,
           "input": {
@@ -40,10 +40,10 @@
     },
     {
       "case_id": "read_search_prompt_fingerprint",
-      "provider": "openai",
-      "model": "gpt-5.4",
+      "provider": "provider-d",
+      "model": "model-d-5.4",
       "keeper_profile": "bench-analyst",
-      "run_id": "run-openai-analyst-2",
+      "run_id": "run-provider-d-analyst-2",
       "repeat_index": 2,
       "prompt_fingerprint": "fp-analyst-a",
       "task_success": true,
@@ -67,7 +67,7 @@
           }
         },
         {
-          "tool_name": "keeper_fs_read",
+          "tool_name": "tool_read_file",
           "success": true,
           "duration_ms": 33.0,
           "input": {
@@ -78,10 +78,10 @@
     },
     {
       "case_id": "read_search_prompt_fingerprint",
-      "provider": "openai",
-      "model": "gpt-5.4",
+      "provider": "provider-d",
+      "model": "model-d-5.4",
       "keeper_profile": "bench-executor",
-      "run_id": "run-openai-executor-1",
+      "run_id": "run-provider-d-executor-1",
       "repeat_index": 1,
       "prompt_fingerprint": "fp-executor-a",
       "task_success": true,
@@ -105,7 +105,7 @@
           }
         },
         {
-          "tool_name": "keeper_bash",
+          "tool_name": "tool_execute",
           "success": true,
           "duration_ms": 48.0,
           "input": {
@@ -113,7 +113,7 @@
           }
         },
         {
-          "tool_name": "keeper_fs_read",
+          "tool_name": "tool_read_file",
           "success": true,
           "duration_ms": 30.0,
           "input": {
@@ -124,10 +124,10 @@
     },
     {
       "case_id": "text_only_triage",
-      "provider": "openai",
-      "model": "gpt-5.4",
+      "provider": "provider-d",
+      "model": "model-d-5.4",
       "keeper_profile": "bench-analyst",
-      "run_id": "run-openai-text-only-1",
+      "run_id": "run-provider-d-text-only-1",
       "repeat_index": 1,
       "prompt_fingerprint": "fp-analyst-text",
       "task_success": true,
@@ -145,10 +145,10 @@
     },
     {
       "case_id": "recovery_after_failed_read",
-      "provider": "openai",
-      "model": "gpt-5.4-mini",
+      "provider": "provider-d",
+      "model": "model-d-5.4-mini",
       "keeper_profile": "bench-verifier",
-      "run_id": "run-openai-verifier-1",
+      "run_id": "run-provider-d-verifier-1",
       "repeat_index": 1,
       "prompt_fingerprint": "fp-verifier-a",
       "task_success": true,
@@ -164,7 +164,7 @@
       },
       "tool_calls": [
         {
-          "tool_name": "keeper_fs_read",
+          "tool_name": "tool_read_file",
           "success": false,
           "duration_ms": 15.0,
           "input": {
@@ -180,7 +180,7 @@
           }
         },
         {
-          "tool_name": "keeper_fs_read",
+          "tool_name": "tool_read_file",
           "success": true,
           "duration_ms": 34.0,
           "input": {
@@ -191,10 +191,10 @@
     },
     {
       "case_id": "recovery_after_failed_read",
-      "provider": "openai",
-      "model": "gpt-5.4-mini",
+      "provider": "provider-d",
+      "model": "model-d-5.4-mini",
       "keeper_profile": "bench-verifier",
-      "run_id": "run-openai-verifier-2",
+      "run_id": "run-provider-d-verifier-2",
       "repeat_index": 2,
       "prompt_fingerprint": "fp-verifier-b",
       "task_success": true,
@@ -210,7 +210,7 @@
       },
       "tool_calls": [
         {
-          "tool_name": "keeper_fs_read",
+          "tool_name": "tool_read_file",
           "success": false,
           "duration_ms": 18.0,
           "input": {
@@ -226,7 +226,7 @@
           }
         },
         {
-          "tool_name": "keeper_fs_read",
+          "tool_name": "tool_read_file",
           "success": true,
           "duration_ms": 39.0,
           "input": {
@@ -234,7 +234,7 @@
           }
         },
         {
-          "tool_name": "keeper_fs_read",
+          "tool_name": "tool_read_file",
           "success": true,
           "duration_ms": 22.0,
           "input": {
@@ -245,10 +245,10 @@
     },
     {
       "case_id": "multi_step_board_update",
-      "provider": "anthropic",
-      "model": "claude-sonnet-latest",
+      "provider": "provider-a",
+      "model": "agent-llm-a-sonnet-latest",
       "keeper_profile": "bench-executor",
-      "run_id": "run-anthropic-executor-1",
+      "run_id": "run-provider-a-executor-1",
       "repeat_index": 1,
       "prompt_fingerprint": "fp-executor-board",
       "task_success": false,

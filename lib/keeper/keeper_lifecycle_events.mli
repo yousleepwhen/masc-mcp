@@ -10,6 +10,7 @@ type t =
   | Self_preservation
   | Paused_pruned
   | Auto_resumed
+  | Admission_denied
 
 val to_string : t -> string
 val all_custom_events : t list
@@ -26,7 +27,7 @@ val all_event_names : string list
 
 (** {1 Unified lifecycle event sum type (#8856)}
 
-    Wire vocabulary for [Oas_events.publish_keeper_lifecycle]. The
+    Wire vocabulary for [Cascade_events.publish_keeper_lifecycle]. The
     [Custom_event] case carries an optional phase context that the
     legacy [?phase] argument used to provide; [Phase_event] is the case
     where the wire event name IS the phase name. *)

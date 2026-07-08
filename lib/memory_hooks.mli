@@ -41,8 +41,27 @@ val make :
   ?procedure_limit:int ->
   ?flush_incremental:
     (memory:Agent_sdk.Memory.t -> agent_name:string -> int * int) ->
+  ?runtime_manifest_context:Keeper_runtime_manifest.turn_context ->
+  ?runtime_manifest_append:(Keeper_runtime_manifest.t -> unit) ->
   unit ->
   Agent_sdk.Hooks.hooks
+
+val record_last_memory_injection : string -> string -> int -> int -> unit
+(** [record_last_memory_injection agent_name digest computed_size injected_size]
+    records the digest, computed memory text size, and final injected
+    extra_system_context size of the last memory injection for an agent.
+    Thread-safe (Stdlib.Mutex). Overwrites any previous entry. *)
+
+val get_last_memory_injection : string -> (string * int * int) option
+(** Retrieve the last recorded memory injection digest, computed size, and
+    injected size for an agent. Thread-safe (Stdlib.Mutex). Returns [None]
+    if no injection was recorded since the last [Continue] branch or process
+    start. *)
+
+val clear_last_memory_injection : string -> unit
+(** Clear the recorded memory injection digest and size for an agent.
+    Used at the keeper turn boundary so pre-dispatch failures cannot
+    inherit side-channel data from an earlier turn. *)
 
 val compose_with_inner :
   memory_hooks:Agent_sdk.Hooks.hooks ->

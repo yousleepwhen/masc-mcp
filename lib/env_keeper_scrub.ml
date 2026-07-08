@@ -1,4 +1,4 @@
-(* Exact keys copied from claude-code's GHA_SUBPROCESS_SCRUB list at
+(* Exact keys copied from agent_llm_a-code's GHA_SUBPROCESS_SCRUB list at
    src/utils/subprocessEnv.ts:15-53.
 
    Each group is documented in the reference. Rationale preserved so a
@@ -6,7 +6,7 @@
 
 let scrub : string list =
   [
-    (* Anthropic auth — MASC re-reads these per-request, subprocesses don't
+    (* Provider_a auth — MASC re-reads these per-request, subprocesses don't
        need them and leaking them into a sandboxed container creates an
        escape surface. *)
     "ANTHROPIC_API_KEY";
@@ -46,7 +46,7 @@ let scrub : string list =
     "SSH_SIGNING_KEY";
 
     (* Keeper GitHub work must use the MASC-owned identity bundle
-       selected by Keeper_gh_env. Ambient host credentials would turn
+       selected by Repo_cli_credentials. Ambient host credentials would turn
        keeper/root identity labels into a cosmetic boundary. *)
     "GH_TOKEN";
     "GITHUB_TOKEN";
@@ -55,6 +55,21 @@ let scrub : string list =
     "GIT_CONFIG_GLOBAL";
     "GIT_CONFIG_SYSTEM";
     "GIT_CONFIG_COUNT";
+
+    (* Stress test 2026-05-26 — same-category extensions to the reference
+       list. The reference (agent_llm_a-code) inherits from gh CLI usage,
+       but these were missed: *)
+    (* gh Enterprise token: same role as GH_TOKEN, different env name. *)
+    "GH_ENTERPRISE_TOKEN";
+    (* gh endpoint host override — operator setting GH_HOST=evil.com
+       would redirect keeper API calls without changing token. *)
+    "GH_HOST";
+    (* git credential helper / SSH command override — these let a host
+       env subvert keeper identity by injecting an arbitrary askpass or
+       ssh binary. Same category as GIT_CONFIG_GLOBAL above. *)
+    "GIT_ASKPASS";
+    "GIT_SSH";
+    "GIT_SSH_COMMAND";
   ]
 
 let pass : string list =

@@ -24,7 +24,7 @@ Scope:
 
 - Canonical behavior in this document is derived from code.
 - "Current host audit" is a dated snapshot of the machine inspected on 2026-04-09.
-- Primary runtime domains are `tasks`, `board`, `goals`, `governance`, `autoresearch`, and `keepers`.
+- Primary runtime domains are `tasks`, `board`, `goals`, `governance`, and `keepers`.
 - `team-sessions`, `local-workers`, `oas-runtime`, and `command-plane` are documented only as compatibility, historical, or execution-artifact lanes, not as the primary product concept.
 
 ## 1. Boot Inputs and Precedence
@@ -38,11 +38,10 @@ Scope:
 | `MASC_CONFIG_DIR` | Explicit config root override. Highest-precedence config selector. | `Config_dir_resolver`, bootstrap, keeper/persona config resolution |
 | `MASC_PERSONAS_DIR` | Explicit personas root override. | `Config_dir_resolver`, keeper/persona loading |
 | `MASC_STORAGE_TYPE` | Runtime backend selector. Only `filesystem` is active; PostgreSQL backend was removed. | bootstrap and backend setup |
-| `HOME` | Fallback for home-level config discovery. | `Config_dir_resolver`, some artifact stores |
-| `MASC_WORKSPACE_ROOT`, `ME_ROOT`, `DUNE_SOURCEROOT` | Workspace discovery, legacy repo fallback, some knowledge paths, `scripts/sb` resolution. | `Env_config_core`, `autoresearch_knowledge`, legacy paths |
+| `HOME` | Shell/user-home context for external tools and non-config artifact stores. | Host process environment |
+| `MASC_WORKSPACE_ROOT`, `ME_ROOT`, `DUNE_SOURCEROOT` | Workspace discovery, knowledge paths, `scripts/sb` resolution. | `Env_config_core`, workspace paths |
 | `MASC_HOST`, `MASC_HTTP_PORT`, `MASC_HTTP_BASE_URL` | Bind address and derived HTTP endpoint identity. | HTTP/bootstrap/provider routing |
 | `MASC_ADMIN_TOKEN` | Privileged endpoint auth. | server auth |
-| `MASC_POSTGRES_URL`, `MASC_PG_POOL_SIZE` | Retired PostgreSQL backend envs; current bootstrap logs and ignores PG runtime envs while enforcing filesystem storage. | bootstrap diagnostics only |
 
 Not every environment variable controls the same part of the runtime, but the
 default operator contract is still boot-time unless a separate runtime control
@@ -57,9 +56,7 @@ Low-level resolver precedence is:
 
 1. `MASC_CONFIG_DIR`
 2. `<MASC_BASE_PATH>/.masc/config`
-3. `~/.masc/config`
-4. `cwd/config` when `MASC_ALLOW_REPO_CONFIG_FALLBACK=true`
-5. executable-relative `config/` when `MASC_ALLOW_REPO_CONFIG_FALLBACK=true`
+3. missing/uninitialized `<base-path>/.masc/config`
 
 Important boot behavior:
 
@@ -68,6 +65,8 @@ Important boot behavior:
 - Supported launchers and `main_eio.exe doctor` should be read with a simpler operator contract:
   active config is `MASC_CONFIG_DIR` when set, otherwise `<MASC_BASE_PATH>/.masc/config`.
 - This means a passive base-path config root can exist on disk even when it is not the active config root.
+- There is no secondary operator config fallback. On shared hosts, use an
+  explicit base path and expect live config under `<base-path>/.masc/config`.
 
 ### 1.3 Personas root resolution
 
@@ -84,7 +83,7 @@ The checked-in versioned seed config tree currently contains:
 
 | Path | Purpose |
 | --- | --- |
-| `config/cascade.json` | Provider/model cascade and routing defaults. |
+| `config/cascade.toml` | Provider/model cascade and routing defaults. |
 | `config/tool_policy.toml` | Tool preset policy and allow/deny rules. |
 | `config/keepers/*.toml` | Keeper defaults and policy-overridable profiles. |
 | `config/personas/*` | Persona definitions and persona-specific profile data. |
@@ -116,13 +115,10 @@ Operational contract:
 
 Missing file is not an error (returns 0 overrides, uses env/defaults).
 Parse errors log a warning and fall back to env defaults.
-For compatibility keys that runtime still reads, the legacy process env
-also preempts TOML. Example: `MASC_KEEPER_AUTOBOT_MAX` preempts
-`bootstrap.autoboot_max` even though TOML writes the canonical
-`MASC_KEEPER_AUTOBOOT_MAX` boot override.
-
-Legacy compatibility names that are no longer read by the unified turn path
-are intentionally excluded from this TOML surface.
+Legacy compatibility names are not TOML preemption keys. For example,
+`MASC_KEEPER_AUTOBOT_MAX` is ignored here; `bootstrap.autoboot_max` writes
+only the canonical `MASC_KEEPER_AUTOBOOT_MAX` boot override unless that exact
+canonical process env var is already set.
 
 **Sections** (80 knobs total):
 
@@ -184,21 +180,21 @@ without mutating the parent environment.
 
 ### 2.1 Root formulas
 
-- Default cluster runtime root: `<base_path>/.masc`
-- When no explicit `base_path` is provided, runtime state falls back to `~/.masc`
-  by treating `HOME` as the implicit base path.
-- Named cluster runtime root: `<base_path>/.masc/clusters/<cluster_name>`
+- Default cluster runtime root: `<base-path>/.masc`
+- Normal operator runbooks should name the base path explicitly; runtime state
+  is then rooted at `<base-path>/.masc`.
+- Named cluster runtime root: `<base-path>/.masc/clusters/<cluster_name>`
 - Config root: resolved separately by the precedence chain above
 - Personas root: resolved separately from the config root
-- Planning root: `<base_path>/planning/<task_id>` (important outlier: not inside `.masc`)
+- Planning root: `<base-path>/planning/<task_id>` (important outlier: not inside `.masc`)
 
 ### 2.2 Path matrix
 
 | Artifact lane | Canonical path |
 | --- | --- |
-| Runtime root | `<base_path>/.masc` |
-| Cluster root | `<base_path>/.masc/clusters/<cluster_name>` |
-| Base-path config root | `<base_path>/.masc/config` |
+| Runtime root | `<base-path>/.masc` |
+| Cluster root | `<base-path>/.masc/clusters/<cluster_name>` |
+| Base-path config root | `<base-path>/.masc/config` |
 | Keepers | `<runtime_root>/keepers` |
 | Traces | `<runtime_root>/traces` |
 | Playground | `<runtime_root>/playground/<keeper>/...` |
@@ -207,12 +203,11 @@ without mutating the parent environment.
 | Agents | `<runtime_root>/agents` |
 | Messages | `<runtime_root>/messages` |
 | Current task pointer | `<runtime_root>/current_task` |
-| Planning context | `<base_path>/planning/<task_id>/` |
+| Planning context | `<base-path>/planning/<task_id>/` |
 | Runs | `<runtime_root>/runs/<task_id>/` |
 | Board | `<runtime_root>/board_posts.jsonl`, `board_comments.jsonl`, `board_votes.jsonl` |
 | Goals | `<runtime_root>/goals.json`, `goals_snapshots/`, `goals_scheduler_state.json` |
 | Governance | `<runtime_root>/governance.json`, `governance_v2/...` |
-| Autoresearch loops | `<runtime_root>/autoresearch/<loop_id>/` |
 | Control plane | `<runtime_root>/control-plane/` |
 | Operator lane | `<runtime_root>/operator/` |
 | Logs | `<runtime_root>/logs/` |
@@ -233,7 +228,7 @@ without mutating the parent environment.
 - `<runtime_root>/agents/`: agent membership and state snapshots.
 - `<runtime_root>/messages/`: room and broadcast message artifacts.
 - `<runtime_root>/current_task`: planning pointer for the current claimed task.
-- `<base_path>/planning/<task_id>/`: planning-with-files context:
+- `<base-path>/planning/<task_id>/`: planning-with-files context:
   - `task_plan.md`
   - `notes.md`
   - `errors.md`
@@ -245,7 +240,7 @@ without mutating the parent environment.
   - `deliverable.md`
   - `log.jsonl`
 
-Important outlier: planning data does not live under `.masc`; it lives under `<base_path>/planning/`.
+Important outlier: planning data does not live under `.masc`; it lives under `<base-path>/planning/`.
 
 ### 3.2 Board
 
@@ -280,21 +275,7 @@ Compatibility note:
 - `governance_v2/petitions/` may still exist on disk, but petition-first governance is no longer the primary operating concept.
 - Some older governance reads still inspect `<runtime_root>/governance/judgments/`.
 
-### 3.5 Autoresearch
-
-- `<runtime_root>/autoresearch/<loop_id>/`
-  - `results.jsonl`
-  - `state.json`
-  - `swarm.json`
-  - `worktree/`
-- `<me_root>/.masc/autoresearch/findings/findings.jsonl`
-
-Important outlier:
-
-- The findings store is resolved from `ME_ROOT` or `HOME`, not from the room-config runtime root.
-- Legacy links from team-session artifacts to autoresearch loops may still exist.
-
-### 3.6 Keepers
+### 3.5 Keepers
 
 - `<runtime_root>/keepers/<name>.json`: keeper meta/state.
 - `<runtime_root>/keepers/<name>.decisions.jsonl`
@@ -340,7 +321,7 @@ Allowed path model:
 ### 3.8 Logs, Audit, Metrics, and Tool Traces
 
 - `<runtime_root>/logs/`: service logs.
-- `<runtime_root>/audit/YYYY-MM/DD.jsonl` and legacy `<runtime_root>/audit.jsonl`
+- `<runtime_root>/audit/YYYY-MM/DD.jsonl`
 - `<runtime_root>/tool_calls/YYYY-MM/DD.jsonl`
 - `<runtime_root>/tool_usage/YYYY-MM/DD.jsonl`
 - `<runtime_root>/runtime_params.json`
@@ -377,7 +358,6 @@ Notes:
   Discord bot. When the bot uses relative paths, resolve them against the same
   `MASC_BASE_PATH` as the server. Operational setup and verification steps live
   in `sidecars/discord-bot/README.md`.
-- `VOICE_MCP_HOST` and `VOICE_MCP_PORT` remain legacy environment fallbacks.
 - All voice paths resolve relative to `MASC_BASE_PATH/.masc/`.
   `voice_config.json` is discovered at `<runtime_root>/voice_config.json`
   where `<runtime_root>` = `MASC_BASE_PATH/.masc/`.
@@ -403,7 +383,7 @@ Notes:
 
 These still exist because some execution and proof surfaces have not been fully migrated away from them. They should not be treated as the main product-level operator concept.
 
-## 4. Current Host Audit (2026-04-09)
+## 4. Current Host Audit (2026-05-17)
 
 Current observed state on the inspected host:
 
@@ -415,11 +395,9 @@ Current observed state on the inspected host:
   - `/Users/dancer/me/.masc`
 - Effective config root:
   - `/Users/dancer/me/.masc/config`
-  - Reason: for the normal `--base-path=/Users/dancer/me` runtime without an explicit `MASC_CONFIG_DIR` override, config resolves under the base path.
+  - Reason: live `/health` reports `startup.config_resolution.config_root.path` as `/Users/dancer/me/.masc/config`.
 - Checked-in fallback/default config tree:
   - `/Users/dancer/me/workspace/yousleepwhen/masc-mcp/config`
-- Home fallback config root is absent on this host right now:
-  - `/Users/dancer/.masc/config` does not exist.
 - Both of these trees exist at the same time:
   - `/Users/dancer/me/.masc/*`
   - `/Users/dancer/me/.masc/.masc/*`
@@ -429,7 +407,7 @@ Interpretation:
 - `/Users/dancer/me/.masc` is the current canonical runtime root.
 - `/Users/dancer/me/.masc/.masc` should be treated as historical drift from earlier runs that used `/Users/dancer/me/.masc` itself as `base_path`.
 - The active config root should be treated as the resolved runtime config root under `/Users/dancer/me/.masc/config` unless `MASC_CONFIG_DIR` explicitly points elsewhere.
-- The checked-in repo `config/` tree is the versioned default/fallback source, not the live runtime truth by itself.
+- The checked-in repo `config/` tree is the versioned default/seed source, not the live runtime truth by itself.
 
 Current host definitely has live filesystem data for:
 
@@ -437,7 +415,6 @@ Current host definitely has live filesystem data for:
 - board
 - goals
 - governance
-- autoresearch
 - keepers
 - command-plane and operator
 - auth
@@ -446,16 +423,14 @@ Current host definitely has live filesystem data for:
 
 Current log sink observed today:
 
-- `/Users/dancer/me/.masc/logs/masc-server.log`
-- `/Users/dancer/me/.masc/logs/system_log_2026-04-09.jsonl`
+- `/Users/dancer/me/.masc/logs`
+- current file-sink date: `2026-05-17`
 
 [근거]
 
-- `ps aux | rg 'main_eio\.exe --host=127.0.0.1 --port=8935 --base-path=/Users/dancer/me'`; 확인일시: 2026-04-09 Asia/Seoul; 신뢰도: High
-- `ps eww -p 3568` with secret-bearing values redacted; 확인일시: 2026-04-09 Asia/Seoul; 신뢰도: High
-- `env | sort | rg '^(HOME|ME_ROOT|MASC_BASE_PATH|MASC_CONFIG_DIR|MASC_PERSONAS_DIR)='`; 확인일시: 2026-04-09 Asia/Seoul; 신뢰도: High
-- `find /Users/dancer/me/.masc ...`; 확인일시: 2026-04-09 Asia/Seoul; 신뢰도: High
-- `test -d /Users/dancer/.masc/config && echo present || echo absent`; 확인일시: 2026-04-09 Asia/Seoul; 신뢰도: High
+- `curl -fsS http://127.0.0.1:8935/health`; 확인일시: 2026-05-17 Asia/Seoul; 신뢰도: High
+- `pgrep -fl main_eio`; 확인일시: 2026-05-17 Asia/Seoul; 신뢰도: High
+- `test -f /Users/dancer/me/.masc/config/cascade.toml`; 확인일시: 2026-05-17 Asia/Seoul; 신뢰도: High
 
 ## 5. Operator Checklist for Root Drift
 
@@ -465,15 +440,15 @@ Current log sink observed today:
 2. Pick one active config root.
    - If `MASC_CONFIG_DIR` is set, that wins.
    - If you want the base-path config root to become active, unset `MASC_CONFIG_DIR` and restart.
-   - The home fallback is only relevant when both of the above fail and `~/.masc/config` actually exists.
-3. Treat `<base_path>/planning/` as a separate backup and cleanup lane from `.masc/`.
+   - Do not create a second operator config surface; the resolver only consults the active config root.
+3. Treat `<base-path>/planning/` as a separate backup and cleanup lane from `.masc/`.
 4. Do not delete a nested `.masc/.masc` tree until you have checked whether it still contains needed logs, traces, or backlog state.
 5. When debugging keeper shell, clone, or PR-submit behavior, inspect these paths first:
    - `<runtime_root>/playground/<keeper>/repos/`
    - `<runtime_root>/keepers/<name>/`
    - `<runtime_root>/traces/`
    - `<active config root>/tool_policy.toml`
-   - `<active config root>/cascade.json`
+   - `<active config root>/cascade.toml`
 
 ## Appendix A. Centralized Environment Inventory
 
@@ -501,15 +476,11 @@ MASC_LOG_LEVEL
 MASC_LOG_ROUTINE_LEVEL
 MASC_PARSE_WARN
 MASC_PERSONAS_DIR
-MASC_PG_POOL_SIZE
-MASC_POSTGRES_URL
 MASC_PUBSUB_MAX_MESSAGES
 MASC_RELAY_CALIBRATION_ENABLED
 MASC_STORAGE_TYPE
 MASC_TELEMETRY_ENABLED
-MASC_TOOL_AUTH_STRICT
 MASC_WORKSPACE_ROOT
-ME_ROOT
 ```
 
 ### A.2 `env_config_runtime`
@@ -620,8 +591,6 @@ MASC_ZOMBIE_CLEANUP_INTERVAL_SEC
 MASC_ZOMBIE_THRESHOLD_SEC
 OLLAMA_DEFAULT_MODEL
 OLLAMA_SERVER_URL
-VOICE_MCP_HOST
-VOICE_MCP_PORT
 ZAI_BASE_URL
 ```
 
@@ -640,7 +609,6 @@ MASC_DASHBOARD_FIXTURE
 MASC_DASHBOARD_FIXTURES_ENABLED
 MASC_DASHBOARD_GOVERNANCE_JUDGE_ENABLED
 MASC_DASHBOARD_GOVERNANCE_JUDGE_INTERVAL_SEC
-MASC_DASHBOARD_GOVERNANCE_JUDGE_TIMEOUT_SEC
 MASC_DEFAULT_CASCADE
 MASC_DEFAULT_MODEL
 MASC_DEFAULT_PROVIDER
@@ -659,7 +627,6 @@ MASC_OPERATOR_JUDGE_ENABLED
 MASC_OPERATOR_JUDGE_INTERVAL_SEC
 MASC_OPERATOR_JUDGE_ROOM_TTL_SEC
 MASC_OPERATOR_JUDGE_SESSION_TTL_SEC
-MASC_OPERATOR_JUDGE_TIMEOUT_SEC
 MASC_RATE_LIMIT_CLEANUP_INTERVAL_SEC
 MASC_RATE_LIMIT_ENTRY_MAX_AGE_SEC
 MASC_ROUTING_CASCADE
@@ -669,27 +636,10 @@ MASC_SSE_KEEPALIVE_SEC
 
 ### A.4 `env_config_keeper`
 
-Used for keeper bootstrap, alert fanout, supervisor policy, keepalive cadence, tool retry behavior, OAS turn limits, and context compaction thresholds.
+Used for keeper bootstrap, alert fanout, supervisor policy, keepalive cadence, tool retry behavior, OAS turn limits, and the context ratio hard cap.
 
 ```text
 MASC_ALERT_DEDUP_WINDOW_SEC
-MASC_COMPACT_ANCHOR_BOOST
-MASC_COMPACT_DROP_THRESHOLD
-MASC_COMPACT_DYN_FOCUSED_RATIO
-MASC_COMPACT_DYN_MULTI_AGENT_RATIO
-MASC_COMPACT_KEEP_RECENT
-MASC_COMPACT_LARGE_CLOUD_FLOOR
-MASC_COMPACT_ROLE_ASSISTANT
-MASC_COMPACT_ROLE_SYSTEM
-MASC_COMPACT_ROLE_TOOL
-MASC_COMPACT_ROLE_USER
-MASC_COMPACT_SMALL_LOCAL_FLOOR
-MASC_COMPACT_TOOL_ABSENT
-MASC_COMPACT_TOOL_PRESENT
-MASC_COMPACT_TOOL_PRUNE_LIMIT
-MASC_COMPACT_W_RECENCY
-MASC_COMPACT_W_ROLE
-MASC_COMPACT_W_TOOL
 MASC_CONTEXT_RATIO_HARD_CAP
 MASC_DASHBOARD_HEALTH_CTX_CRITICAL
 MASC_DASHBOARD_HEALTH_CTX_WARN
@@ -763,7 +713,7 @@ Important operator-facing families still outside the centralized inventory:
 
 - dashboard and operator HTTP surfaces: `MASC_DASHBOARD_*`, `MASC_OPERATOR_*`, `MASC_WARM_DELAY_*`
 - advanced keeper tuning: extra `MASC_KEEPER_*` reads from `keeper_config.ml`, `keeper_memory_bank.ml`, `keeper_tool_affinity.ml`, and related files
-- transport edge cases: `MASC_ALLOW_LEGACY_ACCEPT`, `MASC_FORCE_JSON_RESPONSE`, `MASC_POST_SSE_KEEPALIVE_SEC`, `MASC_SSE_*`
+- transport edge cases: `MASC_FORCE_JSON_RESPONSE`, `MASC_POST_SSE_KEEPALIVE_SEC`, `MASC_SSE_*`
 - worker runtime and Docker lanes: `MASC_WORKER_RUNTIME_*`
 - goal, swarm, economy, and notify lanes: `MASC_GOAL_*`, `MASC_SWARM_*`, `MASC_ECONOMY_*`, `MASC_NOTIFY_*`
 - connector overrides: `MASC_DISCORD_*`
@@ -773,5 +723,5 @@ To regenerate the inventories:
 ```bash
 rg -oN '"MASC_[A-Z0-9_]+"' lib/config/env_config_core.ml lib/config/env_config_runtime.ml lib/config/env_config_governance.ml lib/config/env_config_keeper.ml | tr -d '"' | sort -u
 rg -oN '"MASC_[A-Z0-9_]+"' lib bin | tr -d '"' | sort -u
-rg -oN '"(LLAMA_[A-Z0-9_]+|OLLAMA_[A-Z0-9_]+|VOICE_MCP_[A-Z0-9_]+|ME_ROOT|HOME|DUNE_SOURCEROOT)"' lib bin | tr -d '"' | sort -u
+rg -oN '"(LLAMA_[A-Z0-9_]+|OLLAMA_[A-Z0-9_]+|HOME|DUNE_SOURCEROOT)"' lib bin | tr -d '"' | sort -u
 ```

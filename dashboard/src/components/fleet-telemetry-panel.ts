@@ -3,17 +3,21 @@ import { useSignal } from '@preact/signals'
 import { useEffect, useMemo, useRef } from 'preact/hooks'
 import { RotateCcw } from 'lucide-preact'
 import { LoadingState } from './common/feedback-state'
+import { hasFleetTelemetryData } from './fleet-telemetry-data-predicate'
 import { Eyebrow } from './common/eyebrow'
 import {
   fetchDashboardExecution,
+  fetchDashboardExecutionTrust,
   fetchDashboardNamespaceTruth,
   fetchTelemetrySummary,
   fetchToolQuality,
+  type DashboardExecutionTrustResponse,
   type TelemetrySourceSummary,
   type ToolQualityResponse,
 } from '../api/dashboard'
 import { resetKeeper } from '../api/keeper'
 import { TELEMETRY_AUTO_REFRESH_MS } from '../config/constants'
+import { telemetrySourceLabel } from '../config/telemetry-sources'
 import { formatAutoRefreshLabel, setupVisibleAutoRefresh } from '../lib/auto-refresh'
 import { useSavedSignal } from '../lib/saved-signal'
 import { normalizeKeepers } from '../keeper-store-normalize'
@@ -23,6 +27,7 @@ import { isAbortError } from '../lib/async-state'
 import { requestConfirm } from './common/confirm-dialog'
 import { Sparkline } from './common/sparkline'
 import { TextInput } from './common/input'
+import { coverageGapDisplay, freshnessText, sourceHealthClass } from './common/source-health'
 import { pushSnapshot, getTrend, type MetricKey, type TrendDirection } from './fleet-trend-store'
 import type { DashboardAttentionEvent, DashboardReadinessPillar } from '../types'
 import {
@@ -33,7 +38,7 @@ import {
   buildRuntimeWarnings,
   buildTelemetryWarnings,
   emptyState,
-  errorMessage,
+  errorMessageOrUnknown,
   fleetBand,
   formatActivitySignal,
   formatLatency,
@@ -41,24 +46,22 @@ import {
   pressureClass,
   sourceCountClass,
   sourceDetail,
-  sourceLabel,
   statusClass,
   successClass,
   summaryCounts,
   toneForPressure,
   toneForToolSuccess,
+  toolTelemetryCoverageDetail,
   toolSummary,
   type FleetRow,
   type FleetTelemetryState,
 } from './fleet-telemetry-utils'
 
-export { buildFleetRows }
-
 /**
  * Pure filter for fleet rows.
  *
- * Case-insensitive substring match on keeper identity, runtime model,
- * cascade/provider/fallback labels, and runtime blocker.
+ * Case-insensitive substring match on keeper identity, runtime/cascade
+ * attempt labels, and runtime blocker.
  *
  * Empty/whitespace query returns the input reference unchanged (no
  * new array allocation, preserves referential equality for memoisation).
@@ -78,6 +81,8 @@ function filterFleetRows(
     if (row.provider_label && row.provider_label.toLowerCase().includes(needle)) return true
     if (row.fallback_label && row.fallback_label.toLowerCase().includes(needle)) return true
     if (row.runtime_blocker_class && row.runtime_blocker_class.toLowerCase().includes(needle)) return true
+    if (row.stop_cause?.code.toLowerCase().includes(needle)) return true
+    if (row.stop_cause?.summary?.toLowerCase().includes(needle)) return true
     return false
   })
 }
@@ -135,7 +140,7 @@ function SummaryCard({
     <div class="rounded-[var(--r-1)] border ${toneClass} p-3">
       <${Eyebrow} tone="disabled">${title}</${Eyebrow}>
       <div class="mt-1 text-xl font-semibold text-[var(--text)]">${value}</div>
-      <div class="mt-1 text-2xs leading-relaxed text-[var(--color-fg-disabled)]">${detail}</div>
+      <div class="mt-1 text-2xs leading-relaxed text-[var(--color-fg-muted)]">${detail}</div>
     </div>
   `
 }
@@ -360,6 +365,13 @@ function FleetComparisonTable({ rows, onReset }: { rows: FleetRow[]; onReset: (n
     return html`<div class="text-2xs text-[var(--color-fg-disabled)]">Keeper 데이터 없음.</div>`
   }
 
+  const runtimeModelLabel = (model: string): string =>
+    model === 'runtime' ? 'runtime lane' : model
+  const runtimeModelTitle = (model: string): string =>
+    model === 'runtime'
+      ? 'provider/model identity is redacted; use cascade and attempts details below'
+      : model
+
   return html`
     <div class="overflow-x-auto">
       <table class="w-full text-2xs" aria-label="키퍼 텔레메트리 현황">
@@ -374,6 +386,7 @@ function FleetComparisonTable({ rows, onReset }: { rows: FleetRow[]; onReset: (n
             <${ThRight}>Ctx</${ThRight}>
             <${ThRight}>지연</${ThRight}>
             <${ThRight}>런타임</${ThRight}>
+            <th scope="col" class="py-1 text-center font-normal">상태</th>
             <th scope="col" class="py-1 text-center font-normal">예산</th>
             <th scope="col" class="w-8 py-1"></th>
           </tr>
@@ -432,15 +445,15 @@ function FleetComparisonTable({ rows, onReset }: { rows: FleetRow[]; onReset: (n
                   ${row.decision_required
                     ? html`<span class="rounded-[var(--r-1)] bg-[var(--bad-10)] px-1.5 py-0.5 text-3xs text-[var(--bad-light)]">decision</span>`
                     : null}
-                  ${row.terminal_reason_code
+                  ${row.stop_cause
                     ? html`
                       <span
-                        class=${row.terminal_reason_severity === 'bad'
+                        class=${row.stop_cause.severity === 'bad'
                           ? 'rounded bg-[var(--bad-10)] px-1.5 py-0.5 text-3xs text-[var(--bad-light)]'
                           : 'rounded bg-[var(--warn-10)] px-1.5 py-0.5 text-3xs text-[var(--color-status-warn)]'}
-                        title=${row.runtime_trust_next_action ?? row.runtime_trust_reason ?? row.terminal_reason_code}
+                        title=${row.stop_cause.next_action ?? row.stop_cause.summary ?? row.runtime_trust_next_action ?? row.runtime_trust_reason ?? row.stop_cause.code}
                       >
-                        ${row.terminal_reason_code}
+                        ${row.stop_cause.code}
                       </span>
                     `
                     : null}
@@ -482,16 +495,24 @@ function FleetComparisonTable({ rows, onReset }: { rows: FleetRow[]; onReset: (n
                 valueClass="text-[var(--color-fg-disabled)]"
               />
               <td class="py-1.5 text-right text-3xs text-[var(--color-fg-disabled)]">
-                <div class="font-mono text-[var(--color-fg-secondary)]">${row.model}</div>
+                <div
+                  class="font-mono text-[var(--color-fg-secondary)]"
+                  title=${runtimeModelTitle(row.model)}
+                >
+                  ${runtimeModelLabel(row.model)}
+                </div>
                 ${row.cascade_label
                   ? html`<div class="max-w-56 truncate" title=${row.cascade_label}>cascade ${row.cascade_label}</div>`
                   : null}
                 ${row.provider_label
-                  ? html`<div class="max-w-56 truncate" title=${row.provider_label}>provider ${row.provider_label}</div>`
+                  ? html`<div class="max-w-56 truncate" title=${row.provider_label}>attempts ${row.provider_label}</div>`
                   : null}
                 ${row.fallback_label
                   ? html`<div class="max-w-56 truncate text-[var(--color-status-warn)]" title=${row.fallback_label}>fallback ${row.fallback_label}</div>`
                   : null}
+              </td>
+              <td class="py-1.5 text-center">
+                <span class="text-3xs text-[var(--color-fg-disabled)]">—</span>
               </td>
               <td class="py-1.5 text-center">
                 ${row.budget_source === 'override_invalid'
@@ -529,7 +550,7 @@ function TelemetrySourcesPanel({ sources }: { sources: TelemetrySourceSummary[] 
       ${sorted.map(source => html`
         <div class="rounded-[var(--r-1)] border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3">
           <div class="flex items-center justify-between gap-3">
-            <div class="text-2xs font-medium text-[var(--text)]">${sourceLabel(source.source)}</div>
+            <div class="text-2xs font-medium text-[var(--text)]">${telemetrySourceLabel(source.source)}</div>
             <div class="font-mono text-2xs ${sourceCountClass(source)}">
               ${source.entry_count.toLocaleString()}
             </div>
@@ -537,6 +558,56 @@ function TelemetrySourcesPanel({ sources }: { sources: TelemetrySourceSummary[] 
           <div class="mt-1 text-3xs text-[var(--color-fg-disabled)]">${sourceDetail(source)}</div>
         </div>
       `)}
+    </div>
+  `
+}
+
+function ExecutionTrustSourcePanel({ trust }: { trust: DashboardExecutionTrustResponse | null }) {
+  if (!trust) {
+    return html`<div class="text-2xs text-[var(--color-fg-disabled)]">Execution trust source 요약 사용 불가.</div>`
+  }
+
+  const coverageGap = coverageGapDisplay(trust)
+  const provenanceRows = [
+    trust.producer ? ['producer', trust.producer] : null,
+    trust.durable_store ? ['store', trust.durable_store] : null,
+    trust.dashboard_surface ? ['surface', trust.dashboard_surface] : null,
+  ].filter((row): row is [string, string] => row !== null)
+
+  return html`
+    <div class="rounded-[var(--r-1)] border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3">
+      <div class="flex items-center justify-between gap-3">
+        <div>
+          <div class="text-2xs font-medium text-[var(--text)]">Execution Trust</div>
+          <div class="mt-1 text-3xs text-[var(--color-fg-disabled)]">
+            <span class="font-mono">${trust.source ?? 'execution_receipt'}</span>
+            <span class="mx-1" aria-hidden="true">·</span>
+            <span class="font-mono ${sourceHealthClass(trust.health)}">${trust.health ?? 'unknown'}</span>
+            <span class="mx-1" aria-hidden="true">·</span>
+            <span>${freshnessText(trust)}</span>
+          </div>
+        </div>
+        <div class="text-right">
+          <div class="font-mono text-sm text-[var(--text)]">${(trust.entry_count ?? 0).toLocaleString()}</div>
+          <div class="text-3xs text-[var(--color-fg-disabled)]">${trust.total.toLocaleString()} keepers</div>
+        </div>
+      </div>
+      ${provenanceRows.length > 0 ? html`
+        <div class="mt-2 grid gap-1 text-3xs text-[var(--color-fg-disabled)]">
+          ${provenanceRows.map(([label, value]) => html`
+            <div class="flex min-w-0 gap-1">
+              <span class="shrink-0">${label}:</span>
+              <span class="min-w-0 break-all font-mono">${value}</span>
+            </div>
+          `)}
+        </div>
+      ` : null}
+      ${coverageGap ? html`
+        <div class="mt-2 grid gap-0.5 text-3xs text-[var(--color-status-warn)]">
+          <span>${coverageGap.summary}</span>
+          ${coverageGap.details.map(detail => html`<span class="font-mono break-all">${detail}</span>`)}
+        </div>
+      ` : null}
     </div>
   `
 }
@@ -586,8 +657,9 @@ export function FleetTelemetryPanel() {
     }
 
     try {
-      const [executionResult, toolQualityResult, telemetrySummaryResult, namespaceTruthResult] = await Promise.allSettled([
+      const [executionResult, executionTrustResult, toolQualityResult, telemetrySummaryResult, namespaceTruthResult] = await Promise.allSettled([
         fetchDashboardExecution({ signal: controller.signal }),
+        fetchDashboardExecutionTrust({ signal: controller.signal }),
         fetchToolQuality({ n: 5000, windowHours: 24, signal: controller.signal }),
         fetchTelemetrySummary({ signal: controller.signal }),
         fetchDashboardNamespaceTruth({ signal: controller.signal }),
@@ -602,7 +674,15 @@ export function FleetTelemetryPanel() {
           ? normalizeKeepers(executionResult.value.keepers)
           : []
       if (executionResult.status === 'rejected' && !isAbortError(executionResult.reason)) {
-        warnings.push(`실행 스냅샷 사용 불가: ${errorMessage(executionResult.reason)}`)
+        warnings.push(`실행 스냅샷 사용 불가: ${errorMessageOrUnknown(executionResult.reason)}`)
+      }
+
+      const executionTrust =
+        executionTrustResult.status === 'fulfilled'
+          ? executionTrustResult.value
+          : null
+      if (executionTrustResult.status === 'rejected' && !isAbortError(executionTrustResult.reason)) {
+        warnings.push(`Execution trust 사용 불가: ${errorMessageOrUnknown(executionTrustResult.reason)}`)
       }
 
       const toolQuality =
@@ -610,7 +690,7 @@ export function FleetTelemetryPanel() {
           ? toolQualityResult.value
           : EMPTY_TOOL_QUALITY
       if (toolQualityResult.status === 'rejected' && !isAbortError(toolQualityResult.reason)) {
-        warnings.push(`도구 품질 데이터 사용 불가: ${errorMessage(toolQualityResult.reason)}`)
+        warnings.push(`도구 품질 데이터 사용 불가: ${errorMessageOrUnknown(toolQualityResult.reason)}`)
       }
 
       const telemetrySummary =
@@ -618,7 +698,7 @@ export function FleetTelemetryPanel() {
           ? telemetrySummaryResult.value
           : { generated_at: '', sources: [], total_entries: 0 }
       if (telemetrySummaryResult.status === 'rejected' && !isAbortError(telemetrySummaryResult.reason)) {
-        warnings.push(`텔레메트리 저장소 요약 사용 불가: ${errorMessage(telemetrySummaryResult.reason)}`)
+        warnings.push(`텔레메트리 저장소 요약 사용 불가: ${errorMessageOrUnknown(telemetrySummaryResult.reason)}`)
       }
       warnings.push(...buildTelemetryWarnings(telemetrySummary.sources))
 
@@ -627,20 +707,23 @@ export function FleetTelemetryPanel() {
           ? normalizeNamespaceTruth(namespaceTruthResult.value)
           : null
       if (namespaceTruthResult.status === 'rejected' && !isAbortError(namespaceTruthResult.reason)) {
-        warnings.push(`Control room 사용 불가: ${errorMessage(namespaceTruthResult.reason)}`)
+        warnings.push(`Control room 사용 불가: ${errorMessageOrUnknown(namespaceTruthResult.reason)}`)
       }
 
       const rows = buildFleetRows(keepers, toolQuality)
       warnings.push(...buildRuntimeWarnings(rows))
       const updatedAt =
         (executionResult.status === 'fulfilled' ? executionResult.value.generated_at : null)
+        || executionTrust?.generated_at
         || telemetrySummary.generated_at
         || new Date().toISOString()
 
-      const hasAnyData =
-        rows.length > 0
-        || toolQuality.total > 0
-        || telemetrySummary.total_entries > 0
+      const hasAnyData = hasFleetTelemetryData({
+        rowCount: rows.length,
+        executionTrust,
+        toolQuality,
+        telemetrySummary,
+      })
 
       pushSnapshot(rows)
 
@@ -649,6 +732,7 @@ export function FleetTelemetryPanel() {
         error: hasAnyData ? null : '함대 텔레메트리 데이터가 없습니다.',
         warnings,
         rows,
+        execution_trust: executionTrust,
         tool_quality: toolQuality,
         telemetry_sources: telemetrySummary.sources,
         total_telemetry_entries: telemetrySummary.total_entries,
@@ -742,11 +826,11 @@ export function FleetTelemetryPanel() {
 
       <${WarningBanner} warnings=${value.warnings} />
 
-      <div class="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-5">
+      <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
         <${SummaryCard}
           title="키퍼 가동률"
           value=${`${counts.live}/${value.rows.length || 0}`}
-          detail=${`${counts.toolCovered}/${value.rows.length || 0} 키퍼가 최근 도구 활동을 보였습니다.`}
+          detail=${toolTelemetryCoverageDetail(counts, value.rows.length)}
           tone=${liveTone}
         />
         <${SummaryCard}
@@ -755,12 +839,15 @@ export function FleetTelemetryPanel() {
           detail=${counts.stale > 0 ? `${counts.stale}개 키퍼가 ${Math.round(STALE_ACTIVITY_SEC / 60)}분 이상 정체 중입니다.` : '정체된 키퍼가 활동 임계값을 넘기지 않았습니다.'}
           tone=${toneForPressure(counts.hot, counts.warn)}
         />
+      </div>
+
+      <div class="grid grid-cols-1 gap-3 md:grid-cols-3">
         <${SummaryCard}
           title="차단된 키퍼"
           value=${counts.blocked.toString()}
           detail=${counts.blocked > 0
             ? '런타임은 살아있지만 typed blocker_class를 가진 키퍼 — 행 필터에서 blocker 클래스 이름으로 검색해 원인 확인.'
-            : '활성 차단 사유가 보고된 키퍼가 없습니다 (semaphore_wait_timeout, oas_timeout_budget 등).'}
+            : '활성 차단 사유가 보고된 키퍼가 없습니다 (admission_queue_wait_timeout, provider_runtime_error 등).'}
           tone=${counts.blocked > 0 ? 'warn' : 'ok'}
         />
         <${SummaryCard}
@@ -787,6 +874,11 @@ export function FleetTelemetryPanel() {
       </div>
 
       <div>
+        <${Eyebrow} tone="disabled" class="mb-1">Execution Trust Source</${Eyebrow}>
+        <${ExecutionTrustSourcePanel} trust=${value.execution_trust} />
+      </div>
+
+      <div>
         <${Eyebrow} tone="disabled" class="mb-1">압박 감시 목록</${Eyebrow}>
         <${PressureWatchlist} rows=${value.rows} />
       </div>
@@ -797,7 +889,7 @@ export function FleetTelemetryPanel() {
           <${TextInput}
             type="search"
             value=${query.value}
-            placeholder="name / model / blocker 필터"
+            placeholder="name / blocker 필터"
             ariaLabel="Keeper 필터"
             onInput=${(e: Event) => { query.value = (e.target as HTMLInputElement).value }}
             class="min-w-40 max-w-60 flex-1 !px-2 !py-1 !text-2xs"

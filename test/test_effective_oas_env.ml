@@ -1,4 +1,4 @@
-(** test_effective_oas_env — Gemini CLI MCP auto-enable verification.
+(** test_effective_oas_env — Provider_f CLI MCP auto-enable verification.
 
     Pins three invariants of [Keeper_types_profile.effective_oas_env]:
 
@@ -15,8 +15,7 @@
 
     Cross-reference:
     - [lib/keeper/keeper_types_profile.ml] — [effective_oas_env]
-    - [lib/keeper/keeper_mcp_provider_audit.ml] — SSOT audit table
-    - OAS [transport_gemini_cli.ml:67-85] — sentinel behavior *)
+    - OAS [transport_cli_tool_b.ml:67-85] — sentinel behavior *)
 
 open Alcotest
 

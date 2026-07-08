@@ -99,29 +99,65 @@ let governance_param_risk param_key =
   |> Option.map (fun (surface : Governance_registry.surface) -> surface.risk)
 
 let respond_high_risk_param_blocked request reqd ~param_key ~risk =
-  respond_json_with_cors ~status:`Forbidden request reqd
-    (Yojson.Safe.to_string
-       (`Assoc
-          [
-            ("ok", `Bool false);
-            ( "error",
-              `String
-                (Printf.sprintf
-                   "runtime param %s is %s risk and no longer supports direct dashboard mutation"
-                   param_key risk) );
-          ]))
+  respond_json_value_with_cors ~status:`Forbidden request reqd
+    (`Assoc
+       [
+         ("ok", `Bool false);
+         ( "error",
+           `String
+             (Printf.sprintf
+                "runtime param %s is %s risk and no longer supports direct dashboard mutation"
+                param_key risk) );
+       ])
+
+let board_curation_json () =
+  match Board_dispatch.latest_curation_snapshot () with
+  | None -> `Assoc [ ("snapshot", `Null) ]
+  | Some snap -> `Assoc [ ("snapshot", Board_curation.snapshot_to_yojson snap) ]
+
+let board_sub_boards_json () =
+  let sub_boards = Board_dispatch.list_sub_boards () in
+  `Assoc
+    [
+      ( "sub_boards",
+        `List (List.map Board.sub_board_to_yojson sub_boards) );
+    ]
+
+let board_karma_ledger_json req =
+  let agent = query_param req "agent" in
+  let limit = int_query_param req "limit" ~default:500 |> clamp ~min_v:1 ~max_v:5000 in
+  let events = Board_dispatch.get_karma_ledger ?agent ~limit () in
+  let totals =
+    Board_dispatch.get_all_karma ()
+    |> List.sort (fun (_, a) (_, b) -> compare b a)
+  in
+  `Assoc
+    [
+      ("events", `List (List.map Board.karma_event_to_yojson events));
+      ("count", `Int (List.length events));
+      ("scoring_rule", `String "up=+1,down=0");
+      ( "totals",
+        `List
+          (List.map
+             (fun (agent_name, k) ->
+               `Assoc [ ("agent", `String agent_name); ("karma", `Int k) ])
+             totals) );
+    ]
+
+let respond_board_json reqd json =
+  Http.Response.json_value json reqd
 
 let add_routes ~sw ~clock router =
   router
   |> Http.Router.get "/api/v1/activity/events" (fun request reqd ->
        with_public_read (fun state req reqd ->
          let json = activity_events_http_json ~sw ~clock ~state req in
-         Http.Response.json (Yojson.Safe.to_string json) reqd
+         Http.Response.json_value json reqd
        ) request reqd)
   |> Http.Router.get "/api/v1/activity/graph" (fun request reqd ->
        with_public_read (fun state req reqd ->
          let json = activity_graph_http_json ~sw ~clock ~state req in
-         Http.Response.json (Yojson.Safe.to_string json) reqd
+         Http.Response.json_value json reqd
        ) request reqd)
   |> Http.Router.get "/api/v1/activity/swimlane" (fun request reqd ->
        with_public_read (fun state req reqd ->
@@ -129,7 +165,7 @@ let add_routes ~sw ~clock router =
            Server_activity_http.swimlane_http_json
              ~deps:(activity_http_deps ~sw ~clock) ~state req
          in
-         Http.Response.json (Yojson.Safe.to_string json) reqd
+         Http.Response.json_value json reqd
        ) request reqd)
   |> Http.Router.get "/api/v1/governance/params" (fun request reqd ->
        with_public_read (fun _state _req reqd ->
@@ -165,7 +201,7 @@ let add_routes ~sw ~clock router =
                ("surfaces", surfaces);
              ]
          in
-         Http.Response.json (Yojson.Safe.pretty_to_string json) reqd
+         Http.Response.json_value json reqd
        ) request reqd)
 
   |> Http.Router.get "/api/v1/governance/params/audit" (fun request reqd ->
@@ -177,7 +213,7 @@ let add_routes ~sw ~clock router =
            ("entries", `List entries);
            ("count", `Int (List.length entries));
          ] in
-         Http.Response.json (Yojson.Safe.to_string json) reqd
+         Http.Response.json_value json reqd
        ) request reqd)
 
   |> Http.Router.get "/api/v1/audit" (fun request reqd ->
@@ -205,8 +241,8 @@ let add_routes ~sw ~clock router =
              ?kind:kind_filter ?severity:severity_filter ?since:since_filter
              ?until:until_filter ~limit all_entries
          in
-         Http.Response.json ~compress:true ~request:req
-           (Yojson.Safe.to_string json) reqd
+         Http.Response.json_value ~compress:true ~request:req
+           json reqd
        ) request reqd)
 
   |> Http.Router.get "/api/v1/board" (fun request reqd ->
@@ -252,6 +288,10 @@ let add_routes ~sw ~clock router =
              ~voter
          in
          let reactions_for = board_reactions_lookup reaction_rows in
+         let contributor_quality_for =
+           board_contributor_quality_lookup
+             ~config:state.Mcp_server.room_config ()
+         in
          let posts_json =
            List.map
              (fun (p : Board.post) ->
@@ -259,8 +299,10 @@ let add_routes ~sw ~clock router =
                let post_id = Board.Post_id.to_string p.id in
                let current_vote = board_current_vote_for_post ~voter ~post_id in
                let reactions = reactions_for (Board.Reaction_post, post_id) in
+               let contributor_quality = contributor_quality_for author in
                board_post_dashboard_json ~include_moderation ~blind_votes
-                 ?current_vote ~reactions
+                 ?contributor_quality ~reactions
+                 ?current_vote
                  ~author_karma:(get_karma author) p)
              paged
          in
@@ -271,7 +313,7 @@ let add_routes ~sw ~clock router =
            ("offset", `Int offset);
            ("sort_by", `String (board_sort_label sort_by));
          ] in
-         Http.Response.json (Yojson.Safe.to_string json) reqd
+         Http.Response.json_value json reqd
        ) request reqd)
 
   |> Http.Router.get "/api/v1/board/hearths" (fun request reqd ->
@@ -282,23 +324,24 @@ let add_routes ~sw ~clock router =
              `Assoc [("name", `String name); ("count", `Int count)]
            ) hearths));
          ] in
-         Http.Response.json (Yojson.Safe.to_string json) reqd
+         Http.Response.json_value json reqd
+       ) request reqd)
+
+  |> Http.Router.get "/api/v1/board/curation" (fun request reqd ->
+       with_public_read (fun _state _req reqd ->
+         respond_board_json reqd (board_curation_json ())
        ) request reqd)
 
   |> Http.Router.get "/api/v1/board/flairs" (fun _request reqd ->
        let flairs = List.map Board.flair_to_yojson Board.available_flairs in
        let json = `Assoc [("flairs", `List flairs)] in
-       Http.Response.json (Yojson.Safe.to_string json) reqd)
+       Http.Response.json_value json reqd)
 
   |> Http.Router.get "/api/v1/board/sub-boards" (fun _request reqd ->
-       let sub_boards = Board_dispatch.list_sub_boards () in
-       let json = `Assoc [
-         ("sub_boards", `List (List.map Board.sub_board_to_yojson sub_boards));
-       ] in
-       Http.Response.json (Yojson.Safe.to_string json) reqd)
+       respond_board_json reqd (board_sub_boards_json ()))
 
   |> Http.Router.post "/api/v1/board/sub-boards" (fun request reqd ->
-       with_tool_auth ~tool_name:"board_sub_board_create"
+       with_tool_auth ~tool_name:"masc_board_sub_board_create"
          (fun _state _req reqd ->
          Http.Request.read_body_async reqd (fun body ->
            try
@@ -328,17 +371,14 @@ let add_routes ~sw ~clock router =
              (match Board_dispatch.create_sub_board ~slug ~name ~description
                       ~owner:agent_name ~members ?access () with
               | Ok sb ->
-                  Http.Response.json
-                    (Yojson.Safe.to_string (Board.sub_board_to_yojson sb)) reqd
+                  Http.Response.json_value (Board.sub_board_to_yojson sb) reqd
               | Error e ->
-                  Http.Response.json ~status:`Bad_request
-                    (Yojson.Safe.to_string
-                       (`Assoc [("error", `String (Tool_board.board_error_to_string e))]))
+                  Http.Response.json_value ~status:`Bad_request
+                    (`Assoc [("error", `String (Tool_board.board_error_to_string e))])
                     reqd)
            with Yojson.Json_error msg ->
-             Http.Response.json ~status:`Bad_request
-               (Yojson.Safe.to_string
-                  (`Assoc [("error", `String ("invalid JSON: " ^ msg))]))
+             Http.Response.json_value ~status:`Bad_request
+               (`Assoc [("error", `String ("invalid JSON: " ^ msg))])
                reqd))
          request reqd)
 
@@ -346,29 +386,86 @@ let add_routes ~sw ~clock router =
        let path = Http.Request.path request in
        (match extract_path_param ~prefix:"/api/v1/board/sub-boards/" path with
         | None ->
-            Http.Response.json ~status:`Bad_request
-              (Yojson.Safe.to_string
-                 (`Assoc [("error", `String "sub_board_id is required")]))
+            Http.Response.json_value ~status:`Bad_request
+              (`Assoc [("error", `String "sub_board_id is required")])
               reqd
         | Some sub_board_id ->
             (match Board_dispatch.get_sub_board ~sub_board_id with
              | Ok sb ->
-                 Http.Response.json
-                   (Yojson.Safe.to_string (Board.sub_board_to_yojson sb)) reqd
+                 Http.Response.json_value (Board.sub_board_to_yojson sb) reqd
              | Error e ->
-                 Http.Response.json ~status:`Not_found
-                   (Yojson.Safe.to_string
-                      (`Assoc [("error", `String (Tool_board.board_error_to_string e))]))
+                 Http.Response.json_value ~status:`Not_found
+                   (`Assoc [("error", `String (Tool_board.board_error_to_string e))])
                    reqd)))
+
+  |> Http.Router.prefix_delete "/api/v1/board/sub-boards/" (fun request reqd ->
+       with_tool_auth ~tool_name:"masc_board_sub_board_delete"
+         (fun _state _req reqd ->
+         let path = Http.Request.path request in
+         (match extract_path_param ~prefix:"/api/v1/board/sub-boards/" path with
+          | None ->
+              Http.Response.json_value ~status:`Bad_request
+                (`Assoc [("error", `String "sub_board_id is required")])
+                reqd
+          | Some sub_board_id ->
+              (match Board_dispatch.delete_sub_board ~sub_board_id with
+               | Ok () ->
+                   Http.Response.json_value (`Assoc [("deleted", `Bool true)]) reqd
+               | Error e ->
+                   Http.Response.json_value ~status:`Not_found
+                     (`Assoc [("error", `String (Tool_board.board_error_to_string e))])
+                     reqd)))
+         request reqd)
+
+  |> Http.Router.prefix_put "/api/v1/board/sub-boards/" (fun request reqd ->
+       with_tool_auth ~tool_name:"masc_board_sub_board_update"
+         (fun _state _req reqd ->
+         Http.Request.read_body_async reqd (fun body ->
+           try
+             let args = Yojson.Safe.from_string body in
+             let name = Safe_ops.json_string_opt "name" args in
+             let description = Safe_ops.json_string_opt "description" args in
+             let members = Safe_ops.json_string_list "members" args in
+             let members_arg = if members = [] then None else Some members in
+             let access =
+               match Safe_ops.json_string_opt "access" args with
+               | Some s -> Board.sub_board_access_of_string_opt s
+               | None -> None
+             in
+             let path = Http.Request.path request in
+             (match extract_path_param ~prefix:"/api/v1/board/sub-boards/" path with
+              | None ->
+                  Http.Response.json_value ~status:`Bad_request
+                    (`Assoc [("error", `String "sub_board_id is required")])
+                    reqd
+              | Some sub_board_id ->
+                  (match Board_dispatch.update_sub_board ~sub_board_id ?name ?description ?members:members_arg ?access () with
+                   | Ok sb ->
+                       Http.Response.json_value (Board.sub_board_to_yojson sb) reqd
+                   | Error e ->
+                       Http.Response.json_value ~status:`Bad_request
+                         (`Assoc [("error", `String (Tool_board.board_error_to_string e))])
+                         reqd))
+           with Yojson.Json_error msg ->
+             Http.Response.json_value ~status:`Bad_request
+               (`Assoc [("error", `String ("invalid JSON: " ^ msg))])
+               reqd))
+         request reqd)
 
   |> Http.Router.prefix_get "/api/v1/board/" (fun request reqd ->
        with_public_read (fun state req reqd ->
          let path = Http.Request.path request in
          (match extract_path_param ~prefix:"/api/v1/board/" path with
           | None ->
-              Http.Response.json
-                (Yojson.Safe.to_string (`Assoc [("error", `String "post_id is required")]))
+              Http.Response.json_value
+                (`Assoc [("error", `String "post_id is required")])
                 ~status:`Bad_request reqd
+          | Some "curation" ->
+              respond_board_json reqd (board_curation_json ())
+          | Some "sub-boards" ->
+              respond_board_json reqd (board_sub_boards_json ())
+          | Some "karma/ledger" ->
+              respond_board_json reqd (board_karma_ledger_json req)
           | Some post_id ->
               let format =
                 query_param req "format" |> Option.value ~default:"nested"
@@ -384,6 +481,7 @@ let add_routes ~sw ~clock router =
               in
               let (status, body) =
                 board_post_detail_json ~include_moderation ~blind_votes ~voter
+                  ~config:(Some state.Mcp_server.room_config)
                   ~response_format:format ~post_id
               in
               respond_json_with_cors ~status request reqd body)
@@ -402,11 +500,9 @@ let add_routes ~sw ~clock router =
                match r with
                | Ok v -> f v
                | Error msg ->
-                   respond_json_with_cors ~status:`Bad_request request reqd
-                     (Yojson.Safe.to_string (`Assoc [
-                       ("ok", `Bool false);
-                       ("message", `String msg)
-                     ]))
+                   respond_json_value_with_cors ~status:`Bad_request request reqd
+                     (`Assoc
+                        [ ("ok", `Bool false); ("message", `String msg) ])
              in
              let* args =
                try Ok (Yojson.Safe.from_string body_str)
@@ -415,19 +511,18 @@ let add_routes ~sw ~clock router =
              let voter = board_actor_author_for_write agent_name in
              let* args = json_upsert_string_field "voter" voter args in
              let result = Tool_board.handle_tool "masc_board_vote" args in
-             let ok = result.success in
+             let ok = Tool_result.is_success result in
              let msg = Tool_result.message result in
              let status = if ok then `OK else `Bad_request in
-             respond_json_with_cors ~status request reqd
-               (Yojson.Safe.to_string (`Assoc [
-                 ("ok", `Bool ok); ("message", `String msg)
-               ]))
+             respond_json_value_with_cors ~status request reqd
+               (`Assoc [ ("ok", `Bool ok); ("message", `String msg) ])
            with Eio.Cancel.Cancelled _ as e -> raise e | exn ->
-             respond_json_with_cors ~status:`Bad_request request reqd
-               (Yojson.Safe.to_string (`Assoc [
-                 ("ok", `Bool false);
-                 ("message", `String (Printexc.to_string exn))
-               ]))
+             respond_json_value_with_cors ~status:`Bad_request request reqd
+               (`Assoc
+                  [
+                    ("ok", `Bool false);
+                    ("message", `String (Printexc.to_string exn));
+                  ])
          )
        ) request reqd)
 
@@ -441,11 +536,9 @@ let add_routes ~sw ~clock router =
                match r with
                | Ok v -> f v
                | Error msg ->
-                   respond_json_with_cors ~status:`Bad_request request reqd
-                     (Yojson.Safe.to_string (`Assoc [
-                       ("ok", `Bool false);
-                       ("message", `String msg)
-                     ]))
+                   respond_json_value_with_cors ~status:`Bad_request request reqd
+                     (`Assoc
+                        [ ("ok", `Bool false); ("message", `String msg) ])
              in
              let* args =
                try Ok (Yojson.Safe.from_string body_str)
@@ -459,19 +552,18 @@ let add_routes ~sw ~clock router =
              in
              let* args = json_ensure_meta_source "dashboard_board_post" args in
              let result = Tool_board.handle_tool "masc_board_post" args in
-             let ok = result.success in
+             let ok = Tool_result.is_success result in
              let msg = Tool_result.message result in
              let status = if ok then `Created else `Bad_request in
-             respond_json_with_cors ~status request reqd
-               (Yojson.Safe.to_string (`Assoc [
-                 ("ok", `Bool ok); ("message", `String msg)
-               ]))
+             respond_json_value_with_cors ~status request reqd
+               (`Assoc [ ("ok", `Bool ok); ("message", `String msg) ])
            with Eio.Cancel.Cancelled _ as e -> raise e | exn ->
-             respond_json_with_cors ~status:`Bad_request request reqd
-               (Yojson.Safe.to_string (`Assoc [
-                 ("ok", `Bool false);
-                 ("message", `String (Printexc.to_string exn))
-               ]))
+             respond_json_value_with_cors ~status:`Bad_request request reqd
+               (`Assoc
+                  [
+                    ("ok", `Bool false);
+                    ("message", `String (Printexc.to_string exn));
+                  ])
          )
        ) request reqd)
 
@@ -485,11 +577,9 @@ let add_routes ~sw ~clock router =
                match r with
                | Ok v -> f v
                | Error msg ->
-                   respond_json_with_cors ~status:`Bad_request request reqd
-                     (Yojson.Safe.to_string (`Assoc [
-                       ("ok", `Bool false);
-                       ("message", `String msg)
-                     ]))
+                   respond_json_value_with_cors ~status:`Bad_request request reqd
+                     (`Assoc
+                        [ ("ok", `Bool false); ("message", `String msg) ])
              in
              let* args =
                try Ok (Yojson.Safe.from_string body_str)
@@ -498,19 +588,18 @@ let add_routes ~sw ~clock router =
              let author = board_actor_author_for_write agent_name in
              let* args = json_upsert_string_field "author" author args in
              let result = Tool_board.handle_tool "masc_board_comment" args in
-             let ok = result.success in
+             let ok = Tool_result.is_success result in
              let msg = Tool_result.message result in
              let status = if ok then `Created else `Bad_request in
-             respond_json_with_cors ~status request reqd
-               (Yojson.Safe.to_string (`Assoc [
-                 ("ok", `Bool ok); ("message", `String msg)
-               ]))
+             respond_json_value_with_cors ~status request reqd
+               (`Assoc [ ("ok", `Bool ok); ("message", `String msg) ])
            with Eio.Cancel.Cancelled _ as e -> raise e | exn ->
-             respond_json_with_cors ~status:`Bad_request request reqd
-               (Yojson.Safe.to_string (`Assoc [
-                 ("ok", `Bool false);
-                 ("message", `String (Printexc.to_string exn))
-               ]))
+             respond_json_value_with_cors ~status:`Bad_request request reqd
+               (`Assoc
+                  [
+                    ("ok", `Bool false);
+                    ("message", `String (Printexc.to_string exn));
+                  ])
          )
        ) request reqd)
   |> Http.Router.get "/api/v1/karma" (fun request reqd ->
@@ -522,32 +611,12 @@ let add_routes ~sw ~clock router =
              `Assoc [("agent", `String agent); ("karma", `Int k)]
            ) sorted));
          ] in
-         Http.Response.json (Yojson.Safe.to_string json) reqd
+         Http.Response.json_value json reqd
        ) request reqd)
 
   |> Http.Router.get "/api/v1/board/karma/ledger" (fun request reqd ->
        with_public_read (fun _state req reqd ->
-         let agent = query_param req "agent" in
-         let limit =
-           int_query_param req "limit" ~default:500
-           |> clamp ~min_v:1 ~max_v:5000
-         in
-         let events = Board_dispatch.get_karma_ledger ?agent ~limit () in
-         let totals =
-           Board_dispatch.get_all_karma ()
-           |> List.sort (fun (_, a) (_, b) -> compare b a)
-         in
-         let json =
-           `Assoc [
-             ("events", `List (List.map Board.karma_event_to_yojson events));
-             ("count", `Int (List.length events));
-             ("scoring_rule", `String "up=+1,down=0");
-             ("totals", `List (List.map (fun (agent_name, k) ->
-               `Assoc [("agent", `String agent_name); ("karma", `Int k)])
-               totals));
-           ]
-         in
-         Http.Response.json (Yojson.Safe.to_string json) reqd
+         respond_board_json reqd (board_karma_ledger_json req)
        ) request reqd)
 
   (* Mention Inbox API *)
@@ -556,8 +625,8 @@ let add_routes ~sw ~clock router =
          let path = Http.Request.path request in
          (match extract_path_param ~prefix:"/api/v1/mentions/" path with
           | None ->
-              Http.Response.json
-                (Yojson.Safe.to_string (`Assoc [("error", `String "agent_name is required")]))
+              Http.Response.json_value
+                (`Assoc [("error", `String "agent_name is required")])
                 ~status:`Bad_request reqd
           | Some agent_name ->
               let limit = standard_limit request in
@@ -574,7 +643,7 @@ let add_routes ~sw ~clock router =
                 ("unread_count", `Int unread);
                 ("mentions", `List (List.map Mention_inbox.mention_record_to_json mentions));
               ] in
-              Http.Response.json (Yojson.Safe.to_string json) reqd)
+              Http.Response.json_value json reqd)
        ) request reqd)
 
   (* Agent Reputation API *)
@@ -583,17 +652,16 @@ let add_routes ~sw ~clock router =
          let path = Http.Request.path request in
          (match extract_path_param ~prefix:"/api/v1/reputation/" path with
           | None ->
-              Http.Response.json
-                (Yojson.Safe.to_string (`Assoc [("error", `String "agent_name is required")]))
+              Http.Response.json_value
+                (`Assoc [("error", `String "agent_name is required")])
                 ~status:`Bad_request reqd
           | Some agent_name ->
               let rep =
                 Agent_reputation.compute_reputation
                   state.Mcp_server.room_config ~agent_name
               in
-              Http.Response.json
-                (Yojson.Safe.to_string (Agent_reputation.reputation_to_json rep))
-                reqd)
+              Http.Response.json_value
+                (Agent_reputation.reputation_to_json rep) reqd)
        ) request reqd)
 
   (* Activity Feed API *)
@@ -609,14 +677,14 @@ let add_routes ~sw ~clock router =
            ("items", `List (List.map Activity_feed.activity_item_to_json items));
            ("count", `Int (List.length items));
          ] in
-         Http.Response.json (Yojson.Safe.to_string json) reqd
+         Http.Response.json_value json reqd
        ) request reqd)
 
   (* Prompt Registry API *)
   |> Http.Router.get "/api/v1/prompts" (fun request reqd ->
        with_public_read (fun _state _req reqd ->
          let json = Prompt_registry.prompts_json () in
-         Http.Response.json (Yojson.Safe.to_string json) reqd
+         Http.Response.json_value json reqd
        ) request reqd)
 
   |> Http.Router.post "/api/v1/prompts" (fun request reqd ->
@@ -630,10 +698,9 @@ let add_routes ~sw ~clock router =
              let action = Yojson.Safe.Util.(member "action" args |> to_string_option)
                |> Option.value ~default:"set" in
              if key = "" then
-               respond_json_with_cors ~status:`Bad_request request reqd
-                 (Yojson.Safe.to_string (`Assoc [
-                   ("ok", `Bool false); ("error", `String "key is required")
-                 ]))
+               respond_json_value_with_cors ~status:`Bad_request request reqd
+                 (`Assoc
+                    [ ("ok", `Bool false); ("error", `String "key is required") ])
              else begin
                let result = match action with
                  | "clear" ->
@@ -659,26 +726,26 @@ let add_routes ~sw ~clock router =
                in
                match result with
                | Ok msg ->
-                 respond_json_with_cors request reqd
-                   (Yojson.Safe.to_string (`Assoc [
-                     ("ok", `Bool true);
-                     ("message", `String msg);
-                     ("key", `String key);
-                     ("source", `String (Prompt_registry.prompt_source key));
-                     ("effective", `String (Prompt_registry.get_prompt key));
-                   ]))
+                 respond_json_value_with_cors request reqd
+                   (`Assoc
+                      [
+                        ("ok", `Bool true);
+                        ("message", `String msg);
+                        ("key", `String key);
+                        ("source", `String (Prompt_registry.prompt_source key));
+                        ("effective", `String (Prompt_registry.get_prompt key));
+                      ])
                | Error msg ->
-                 respond_json_with_cors ~status:`Bad_request request reqd
-                   (Yojson.Safe.to_string (`Assoc [
-                     ("ok", `Bool false); ("error", `String msg)
-                   ]))
+                 respond_json_value_with_cors ~status:`Bad_request request reqd
+                   (`Assoc [ ("ok", `Bool false); ("error", `String msg) ])
              end
            with Eio.Cancel.Cancelled _ as e -> raise e | exn ->
-             respond_json_with_cors ~status:`Bad_request request reqd
-               (Yojson.Safe.to_string (`Assoc [
-                 ("ok", `Bool false);
-                 ("error", `String (Printexc.to_string exn))
-               ]))
+             respond_json_value_with_cors ~status:`Bad_request request reqd
+               (`Assoc
+                  [
+                    ("ok", `Bool false);
+                    ("error", `String (Printexc.to_string exn));
+                  ])
          )
        ) request reqd)
 
@@ -698,17 +765,15 @@ let add_routes ~sw ~clock router =
                |> to_string_option) |> Option.value ~default:"" |> String.trim in
              let value_json = match Yojson.Safe.Util.member "value" args with
                | `Null -> None | v -> Some v in
-             if param_key = "" then
-               respond_json_with_cors ~status:`Bad_request request reqd
-                 (Yojson.Safe.to_string (`Assoc [
-                   ("ok", `Bool false); ("error", `String "param_key is required")
-                 ]))
+            if param_key = "" then
+               respond_json_value_with_cors ~status:`Bad_request request reqd
+                 (`Assoc
+                    [ ("ok", `Bool false); ("error", `String "param_key is required") ])
              else match value_json with
              | None ->
-               respond_json_with_cors ~status:`Bad_request request reqd
-                 (Yojson.Safe.to_string (`Assoc [
-                   ("ok", `Bool false); ("error", `String "value is required")
-                 ]))
+               respond_json_value_with_cors ~status:`Bad_request request reqd
+                 (`Assoc
+                    [ ("ok", `Bool false); ("error", `String "value is required") ])
              | Some value ->
                (match governance_param_risk param_key with
                 | Some "high" ->
@@ -723,13 +788,12 @@ let add_routes ~sw ~clock router =
                     in
                     (match Runtime_params.set_by_key param_key value with
                      | Error msg ->
-                         respond_json_with_cors ~status:`Bad_request request reqd
-                           (Yojson.Safe.to_string
-                              (`Assoc
-                                 [
-                                   ("ok", `Bool false);
-                                   ("error", `String msg);
-                                 ]))
+                         respond_json_value_with_cors ~status:`Bad_request request reqd
+                           (`Assoc
+                              [
+                                ("ok", `Bool false);
+                                ("error", `String msg);
+                              ])
                      | Ok () ->
                          Runtime_params.persist ~base_path;
                          Runtime_params.record_audit ~base_path
@@ -743,22 +807,22 @@ let add_routes ~sw ~clock router =
                                 ("new_value", value);
                                 ("actor", `String actor);
                               ]);
-                         respond_json_with_cors request reqd
-                           (Yojson.Safe.to_string
-                              (`Assoc
-                                 [
-                                   ("ok", `Bool true);
-                                   ( "message",
-                                     `String
-                                       (Printf.sprintf "Set %s = %s" param_key
-                                          (Yojson.Safe.to_string value)) );
-                                 ]))))
+                         respond_json_value_with_cors request reqd
+                           (`Assoc
+                              [
+                                ("ok", `Bool true);
+                                ( "message",
+                                  `String
+                                    (Printf.sprintf "Set %s = %s" param_key
+                                       (Yojson.Safe.to_string value)) );
+                              ])))
            with Eio.Cancel.Cancelled _ as e -> raise e | exn ->
-             respond_json_with_cors ~status:`Bad_request request reqd
-               (Yojson.Safe.to_string (`Assoc [
-                 ("ok", `Bool false);
-                 ("error", `String (Printexc.to_string exn))
-               ]))
+             respond_json_value_with_cors ~status:`Bad_request request reqd
+               (`Assoc
+                  [
+                    ("ok", `Bool false);
+                    ("error", `String (Printexc.to_string exn));
+                  ])
          )
        ) request reqd)
 
@@ -775,11 +839,10 @@ let add_routes ~sw ~clock router =
                sanitized_dashboard_actor_for_request ~base_path request
                |> Option.value ~default:"dashboard"
              in
-             if param_key = "" then
-               respond_json_with_cors ~status:`Bad_request request reqd
-                 (Yojson.Safe.to_string (`Assoc [
-                   ("ok", `Bool false); ("error", `String "param_key is required")
-                 ]))
+            if param_key = "" then
+               respond_json_value_with_cors ~status:`Bad_request request reqd
+                 (`Assoc
+                    [ ("ok", `Bool false); ("error", `String "param_key is required") ])
              else begin
                match governance_param_risk param_key with
                | Some "high" ->
@@ -794,13 +857,12 @@ let add_routes ~sw ~clock router =
                    in
                    match Runtime_params.clear_by_key param_key with
                    | Error msg ->
-                       respond_json_with_cors ~status:`Bad_request request reqd
-                         (Yojson.Safe.to_string
-                            (`Assoc
-                               [
-                                 ("ok", `Bool false);
-                                 ("error", `String msg);
-                               ]))
+                       respond_json_value_with_cors ~status:`Bad_request request reqd
+                         (`Assoc
+                            [
+                              ("ok", `Bool false);
+                              ("error", `String msg);
+                            ])
                    | Ok () ->
                        let new_value =
                          match Runtime_params.registry ()
@@ -820,21 +882,21 @@ let add_routes ~sw ~clock router =
                               ("new_value", new_value);
                               ("actor", `String actor);
                             ]);
-                       respond_json_with_cors request reqd
-                         (Yojson.Safe.to_string
-                            (`Assoc
-                               [
-                                 ("ok", `Bool true);
-                                 ( "message",
-                                   `String
-                                     (Printf.sprintf "Cleared %s to default" param_key) );
-                               ]))
+                       respond_json_value_with_cors request reqd
+                         (`Assoc
+                            [
+                              ("ok", `Bool true);
+                              ( "message",
+                                `String
+                                  (Printf.sprintf "Cleared %s to default" param_key) );
+                            ])
              end
            with Eio.Cancel.Cancelled _ as e -> raise e | exn ->
-             respond_json_with_cors ~status:`Bad_request request reqd
-               (Yojson.Safe.to_string (`Assoc [
-                 ("ok", `Bool false);
-                 ("error", `String (Printexc.to_string exn))
-               ]))
+             respond_json_value_with_cors ~status:`Bad_request request reqd
+               (`Assoc
+                  [
+                    ("ok", `Bool false);
+                    ("error", `String (Printexc.to_string exn));
+                  ])
          )
        ) request reqd)

@@ -26,14 +26,22 @@
 #   scripts/audit-keeper-credential-uuid-integrity.sh [--base-path PATH] [--json]
 #
 # Options:
-#   --base-path PATH   Server base_path (default: $HOME/me)
+#   --base-path PATH   Server base_path (default: MASC_BASE_PATH, then cwd)
 #   --json             Emit machine-readable JSON only
 #   -h, --help         Show this help
 set -o pipefail
 # Note: set -e and set -u are intentionally NOT enabled — see
 # audit-keeper-credential-drift.sh for the bash 3.2 rationale.
 
-BASE_PATH="${HOME}/me"
+default_base_path() {
+  if [ -n "${MASC_BASE_PATH:-}" ]; then
+    printf '%s\n' "$MASC_BASE_PATH"
+  else
+    pwd
+  fi
+}
+
+BASE_PATH="$(default_base_path)"
 EMIT_JSON=0
 
 usage() {

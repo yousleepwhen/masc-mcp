@@ -1,15 +1,13 @@
 open Masc_domain
 
 (** Issue #8501: hand-mirrored from
-    [Tool_agent.valid_agent_card_action_strings] and
-    [Tool_agent.valid_collaboration_format_strings]. masc_tool_schemas
+    [Tool_agent.valid_agent_card_action_strings]. masc_tool_schemas
     only depends on masc_types so it cannot derive directly. The sync
     regression test [test_types.ml :: agent_tool_variants_ssot] catches
     drift. Same shape as #8467/#8480/#8484/#8490/#8493 mirror+sync
     pattern. *)
 
 let agent_card_action_enum_strings = [ "get"; "refresh" ]
-let collaboration_format_enum_strings = [ "text"; "json" ]
 
 let schemas : tool_schema list = [
   {
@@ -72,27 +70,6 @@ let schemas : tool_schema list = [
       ("additionalProperties", `Bool false);
     ];
   };
-  {
-    name = "masc_register_capabilities";
-    description = "Register your skill tags so other agents can discover you by capability.";
-    input_schema = `Assoc [
-      ("type", `String "object");
-      ("properties", `Assoc [
-        ("agent_name", `Assoc [
-          ("type", `String "string");
-          ("description", `String "Your agent name");
-        ]);
-        ("capabilities", `Assoc [
-          ("type", `String "array");
-          ("items", `Assoc [("type", `String "string")]);
-          ("description", `String "List of your capabilities (e.g., ['typescript', 'testing'])");
-        ]);
-      ]);
-      ("required", `List [`String "agent_name"; `String "capabilities"]);
-      ("additionalProperties", `Bool false);
-    ];
-  };
-
   {
     name = "masc_get_metrics";
     description = "Fetch raw performance metrics for an agent: task completion, timing, error rates, collaboration history.";

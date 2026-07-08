@@ -1,23 +1,49 @@
 #!/usr/bin/env python3
 """Analyze module dependencies in lib/ monolith for sub-library extraction.
 
-Phase 0 of #3593: dependency graph analysis.
+Phase 0 of #3593: dependency graph analysis. Feeds RFC-0056 §3.4 (the
+fan-in/fan-out audit that prioritizes future sub-library extractions).
 
 Usage:
     python3 scripts/analyze_lib_deps.py [--json] [--cycles] [--clusters]
+    python3 scripts/analyze_lib_deps.py --json --no-write  # JSON to stdout
+    python3 scripts/analyze_lib_deps.py --json-out /tmp/graph.json
+    python3 scripts/analyze_lib_deps.py --self-test   # regression guard
 """
 
+import argparse
+import json
 import re
 import sys
-import json
 from collections import defaultdict
 from pathlib import Path
+from typing import TypedDict
 
 ROOT = Path(__file__).resolve().parent.parent
 LIB_DIR = ROOT / "lib"
 
 # Sub-library directories (already extracted, skip these)
 SUB_LIBRARY_DIRS: set[str] = set()
+
+
+class DependencyStats(TypedDict):
+    total_modules: int
+    total_edges: int
+    avg_out_degree: float
+    top_importers: list[tuple[str, int]]
+    top_imported: list[tuple[str, int]]
+    leaf_count: int
+    root_count: int
+    roots_sample: list[str]
+
+
+class ClusterCandidate(TypedDict):
+    prefix: str
+    module_count: int
+    members: list[str]
+    internal_edges: int
+    external_dep_count: int
+    coupling_ratio: float
 
 
 def discover_sub_libraries() -> None:
@@ -32,56 +58,35 @@ def discover_sub_libraries() -> None:
 
 
 def get_monolith_modules() -> dict[str, Path]:
-    """Parse lib/dune to get explicit module list."""
-    dune_path = LIB_DIR / "dune"
-    content = dune_path.read_text()
+    """Discover every .ml file absorbed into the flat `masc_mcp` library.
 
-    # Extract modules from (modules ...) stanza
+    `lib/dune` declares the library with `(include_subdirs unqualified)` and no
+    explicit `(modules ...)` stanza, so the module set is *every* `.ml` under
+    `lib/` that is not inside a sub-library directory — a direct child of `lib/`
+    whose `dune` declares its own `(library ...)`.  (Nested sub-libraries such as
+    `lib/exec/parser/` live inside an already-skipped tree, so pruning at the
+    top-level child name is sufficient.)
+
+    Pre-2026-05 this parsed a `(modules ...)` stanza; after `lib/dune` switched
+    to `(include_subdirs unqualified)` that stanza disappeared and the parser
+    silently returned `{}`, making the whole analysis (and the CI "lib
+    dependency delta" step) a no-op.  See `--self-test`.
+    """
     modules: dict[str, Path] = {}
-    in_modules = False
-    paren_depth = 0
-
-    for line in content.split("\n"):
-        stripped = line.strip()
-        if "(modules" in stripped:
-            in_modules = True
-            paren_depth = 1
-            # Extract any modules on same line after (modules
-            after = stripped.split("(modules")[1]
-            for word in after.split():
-                w = word.strip(")")
-                if w and not w.startswith("("):
-                    modules[w] = _find_ml_file(w)
+    for path in sorted(LIB_DIR.rglob("*.ml")):
+        rel = path.relative_to(LIB_DIR)
+        # Skip files inside an extracted sub-library directory.
+        if len(rel.parts) > 1 and rel.parts[0] in SUB_LIBRARY_DIRS:
             continue
-
-        if in_modules:
-            paren_depth += stripped.count("(") - stripped.count(")")
-            if paren_depth <= 0:
-                in_modules = False
-                continue
-            for word in stripped.split():
-                w = word.strip(")")
-                if w and not w.startswith(";") and not w.startswith("("):
-                    modules[w] = _find_ml_file(w)
-
+        # Skip build artifacts (`_build`, dune `.formatted`, etc.).
+        if any(part == "_build" or part.startswith(".") for part in rel.parts):
+            continue
+        stem = path.stem
+        # Within the flat namespace `(include_subdirs unqualified)` forbids
+        # duplicate module names, so a stem collision means a stray file
+        # (e.g. a vendored copy); keep the first deterministically.
+        modules.setdefault(stem, path)
     return modules
-
-
-def _find_ml_file(module_name: str) -> Path:
-    """Find .ml file for a module name, searching lib/ and subdirs."""
-    # Direct in lib/
-    direct = LIB_DIR / f"{module_name}.ml"
-    if direct.exists():
-        return direct
-
-    # Search subdirectories (non-sub-library ones only)
-    for child in LIB_DIR.iterdir():
-        if child.is_dir() and child.name not in SUB_LIBRARY_DIRS:
-            candidate = child / f"{module_name}.ml"
-            if candidate.exists():
-                return candidate
-
-    return direct  # fallback even if missing
 
 
 def strip_ocaml_comments_and_strings(content: str) -> str:
@@ -281,7 +286,7 @@ def find_cycles(graph: dict[str, set[str]]) -> list[list[str]]:
 
 def compute_stats(
     graph: dict[str, set[str]],
-) -> dict[str, object]:
+) -> DependencyStats:
     """Compute dependency statistics."""
     in_degree: dict[str, int] = defaultdict(int)
     out_degree: dict[str, int] = {}
@@ -322,7 +327,7 @@ def compute_stats(
 def identify_clusters(
     graph: dict[str, set[str]],
     modules: dict[str, Path],
-) -> list[dict[str, object]]:
+) -> list[ClusterCandidate]:
     """Identify potential sub-library extraction candidates by prefix."""
     prefix_groups: dict[str, list[str]] = defaultdict(list)
 
@@ -335,7 +340,7 @@ def identify_clusters(
             prefix_groups[prefix].append(ocaml_name)
 
     # Filter to groups with 3+ modules
-    candidates = []
+    candidates: list[ClusterCandidate] = []
     for prefix, members in sorted(prefix_groups.items(), key=lambda x: -len(x[1])):
         if len(members) < 3:
             continue
@@ -365,25 +370,110 @@ def identify_clusters(
     return sorted(candidates, key=lambda x: (-x["coupling_ratio"], -x["module_count"]))
 
 
+def graph_json(
+    *,
+    graph: dict[str, set[str]],
+    modules: dict[str, Path],
+    stats: DependencyStats,
+) -> dict[str, object]:
+    return {
+        "stats": {
+            "total_modules": stats["total_modules"],
+            "total_edges": stats["total_edges"],
+            "avg_out_degree": stats["avg_out_degree"],
+            "leaf_count": stats["leaf_count"],
+            "root_count": stats["root_count"],
+        },
+        "top_imported": stats["top_imported"],
+        "top_importers": stats["top_importers"],
+        "cycles": find_cycles(graph),
+        "clusters": identify_clusters(graph, modules),
+        "graph": {k: sorted(v) for k, v in graph.items()},
+    }
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Analyze dependency edges in the flat masc_mcp library."
+    )
+    parser.add_argument("--json", action="store_true",
+                        help="Write graph JSON to reports/lib-dependency-graph.json.")
+    parser.add_argument("--json-out", type=Path,
+                        help="Write graph JSON to this path instead of the default report path.")
+    parser.add_argument("--no-write", action="store_true",
+                        help="With --json, emit machine-readable JSON to stdout and do not write reports.")
+    parser.add_argument("--cycles", action="store_true",
+                        help="Print circular dependency summary in the human report.")
+    parser.add_argument("--clusters", action="store_true",
+                        help="Print extraction candidates in the human report.")
+    parser.add_argument("--self-test", action="store_true",
+                        help="Run analyzer self-test and exit.")
+    return parser.parse_args(argv)
+
+
+# Regression floor: the flat `masc_mcp` namespace has had 600+ modules for the
+# whole life of this script.  If discovery returns far fewer, module discovery
+# is broken (the pre-2026-05 `(modules ...)`-parsing bug returned 0).
+_SELF_TEST_MIN_MODULES = 400
+_SELF_TEST_MIN_EDGES = 200
+
+
+def run_self_test() -> int:
+    """Assert module discovery and graph construction are not silently empty."""
+    discover_sub_libraries()
+    modules = get_monolith_modules()
+    graph = build_dependency_graph(modules)
+    edges = sum(len(v) for v in graph.values())
+    problems: list[str] = []
+    if len(modules) < _SELF_TEST_MIN_MODULES:
+        problems.append(
+            f"discovered {len(modules)} flat-ns modules, expected >= "
+            f"{_SELF_TEST_MIN_MODULES} (module discovery broken?)"
+        )
+    if edges < _SELF_TEST_MIN_EDGES:
+        problems.append(
+            f"graph has {edges} edges, expected >= {_SELF_TEST_MIN_EDGES}"
+        )
+    missing = [n for n, p in modules.items() if not p.exists()]
+    if missing:
+        problems.append(f"{len(missing)} discovered modules have no .ml file")
+    if problems:
+        for p in problems:
+            print(f"SELF-TEST FAIL: {p}", file=sys.stderr)
+        return 1
+    print(
+        f"SELF-TEST OK: {len(modules)} flat-ns modules, {edges} internal edges, "
+        f"{len(SUB_LIBRARY_DIRS)} sub-libraries"
+    )
+    return 0
+
+
 def main() -> None:
-    args = set(sys.argv[1:])
+    args = parse_args(sys.argv[1:])
+
+    if args.self_test:
+        sys.exit(run_self_test())
 
     discover_sub_libraries()
+    modules = get_monolith_modules()
+    graph = build_dependency_graph(modules)
+    stats = compute_stats(graph)
+
+    if args.no_write and (args.json or args.json_out is not None):
+        print(json.dumps(graph_json(graph=graph, modules=modules, stats=stats), indent=2))
+        return
+
     print(f"Sub-libraries already extracted: {len(SUB_LIBRARY_DIRS)}")
     print(f"  {', '.join(sorted(SUB_LIBRARY_DIRS))}")
     print()
 
-    modules = get_monolith_modules()
-    print(f"Monolith modules in lib/dune: {len(modules)}")
+    print(f"Flat-namespace modules (absorbed into masc_mcp): {len(modules)}")
 
     missing = [n for n, p in modules.items() if not p.exists()]
     if missing:
         print(f"  Missing .ml files: {len(missing)}")
 
     print()
-
-    graph = build_dependency_graph(modules)
-    stats = compute_stats(graph)
 
     print("=== Dependency Statistics ===")
     print(f"Total modules: {stats['total_modules']}")
@@ -403,7 +493,7 @@ def main() -> None:
         print(f"  {name}: {count} dependencies")
     print()
 
-    if "--cycles" in args or "--json" not in args:
+    if args.cycles or not (args.json or args.json_out is not None):
         cycles = find_cycles(graph)
         print("=== Circular Dependencies ===")
         print(f"Strongly connected components (cycles): {len(cycles)}")
@@ -411,7 +501,7 @@ def main() -> None:
             print(f"  SCC {i+1} ({len(scc)} modules): {', '.join(scc[:8])}{'...' if len(scc) > 8 else ''}")
         print()
 
-    if "--clusters" in args or "--json" not in args:
+    if args.clusters or not (args.json or args.json_out is not None):
         clusters = identify_clusters(graph, modules)
         print("=== Extraction Candidates (prefix-based, 3+ modules) ===")
         for c in clusters[:15]:
@@ -422,22 +512,9 @@ def main() -> None:
             )
         print()
 
-    if "--json" in args:
-        output = {
-            "stats": {
-                "total_modules": stats["total_modules"],
-                "total_edges": stats["total_edges"],
-                "avg_out_degree": stats["avg_out_degree"],
-                "leaf_count": stats["leaf_count"],
-                "root_count": stats["root_count"],
-            },
-            "top_imported": stats["top_imported"],
-            "top_importers": stats["top_importers"],
-            "cycles": find_cycles(graph),
-            "clusters": identify_clusters(graph, modules),
-            "graph": {k: sorted(v) for k, v in graph.items()},
-        }
-        json_path = ROOT / "reports" / "lib-dependency-graph.json"
+    if args.json or args.json_out is not None:
+        output = graph_json(graph=graph, modules=modules, stats=stats)
+        json_path = args.json_out or ROOT / "reports" / "lib-dependency-graph.json"
         json_path.parent.mkdir(parents=True, exist_ok=True)
         json_path.write_text(json.dumps(output, indent=2))
         print(f"Full graph written to {json_path}")

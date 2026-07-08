@@ -16,6 +16,22 @@ type compaction_policy =
   ; token_gate : int
   ; cooldown_sec : int
   ; max_checkpoint_messages : int
+  ; keep_recent_tool_results : int
+    (* Verbatim tool-result tail length for OAS context compaction
+       (consumed by [Agent_sdk.Context_reducer.stub_tool_results
+       ~keep_recent]).  Default 2; parsers clamp to
+       [[0, Keeper_config.keep_recent_tool_results_max]]. *)
+  ; tool_heavy_msg_threshold : int
+    (* Per-keeper message-count floor for the tool-heavy compaction
+       gate.  Default {!Keeper_config.default_tool_heavy_msg_threshold}
+       (40); preserves prior global behavior in
+       [Keeper_compact_policy].  Heavy-tool keepers can lower this
+       to compact sooner without code change.  Wired by PR-B. *)
+  ; tool_heavy_ratio_floor : float
+    (* Per-keeper context-ratio floor for the tool-heavy compaction
+       gate.  Default
+       {!Keeper_config.default_tool_heavy_ratio_floor} (0.15);
+       preserves prior global behavior.  Wired by PR-B. *)
   }
 
 type proactive_policy =
@@ -23,8 +39,6 @@ type proactive_policy =
   ; idle_sec : int
   ; cooldown_sec : int
   }
-
-type scheduled_autonomous_policy = proactive_policy
 
 type proactive_cycle_outcome =
   | Proactive_never_started
@@ -34,8 +48,6 @@ type proactive_cycle_outcome =
   | Proactive_tool_use
   | Proactive_mixed_response
   | Proactive_error
-
-type scheduled_autonomous_cycle_outcome = proactive_cycle_outcome
 
 (* -- Runtime types (moved into agent_runtime_state) -- *)
 
@@ -61,8 +73,6 @@ type proactive_runtime =
   ; last_outcome : proactive_cycle_outcome
   ; last_reason : string
   ; last_preview : string
-  ; last_work_discovery_ts : float
-  ; work_discovery_count : int
   ; consecutive_noop_count : int
     (** Consecutive autonomous cycles where only observation tools
           (board_list, stay_silent, context_status) were used with no
@@ -71,29 +81,40 @@ type proactive_runtime =
           backoff: cooldown *= 2^min(n, 3), capping at 8x. *)
   }
 
-type scheduled_autonomous_runtime = proactive_runtime
-
 (* ── Structured blocker classification ──────────────────────── *)
 
 type cascade_exhaustion_reason =
   | Connection_refused
+  | Dns_failure
+    (** RFC-0142 PR-2 (2026-05-22): typed surface for the dominant Other_detail
+        message ["failed to resolve hostname: ..."] (50% live share on 5/21).
+        Producer-side typed signal already exists at
+        [Llm_provider.Http_client.network_error_kind] as [Dns_failure];
+        previously [keeper_turn_driver.ml]'s NetworkError branch only honoured
+        [Connection_refused] and let [Dns_failure] fall through the
+        string/substring SSOT, manifesting as [Other_detail "failed to resolve
+        hostname: ..."].  This variant closes that typed→string→typed
+        roundtrip without adding any new substring matcher. *)
   | No_providers_available
   | All_providers_failed
   | Candidates_filtered_after_cycles
   | Max_turns_exceeded
+  | Structural_attempt_timeout of { detail : string }
   | Other_detail of string
 
 type blocker_class =
   | Cascade_exhausted of cascade_exhaustion_reason
+  | Capacity_backpressure
   | Ambiguous_post_commit_timeout
   | Ambiguous_post_commit_failure
   | Autonomous_slot_wait_timeout
   | Admission_queue_wait_timeout
   | Turn_timeout_after_queue_wait
-  | Oas_timeout_budget
   | Turn_timeout
+  | Turn_livelock_blocked
   | Completion_contract_violation
   | No_tool_capable_provider
+  | Stay_silent_loop
   | Fiber_unresolved
     (** 2026-05-05: turn fiber finished without invoking [resolve_done]
         (cancelled mid-turn, raised an exception not handled by the
@@ -108,87 +129,301 @@ type blocker_class =
         Maps to [Keeper_registry.Stale_turn_timeout _] cohort.  Like
         [Fiber_unresolved], this path runs through
         [force_unresolved_watchdog_crash] and never visits
-        [handle_crash_auto_pause], so PR #12889's [last_blocker_class]
-        stamp does not apply.  Without this variant, dashboards and
-        per-keeper meta read [last_blocker_class = null] for the
-        majority cohort during a fleet stall (observed: 6/14 keepers
-        in cohort=stale_turn_timeout, every meta showing null). *)
+        [handle_crash_auto_pause], so historical string-only blocker
+        stamping did not apply. Without this variant, dashboards and
+        per-keeper meta lacked a structured blocker class for the majority
+        cohort during a fleet stall (observed: 6/14 keepers in
+        cohort=stale_turn_timeout). *)
   | Stale_fleet_batch
-    (** Multiple keepers were stale-watchdog terminated inside the fleet
-        batch window. This mirrors [Keeper_registry.Stale_fleet_batch] so
-        keeper_meta and dashboard status can report the systemic blocker
-        instead of collapsing it to a generic turn timeout. *)
+    (** Legacy blocker class for pre-existing fleet-batch state. Current
+        fleet-batch detection is observation-only and should not stamp keeper
+        meta; stale keepers use their per-keeper watchdog blocker instead. *)
+  | Oas_agent_execution_timeout
+  | Sdk_max_turns_exceeded
+  | Sdk_token_budget_exceeded
+  | Sdk_cost_budget_exceeded
+  | Sdk_unrecognized_stop_reason
+  | Sdk_idle_detected
+  | Sdk_tool_retry_exhausted
+  | Sdk_guardrail_violation
+  | Sdk_tripwire_violation
+  | Sdk_exit_condition_met
+  | Sdk_input_required
 
 let blocker_class_to_string = function
   | Cascade_exhausted _ -> "cascade_exhausted"
+  | Capacity_backpressure -> "capacity_backpressure"
   | Ambiguous_post_commit_timeout -> "ambiguous_post_commit_timeout"
   | Ambiguous_post_commit_failure -> "ambiguous_post_commit_failure"
   | Autonomous_slot_wait_timeout -> "autonomous_slot_wait_timeout"
   | Admission_queue_wait_timeout -> "admission_queue_wait_timeout"
   | Turn_timeout_after_queue_wait -> "turn_timeout_after_queue_wait"
-  | Oas_timeout_budget -> "oas_timeout_budget"
   | Turn_timeout -> "turn_timeout"
+  | Turn_livelock_blocked -> "turn_livelock_blocked"
   | Completion_contract_violation -> "completion_contract_violation"
   | No_tool_capable_provider -> "no_tool_capable_provider"
+  | Stay_silent_loop -> "stay_silent_loop"
   | Fiber_unresolved -> "fiber_unresolved"
   | Stale_turn_timeout -> "stale_turn_timeout"
   | Stale_fleet_batch -> "stale_fleet_batch"
+  | Oas_agent_execution_timeout -> "oas_agent_execution_timeout"
+  | Sdk_max_turns_exceeded -> "sdk_max_turns_exceeded"
+  | Sdk_token_budget_exceeded -> "sdk_token_budget_exceeded"
+  | Sdk_cost_budget_exceeded -> "sdk_cost_budget_exceeded"
+  | Sdk_unrecognized_stop_reason -> "sdk_unrecognized_stop_reason"
+  | Sdk_idle_detected -> "sdk_idle_detected"
+  | Sdk_tool_retry_exhausted -> "sdk_tool_retry_exhausted"
+  | Sdk_guardrail_violation -> "sdk_guardrail_violation"
+  | Sdk_tripwire_violation -> "sdk_tripwire_violation"
+  | Sdk_exit_condition_met -> "sdk_exit_condition_met"
+  | Sdk_input_required -> "sdk_input_required"
 ;;
 
 let blocker_class_of_serialized_string = function
   | "cascade_exhausted" -> Some (Cascade_exhausted (Other_detail "cascade_exhausted"))
+  | "capacity_backpressure" -> Some Capacity_backpressure
   | "ambiguous_post_commit_timeout" -> Some Ambiguous_post_commit_timeout
   | "ambiguous_post_commit_failure" -> Some Ambiguous_post_commit_failure
   | "autonomous_slot_wait_timeout" -> Some Autonomous_slot_wait_timeout
   | "admission_queue_wait_timeout" -> Some Admission_queue_wait_timeout
   | "turn_timeout_after_queue_wait" -> Some Turn_timeout_after_queue_wait
-  | "oas_timeout_budget" -> Some Oas_timeout_budget
   | "turn_timeout" -> Some Turn_timeout
+  | "turn_livelock_blocked" -> Some Turn_livelock_blocked
   | "completion_contract_violation" -> Some Completion_contract_violation
   | "no_tool_capable_provider" -> Some No_tool_capable_provider
+  | "stay_silent_loop" -> Some Stay_silent_loop
   | "fiber_unresolved" -> Some Fiber_unresolved
   | "stale_turn_timeout" -> Some Stale_turn_timeout
   | "stale_fleet_batch" -> Some Stale_fleet_batch
+  | "oas_agent_execution_timeout" -> Some Oas_agent_execution_timeout
+  | "sdk_max_turns_exceeded" -> Some Sdk_max_turns_exceeded
+  | "sdk_token_budget_exceeded" -> Some Sdk_token_budget_exceeded
+  | "sdk_cost_budget_exceeded" -> Some Sdk_cost_budget_exceeded
+  | "sdk_unrecognized_stop_reason" -> Some Sdk_unrecognized_stop_reason
+  | "sdk_idle_detected" -> Some Sdk_idle_detected
+  | "sdk_tool_retry_exhausted" -> Some Sdk_tool_retry_exhausted
+  | "sdk_guardrail_violation" -> Some Sdk_guardrail_violation
+  | "sdk_tripwire_violation" -> Some Sdk_tripwire_violation
+  | "sdk_exit_condition_met" -> Some Sdk_exit_condition_met
+  | "sdk_input_required" -> Some Sdk_input_required
   | _ -> None
 ;;
 
 let cascade_exhaustion_summary = function
   | Connection_refused ->
     "Cascade exhausted after provider failures; local runtime connection refused."
+  | Dns_failure ->
+    "Cascade exhausted; hostname resolution failed (DNS)."
   | No_providers_available -> "Cascade exhausted; no providers were available."
-  | All_providers_failed -> "Cascade exhausted after all configured providers failed."
-  | Candidates_filtered_after_cycles -> "Cascade exhausted after provider failures."
+  | All_providers_failed ->
+    "Cascade exhausted after all configured providers failed; inspect per-attempt root causes."
+  | Candidates_filtered_after_cycles ->
+    "Cascade exhausted after provider candidates were filtered; inspect candidate filter reasons."
   | Max_turns_exceeded ->
     "Cascade exhausted after a provider hit its per-call turn budget."
-  | Other_detail _ -> "Cascade exhausted after provider failures."
+  | Structural_attempt_timeout _ ->
+    "Cascade exhausted after the per-OAS-call ceiling (max_execution_time_s) fired."
+  | Other_detail _ ->
+    "Cascade exhausted; inspect cascade attempts for the dominant root cause."
 ;;
 
 let blocker_class_continue_gate = function
-  | Ambiguous_post_commit_timeout | Ambiguous_post_commit_failure -> true
-  | _ -> false
+  | Ambiguous_post_commit_timeout
+  | Ambiguous_post_commit_failure -> true
+  | Cascade_exhausted _
+  | Capacity_backpressure
+  | Autonomous_slot_wait_timeout
+  | Admission_queue_wait_timeout
+  | Turn_timeout_after_queue_wait
+  | Turn_timeout
+  | Turn_livelock_blocked
+  | Completion_contract_violation
+  | No_tool_capable_provider
+  | Stay_silent_loop
+  | Fiber_unresolved
+  | Stale_turn_timeout
+  | Stale_fleet_batch
+  | Oas_agent_execution_timeout
+  | Sdk_max_turns_exceeded
+  | Sdk_token_budget_exceeded
+  | Sdk_cost_budget_exceeded
+  | Sdk_unrecognized_stop_reason
+  | Sdk_idle_detected
+  | Sdk_tool_retry_exhausted
+  | Sdk_guardrail_violation
+  | Sdk_tripwire_violation
+  | Sdk_exit_condition_met
+  | Sdk_input_required -> false
 ;;
 
 let cascade_exhaustion_reason_to_json = function
   | Connection_refused -> `String "connection_refused"
+  | Dns_failure -> `String "dns_failure"
   | No_providers_available -> `String "no_providers_available"
   | All_providers_failed -> `String "all_providers_failed"
   | Candidates_filtered_after_cycles -> `String "candidates_filtered_after_cycles"
   | Max_turns_exceeded -> `String "max_turns_exceeded"
+  | Structural_attempt_timeout { detail } ->
+    `Assoc [ "tag", `String "structural_attempt_timeout"; "detail", `String detail ]
   | Other_detail msg -> `Assoc [ "tag", `String "other_detail"; "message", `String msg ]
 ;;
 
 let cascade_exhaustion_reason_of_json = function
   | `String "connection_refused" -> Some Connection_refused
+  | `String "dns_failure" -> Some Dns_failure
   | `String "no_providers_available" -> Some No_providers_available
   | `String "all_providers_failed" -> Some All_providers_failed
   | `String "candidates_filtered_after_cycles" -> Some Candidates_filtered_after_cycles
   | `String "max_turns_exceeded" -> Some Max_turns_exceeded
   | `Assoc fields ->
     (match List.assoc_opt "tag" fields with
+     | Some (`String "structural_attempt_timeout") ->
+       (match List.assoc_opt "detail" fields with
+        | Some (`String detail) -> Some (Structural_attempt_timeout { detail })
+        | _ -> None)
      | Some (`String "other_detail") ->
        (match List.assoc_opt "message" fields with
         | Some (`String msg) -> Some (Other_detail msg)
         | _ -> None)
+     | _ -> None)
+  | _ -> None
+;;
+
+(* ── Unified blocker_info: typed klass + free-form detail ───────
+   Replaces the historic split blocker fields. The string-only field was used
+   by substring classifiers to recover a typed class — exactly the workaround
+   pattern called out in CLAUDE.md
+   "워크어라운드 거부 기준 #2 String/Substring 분류기 보강". Making
+   [blocker_class] the only authoritative class eliminates that recovery path;
+   [detail] carries free-form context for UI / Prometheus labels (no
+   classification semantics). *)
+type blocker_info = {
+  klass : blocker_class;
+  detail : string;
+}
+
+let blocker_info_of_class ?(detail = "") klass = { klass; detail }
+
+let blocker_info_to_json (info : blocker_info) : Yojson.Safe.t =
+  let klass_payload = match info.klass with
+    | Cascade_exhausted reason ->
+      `Assoc [ "name", `String "cascade_exhausted"
+             ; "reason", cascade_exhaustion_reason_to_json reason
+             ]
+    | _ -> `String (blocker_class_to_string info.klass)
+  in
+  `Assoc
+    [ "klass", klass_payload
+    ; "detail", `String info.detail
+    ]
+;;
+
+let blocker_info_of_json (json : Yojson.Safe.t) : blocker_info option =
+  match json with
+  | `Null -> None
+  | `Assoc fields ->
+    let klass =
+      match List.assoc_opt "klass" fields with
+      | Some (`String s) -> blocker_class_of_serialized_string s
+      | Some (`Assoc kfields) ->
+        (match List.assoc_opt "name" kfields with
+         | Some (`String "cascade_exhausted") ->
+           let reason =
+             match List.assoc_opt "reason" kfields with
+             | Some r ->
+               (match cascade_exhaustion_reason_of_json r with
+                | Some r -> r
+                | None -> Other_detail "cascade_exhausted")
+             | None -> Other_detail "cascade_exhausted"
+           in
+           Some (Cascade_exhausted reason)
+         | Some (`String s) -> blocker_class_of_serialized_string s
+         | _ -> None)
+      | _ -> None
+    in
+    (match klass with
+     | None -> None
+     | Some klass ->
+       let detail = match List.assoc_opt "detail" fields with
+         | Some (`String s) -> s
+         | _ -> ""
+       in
+       Some { klass; detail })
+  | _ -> None
+;;
+
+type cascade_attempt_record =
+  { provider_id : string
+  ; http_status : int option
+  ; outcome : [ `Success | `Failure of string ]
+  ; timestamp : float
+  }
+
+let cascade_attempt_outcome_to_json = function
+  | `Success -> `Assoc [ "kind", `String "success" ]
+  | `Failure message ->
+    `Assoc [ "kind", `String "failure"; "message", `String message ]
+;;
+
+let cascade_attempt_outcome_of_json = function
+  | `Assoc fields ->
+    (match List.assoc_opt "kind" fields with
+     | Some (`String "success") -> Some `Success
+     | Some (`String "failure") ->
+       (match List.assoc_opt "message" fields with
+        | Some (`String message) -> Some (`Failure message)
+        (* DET-OK: legacy attempt rows encoded failure without a message;
+           keep the lossy historical record instead of dropping it. *)
+        | _ -> Some (`Failure ""))
+     | _ -> None)
+  | `String "success" -> Some `Success
+  | `String "failure" -> Some (`Failure "")
+  | _ -> None
+;;
+
+let cascade_attempt_record_to_json (record : cascade_attempt_record) : Yojson.Safe.t =
+  `Assoc
+    [ "provider_id", `String record.provider_id
+    ; ( "http_status"
+      , match record.http_status with
+        | Some status -> `Int status
+        | None -> `Null )
+    ; "outcome", cascade_attempt_outcome_to_json record.outcome
+    ; "timestamp", `Float record.timestamp
+    ]
+;;
+
+let cascade_attempt_record_of_json (json : Yojson.Safe.t)
+  : cascade_attempt_record option
+  =
+  match json with
+  | `Null -> None
+  | `Assoc fields ->
+    let provider_id =
+      match List.assoc_opt "provider_id" fields with
+      | Some (`String value) -> Some value
+      | _ -> None
+    in
+    let http_status =
+      match List.assoc_opt "http_status" fields with
+      | Some (`Int status) -> Some status
+      | Some `Null | None -> None
+      | _ -> None
+    in
+    let outcome =
+      match List.assoc_opt "outcome" fields with
+      | Some value -> cascade_attempt_outcome_of_json value
+      | None -> None
+    in
+    let timestamp =
+      match List.assoc_opt "timestamp" fields with
+      | Some (`Float value) -> Some value
+      | Some (`Int value) -> Some (float_of_int value)
+      | _ -> None
+    in
+    (match provider_id, outcome, timestamp with
+     | Some provider_id, Some outcome, Some timestamp ->
+       Some { provider_id; http_status; outcome; timestamp }
      | _ -> None)
   | _ -> None
 ;;
@@ -205,6 +440,11 @@ type usage_metrics =
   ; last_output_tokens : int
   ; last_total_tokens : int
   ; last_latency_ms : int
+  }
+
+type tool_call_summary =
+  { tool_name : string
+  ; outcome : string
   }
 
 type agent_runtime_state =
@@ -224,14 +464,14 @@ type agent_runtime_state =
   ; board_reactive_turn_count : int
   ; mention_reactive_turn_count : int
   ; noop_turn_count : int
-  ; consecutive_noop_count : int
   ; last_speech_act : string
   ; last_social_transition_reason : string
   ; last_active_desire : string
   ; last_current_intention : string
-  ; last_blocker : string
-  ; last_blocker_class : blocker_class option
+  ; last_blocker : blocker_info option
+  ; last_cascade_attempt : cascade_attempt_record option
   ; last_need : string
+  ; last_turn_tool_calls : tool_call_summary list
   }
 
 type keeper_meta =
@@ -244,15 +484,14 @@ type keeper_meta =
   ; mid_goal : string
   ; long_goal : string
   ; social_model : string
-  ; cascade_name : string
   ; models : string list
+  ; cascade_ref : Cascade_ref.cascade_ref option
   ; will : string
   ; needs : string
   ; desires : string
   ; instructions : string
   ; (* -- Policy -- *)
-    policy_voice_enabled : bool
-  ; sandbox_profile : sandbox_profile
+    sandbox_profile : sandbox_profile
   ; sandbox_image : string option
   ; network_mode : network_mode
   ; allowed_paths : string list
@@ -268,10 +507,6 @@ type keeper_meta =
   ; auto_handoff : bool
   ; handoff_threshold : float
   ; handoff_cooldown_sec : int
-  ; (* -- Voice -- *)
-    voice_enabled : bool
-  ; voice_channel : string
-  ; voice_agent_id : string
   ; (* -- Lifecycle -- *)
     created_at : string
   ; updated_at : string
@@ -294,10 +529,6 @@ type keeper_meta =
     (** Currently claimed task ID for cost attribution.
       Set when keeper claims a task; cleared on masc_transition action=done.
       Propagated to trajectory accumulator for per-task cost tracking. *)
-  ; work_discovery_enabled : bool option
-  ; work_discovery_sources : string list option
-  ; work_discovery_interval_sec : int option
-  ; work_discovery_guidance : string option
   ; telemetry_feedback_enabled : bool option
   ; telemetry_feedback_window_hours : int option
   ; per_provider_timeout_s : float option
@@ -309,6 +540,21 @@ type keeper_meta =
   ; oas_env : (string * string) list
   ; meta_version : int
   }
+
+let cascade_name_of_meta (m : keeper_meta) : string =
+  match m.cascade_ref with
+  | Some ref_ -> Cascade_name.to_string ref_.Cascade_ref.group
+  | _ -> (Keeper_config.default_cascade_name ())
+;;
+
+let set_cascade_name (name : string) (m : keeper_meta) : keeper_meta =
+  match Cascade_name.of_string name with
+  | Ok group ->
+    { m with cascade_ref = Some Cascade_ref.{ group; item = None } }
+  | Error (`Invalid_prefix | `Empty) ->
+    (* Non-canonical cascade name — keep existing cascade_ref unchanged *)
+    m
+;;
 
 let proactive_cycle_outcome_to_string = function
   | Proactive_never_started -> "never_started"
@@ -367,9 +613,6 @@ let () =
     ]
 ;;
 
-let scheduled_autonomous_cycle_outcome_to_string = proactive_cycle_outcome_to_string
-let scheduled_autonomous_cycle_outcome_of_string = proactive_cycle_outcome_of_string
-
 (* -- Updater helpers for nested record updates -- *)
 
 let map_runtime (f : agent_runtime_state -> agent_runtime_state) (m : keeper_meta)
@@ -413,6 +656,24 @@ let map_proactive_rt (f : proactive_runtime -> proactive_runtime) (m : keeper_me
   { m with runtime = { m.runtime with proactive_rt = f m.runtime.proactive_rt } }
 ;;
 
-let map_scheduled_autonomous_rt = map_proactive_rt
 let now_iso () = Masc_domain.now_iso ()
 let keeper_legacy_model_arg_names = [ "models"; "allowed_models"; "active_model" ]
+
+let reject_legacy_model_args ~tool_name (args : Yojson.Safe.t) =
+  let present =
+    keeper_legacy_model_arg_names
+    |> List.filter (fun key ->
+      match Yojson.Safe.Util.member key args with
+      | `Null -> false
+      | _ -> true)
+  in
+  match present with
+  | [] -> Ok ()
+  | fields ->
+    Error
+      (Printf.sprintf
+         "legacy keeper model args removed for %s: %s. Use cascade_name; concrete \
+          provider/model identity is OAS-owned."
+         tool_name
+         (String.concat ", " fields))
+;;

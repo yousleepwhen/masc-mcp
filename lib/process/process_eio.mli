@@ -25,18 +25,50 @@ val should_retry_unix_fallback : exn -> bool
 
 (** {1 Observability hook (#9632)} *)
 
+(** Origin at which a [run_argv*] timeout budget was exhausted.
+
+    - [Timeout_origin.Slot_wait] — reserved for callers that wrap [run_argv*] with their
+      own slot/semaphore (e.g. [Docker_spawn_throttle.with_slot]) and want
+      to attribute a timeout to slot contention.  Not emitted by
+      [Process_eio] directly because [Eio.Time.with_timeout_exn] starts
+      the clock after slot acquisition.
+    - [Timeout_origin.Spawn] — timeout fired before [Eio.Process.spawn] returned, i.e.
+      process creation itself stalled (docker daemon backpressure, container
+      cold start during [docker run]).
+    - [Timeout_origin.Command] — timeout fired after the child was created and while
+      draining pipes or awaiting exit; the normal “command was slow” case.
+
+    The closed vocabulary lives in [Timeout_origin] so process timeouts,
+    LLM timeouts, dashboard refreshes, and health probes cannot drift into
+    separate stringly vocabularies. *)
+
 val process_timeout_observer_fn :
-  (program:string -> timeout_sec:float -> unit) Atomic.t
+  (program:string -> timeout_sec:float -> origin:Timeout_origin.t -> unit) Atomic.t
 (** Hook fired from every [run_argv*] timeout branch.  Default no-op so
     [masc_process] carries no [Prometheus] dependency.  [lib/coord.ml]
     wires it at module load to emit [masc_process_timeout_total].
-    [program] is [Filename.basename argv0] (~10-20 distinct programs
-    fleet-wide). *)
+    [program] is [Filename.basename argv0] (~10-20 distinct programs fleet-wide);
+    [origin] is one of {!Timeout_origin.process_origins}, so the metric’s
+    total cardinality stays bounded by [program × bucket × origin]. *)
 
 val argv_program : string list -> string
 (** [argv_program argv] returns [Filename.basename argv0] (or
     ["<empty>"] for an empty argv).  Exposed for tests and parity with
     the hook payload. *)
+
+(** {1 Spawn guard hook} *)
+
+type spawn_guard = { run : 'a. (unit -> 'a) -> 'a }
+(** Process-wide wrapper around foreground [run_argv*] subprocess calls.
+    The default guard runs the callback immediately. Higher-level runtimes can
+    install resource accounting/backpressure without making this lower
+    [masc_process] library depend on those policy modules. *)
+
+val set_spawn_guard : spawn_guard -> unit
+(** Install the process-wide foreground spawn guard. *)
+
+val reset_spawn_guard_for_testing : unit -> unit
+(** Restore the default no-op foreground spawn guard. *)
 
 val default_timeout_sec : float
 (** Default subprocess wall-clock budget shared by every [run_argv*],
@@ -105,7 +137,19 @@ val run_argv_with_status_split :
 (** Like [run_argv_with_status], but returns
     [(status, stdout, stderr)] without combining stderr into stdout. *)
 
-(** {1 Detached (background) spawn primitives — P2 foundation} *)
+type pipeline_stage = {
+  argv : string list;
+  env : string array option;
+  cwd : string option;
+}
+(** One argv-only process stage in a native pipeline. *)
+
+val run_argv_pipeline_with_status_split :
+  ?timeout_sec:float -> pipeline_stage list -> (Unix.process_status * string * string)
+(** Run host stages as a native pipeline. Adjacent stages are connected with
+    process pipes so intermediate stdout is streamed with backpressure rather
+    than buffered into OCaml strings. The returned stdout is the final stage's
+    stdout; stderr is captured from every stage in stage order. *)
 
 type detached_handle = {
   pid : int;
@@ -117,6 +161,15 @@ type detached_handle = {
   stderr_fd : Unix.file_descr;
       (** Read end of child's stderr pipe. Caller owns and must close. *)
   started_at : float;
+      (** [Unix.gettimeofday ()] at spawn time. *)
+}
+
+type detached_devnull_handle = {
+  devnull_pid : int;
+      (** Child process PID (also the process-group leader). *)
+  devnull_pgid : int;
+      (** Process group ID; always equal to [pid] for tree-kill. *)
+  devnull_started_at : float;
       (** [Unix.gettimeofday ()] at spawn time. *)
 }
 
@@ -140,6 +193,16 @@ val spawn_detached :
 
     The argv-only API is intentional: no shell interpolation,
     matching the rest of this module. *)
+
+val spawn_detached_devnull :
+  argv:string list ->
+  env:string array ->
+  cwd:string ->
+  (detached_devnull_handle, string) result
+(** Like {!spawn_detached}, but redirects stdin/stdout/stderr to [/dev/null]
+    and returns no pipe FDs. Use this for fire-and-forget process starts where
+    retaining stdout/stderr pipes would either leak descriptors or backpressure
+    the child. *)
 
 val tree_kill :
   pgid:int ->

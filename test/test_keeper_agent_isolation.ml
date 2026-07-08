@@ -5,18 +5,17 @@ module Types = Masc_domain
     Validates the structural invariant that keeper tools and agent
     coordination tools occupy disjoint namespaces.
 
-    Note: research-profile keepers intentionally receive masc_autoresearch_*
-    tools via the shard system. The isolation boundary is between keeper
-    tools and agent coordination tools (spawned_agent_public).
+	    The isolation boundary is between keeper tools and agent coordination tools
+    (spawned_agent_public).
 
     Pure synchronous tests — no Eio or network required. *)
 
-module Keeper_exec_tools = Masc_mcp.Keeper_exec_tools
+module Agent_tool_dispatch_runtime = Masc_mcp.Agent_tool_dispatch_runtime
 module Agent_tool_surfaces = Masc_mcp.Agent_tool_surfaces
 module Tool_shard = Masc_mcp.Tool_shard
 module Tool_catalog = Masc_mcp.Tool_catalog
 module Keeper_types = Masc_mcp.Keeper_types
-module Tool_code_write = Masc_mcp.Tool_code_write
+module Keeper_identity = Masc_mcp.Keeper_identity
 module Keeper_tool_registry = Masc_mcp.Keeper_tool_registry
 module Config = Masc_mcp.Config
 
@@ -42,8 +41,7 @@ let make_meta
   | Error e -> failwith (Printf.sprintf "make_meta failed: %s" e)
 
 (* ============================================================
-   Known intentional cross-namespace tools
-   (research keepers receive these via shard, not dispatch)
+   Known intentional cross-namespace tools.
    ============================================================ *)
 
 let has_keeper_prefix name =
@@ -54,25 +52,14 @@ let has_keeper_prefix name =
     Must be a function (not a let-binding) because injected_masc_tool_names
     depends on inject_masc_schemas which runs after module init. *)
 let known_non_keeper_tool_names () : string list =
-  List.concat [
-    Tool_shard.autoresearch_keeper_tools
-    |> List.map (fun (t : Masc_domain.tool_schema) -> t.name);
-    Tool_shard.coding_tools
-    |> List.map (fun (t : Masc_domain.tool_schema) -> t.name);
-    Tool_code_write.tool_names;
-    (* MASC tools injected via tool_policy.toml masc groups *)
-    Keeper_tool_registry.injected_masc_tool_names ();
-  ]
+  (Tool_shard.all_keeper_tool_schemas
+   |> List.map (fun (t : Masc_domain.tool_schema) -> t.name)
+   |> List.filter (fun name -> not (has_keeper_prefix name)))
+  @ Keeper_tool_registry.injected_masc_tool_names ()
   |> List.sort_uniq String.compare
 
 let known_shared_agent_keeper_tool_names : string list =
   [
-    "masc_worktree_create";
-    "masc_worktree_list";
-    "masc_code_write";
-    "masc_code_edit";
-    "masc_code_shell";
-    "masc_code_git";
     "masc_status";
     "masc_tasks";
     "masc_claim_next";
@@ -98,7 +85,7 @@ let test_known_shared_tools_exist_on_agent_surface () =
 
 let test_heuristic_only_keeper_prefixed () =
   let meta = make_meta () in
-  let names = Keeper_exec_tools.keeper_allowed_tool_names meta in
+  let names = Agent_tool_dispatch_runtime.keeper_allowed_tool_names meta in
   let non_keeper = List.filter (fun n -> not (has_keeper_prefix n)) names in
   let unexpected =
     List.filter (fun n -> not (List.mem n (known_non_keeper_tool_names ()))) non_keeper
@@ -108,7 +95,7 @@ let test_heuristic_only_keeper_prefixed () =
 
 let test_learned_only_keeper_prefixed () =
   let meta = make_meta ~policy_voice_enabled:true () in
-  let names = Keeper_exec_tools.keeper_allowed_tool_names meta in
+  let names = Agent_tool_dispatch_runtime.keeper_allowed_tool_names meta in
   let non_keeper = List.filter (fun n -> not (has_keeper_prefix n)) names in
   let unexpected =
     List.filter (fun n -> not (List.mem n (known_non_keeper_tool_names ()))) non_keeper
@@ -117,13 +104,13 @@ let test_learned_only_keeper_prefixed () =
     "learned keeper only has keeper_* or curated masc_* tools" [] unexpected
 
 (* ============================================================
-   Invariant 2: Research keepers only add research/autoresearch tools
+   Invariant 2: Research keepers still use only known curated tools
    ============================================================ *)
 
 let test_research_extra_tools_are_research_only () =
   let meta = make_meta ~policy_voice_enabled:true
        () in
-  let names = Keeper_exec_tools.keeper_allowed_tool_names meta in
+  let names = Agent_tool_dispatch_runtime.keeper_allowed_tool_names meta in
   let non_keeper = List.filter (fun n -> not (has_keeper_prefix n)) names in
   let unexpected = List.filter (fun n ->
     not (List.mem n (known_non_keeper_tool_names ()))) non_keeper in
@@ -132,7 +119,7 @@ let test_research_extra_tools_are_research_only () =
 
 let test_write_done_returns_empty () =
   let meta = make_meta () in
-  let names = Keeper_exec_tools.keeper_allowed_tool_names ~write_done:true meta in
+  let names = Agent_tool_dispatch_runtime.keeper_allowed_tool_names ~write_done:true meta in
   Alcotest.(check (list string)) "write_done returns empty" [] names
 
 (* ============================================================
@@ -150,10 +137,10 @@ let test_agent_surface_no_keeper_tools () =
 
 let test_no_overlap_heuristic_vs_agent () =
   let meta = make_meta () in
-  let keeper_names = Keeper_exec_tools.keeper_allowed_tool_names meta in
+  let keeper_names = Agent_tool_dispatch_runtime.keeper_allowed_tool_names meta in
   let agent_names = Agent_tool_surfaces.spawned_agent_public_tool_names in
-  (* Mode removal: all keepers now get the approved shared agent/keeper tools,
-     which include worktree and masc_code_* tools. *)
+  (* Some MASC coordination tools are intentionally shared between spawned
+     agents and keeper-selected surfaces. *)
   let overlap =
     List.filter
       (fun n ->
@@ -162,13 +149,13 @@ let test_no_overlap_heuristic_vs_agent () =
       keeper_names
   in
   Alcotest.(check (list string))
-    "heuristic keeper only shares approved worktree/code tools with agent surface"
+    "heuristic keeper only shares approved coordination tools with agent surface"
     [] overlap
 
 let test_no_overlap_research_vs_agent () =
   let meta = make_meta ~policy_voice_enabled:true
        () in
-  let keeper_names = Keeper_exec_tools.keeper_allowed_tool_names meta in
+  let keeper_names = Agent_tool_dispatch_runtime.keeper_allowed_tool_names meta in
   let agent_names = Agent_tool_surfaces.spawned_agent_public_tool_names in
   let overlap =
     List.filter
@@ -178,12 +165,12 @@ let test_no_overlap_research_vs_agent () =
       keeper_names
   in
   Alcotest.(check (list string))
-    "research keeper only shares approved worktree/code tools with agent surface"
+    "research keeper only shares approved coordination tools with agent surface"
     [] overlap
 
 let test_shard_tools_overlap_with_agent_documented () =
-  (* Mode removal: coding shard (now in defaults) includes the approved shared
-     worktree/code tools that also appear in the agent surface. *)
+  (* Shards may include approved shared coordination tools that also appear in
+     the agent surface. *)
   let keeper_tools = Tool_shard.keeper_model_tools
     |> List.map (fun (t : Masc_domain.tool_schema) -> t.name) in
   let agent_tools = Agent_tool_surfaces.spawned_agent_public_tool_names in
@@ -202,7 +189,7 @@ let test_shard_tools_overlap_with_agent_documented () =
 let test_research_admin_overlap_documented () =
   let admin = Tool_catalog.tools_for_surface Tool_catalog.Admin in
   let meta = make_meta  () in
-  let keeper_names = Keeper_exec_tools.keeper_allowed_tool_names meta in
+  let keeper_names = Agent_tool_dispatch_runtime.keeper_allowed_tool_names meta in
   let overlap = List.filter (fun n -> List.mem n admin) keeper_names in
   (* These research tools are intentionally in both lists.
      Keepers access them via shard allocation, not dispatch pre-hook.
@@ -220,7 +207,7 @@ let test_research_admin_overlap_documented () =
 let test_non_research_admin_tools_documented () =
   let admin = Tool_catalog.tools_for_surface Tool_catalog.Admin in
   let meta = make_meta ~policy_voice_enabled:true () in
-  let keeper_names = Keeper_exec_tools.keeper_allowed_tool_names meta in
+  let keeper_names = Agent_tool_dispatch_runtime.keeper_allowed_tool_names meta in
   let overlap = List.filter (fun n -> List.mem n admin) keeper_names in
   (* Mode removal: all keepers get all tools. Admin-listed tools that
      appear in keeper tool set come from known sources (coding, research shards). *)
@@ -237,8 +224,8 @@ let test_heuristic_has_fewer_tools_than_learned () =
   let heuristic = make_meta () in
   let learned = make_meta ~policy_voice_enabled:true
        () in
-  let h_count = List.length (Keeper_exec_tools.keeper_allowed_tool_names heuristic) in
-  let l_count = List.length (Keeper_exec_tools.keeper_allowed_tool_names learned) in
+  let h_count = List.length (Agent_tool_dispatch_runtime.keeper_allowed_tool_names heuristic) in
+  let l_count = List.length (Agent_tool_dispatch_runtime.keeper_allowed_tool_names learned) in
   Alcotest.(check bool)
     "learned mode has >= heuristic tools"
     true (l_count >= h_count)
@@ -248,80 +235,80 @@ let test_heuristic_has_fewer_tools_than_learned () =
    ============================================================ *)
 
 let test_strip_keeper_prefix_no_prefix () =
-  Alcotest.(check string)
-    "plain name unchanged" "sangsu"
-    (Keeper_types.strip_keeper_prefix "sangsu")
+  Alcotest.(check (option string))
+    "plain name has no keeper prefix" None
+    (Keeper_identity.strip_keeper_prefix "sangsu")
 
 let test_strip_keeper_prefix_has_prefix () =
-  Alcotest.(check string)
-    "strips single keeper- prefix" "admin"
-    (Keeper_types.strip_keeper_prefix "keeper-admin")
+  Alcotest.(check (option string))
+    "strips single keeper- prefix" (Some "admin")
+    (Keeper_identity.strip_keeper_prefix "keeper-admin")
 
 let test_strip_keeper_prefix_double () =
-  Alcotest.(check string)
-    "strips outer keeper- leaving keeper-admin" "keeper-admin"
-    (Keeper_types.strip_keeper_prefix "keeper-keeper-admin")
+  Alcotest.(check (option string))
+    "strips outer keeper- leaving keeper-admin" (Some "keeper-admin")
+    (Keeper_identity.strip_keeper_prefix "keeper-keeper-admin")
 
 let test_keeper_agent_sender_plain_name () =
   (* keeper_agent_sender now delegates to meta.agent_name (#5625) *)
   let meta = make_meta ~name:"sangsu" () in
   Alcotest.(check string)
     "returns meta.agent_name" "sangsu"
-    (Masc_mcp.Keeper_exec_shared.keeper_agent_sender ~meta)
+    (Masc_mcp.Agent_tool_shared_runtime.keeper_agent_sender ~meta)
 
 let test_keeper_agent_sender_prefixed_name () =
   let meta = make_meta ~name:"keeper-admin" () in
   Alcotest.(check string)
     "returns meta.agent_name" "keeper-admin"
-    (Masc_mcp.Keeper_exec_shared.keeper_agent_sender ~meta)
+    (Masc_mcp.Agent_tool_shared_runtime.keeper_agent_sender ~meta)
 
 let test_keeper_agent_name_plain () =
   Alcotest.(check string)
     "keeper-sangsu-agent" "keeper-sangsu-agent"
-    (Keeper_types.keeper_agent_name "sangsu")
+    (Keeper_identity.keeper_agent_name "sangsu")
 
 let test_keeper_agent_name_prefixed () =
   Alcotest.(check string)
     "no double prefix in agent_name" "keeper-admin-agent"
-    (Keeper_types.keeper_agent_name "keeper-admin")
+    (Keeper_identity.keeper_agent_name "keeper-admin")
 
 let test_keeper_name_from_agent_name_roundtrip () =
   Alcotest.(check (option string))
     "agent alias resolves to keeper name" (Some "sangsu")
-    (Keeper_types.keeper_name_from_agent_name "keeper-sangsu-agent")
+    (Keeper_identity.keeper_name_from_agent_name "keeper-sangsu-agent")
 
 let test_keeper_name_from_generated_nickname () =
   Alcotest.(check (option string))
-    "generated nickname resolves directly" (Some "claude-swift-fox")
-    (Keeper_types.keeper_name_from_agent_name "claude-swift-fox")
+    "generated nickname resolves directly" (Some "agent_llm_a-swift-fox")
+    (Keeper_identity.keeper_name_from_agent_name "agent_llm_a-swift-fox")
 
 let test_keeper_name_from_agent_name_rejects_plain_name () =
   Alcotest.(check (option string))
     "plain keeper name is not treated as agent alias" None
-    (Keeper_types.keeper_name_from_agent_name "sangsu")
+    (Keeper_identity.keeper_name_from_agent_name "sangsu")
 
 let test_canonical_keeper_name_from_generated_nickname () =
   Alcotest.(check (option string))
-    "generated nickname resolves to canonical keeper" (Some "claude")
-    (Keeper_types.canonical_keeper_name_from_agent_name "claude-swift-fox")
+    "generated nickname resolves to canonical keeper" (Some "agent_llm_a")
+    (Keeper_identity.canonical_keeper_name_from_agent_name "agent_llm_a-swift-fox")
 
 let test_canonical_keeper_name_from_keeper_agent_alias_preserves_full_name () =
   Alcotest.(check (option string))
     "keeper agent alias keeps hyphenated keeper name"
-    (Some "kimi-null-canary")
-    (Keeper_types.canonical_keeper_name_from_agent_name
-       "keeper-kimi-null-canary-agent")
+    (Some "provider_c-null-canary")
+    (Keeper_identity.canonical_keeper_name_from_agent_name
+       "keeper-provider_c-null-canary-agent")
 
 let test_canonical_keeper_name_from_legacy_keeper_name () =
   Alcotest.(check (option string))
     "legacy keeper-prefixed name normalizes" (Some "sangsu")
-    (Keeper_types.canonical_keeper_name "keeper-sangsu")
+    (Keeper_identity.canonical_keeper_name "keeper-sangsu")
 
 let test_canonical_keeper_name_preserves_plain_hyphenated_name () =
   Alcotest.(check (option string))
     "plain hyphenated keeper name is preserved"
     (Some "masc-mcp-smoke")
-    (Keeper_types.canonical_keeper_name "masc-mcp-smoke")
+    (Keeper_identity.canonical_keeper_name "masc-mcp-smoke")
 
 (* ============================================================
    Test runner
@@ -329,8 +316,8 @@ let test_canonical_keeper_name_preserves_plain_hyphenated_name () =
 
 let () =
   let base_path = Masc_test_deps.find_project_root () in
-  Keeper_exec_tools.inject_masc_schemas Config.raw_all_tool_schemas;
-  ignore (Result.get_ok (Keeper_exec_tools.init_policy_config ~base_path));
+  Agent_tool_dispatch_runtime.inject_masc_schemas Config.raw_all_tool_schemas;
+  ignore (Result.get_ok (Agent_tool_dispatch_runtime.init_policy_config ~base_path));
   Alcotest.run "Keeper_agent_isolation" [
     ("non_research_prefix", [
       Alcotest.test_case "heuristic only keeper_*" `Quick test_heuristic_only_keeper_prefixed;

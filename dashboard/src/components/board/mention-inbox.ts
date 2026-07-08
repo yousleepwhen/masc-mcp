@@ -2,10 +2,10 @@ import { html } from 'htm/preact'
 import { useMemo } from 'preact/hooks'
 import { ArrowLeft, AtSign } from 'lucide-preact'
 import { ActionButton } from '../common/button'
-import { EmptyState } from '../common/empty-state'
+import { EmptyState } from '../common/feedback-state'
 import { RichContent } from '../common/rich-content'
 import { TimeAgo } from '../common/time-ago'
-import { stripStateBlocks } from '../../keeper-message'
+import { SYSTEM_MESSAGE_FROM, boardMessageRowKey, previewBoardMessage } from '../../lib/board-utils'
 import { currentDashboardActorName } from '../../lib/dashboard-session-actor'
 import { navigate } from '../../router'
 import { messages, shellAuthSummary } from '../../store'
@@ -120,21 +120,13 @@ export function buildMentionInboxModel(
   }
 }
 
-function previewContent(message: Message): string {
-  return stripStateBlocks(message.content).trim() || message.content.trim() || '(empty)'
-}
-
-function rowKey(row: MentionInboxRow): string {
-  return row.message.id ?? `${row.message.seq ?? 'message'}-${row.index}`
-}
-
 function MessageRow({ row }: { row: MentionInboxRow }) {
-  const preview = previewContent(row.message)
+  const preview = previewBoardMessage(row.message)
   const hasState = row.message.content.includes('[STATE]')
   return html`
     <article class="rounded-[var(--r-1)] border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3.5 py-3">
       <div class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-        <span class="text-xs font-semibold text-[var(--color-fg-secondary)]">${row.message.from ?? 'system'}</span>
+        <span class="text-xs font-semibold text-[var(--color-fg-secondary)]">${row.message.from ?? SYSTEM_MESSAGE_FROM}</span>
         ${row.message.timestamp
           ? html`<span class="text-2xs tabular-nums text-[var(--color-fg-muted)]"><${TimeAgo} timestamp=${row.message.timestamp} /></span>`
           : null}
@@ -181,7 +173,7 @@ function MentionLane({
       </div>
       ${rows.length === 0
         ? html`<${EmptyState} message=${emptyMessage} compact />`
-        : html`<div class="grid gap-2.5">${rows.map(row => html`<${MessageRow} key=${rowKey(row)} row=${row} />`)}</div>`}
+        : html`<div class="grid gap-2.5">${rows.map(row => html`<${MessageRow} key=${boardMessageRowKey(row.message, row.index)} row=${row} />`)}</div>`}
     </section>
   `
 }

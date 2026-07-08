@@ -34,6 +34,7 @@ validate_pr_body_file() {
   local path="$1"
   local missing=()
   local heading
+  local schema_errors=()
 
   if [[ ! -f "$path" ]]; then
     echo "body file not found: $path" >&2
@@ -44,6 +45,7 @@ validate_pr_body_file() {
     "## Summary" \
     "## Product impact" \
     "## Evidence" \
+    "## Direct evidence" \
     "## Review evidence" \
     "## Linked issue"
   do
@@ -56,6 +58,23 @@ validate_pr_body_file() {
     echo "body file is missing required PR hygiene sections:" >&2
     printf '  - %s\n' "${missing[@]}" >&2
     echo "expected headings from .github/pull_request_template.md" >&2
+    exit 1
+  fi
+
+  if ! grep -Eq '^[[:space:]]*schema_version:[[:space:]]*1([[:space:]]|$)' "$path"; then
+    schema_errors+=("schema_version: 1")
+  fi
+  if ! grep -Eq '^[[:space:]]*direct_ratio:[[:space:]]*([0-9]+/[0-9]+|n/a|N/A)([[:space:]]|$)' "$path"; then
+    schema_errors+=("direct_ratio: <direct>/<total> or n/a")
+  fi
+  if ! grep -Eq '^[[:space:]]*provenance:[[:space:]]*(direct|operator_proxy|mixed|n/a)([[:space:]]|$)' "$path"; then
+    schema_errors+=("provenance: direct|operator_proxy|mixed|n/a")
+  fi
+
+  if [[ ${#schema_errors[@]} -gt 0 ]]; then
+    echo "body file is missing required Direct evidence schema fields:" >&2
+    printf '  - %s\n' "${schema_errors[@]}" >&2
+    echo "expected a Direct evidence block with schema_version, direct_ratio, and provenance" >&2
     exit 1
   fi
 }
@@ -71,6 +90,13 @@ validate_no_staged_changes() {
 is_doc_path() {
   case "$1" in
     docs/*|examples/trpg-mvp/*|README.md|*.md) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+is_agent_approval_label() {
+  case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
+    human-approved-ready) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -125,6 +151,45 @@ ensure_pr_is_draft() {
   fi
 }
 
+arm_agent_draft_guard_status() {
+  local pr_number="$1"
+  local pr_meta
+  local pr_url
+  local head_sha
+
+  pr_meta="$(
+    gh pr view "$pr_number" --repo "$repo" --json url,headRefOid \
+      --jq '.url + " " + .headRefOid'
+  )"
+  pr_url="${pr_meta% *}"
+  head_sha="${pr_meta##* }"
+
+  if [[ -z "$head_sha" || "$head_sha" == "$pr_url" ]]; then
+    echo "could not resolve PR #$pr_number head SHA for immediate draft guard status" >&2
+    exit 1
+  fi
+
+  gh api "repos/$repo/statuses/$head_sha" \
+    --method POST \
+    -f state=failure \
+    -f context="Draft Auto-Merge Guard" \
+    -f description="Agent PR requires Approve Agent PR before ready/merge" \
+    -f target_url="$pr_url" \
+    >/dev/null
+}
+
+sync_commit_lineage() {
+  local pr_number="$1"
+  local sync_script="$script_dir/pr-sync-body.sh"
+
+  if [[ ! -x "$sync_script" ]]; then
+    echo "commit-lineage sync script not executable: $sync_script" >&2
+    exit 1
+  fi
+
+  "$sync_script" "$repo" "$pr_number" >/dev/null
+}
+
 repo=""
 base="main"
 title=""
@@ -148,6 +213,8 @@ done
 require_cmd git
 require_cmd gh
 require_cmd jq
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 load_changed_files() {
   local range="$1"
@@ -216,7 +283,7 @@ for f in "${changed_files[@]}"; do
   fi
 done
 
-labels=("agent-pr")
+labels=("agent-pr" "do-not-merge")
 if [[ $has_docs -eq 1 ]]; then
   labels+=("docs")
 fi
@@ -228,6 +295,10 @@ if [[ -n "$extra_labels" ]]; then
   IFS=',' read -r -a extra <<< "$extra_labels"
   for lb in "${extra[@]}"; do
     lb="$(echo "$lb" | xargs)"
+    if is_agent_approval_label "$lb"; then
+      echo "refusing to add '${lb}' from pr-open; use the Approve Agent PR workflow after human review" >&2
+      exit 1
+    fi
     [[ -n "$lb" ]] && labels+=("$lb")
   done
 fi
@@ -237,6 +308,11 @@ if [[ ${#labels[@]} -gt 0 ]]; then
   gh api "repos/$repo/issues/$pr_number/labels" --method POST --input - <<< "$label_json" >/dev/null
   ensure_pr_is_draft "$pr_number" "label application"
 fi
+
+arm_agent_draft_guard_status "$pr_number"
+ensure_pr_is_draft "$pr_number" "guard status arming"
+sync_commit_lineage "$pr_number"
+ensure_pr_is_draft "$pr_number" "commit lineage sync"
 
 pr_url="$(gh pr view "$pr_number" --repo "$repo" --json url --jq .url)"
 echo "PR: $pr_url"

@@ -37,7 +37,7 @@ let make_keeper_meta ?agent_name ?current_task_id ?(goal_ids = [])
     ?tool_access name =
   let agent_name =
     Option.value agent_name
-      ~default:(Masc_mcp.Keeper_types.keeper_agent_name name)
+      ~default:(Masc_mcp.Keeper_identity.keeper_agent_name name)
   in
   let fields =
     [
@@ -78,11 +78,11 @@ let contract_requiring_tools required_tools : Masc_domain.task_contract =
     required_evidence = [];
     inspect_gate_evidence = [];
     verify_gate_evidence = [];
+    required_evidence_typed = [];
     links =
       {
         operation_id = None;
         session_id = None;
-        autoresearch_loop_id = None;
       };
   }
 
@@ -92,6 +92,23 @@ let extract_json_from_text text =
     Yojson.Safe.from_string (String.sub text idx (String.length text - idx))
   with Not_found ->
     failf "expected JSON payload in text: %s" text
+
+let rec check_json_strings_valid_utf8 label = function
+  | `String value ->
+      check bool (label ^ " string is valid UTF-8") true
+        (String.is_valid_utf_8 value)
+  | `Assoc fields ->
+      List.iter
+        (fun (key, value) -> check_json_strings_valid_utf8 (label ^ "." ^ key) value)
+        fields
+  | `List values ->
+      List.iteri
+        (fun idx value ->
+           check_json_strings_valid_utf8
+             (Printf.sprintf "%s[%d]" label idx)
+             value)
+        values
+  | `Null | `Bool _ | `Int _ | `Intlit _ | `Float _ -> ()
 
 let test_timeout_quality_is_error () =
   let quality =
@@ -124,6 +141,29 @@ let test_success_quality_has_no_issues () =
   in
   check bool "passed" true (quality |> U.member "passed" |> U.to_bool);
   check int "issue count" 0 (quality |> U.member "issues" |> U.to_list |> List.length)
+
+let test_activity_payload_sanitizes_invalid_utf8 () =
+  let payload =
+    Masc_mcp.Mcp_server_eio_call_tool.For_testing.activity_tool_called_payload
+      ~tool_name:"tool_execute"
+      ~success:false
+      ~duration_ms:42
+      ~source:"keeper_internal"
+      ~error_detail:"bad\xfferror"
+      ~tool_args_preview:"preview\xfe"
+      (`Assoc
+        [
+          ("cmd", `String "printf '\xff'");
+          ("message", `String "message\xfd");
+          ("title", `String "title\xfc");
+          ("pr_number", `Int 15310);
+        ])
+  in
+  check_json_strings_valid_utf8 "activity_payload" payload;
+  check string "tool name preserved" "tool_execute"
+    (payload |> U.member "tool_name" |> U.to_string);
+  check int "numeric field preserved" 15310
+    (payload |> U.member "pr_number" |> U.to_int)
 
 let test_contains_casefold_keeps_semantics () =
   let contains = Masc_mcp.Mcp_server_eio_call_tool.contains_casefold in
@@ -187,8 +227,6 @@ let test_board_write_tools_use_board_timeout_default () =
       "keeper_board_vote";
       "keeper_board_comment_vote";
       "keeper_board_curation_submit";
-      "keeper_board_delete";
-      "keeper_board_cleanup";
       "masc_board_post";
       "masc_board_comment";
       "masc_board_vote";
@@ -247,7 +285,7 @@ let test_runtime_mcp_keeper_log_context_uses_keeper_trace_and_current_turn () =
         (Some ("trace-test-" ^ keeper_name))
         ctx.trace_id;
       check (option string) "agent_name"
-        (Some (Masc_mcp.Keeper_types.keeper_agent_name keeper_name))
+        (Some (Masc_mcp.Keeper_identity.keeper_agent_name keeper_name))
         ctx.agent_name;
       check (option string) "session_id"
         (Some "session-explicit")
@@ -272,7 +310,7 @@ let test_runtime_mcp_keeper_log_context_uses_keeper_trace_and_current_turn () =
         (Some []) ctx.required_tools;
       check (option (list string)) "runtime mcp missing required tools empty"
         (Some []) ctx.missing_required_tools;
-      check (option string) "cascade profile" (Some meta.cascade_name)
+      check (option string) "cascade profile" (Some (Masc_mcp.Keeper_types.cascade_name_of_meta meta))
         ctx.cascade_profile)
 
 let test_runtime_mcp_keeper_log_context_loads_current_task_contract () =
@@ -283,7 +321,7 @@ let test_runtime_mcp_keeper_log_context_loads_current_task_contract () =
   let config = Masc_mcp.Coord.default_config base_path in
   ignore (Masc_mcp.Coord.init config ~agent_name:(Some keeper_name));
   let contract =
-    contract_requiring_tools [ "keeper_bash"; "keeper_fs_edit" ]
+    contract_requiring_tools [ "tool_execute"; "tool_edit_file" ]
   in
   ignore
     (Masc_mcp.Coord.add_task
@@ -295,7 +333,7 @@ let test_runtime_mcp_keeper_log_context_loads_current_task_contract () =
   let meta =
     make_keeper_meta
       ~current_task_id:"task-001"
-      ~tool_access:(Masc_mcp.Keeper_types.Custom [ "keeper_bash" ])
+      ~tool_access:(Masc_mcp.Keeper_types.Custom [ "tool_execute" ])
       keeper_name
   in
   Fun.protect
@@ -316,10 +354,10 @@ let test_runtime_mcp_keeper_log_context_loads_current_task_contract () =
           ~arguments:(`Assoc [])
       in
       check (option (list string)) "runtime mcp required tools"
-        (Some [ "keeper_bash"; "keeper_fs_edit" ])
+        (Some [ "tool_execute"; "tool_edit_file" ])
         ctx.required_tools;
       check (option (list string)) "runtime mcp missing required tools"
-        (Some [ "keeper_fs_edit" ])
+        (Some [ "tool_edit_file" ])
         ctx.missing_required_tools)
 
 let test_record_runtime_mcp_keeper_tool_trace_logs_and_broadcasts () =
@@ -359,7 +397,7 @@ let test_record_runtime_mcp_keeper_tool_trace_logs_and_broadcasts () =
       Masc_mcp.Mcp_server_eio_call_tool.record_runtime_mcp_keeper_tool_trace
         ~mcp_session_id:"mcp-session-9"
         entry
-        ~tool_name:"keeper_bash"
+        ~tool_name:"tool_execute"
         ~arguments:
           (`Assoc
             [
@@ -374,7 +412,7 @@ let test_record_runtime_mcp_keeper_tool_trace_logs_and_broadcasts () =
       in
       check int "logged row count" 1 (List.length rows);
       let row = List.hd rows in
-      check string "tool" "keeper_bash" (row |> U.member "tool" |> U.to_string);
+      check string "tool" "tool_execute" (row |> U.member "tool" |> U.to_string);
       check bool "success" false (row |> U.member "success" |> U.to_bool);
       check string "output" "command exited 1"
         (row |> U.member "output" |> U.to_string);
@@ -393,7 +431,7 @@ let test_record_runtime_mcp_keeper_tool_trace_logs_and_broadcasts () =
         (row |> U.member "goal_ids" |> U.to_list |> List.length);
       let runtime_contract = row |> U.member "runtime_contract" in
       check string "runtime contract agent"
-        (Masc_mcp.Keeper_types.keeper_agent_name keeper_name)
+        (Masc_mcp.Keeper_identity.keeper_agent_name keeper_name)
         (runtime_contract |> U.member "agent_name" |> U.to_string);
       check bool "runtime contract has generation" true
         (match runtime_contract |> U.member "generation" with
@@ -416,29 +454,30 @@ let test_record_runtime_mcp_keeper_tool_trace_logs_and_broadcasts () =
       check int "runtime contract missing required tools empty" 0
         (runtime_contract |> U.member "missing_required_tools" |> U.to_list
          |> List.length);
-      check string "runtime contract cascade profile" meta.cascade_name
+      check string "runtime contract cascade profile"
+        (Masc_mcp.Keeper_types.cascade_name_of_meta meta)
         (runtime_contract |> U.member "cascade_profile" |> U.to_string);
       let masc_root =
         Filename.concat base_path Common.masc_dirname
       in
       let trace_id = "trace-test-" ^ keeper_name in
       let trajectory_entries =
-        Masc_mcp.Trajectory.read_entries
+        Trajectory.read_entries
           ~masc_root
           ~keeper_name
           ~trace_id
       in
       check int "trajectory row count" 1 (List.length trajectory_entries);
       let trajectory_entry = List.hd trajectory_entries in
-      check string "trajectory tool" "keeper_bash"
-        trajectory_entry.Masc_mcp.Trajectory.tool_name;
+      check string "trajectory tool" "tool_execute"
+        trajectory_entry.Trajectory.tool_name;
       check int "trajectory turn" 1
-        trajectory_entry.Masc_mcp.Trajectory.turn;
+        trajectory_entry.Trajectory.turn;
       check int "trajectory round" 1
-        trajectory_entry.Masc_mcp.Trajectory.round;
+        trajectory_entry.Trajectory.round;
       let trajectory_json =
         let path =
-          Masc_mcp.Trajectory.trajectory_path masc_root keeper_name trace_id
+          Trajectory.trajectory_path masc_root keeper_name trace_id
         in
         let ic = open_in path in
         let content =
@@ -455,13 +494,14 @@ let test_record_runtime_mcp_keeper_tool_trace_logs_and_broadcasts () =
         (trajectory_json |> U.member "runtime_contract" |> U.member "keeper_name"
          |> U.to_string);
       check string "trajectory runtime agent"
-        (Masc_mcp.Keeper_types.keeper_agent_name keeper_name)
+        (Masc_mcp.Keeper_identity.keeper_agent_name keeper_name)
         (trajectory_json |> U.member "runtime_contract" |> U.member "agent_name"
          |> U.to_string);
-      check string "trajectory runtime cascade profile" meta.cascade_name
+      check string "trajectory runtime cascade profile"
+        (Masc_mcp.Keeper_types.cascade_name_of_meta meta)
         (trajectory_json |> U.member "runtime_contract"
          |> U.member "cascade_profile" |> U.to_string);
-      check string "trajectory action tool" "keeper_bash"
+      check string "trajectory action tool" "tool_execute"
         (trajectory_json |> U.member "action_radius" |> U.member "tool_name"
          |> U.to_string);
       let sse_payload =
@@ -473,12 +513,20 @@ let test_record_runtime_mcp_keeper_tool_trace_logs_and_broadcasts () =
         (sse_payload |> U.member "type" |> U.to_string);
       check string "sse keeper name" keeper_name
         (sse_payload |> U.member "name" |> U.to_string);
-      check string "sse tool name" "keeper_bash"
+      check string "sse tool name" "tool_execute"
         (sse_payload |> U.member "tool_name" |> U.to_string);
       check bool "sse success" false
         (sse_payload |> U.member "success" |> U.to_bool);
       check string "sse error text" "command exited 1"
-        (sse_payload |> U.member "error_text" |> U.to_string))
+        (sse_payload |> U.member "error_text" |> U.to_string);
+      check string "sse args structured input" "false"
+        (sse_payload |> U.member "tool_args" |> U.member "cmd" |> U.to_string);
+      check string "sse result structured text" "command exited 1"
+        (sse_payload |> U.member "tool_result" |> U.to_string);
+      check string "sse args preview includes input" {|{"cmd":"false","session_id":"session-explicit"}|}
+        (sse_payload |> U.member "tool_args_preview" |> U.to_string);
+      check string "sse output preview includes result" "command exited 1"
+        (sse_payload |> U.member "tool_output_preview" |> U.to_string))
 
 let () =
   run "mcp_server_eio_call_tool"
@@ -488,6 +536,8 @@ let () =
           test_case "timeout is error" `Quick test_timeout_quality_is_error;
           test_case "generic failure is error" `Quick test_generic_failure_quality_is_error;
           test_case "success has no issues" `Quick test_success_quality_has_no_issues;
+          test_case "activity payload sanitizes invalid UTF-8" `Quick
+            test_activity_payload_sanitizes_invalid_utf8;
           test_case "contains casefold keeps semantics" `Quick
             test_contains_casefold_keeps_semantics;
           test_case "transition has no fixed timeout" `Quick test_transition_has_no_fixed_timeout;

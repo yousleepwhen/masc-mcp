@@ -1,5 +1,4 @@
-(** Keeper_memory_recall — cost calculation, recall scoring, auto-rules,
-    model-aware threshold adjustment, and memory evaluation.
+(** Keeper_memory_recall — recall scoring, auto-rules, and memory evaluation.
 
     Pure memory bank operations are provided by [Keeper_memory_bank]
     (included below). This module adds recall-specific logic on top. *)
@@ -10,38 +9,75 @@ open Keeper_types
 
 include module type of Keeper_memory_bank
 
-(** {1 Cost Calculation} *)
-
-val cost_usd_of_usage :
-  Agent_sdk.Types.api_usage -> model_id:string -> float
-
 (** {1 File Reading} *)
 
-val read_file_tail_lines : string -> max_bytes:int -> max_lines:int -> string list
+val read_file_tail_lines_result :
+  string -> max_bytes:int -> max_lines:int
+  -> (string list, Keeper_memory_recall_exn_class.t) result
+(** Result-returning tail reader.  [Ok []] covers both "no recorded
+    memory" (file missing, or [max_lines <= 0]) and "empty file"; the
+    caller cannot disambiguate at this entry point and should not try.
+    [Error class] surfaces an IO/parse failure classified through the
+    bounded {!Keeper_memory_recall_exn_class.t} closed sum so callers
+    can branch on a typed value instead of inspecting a stringified
+    exception (RFC-0149 §3.1).
 
-val read_keeper_memory_summary :
+    Use this entry point when the caller can produce a meaningful
+    operator-visible signal on [Error] (e.g. propagate
+    {b Memory_unavailable} up the chain instead of silently rendering
+    an empty summary).
+
+    @since RFC-0149 Phase 1 *)
+
+val record_memory_recall_read_error :
+  site:string -> string -> Keeper_memory_recall_exn_class.t -> unit
+(** Emit the bounded read-failure metric and WARN line for call sites
+    that intentionally degrade after consuming
+    {!read_file_tail_lines_result}.  This is logging only; callers must
+    choose their own degraded value explicitly. *)
+
+val read_keeper_memory_summary_result :
   Coord.config ->
   name:string ->
   max_bytes:int ->
   max_lines:int ->
   recent_limit:int ->
-  keeper_memory_summary
+  (keeper_memory_summary, Keeper_memory_recall_exn_class.t) result
+(** Result-returning variant of {!read_keeper_memory_summary}.  On
+    [Error class] the caller can render a typed [Memory_unavailable]
+    signal up the chain (boot-time alert, operator-visible degraded
+    status) instead of emitting an empty summary that is
+    indistinguishable from a fresh keeper with no recorded memory.
 
-val read_memory_horizon_counts :
+    @since RFC-0149 Phase 1 *)
+
+val read_memory_horizon_counts_result :
   Coord.config ->
   name:string ->
   max_bytes:int ->
   max_lines:int ->
-  (string * int) list
+  ((string * int) list, Keeper_memory_recall_exn_class.t) result
+(** Result-returning variant of {!read_memory_horizon_counts}.  On
+    [Error class] the caller can distinguish "no horizon counts because
+    the bank is empty" ([Ok []]) from "the bank read failed"
+    ([Error class]).
 
-val read_recent_memory_texts :
+    @since RFC-0149 §3.1 *)
+
+val read_recent_memory_texts_result :
   Coord.config ->
   name:string ->
   horizon:string ->
   max_bytes:int ->
   max_lines:int ->
   limit:int ->
-  string list
+  (string list, Keeper_memory_recall_exn_class.t) result
+(** Result-returning variant of {!read_recent_memory_texts}.  On
+    [Error class] the caller can distinguish "no recent texts in this
+    horizon" ([Ok []]) from "the bank read failed" ([Error class]).
+
+    @since RFC-0149 §3.1 *)
+
 
 (** {1 Query Detection} *)
 
@@ -111,11 +147,7 @@ val keeper_auto_rule_eval_of_measurement :
   Keeper_measurement.measurement_snapshot ->
   keeper_auto_rule_eval
 
-(** {1 Model-Aware Threshold Adjustment} *)
-
-(** Compute threshold multipliers from OAS [Llm_provider.Model_meta] parameters.
-    Uses [context_window] and [is_local] instead of model name matching. *)
-val model_threshold_multipliers_of_model_id : string -> float * float
+(** {1 Runtime-Neutral Threshold Evaluation} *)
 
 val evaluate_keeper_auto_rules :
   meta:keeper_meta ->
@@ -125,7 +157,6 @@ val evaluate_keeper_auto_rules :
   repetition_risk:float ->
   goal_alignment:float ->
   response_alignment:float ->
-  ?model_id:string ->
   unit ->
   keeper_auto_rule_eval
 
@@ -152,7 +183,6 @@ val learned_policy_auto_rules :
   repetition_risk:float ->
   goal_alignment:float ->
   response_alignment:float ->
-  ?model_id:string ->
   unit ->
   keeper_auto_rule_eval
 
@@ -161,8 +191,16 @@ val learned_policy_auto_rules :
 val recent_user_messages :
   Agent_sdk.Types.message list -> max_n:int -> string list
 
-val load_history_user_messages :
-  path:string -> max_n:int -> string list
+val load_history_user_messages_result :
+  path:string ->
+  max_n:int ->
+  (string list, Keeper_memory_recall_exn_class.t) result
+(** Result-returning variant of {!load_history_user_messages}.  On
+    [Error class] the caller can distinguish "no user messages in the
+    history file" ([Ok []]) from "the history file read failed"
+    ([Error class]).
+
+    @since RFC-0149 §3.1 *)
 
 val recall_candidates_with_history :
   checkpoint_messages:Agent_sdk.Types.message list ->

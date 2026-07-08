@@ -7,7 +7,7 @@ import type { ComponentChildren } from 'preact'
 import autoAnimate from '@formkit/auto-animate'
 import { EmptyState, ErrorState, LoadingState } from '../common/feedback-state'
 import { ActionButton } from '../common/button'
-import { Card } from '../common/card'
+import { SectionCard } from '../common/card'
 import { TextInput } from '../common/input'
 import { TimeAgo } from '../common/time-ago'
 import { RichContent } from '../common/rich-content'
@@ -27,15 +27,14 @@ import {
   filterTasksByQuery,
 } from './goal-helpers'
 import { openTaskDetail } from './task-detail-state'
+import { DECK_CHIP, DECK_PANEL } from './deck-classes'
 
 const deletingTaskId = signal<string | null>(null)
 const doneVisibleCount = signal(20)
 const searchDoneVisibleCount = signal(20)
 const DONE_PAGE_SIZE = 20
 const REPO_ISSUES_BASE = 'https://github.com/jeong-sik/masc-mcp/issues'
-const DECK_PANEL = 'overflow-hidden rounded-[var(--r-0)] border border-[var(--color-border-default)] bg-[var(--color-bg-page)]'
 const DECK_HEAD = 'border-b border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-2'
-const DECK_CHIP = 'rounded-[var(--r-0)] border border-[var(--color-border-strong)] bg-[var(--color-bg-elevated)] px-1.5 py-0.5 font-mono text-3xs'
 const META_CHIP = 'rounded-[var(--r-0)] border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-1.5 py-0.5 font-mono text-3xs'
 const BACKLOG_PRESSURE_PRIORITIES = [1, 2, 3, 4] as const
 const BACKLOG_STALE_THRESHOLD_HOURS: Record<number, number | undefined> = {
@@ -396,12 +395,12 @@ export function TaskBacklog() {
   const hasData = executionLoaded.value
 
   if (isLoading) {
-    return html`<${Card} title="태스크 백로그" class="section" variant="compact"><${LoadingState}>백로그 불러오는 중...<//><//>`
+    return html`<${SectionCard} label="태스크 백로그" class="section" variant="compact"><${LoadingState}>백로그 불러오는 중...<//><//>`
   }
 
   if (hasError && !hasData) {
     return html`
-      <${Card} title="태스크 백로그" class="section" variant="compact">
+      <${SectionCard} label="태스크 백로그" class="section" variant="compact">
         <div class="flex flex-col items-center gap-3 py-6">
           <${ErrorState} message="데이터를 불러오지 못했습니다." />
           <${ActionButton} variant="ghost" size="sm" onClick=${() => refreshExecution({ force: true })}>재시도<//>
@@ -411,11 +410,11 @@ export function TaskBacklog() {
   }
 
   if (hasData && totalTasks === 0) {
-    return html`<${Card} title="태스크 백로그" class="section" variant="compact"><${EmptyState} message="등록된 태스크가 없습니다" /><//>`
+    return html`<${SectionCard} label="태스크 백로그" class="section" variant="compact"><${EmptyState} message="등록된 태스크가 없습니다" /><//>`
   }
 
   return html`
-    <${Card} title="태스크 백로그" class="section" variant="compact">
+    <${SectionCard} label="태스크 백로그" class="section" variant="compact">
       ${hasError && hasData ? html`
         <div class="mb-2 rounded-[var(--r-0)] border border-warn/25 bg-warn/10 px-2.5 py-1.5 text-2xs text-warn">마지막 갱신에 실패했습니다. 표시된 데이터가 오래되었을 수 있습니다.</div>
       ` : null}

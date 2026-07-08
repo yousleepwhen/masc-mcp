@@ -25,7 +25,6 @@ type handler_binding =
   | Direct of Tool_dispatch.handler
   | Shared of Tool_dispatch.handler
   | Tag_dispatch
-  | Match_chain
 
 type t = {
   name : string;
@@ -35,10 +34,10 @@ type t = {
   handler_binding : handler_binding;
   is_read_only : bool;
   requires_join : bool;
+  mcp_context_required : bool;
   is_destructive : bool;
   is_idempotent : bool;
   visibility : Tool_catalog.visibility;
-  lifecycle : Tool_catalog.lifecycle;
   implementation_status : Tool_catalog.implementation_status;
   canonical_name : string option;
   replacement : string option;
@@ -62,10 +61,10 @@ let create
     ~handler_binding
     ?(is_read_only = false)
     ?(requires_join = false)
+    ?(mcp_context_required = false)
     ?(is_destructive = false)
     ?(is_idempotent = false)
     ?(visibility = Tool_catalog.Default)
-    ?(lifecycle = Tool_catalog.Active)
     ?(implementation_status = Tool_catalog.Real)
     ?canonical_name
     ?replacement
@@ -77,8 +76,8 @@ let create
     ?requires_actor_binding
     () =
   { name; description; module_tag; input_schema; handler_binding;
-    is_read_only; requires_join; is_destructive; is_idempotent;
-    visibility; lifecycle; implementation_status;
+    is_read_only; requires_join; mcp_context_required; is_destructive; is_idempotent;
+    visibility; implementation_status;
     canonical_name; replacement; reason;
     allow_direct_call_when_hidden; title; required_permission; effect_domain;
     requires_actor_binding }
@@ -111,18 +110,7 @@ let register (spec : t) =
   (* 1. Tag + schema registry *)
   Tool_dispatch.register_module_tag
     ~schemas:[ to_tool_schema spec ] ~tag:spec.module_tag;
-  (* 2. Read-only set *)
-  if spec.is_read_only then
-    Tool_dispatch.init_read_only_set [ spec.name ];
-  (* 3. Requires-join set *)
-  if spec.requires_join then
-    Tool_dispatch.init_requires_join_set [ spec.name ];
-  (* Add destructive and idempotent sets *)
-  if spec.is_destructive then
-    Tool_dispatch.init_destructive_set [ spec.name ];
-  if spec.is_idempotent then
-    Tool_dispatch.init_idempotent_set [ spec.name ];
-  (* 4. Catalog metadata — enforce Hidden for System_internal tools *)
+  (* 2. Catalog metadata — enforce Hidden for System_internal tools *)
   let is_system_internal =
     Tool_catalog_surfaces.is_on_surface System_internal spec.name
   in
@@ -143,26 +131,35 @@ let register (spec : t) =
         Option.bind existing (fun (meta : Tool_catalog.metadata) ->
           meta.requires_actor_binding)
   in
+  let required_permission =
+    match spec.required_permission with
+    | Some _ as value -> value
+    | None ->
+        Option.bind existing (fun (meta : Tool_catalog.metadata) ->
+          meta.required_permission)
+  in
   Tool_catalog.register_metadata spec.name
     { Tool_catalog.visibility = effective_visibility;
-      lifecycle = spec.lifecycle;
+      lifecycle = Tool_catalog.Active;
       implementation_status = spec.implementation_status;
       canonical_name = spec.canonical_name;
       replacement = spec.replacement;
       reason = spec.reason;
       allow_direct_call_when_hidden = effective_allow_direct;
       readonly = Some spec.is_read_only;
+      requires_join = Some spec.requires_join;
+      mcp_context_required = Some spec.mcp_context_required;
       destructive = Some spec.is_destructive;
       idempotent = Some spec.is_idempotent;
-      required_permission = spec.required_permission;
+      required_permission;
       effect_domain = spec.effect_domain;
       requires_actor_binding };
-  (* 5. Handler binding — auto-register Direct/Shared into Tool_dispatch *)
+  (* 3. Handler binding — auto-register Direct/Shared into Tool_dispatch *)
   (match spec.handler_binding with
    | Direct h | Shared h ->
      Tool_dispatch.register ~tool_name:spec.name ~handler:h;
      Hashtbl.replace expects_handler spec.name ()
-   | Tag_dispatch | Match_chain -> ())
+   | Tag_dispatch -> ())
 
 let register_all (specs : t list) =
   List.iter register specs

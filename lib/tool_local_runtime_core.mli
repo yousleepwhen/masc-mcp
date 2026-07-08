@@ -25,9 +25,8 @@ type context = {
     construct it field-by-field with [config; agent_name]
     bindings. *)
 
-type tool_result = bool * string
-(** [(success, body_string)] — the canonical shape used by every
-    inline tool dispatcher in this layer. *)
+type tool_result = Tool_result.result
+(** Typed local-runtime tool result. *)
 
 type llama_process = {
   pid : int option;
@@ -54,20 +53,6 @@ type bench_sample = {
     bench loops; exposed here so all four siblings see the same
     type via include. *)
 
-(** {1 JSON envelope helpers} *)
-
-val json_error : string -> string
-(** [json_error message] returns a JSON-serialised error
-    envelope: [{"status": "error", "message": "..."}]. *)
-
-val json_ok : (string * Yojson.Safe.t) list -> string
-(** [json_ok fields] returns [{"status": "ok", ...fields}] as a
-    JSON-serialised string.  [fields] is prepended-after the
-    canonical status field. *)
-
-val int_opt_to_json : int option -> Yojson.Safe.t
-val string_opt_to_json : string option -> Yojson.Safe.t
-val float_opt_to_json : float option -> Yojson.Safe.t
 (** Aliases over {!Json_util.*_opt_to_json} re-exported for the
     sibling include cascade. *)
 
@@ -78,14 +63,13 @@ val parse_int_opt : string -> int option
     {!String.trim} — convenience for cmdline / JSON-string-int
     coercion. *)
 
-val unique_preserve_order : string list -> string list
 (** Alias over {!Json_util.dedupe_keep_order}. *)
 
 val split_ws : string -> string list
-(** [split_ws text] splits on space, trims, and drops empties.
-    Used to tokenise cmdlines into argv-like lists. *)
+(** [split_ws text] returns argv-like literal words using the shared
+    bash-subset word parser, preserving quoted values.  Used to tokenise
+    cmdlines into argv-like lists for process discovery. *)
 
-val string_contains_substring : string -> string -> bool
 (** Alias over {!String_util.contains_substring} — case-
     sensitive. *)
 
@@ -153,4 +137,4 @@ val fetch_models_at :
 
 val fetch_models : unit -> (string * string list, string) Result.t
 (** Convenience wrapper over {!fetch_models_at} using
-    {!Env_config.Llama.server_url} as the base URL. *)
+    {!Env_config.Local_runtime.server_url} as the base URL. *)

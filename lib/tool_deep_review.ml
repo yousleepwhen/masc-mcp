@@ -25,7 +25,7 @@ module Float = Stdlib.Float
     This forces the reviewer to evaluate code structurally rather than
     relying on domain context that might mask bugs.
 
-    Uses the same [Oas_worker.run_named] pattern as {!Verifier_oas}. *)
+    Uses the same [Keeper_turn_driver.run_named] pattern as {!Verifier_oas}. *)
 
 open Printf
 
@@ -96,8 +96,36 @@ FILES:
 If you find concerns, list each with file:line and a brief explanation.
 If the code looks correct, respond with exactly: NO_ISSUES_FOUND|} question files_str)
 
-(** Run the adversarial review via OAS. Returns (ok, result_json). *)
-let handle_deep_review (config : Coord.config) args : bool * string =
+(* RFC-0189 PR-1b: typed [Tool_result.result] helpers.  Both error
+   sites surface caller-input rejections (missing required args, target
+   file unreadable) → [Workflow_rejection].  The two success sites
+   carry JSON envelope payloads as [data]. *)
+let ok_json ~tool_name ~start_time (json : Yojson.Safe.t) : Tool_result.result =
+  Tool_result.make_ok ~tool_name ~start_time ~data:json ()
+;;
+
+let error_workflow_json
+      ~tool_name
+      ~start_time
+      (json : Yojson.Safe.t)
+  : Tool_result.result
+  =
+  Tool_result.make_err
+    ~tool_name
+    ~class_:Tool_result.Workflow_rejection
+    ~start_time
+    ~data:json
+    (Yojson.Safe.to_string json)
+;;
+
+(** Run the adversarial review via OAS. Returns the typed result. *)
+let handle_deep_review
+      ~tool_name
+      ~start_time
+      (config : Coord.config)
+      args
+  : Tool_result.result
+  =
   let target_files =
     match Yojson.Safe.Util.(member "target_files" args) with
     | `List files ->
@@ -110,15 +138,18 @@ let handle_deep_review (config : Coord.config) args : bool * string =
     | _ -> ""
   in
   if Stdlib.List.length target_files = 0 || String.equal question "" then
-    (false, Yojson.Safe.to_string (`Assoc [
-      ("error", `String "target_files (non-empty array) and question (string) are required")
-    ]))
+    error_workflow_json ~tool_name ~start_time
+      (`Assoc
+         [ ( "error"
+           , `String
+               "target_files (non-empty array) and question (string) are \
+                required" )
+         ])
   else
     match build_prompt ~target_files ~question ~base_path:config.base_path with
     | Error msg ->
-        (false, Yojson.Safe.to_string (`Assoc [
-          ("error", `String msg)
-        ]))
+        error_workflow_json ~tool_name ~start_time
+          (`Assoc [ ("error", `String msg) ])
     | Ok prompt ->
         let cascade_name =
           Keeper_cascade_profile.cascade_name_for_use
@@ -127,7 +158,7 @@ let handle_deep_review (config : Coord.config) args : bool * string =
         match
           Masc_oas_bridge.run_with_caller
             ~caller:Env_config_oas_bridge.Tool_deep_review (fun () ->
-            Oas_worker.run_named
+            Keeper_turn_driver.run_named
               ~cascade_name
               ~goal:prompt
               ~max_turns:1
@@ -138,24 +169,32 @@ let handle_deep_review (config : Coord.config) args : bool * string =
           )
         with
         | Ok result ->
-            let text = Oas_response.text_of_response result.response in
+            let text = Agent_sdk_response.text_of_response result.response in
             let verdict =
               if String.equal (String.trim (String.uppercase_ascii text)) "NO_ISSUES_FOUND"
               then "no_issues"
               else "concern"
             in
-            (true, Yojson.Safe.to_string (`Assoc [
-              ("verdict", `String verdict);
-              ("review", `String text);
-              ("files_reviewed", `Int (List.length target_files));
-            ]))
+            ok_json ~tool_name ~start_time
+              (`Assoc [
+                ("verdict", `String verdict);
+                ("review", `String text);
+                ("files_reviewed", `Int (List.length target_files));
+              ])
         | Error err ->
             let msg = Agent_sdk.Error.to_string err in
             Log.Misc.warn "adversarial review failed: %s" msg;
-            (true, Yojson.Safe.to_string (`Assoc [
-              ("verdict", `String "unavailable");
-              ("error", `String msg);
-            ]))
+            (* Provider failure is surfaced as a successful tool call with
+               verdict="unavailable" — the original handler returned
+               [Tool_result.ok] in this branch, preserved as
+               [make_ok] so [success=true] and the verdict carries the
+               failure signal in [data], not in [failure_class]. *)
+            ok_json ~tool_name ~start_time
+              (`Assoc [
+                ("verdict", `String "unavailable");
+                ("error", `String msg);
+              ])
+;;
 
 (** Tool schema for MCP registration. *)
 let tool_definitions = [

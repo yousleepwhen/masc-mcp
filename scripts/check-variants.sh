@@ -18,6 +18,7 @@
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
+REPO_ROOT=$(pwd)
 
 if ! command -v rg >/dev/null 2>&1; then
   echo "ERROR: check-variants.sh requires ripgrep (rg)." >&2
@@ -38,9 +39,37 @@ extract_ocaml_all_list() {
   # Capture everything between the opening [ and the closing ] of "let <name> ="
   # then pull out individual constructor names (word chars starting with upper
   # or lower, separated by ;/whitespace).
-  awk "/^let ${list_name}[[:space:]]*=/{found=1} found{print} found && /\]/{exit}" "$file" \
-    | rg '\b([A-Z][a-zA-Z_0-9]*)\b' -o -r '$1' \
-    | sort -u || true
+  local content
+  content=$(awk "/^let ${list_name}[[:space:]]*=/{found=1} found{print} found && /\]/{exit}" "$file")
+
+  # If the assignment line itself (or the very next line) does not contain
+  # '[', the definition is a delegation
+  # (e.g. `let all_phases = Keeper_state_machine_phase.all_phases`)
+  # rather than a list literal. Follow the reference heuristically.
+  local first_line second_line
+  first_line=$(echo "$content" | head -1)
+  second_line=$(echo "$content" | sed -n '2p')
+  if ! echo "$first_line" | grep -q '\[' && ! echo "$second_line" | grep -q '^\s*\['; then
+    local ref_module ref_name snake_module candidate
+    ref_module=$(echo "$content" | head -1 | rg '=\s*([A-Z][a-zA-Z_0-9]*)\.' -o -r '$1' || true)
+    ref_name=$(echo "$content" | head -1 | rg '\.([a-z_][a-zA-Z_0-9]*)' -o -r '$1' || true)
+    if [ -n "$ref_module" ] && [ -n "$ref_name" ]; then
+      snake_module=$(echo "$ref_module" | perl -pe 's/([A-Z])/_\L$1/g' | perl -pe 's/^_//')
+      for d in lib/keeper lib lib/coord lib/server lib/dashboard; do
+        candidate="${REPO_ROOT}/${d}/${snake_module}.ml"
+        if [ -f "$candidate" ]; then
+          # Guard against infinite recursion: only follow one level.
+          extract_ocaml_all_list "$candidate" "$ref_name"
+          return
+        fi
+      done
+    fi
+    # Could not resolve delegation — return empty so the caller can fall back.
+    true
+    return
+  fi
+
+  echo "$content" | rg '\b([A-Z][a-zA-Z_0-9]*)\b' -o -r '$1' | sort -u || true
 }
 
 # Extract constructor names from an OCaml type definition.
@@ -48,9 +77,30 @@ extract_ocaml_all_list() {
 extract_ocaml_type() {
   local file="$1"
   local type_name="$2"
-  awk "/^type ${type_name}[[:space:]]*=/{found=1; next} found && /^[[:space:]]*\|/{print} found && /^[a-z]/{exit}" "$file" \
+  local variants
+  variants=$(awk "/^type ${type_name}[[:space:]]*=/{found=1; next} found && /^[[:space:]]*\|/{print} found && /^[a-z]/{exit}" "$file" \
     | rg '^[[:space:]]*\|[[:space:]]+([A-Z][a-zA-Z_0-9]*)' -o -r '$1' \
-    | sort -u || true
+    | sort -u || true)
+  if [ -n "$variants" ]; then
+    echo "$variants"
+    return
+  fi
+
+  local include_module snake_module candidate resolved
+  while IFS= read -r include_module; do
+    snake_module=$(echo "$include_module" | perl -pe 's/([A-Z])/_\L$1/g' | perl -pe 's/^_//')
+    for d in lib/keeper lib lib/coord lib/server lib/dashboard; do
+      candidate="${REPO_ROOT}/${d}/${snake_module}.ml"
+      if [ -f "$candidate" ]; then
+        resolved=$(extract_ocaml_type "$candidate" "$type_name")
+        if [ -n "$resolved" ]; then
+          echo "$resolved"
+          return
+        fi
+      fi
+    done
+  done < <(rg '^\s*include\s+([A-Z][a-zA-Z_0-9]*)\s*$' "$file" -o -r '$1' || true)
+  true
 }
 
 assert_contains_variant() {
@@ -127,11 +177,11 @@ check_pair() {
   fi
 }
 
-# ── Check 1: Keeper_state_machine.phase (OCaml) vs KeeperPhase (TypeScript) ──
+# ── Check 1: Keeper_state_machine_phase.phase (OCaml) vs KeeperPhase (TypeScript) ──
 
 echo "=== Check 1: KeeperStateMachine.phase (OCaml) vs KeeperPhase (TypeScript) ==="
 
-KSM_ML="lib/keeper/keeper_state_machine.ml"
+KSM_ML="lib/keeper/keeper_state_machine_phase.ml"
 KP_TS="dashboard/src/types/core.ts"
 
 if [ -f "$KSM_ML" ] && [ -f "$KP_TS" ]; then
@@ -155,12 +205,12 @@ fi
 echo ""
 echo "=== Check 2: turn_phase (OCaml) vs KeeperCascadeLifecycle.tla domain ==="
 
-KR_ML="lib/keeper/keeper_registry.ml"
+KR_TYPES_ML="lib/keeper/keeper_registry_types.ml"
 KCL_TLA="specs/keeper-state-machine/KeeperCascadeLifecycle.tla"
 
-if [ -f "$KR_ML" ]; then
+if [ -f "$KR_TYPES_ML" ]; then
   # turn_phase constructors (strip "Turn_" prefix, lowercase for TLA+ comparison)
-  ocaml_turn_constructors=$(extract_ocaml_type "$KR_ML" "turn_phase")
+  ocaml_turn_constructors=$(extract_ocaml_type "$KR_TYPES_ML" "turn_phase")
   assert_contains_variant "OCaml(turn_phase)" "$ocaml_turn_constructors" "Turn_idle"
   assert_contains_variant "OCaml(turn_phase)" "$ocaml_turn_constructors" "Turn_prompting"
   ocaml_turn=$(echo "$ocaml_turn_constructors" \
@@ -181,10 +231,10 @@ if [ -f "$KR_ML" ]; then
       echo "INFO: ${KCL_TLA} not found — TLA+ turn_phase check skipped"
     fi
   else
-    echo "WARN: could not extract OCaml turn_phase from ${KR_ML}"
+    echo "WARN: could not extract OCaml turn_phase from ${KR_TYPES_ML}"
   fi
 else
-  echo "WARN: ${KR_ML} not found — turn_phase check skipped"
+  echo "WARN: ${KR_TYPES_ML} not found — turn_phase check skipped"
 fi
 
 # ── Check 3: cascade_state (OCaml) vs CascadeSet in TLA+ ────────────────────
@@ -192,8 +242,8 @@ fi
 echo ""
 echo "=== Check 3: cascade_state (OCaml) vs KeeperCascadeLifecycle.tla domain ==="
 
-if [ -f "$KR_ML" ]; then
-  ocaml_cascade=$(extract_ocaml_type "$KR_ML" "cascade_state" \
+if [ -f "$KR_TYPES_ML" ]; then
+  ocaml_cascade=$(extract_ocaml_type "$KR_TYPES_ML" "cascade_state" \
     | sed 's/Cascade_//' | tr '[:upper:]' '[:lower:]' | sort -u)
 
   if [ -n "$ocaml_cascade" ]; then
@@ -211,6 +261,8 @@ if [ -f "$KR_ML" ]; then
       echo "INFO: ${KCL_TLA} not found — TLA+ cascade_state check skipped"
     fi
   fi
+else
+  echo "WARN: ${KR_TYPES_ML} not found — cascade_state check skipped"
 fi
 
 # ── Check 4: PHASE_STYLES coverage (TypeScript) vs KeeperPhase ───────────────

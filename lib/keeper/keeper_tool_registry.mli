@@ -29,71 +29,35 @@ val core_discovery_tools : string list
 
 val effective_core_tools : unit -> string list
 
-(** Keeper tools the dispatcher accepts but withholds from the
-    visible/core set; served only when a keeper opts in via
-    policy_config.also_allow. Exported so [Tool_registration_check]
-    does not flag them as orphan toml entries (#7696). *)
-val keeper_admin_dispatched_tools : string list
-
 (** Lookup hashtable for [core_always_tools]. *)
 val core_always_set : (string, unit) Hashtbl.t
 
 val is_core_always_tool : string -> bool
 
-(** Read-only tools that live outside any [Tool_shard]
-    (e.g. [keeper_tool_search]). *)
-val non_shard_read_only_tools : string list
+(** Descriptor-projected read-only tools. *)
+val descriptor_read_only_tools : string list
 
-(** All read-only keeper tools — shard read-only tools plus
-    [non_shard_read_only_tools], sorted/deduped. *)
+(** All read-only keeper tools — shard read-only tools plus descriptor
+    projections, sorted/deduped. *)
 val keeper_read_only_tools : string list
-
-val keeper_read_only_set : (string, unit) Hashtbl.t
 
 val is_keeper_read_only_tool : string -> bool
 
-(** Combined read-only check: keeper-local set + Tool_dispatch
+(** Combined read-only check: keeper-local lookup + catalog-backed
     read-only/idempotent classification. *)
 val is_effectively_read_only_tool : string -> bool
 
 (** Negation of [is_effectively_read_only_tool]. *)
 val has_mutating_side_effect : string -> bool
 
-(** Read-only [gh] subcommand prefixes used by the input-aware
-    keeper_shell op=gh classifier. *)
-val gh_read_only_prefixes : string list
-
-(** Returns [true] when a [gh api ...] invocation is effectively a
-    GET request (no -X/--method, no -f/-F/--field, not graphql).
-    [cmd_lower] must already be lowercased and trimmed. *)
-val is_gh_api_read_only : string -> bool
-
-(** Strip leading [gh] tokens and re-join with single spaces. *)
-val normalize_gh_command : string -> string
-
-(** Project a [keeper_shell op=gh] input JSON to its normalized
-    [cmd] string ([""] when missing). *)
-val gh_effective_cmd : Yojson.Safe.t -> string
-
-(** [true] iff [input] has [op = "gh"]. *)
-val is_shell_gh_op : Yojson.Safe.t -> bool
-
-(** Read-only [git] action names used by [Masc Code_git] input
-    classification. *)
-val git_read_only_actions : string list
-
-(** Project a [Masc Code_git] input JSON to its [action] field
-    lowercased ([""] when missing). *)
-val git_action_of_input : Yojson.Safe.t -> string
-
-(** Input-aware read-only check: [keeper_shell op=gh] and
-    [masc_code_git] mix read-only and mutating subcommands within
-    one tool name; the input JSON disambiguates. *)
+(** Input-aware read-only check for tools that mix read-only and mutating
+    subcommands within one tool name. *)
 val is_read_only_with_input :
   tool_name:string -> input:Yojson.Safe.t -> bool
 
-(** Whether the tool, given its input, is exempt from the per-turn
-    main-worktree boundary block. *)
+(** Input-aware main-worktree boundary check: returns [true] when the tool
+    should NOT open the per-turn checkpoint boundary (read-only, MASC
+    coordination, or playground-sandboxed mutations). *)
 val is_main_worktree_boundary_exempt_with_input :
   tool_name:string -> input:Yojson.Safe.t -> bool
 
@@ -109,11 +73,19 @@ val is_reconcile_safe_tool : string -> bool
     [reconcile_safe_set]. *)
 val all_tools_reconcile_safe : string list -> bool
 
-(** Mutable ref holding injected MASC tool schemas; populated at
-    boot by the dashboard / tool_registration paths. *)
-val masc_schemas_ref : Masc_domain.tool_schema list ref
+(** Replace injected MASC tool schemas.
+    Startup calls this through [inject_masc_schemas]; runtime readers should
+    use [masc_schemas_snapshot] rather than holding mutable state. *)
+val set_masc_schemas : Masc_domain.tool_schema list -> unit
 
-(** Names extracted from [!masc_schemas_ref] in declaration order. *)
+(** Immutable snapshot of injected MASC tool schemas. *)
+val masc_schemas_snapshot : unit -> Masc_domain.tool_schema list
+
+(** Scoped schema override for tests that need a synthetic MASC surface. *)
+val with_masc_schemas_for_test :
+  Masc_domain.tool_schema list -> (unit -> 'a) -> 'a
+
+(** Names extracted from [masc_schemas_snapshot ()] in declaration order. *)
 val injected_masc_tool_names : unit -> string list
 
 (** SSOT schema for [keeper_tool_search]. Defined here because this

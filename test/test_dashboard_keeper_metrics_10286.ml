@@ -12,26 +12,11 @@ let metric ?(channel = "turn") tools =
       ("tool_call_count", `Int (List.length tools));
     ]
 
-let pr_review_action ?(success = true) action =
-  `Assoc
-    [
-      ("ts_unix", `Float 2.0);
-      ("channel", `String "tool_event");
-      ("metric_event", `String "keeper_pr_review_action");
-      ("pr_review_action", `String action);
-      ("pr_review_action_success", `Bool success);
-      ("tool_call_count", `Int 0);
-      ("tools_used", `List []);
-    ]
-
-let pr_work_action ?(success = true) action =
+let sparse_tool_event () =
   `Assoc
     [
       ("ts_unix", `Float 3.0);
       ("channel", `String "tool_event");
-      ("metric_event", `String "keeper_pr_work_action");
-      ("pr_work_action", `String action);
-      ("pr_work_action_success", `Bool success);
       ("tool_call_count", `Int 0);
       ("tools_used", `List []);
     ]
@@ -62,10 +47,26 @@ let summary_float field summary =
   | `Int value -> float_of_int value
   | other -> failf "expected float field %s, got %s" field (Yojson.Safe.to_string other)
 
-let summary_bool field summary =
-  match Yojson.Safe.Util.(summary |> member field) with
-  | `Bool value -> value
-  | other -> failf "expected bool field %s, got %s" field (Yojson.Safe.to_string other)
+let summary_missing field summary =
+  Yojson.Safe.Util.(summary |> member field) = `Null
+
+let retired_pr_work_summary_fields =
+  [
+    "pr_" ^ "review_read_tool_call_count";
+    "pr_" ^ "review_mutation_tool_call_count";
+    "pr_" ^ "review_tool_call_count";
+    "pr_" ^ "work_git_tool_call_count";
+    "pr_" ^ "work_tool_call_count";
+    "pr_" ^ "work_signal_count";
+    "observed_pr_" ^ "review_tool_calls";
+    "observed_pr_" ^ "mutation_tool_calls";
+    "observed_" ^ "git_tool_calls";
+    "observed_pr_" ^ "work_tool_calls";
+    "observed_pr_" ^ "review_work";
+    "observed_pr_" ^ "mutation_work";
+    "observed_" ^ "git_work";
+    "observed_pr_" ^ "work";
+  ]
 
 let test_contains_ci_preserves_literal_ascii_semantics () =
   check bool "ascii case-insensitive hit" true
@@ -97,31 +98,18 @@ let test_proactive_preview_similarity_stats_semantics () =
   check (float 0.0001) "max" 1.0 max_sim;
   check bool "warn" true warn
 
-let test_metrics_window_exposes_observed_pr_work () =
+let test_metrics_window_does_not_classify_execute_as_pr_work () =
   let _, summary, _, _ =
     Detail.compute_metrics_window
       ~parsed_metrics:
         [
           metric
             [
-              "keeper_pr_review_read";
-              "keeper_pr_review_comment";
-              "keeper_pr_review_reply";
-              "keeper_preflight_check";
-              "masc_worktree_create";
-              "masc_code_git";
+              "tool_execute";
+              "tool_execute";
+              "tool_execute";
             ];
-          pr_review_action "COMMENT";
-          pr_review_action "APPROVE";
-          pr_review_action "REQUEST_CHANGES";
-          pr_review_action "REPLY";
-          pr_review_action ~success:false "APPROVE";
-          pr_work_action "GIT_ADD";
-          pr_work_action "GIT_COMMIT";
-          pr_work_action "GIT_PUSH";
-          pr_work_action "PR_CREATE";
-          pr_work_action ~success:false "GIT_PUSH";
-          metric ~channel:"heartbeat" [ "keeper_pr_review_comment"; "masc_code_git" ];
+          metric ~channel:"heartbeat" [ "tool_execute" ];
         ]
       ~generation:0
       ~compact:false
@@ -130,99 +118,10 @@ let test_metrics_window_exposes_observed_pr_work () =
       ~primary_model_norm:""
       ~primary_model:""
   in
-  check int "review read tool calls" 1
-    (summary_int "pr_review_read_tool_call_count" summary);
-  check int "review mutation tool calls" 2
-    (summary_int "pr_review_mutation_tool_call_count" summary);
-  check int "review tool calls" 3
-    (summary_int "pr_review_tool_call_count" summary);
-  check int "git/preflight tool calls" 3
-    (summary_int "pr_work_git_tool_call_count" summary);
-  check int "pr work tool call count" 6
-    (summary_int "pr_work_tool_call_count" summary);
-  check int "review action attempts" 5
-    (summary_int "pr_review_action_attempt_count" summary);
-  check int "review action successes" 4
-    (summary_int "pr_review_action_success_count" summary);
-  check int "comment actions" 1
-    (summary_int "pr_review_comment_action_count" summary);
-  check int "approve actions" 1
-    (summary_int "pr_review_approve_action_count" summary);
-  check int "request changes actions" 1
-    (summary_int "pr_review_request_changes_action_count" summary);
-  check int "reply actions" 1
-    (summary_int "pr_review_reply_action_count" summary);
-  check int "pr work action attempts" 5
-    (summary_int "pr_work_action_attempt_count" summary);
-  check int "pr work action successes" 4
-    (summary_int "pr_work_action_success_count" summary);
-  check int "git add actions" 1
-    (summary_int "pr_git_add_action_count" summary);
-  check int "git commit actions" 1
-    (summary_int "pr_git_commit_action_count" summary);
-  check int "git push actions" 1
-    (summary_int "pr_git_push_action_count" summary);
-  check int "pr create actions" 1
-    (summary_int "pr_create_action_count" summary);
-  check int "pr work signal count" 14
-    (summary_int "pr_work_signal_count" summary);
-  check bool "observed review" true
-    (summary_bool "observed_pr_review_tool_calls" summary);
-  check bool "observed mutation" true
-    (summary_bool "observed_pr_mutation_tool_calls" summary);
-  check bool "observed git" true
-    (summary_bool "observed_git_tool_calls" summary);
-  check bool "observed pr work tool calls" true
-    (summary_bool "observed_pr_work_tool_calls" summary);
-  check bool "observed review work" true
-    (summary_bool "observed_pr_review_work" summary);
-  check bool "observed mutation work" true
-    (summary_bool "observed_pr_mutation_work" summary);
-  check bool "observed approve" true
-    (summary_bool "observed_pr_approve_work" summary);
-  check bool "observed request changes" true
-    (summary_bool "observed_pr_request_changes_work" summary);
-  check bool "observed reply" true
-    (summary_bool "observed_pr_reply_work" summary);
-  check bool "observed pr create" true
-    (summary_bool "observed_pr_create_work" summary);
-  check bool "observed pr push" true
-    (summary_bool "observed_pr_push_work" summary);
-  check bool "observed pr commit" true
-    (summary_bool "observed_pr_commit_work" summary);
-  check bool "observed git" true (summary_bool "observed_git_work" summary);
-  check bool "observed pr work" true
-    (summary_bool "observed_pr_work" summary)
-
-let test_metrics_window_action_rows_drive_observed_pr_work () =
-  let _, summary, _, _ =
-    Detail.compute_metrics_window
-      ~parsed_metrics:[ pr_review_action "COMMENT"; pr_work_action "GIT_PUSH" ]
-      ~generation:0
-      ~compact:false
-      ~series_points:80
-      ~metrics_window_max_bytes:200_000
-      ~primary_model_norm:""
-      ~primary_model:""
-  in
-  check int "no review tools" 0
-    (summary_int "pr_review_tool_call_count" summary);
-  check int "no git tools" 0
-    (summary_int "pr_work_git_tool_call_count" summary);
-  check int "review action successes" 1
-    (summary_int "pr_review_action_success_count" summary);
-  check int "work action successes" 1
-    (summary_int "pr_work_action_success_count" summary);
-  check int "pr work signal count" 2
-    (summary_int "pr_work_signal_count" summary);
-  check bool "observed review via action" true
-    (summary_bool "observed_pr_review_work" summary);
-  check bool "observed mutation via action" true
-    (summary_bool "observed_pr_mutation_work" summary);
-  check bool "observed git via action" true
-    (summary_bool "observed_git_work" summary);
-  check bool "observed pr work via action" true
-    (summary_bool "observed_pr_work" summary)
+  check int "tool calls remain generic" 3 (summary_int "tool_call_count" summary);
+  List.iter
+    (fun field -> check bool field true (summary_missing field summary))
+    retired_pr_work_summary_fields
 
 let test_24h_context_ignores_sparse_tool_events () =
   let rows, summary =
@@ -230,8 +129,7 @@ let test_24h_context_ignores_sparse_tool_events () =
       ~metrics_lines:
         [
           json_line (context_snapshot ~context_ratio:0.75 ());
-          json_line (pr_review_action "COMMENT");
-          json_line (pr_work_action "GIT_PUSH");
+          json_line (sparse_tool_event ());
         ]
       ~now_ts:100.0
   in
@@ -249,10 +147,8 @@ let test_24h_context_ignores_sparse_tool_events () =
 let test_context_snapshot_classifier_rejects_sparse_tool_events () =
   check bool "context row qualifies" true
     (Metrics.metrics_row_has_context_snapshot (context_snapshot ()));
-  check bool "review action row is sparse" false
-    (Metrics.metrics_row_has_context_snapshot (pr_review_action "COMMENT"));
-  check bool "work action row is sparse" false
-    (Metrics.metrics_row_has_context_snapshot (pr_work_action "GIT_PUSH"))
+  check bool "tool event row is sparse" false
+    (Metrics.metrics_row_has_context_snapshot (sparse_tool_event ()))
 
 let test_metrics_series_ignores_sparse_tool_events () =
   let items, summary, _, _ =
@@ -260,8 +156,7 @@ let test_metrics_series_ignores_sparse_tool_events () =
       ~parsed_metrics:
         [
           context_snapshot ~context_ratio:0.55 ();
-          pr_review_action "COMMENT";
-          pr_work_action "GIT_PUSH";
+          sparse_tool_event ();
         ]
       ~generation:0
       ~compact:false
@@ -271,14 +166,72 @@ let test_metrics_series_ignores_sparse_tool_events () =
       ~primary_model:""
   in
   check int "series skips sparse rows" 1 (List.length items);
-  check int "actions still count" 2
-    (summary_int "pr_work_signal_count" summary);
+  check bool "sparse rows do not create PR work signals" true
+    (summary_missing ("pr_" ^ "work_signal_count") summary);
   match items with
   | [ row ] ->
       check (float 0.0001) "context sample preserved" 0.55
         (summary_float "context_ratio" row)
   | other ->
       failf "expected one metrics series row, got %d" (List.length other)
+
+let test_metrics_window_redacts_model_and_handoff_labels () =
+  let row =
+    `Assoc
+      [
+        ("ts_unix", `Float 20.0);
+        ("channel", `String "turn");
+        ("context_ratio", `Float 0.42);
+        ("context_tokens", `Int 420);
+        ("context_max", `Int 1000);
+        ("message_count", `Int 4);
+        ("model_used", `String "provider_d:gpt-5.4");
+        ( "handoff",
+          `Assoc
+            [
+              ("performed", `Bool true);
+              ("to_model", `String "provider_a:model-a-sonnet");
+              ("prev_trace_id", `String "trace-a");
+              ("new_trace_id", `String "trace-b");
+              ("new_generation", `Int 2);
+            ] );
+      ]
+  in
+  let items, summary, last_handoff, _ =
+    Detail.compute_metrics_window
+      ~parsed_metrics:[ row ]
+      ~generation:0
+      ~compact:false
+      ~series_points:80
+      ~metrics_window_max_bytes:200_000
+      ~primary_model_norm:"model-d-5.4"
+      ~primary_model:"provider_d:gpt-5.4"
+  in
+  let open Yojson.Safe.Util in
+  check bool "primary model redacted" true
+    (summary |> member "primary_model" = `Null);
+  (match summary |> member "top_models" |> to_list with
+  | [ top ] ->
+      check string "model bucket is runtime" "runtime"
+        (top |> member "model" |> to_string);
+      check int "model bucket count" 1 (top |> member "count" |> to_int)
+  | other ->
+      failf "expected one runtime model bucket, got %d" (List.length other));
+  (match items with
+  | [ item ] ->
+      check bool "series model_used redacted" true
+        (item |> member "model_used" = `Null);
+      check bool "series handoff_to_model redacted" true
+        (item |> member "handoff_to_model" = `Null);
+      check bool "nested handoff to_model redacted" true
+        (item |> member "handoff" |> member "to_model" = `Null)
+  | other ->
+      failf "expected one metrics series row, got %d" (List.length other));
+  (match last_handoff with
+  | Some handoff ->
+      check bool "last handoff to_model redacted" true
+        (handoff |> member "to_model" = `Null)
+  | None -> fail "expected last handoff summary")
 
 let () =
   run "dashboard_keeper_metrics_10286"
@@ -297,15 +250,15 @@ let () =
         ] );
       ( "metrics_window",
         [
-          test_case "exposes observed PR work signals" `Quick
-            test_metrics_window_exposes_observed_pr_work;
-          test_case "action rows drive observed PR work signals" `Quick
-            test_metrics_window_action_rows_drive_observed_pr_work;
+          test_case "does not classify Execute as PR work" `Quick
+            test_metrics_window_does_not_classify_execute_as_pr_work;
           test_case "24h context ignores sparse tool events" `Quick
             test_24h_context_ignores_sparse_tool_events;
           test_case "classifies sparse tool events" `Quick
             test_context_snapshot_classifier_rejects_sparse_tool_events;
           test_case "series ignores sparse tool events" `Quick
             test_metrics_series_ignores_sparse_tool_events;
+          test_case "redacts model and handoff labels" `Quick
+            test_metrics_window_redacts_model_and_handoff_labels;
         ] );
     ]

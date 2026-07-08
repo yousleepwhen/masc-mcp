@@ -10,22 +10,32 @@ import {
   type KeeperTransition,
 } from '../api/keeper'
 import { isRecord } from './common/normalize'
-import { EmptyState } from './common/empty-state'
+import { EmptyState } from './common/feedback-state'
 import { InlineSpinner } from './common/inline-spinner'
 import { CytoscapeFsm } from './common/cytoscape-fsm'
 import { MermaidGraph } from './common/mermaid-graph'
 import { FilterChips } from './common/filter-chips'
 import { buildCompositeFsmSpec } from './keeper-fsm-specs'
 import { TurnFsmDetailPanel } from './turn-fsm-detail-panel'
+import { displayState, INVARIANT_LABELS } from './fsm-hub-types'
+import type { KeeperCompositeInvariants } from '../api/schemas/keeper-composite'
 import {
   normalizePhaseDiagnosis,
   PhaseConditionsPanel,
 } from './phase-conditions-panel'
-import type { KeeperPhase } from '../types'
+// RFC-0135 PR-2: phase casing SSOT — `toKeeperPhase` is the single
+// source. The local PHASE_ID_MAP (previously lines 42-69 of this file)
+// duplicated BACKEND_PHASE_MAP in keeper-store-normalize and drifted
+// independently; that map and the local `normalizePhase` export are
+// removed in favor of the canonical helper.
+import { toKeeperPhase } from '../keeper-store-normalize'
 
 interface KeeperStateDiagramProps {
   keeperName: string
-  currentPhase?: KeeperPhase | string | null
+  /** RFC-0046: parent-supplied composite snapshot. When provided,
+   *  this panel reads the SSOT from the shared FsmHub fetch instead
+   *  of issuing its own /composite call. */
+  snapshot?: KeeperCompositeSnapshot | null
 }
 
 function PhaseBadge({ accent, children }: { accent?: boolean; children: unknown }) {
@@ -35,39 +45,13 @@ function PhaseBadge({ accent, children }: { accent?: boolean; children: unknown 
   return html`<span class="${cls}">${children}</span>`
 }
 
-const PHASE_ID_MAP: Record<string, string> = {
-  Offline: 'Offline',
-  Running: 'Running',
-  Failing: 'Failing',
-  Overflowed: 'Overflowed',
-  Compacting: 'Compacting',
-  HandingOff: 'HandingOff',
-  Draining: 'Draining',
-  Paused: 'Paused',
-  Stopped: 'Stopped',
-  Crashed: 'Crashed',
-  Restarting: 'Restarting',
-  Dead: 'Dead',
-  offline: 'Offline',
-  running: 'Running',
-  failing: 'Failing',
-  overflowed: 'Overflowed',
-  compacting: 'Compacting',
-  handing_off: 'HandingOff',
-  paused: 'Paused',
-  draining: 'Draining',
-  stopped: 'Stopped',
-  crashed: 'Crashed',
-  restarting: 'Restarting',
-  dead: 'Dead',
-}
-
-const INVARIANT_LABELS: Array<[keyof KeeperCompositeSnapshot['invariants'], string]> = [
-  ['phase_turn_alignment', '단계 ⇔ 턴'],
-  ['no_cascade_before_measurement', 'Cascade 순서'],
-  ['compaction_atomicity', '압축 원자성'],
-  ['event_priority_monotone', '이벤트 우선순위'],
-]
+// INVARIANT_LABELS is the SSOT in `fsm-hub-types.ts:124` — same five TLA
+// joint observer invariants emitted by `keeper_composite_observer.ml`. A
+// prior local copy in this file enumerated only four (dropped
+// `phase_derivation_agreement`), so the operator panel below silently
+// hid one of the five invariant rows — they would never see KSM phase
+// derivation drift (stored phase vs `derive_phase(conditions)` result,
+// the strictest TLA agreement check).
 
 type DiagramView = 'cytoscape' | 'mermaid'
 
@@ -75,11 +59,6 @@ const DIAGRAM_VIEW_CHIPS: Array<{ key: DiagramView; label: string; title: string
   { key: 'cytoscape', label: 'Cytoscape', title: 'Composite lifecycle graph' },
   { key: 'mermaid', label: 'Mermaid', title: 'Backend-generated phase diagram' },
 ]
-
-export function normalizePhase(phase: string | null | undefined): string | null {
-  if (!phase) return null
-  return PHASE_ID_MAP[phase] ?? phase
-}
 
 export function transitionType(selectedEvent: unknown): string {
   if (selectedEvent && typeof selectedEvent === 'object' && 'type' in selectedEvent) {
@@ -124,8 +103,9 @@ function snapshotPhaseDiagnosis(snapshot: KeeperCompositeSnapshot): unknown {
   return isRecord(snapshot) ? snapshot.phase_diagnosis : undefined
 }
 
-export function KeeperStateDiagramPanel({ keeperName, currentPhase }: KeeperStateDiagramProps) {
-  const [snapshot, setSnapshot] = useState<KeeperCompositeSnapshot | null>(null)
+export function KeeperStateDiagramPanel({ keeperName, snapshot: externalSnapshot }: KeeperStateDiagramProps) {
+  const [internalSnapshot, setInternalSnapshot] = useState<KeeperCompositeSnapshot | null>(null)
+  const snapshot = externalSnapshot ?? internalSnapshot
   const [stateDiagram, setStateDiagram] = useState<KeeperStateDiagramResponse | null>(null)
   const [transitions, setTransitions] = useState<KeeperTransition[]>([])
   const [error, setError] = useState<string | null>(null)
@@ -140,8 +120,15 @@ export function KeeperStateDiagramPanel({ keeperName, currentPhase }: KeeperStat
     setDiagramError(null)
     setStateDiagram(null)
 
+    // RFC-0046 §7 #1: skip composite fetch when parent supplies it.
+    // Caller-passed `undefined` means standalone mode (legacy); `null`
+    // means parent is loading — wait rather than dual-fetch.
+    const compositePromise: Promise<KeeperCompositeSnapshot | null> = externalSnapshot !== undefined
+      ? Promise.resolve(externalSnapshot)
+      : fetchKeeperComposite(keeperName, { signal: controller.signal })
+
     Promise.allSettled([
-      fetchKeeperComposite(keeperName, { signal: controller.signal }),
+      compositePromise,
       fetchKeeperStateDiagram(keeperName, { signal: controller.signal }),
       fetchKeeperTransitions(keeperName, 5, { signal: controller.signal }),
     ])
@@ -149,9 +136,9 @@ export function KeeperStateDiagramPanel({ keeperName, currentPhase }: KeeperStat
         if (controller.signal.aborted) return
 
         if (snapshotResult.status === 'fulfilled') {
-          setSnapshot(snapshotResult.value)
+          setInternalSnapshot(snapshotResult.value)
         } else {
-          setSnapshot(null)
+          setInternalSnapshot(null)
           setError(snapshotResult.reason instanceof Error ? snapshotResult.reason.message : 'composite fetch failed')
         }
 
@@ -183,9 +170,9 @@ export function KeeperStateDiagramPanel({ keeperName, currentPhase }: KeeperStat
     return () => { controller.abort() }
   }, [keeperName])
 
-  const keeperPhase = normalizePhase(currentPhase)
-  const compositePhase = normalizePhase(snapshot?.phase)
-  const phaseMismatch = Boolean(keeperPhase && compositePhase && keeperPhase !== compositePhase)
+  // RFC-0046 Step 5: keeper.phase (flat field) is no longer surfaced here.
+  // Composite snapshot is the single source of truth; backend two-store
+  // drift detection moves to the FsmHub invariant area (future RFC).
   const phaseDiagnosis = useMemo(
     () => snapshot ? normalizePhaseDiagnosis(snapshotPhaseDiagnosis(snapshot)) : null,
     [snapshot],
@@ -221,29 +208,21 @@ export function KeeperStateDiagramPanel({ keeperName, currentPhase }: KeeperStat
   return html`
     <div class="flex flex-col gap-3">
       <div class="flex flex-wrap items-center gap-2 text-3xs text-[var(--color-fg-disabled)]">
-        <${PhaseBadge} accent>composite ${snapshot.phase}<//>
-        ${keeperPhase ? html`
-          <${PhaseBadge}>keeper ${keeperPhase}<//>
-        ` : null}
-        <${PhaseBadge}>KTC ${snapshot.turn_phase}<//>
-        <${PhaseBadge}>KDP ${snapshot.decision.stage}<//>
-        <${PhaseBadge}>KCL ${snapshot.cascade.state}<//>
-        <${PhaseBadge}>KMC ${snapshot.compaction.stage}<//>
+        <${PhaseBadge} accent>composite ${displayState(snapshot.phase)}<//>
+        <${PhaseBadge}>KTC ${displayState(snapshot.turn_phase)}<//>
+        <${PhaseBadge}>KDP ${displayState(snapshot.decision.stage)}<//>
+        <${PhaseBadge}>KCL ${displayState(snapshot.cascade.state)}<//>
+        <${PhaseBadge}>KMC ${displayState(snapshot.compaction.stage)}<//>
+        <${PhaseBadge}>KCB ${displayState(snapshot.circuit_breaker?.state ?? 'clean')}<//>
         ${transitions.length > 0 ? html`
           <${PhaseBadge}>observed ${transitions.length} transitions<//>
         ` : null}
       </div>
 
-      ${phaseMismatch ? html`
-        <div class="rounded-[var(--r-1)] border border-[var(--warn-24)] bg-[var(--warn-8)] px-3 py-2 text-2xs leading-normal text-[var(--color-fg-primary)]">
-          keeper row phase와 composite snapshot phase가 다릅니다. composite snapshot을 authoritative runtime-truth로 사용합니다.
-        </div>
-      ` : null}
-
       <div>
         <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
           <div class="text-3xs font-semibold uppercase tracking-[var(--track-caps)] text-[var(--color-fg-muted)]">
-            통합 라이프사이클 (KSM · KTC · KDP · KCL · KMC)
+            통합 라이프사이클 (KSM · KTC · KDP · KCL · KMC · KCB)
           </div>
           <${FilterChips}
             chips=${DIAGRAM_VIEW_CHIPS}
@@ -291,7 +270,7 @@ export function KeeperStateDiagramPanel({ keeperName, currentPhase }: KeeperStat
       ` : null}
 
       <div class="grid gap-2 md:grid-cols-2">
-        ${INVARIANT_LABELS.map(([key, label]) => {
+        ${(Object.entries(INVARIANT_LABELS) as Array<[keyof KeeperCompositeInvariants, string]>).map(([key, label]) => {
           const ok = snapshot.invariants[key]
           return html`
             <div class=${`rounded-[var(--r-1)] border px-3 py-2 text-2xs leading-normal ${badgeTone(ok)}`}>
@@ -308,9 +287,9 @@ export function KeeperStateDiagramPanel({ keeperName, currentPhase }: KeeperStat
           ${transitions.map(transition => html`
             <div class="rounded-[var(--r-1)] border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-2 text-2xs leading-normal text-[var(--color-fg-primary)]">
               <div class="flex flex-wrap items-center gap-2">
-                <span class="font-mono text-[var(--color-fg-secondary)]">${normalizePhase(transition.prev_phase) ?? transition.prev_phase}</span>
+                <span class="font-mono text-[var(--color-fg-secondary)]">${toKeeperPhase(transition.prev_phase) ?? transition.prev_phase}</span>
                 <span class="text-[var(--color-fg-disabled)]">→</span>
-                <span class="font-mono text-[var(--color-accent-fg)]">${normalizePhase(transition.new_phase) ?? transition.new_phase}</span>
+                <span class="font-mono text-[var(--color-accent-fg)]">${toKeeperPhase(transition.new_phase) ?? transition.new_phase}</span>
                 <span class="rounded-[var(--r-0)] border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 py-0.5 text-3xs text-[var(--color-fg-muted)]">
                   ${transition.event_type ?? transitionType(transition.selected_event)}
                 </span>

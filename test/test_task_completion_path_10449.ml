@@ -12,7 +12,6 @@ module T = Masc_domain
 let empty_links : T.task_execution_links = {
   operation_id = None;
   session_id = None;
-  autoresearch_loop_id = None;
 }
 
 let empty_contract : T.task_contract = {
@@ -22,6 +21,7 @@ let empty_contract : T.task_contract = {
   required_evidence = [];
   inspect_gate_evidence = [];
   verify_gate_evidence = [];
+  required_evidence_typed = [];
   links = empty_links;
 }
 

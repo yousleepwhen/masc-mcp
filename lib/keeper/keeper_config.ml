@@ -1,33 +1,57 @@
 (** Keeper configuration — defaults, environment variable parsing, profiles. *)
 
 open Tool_args
+include Keeper_config_rp_helpers
 
-(** Default cascade name for keeper turns. Resolved through [routes.keeper_turn]
-    so the concrete profile remains configuration-owned. *)
-let default_cascade_name =
-  Keeper_cascade_profile.cascade_name_for_use
-    Keeper_cascade_profile.Keeper_turn
+(** Upper bound for keeper time configs expressed in seconds.  Repeated
+    seven times as the bare literal [172800] across this file before
+    the extraction; [Masc_time_constants.day_int * 2] makes the "2 days"
+    intent explicit and satisfies sw-dev §"Magic Number 금지". *)
+let two_days_seconds_int = Masc_time_constants.day_int * 2
+
+(** One-day upper bound expressed in seconds.  Same anti-pattern as
+    [two_days_seconds_int]: the bare literal [86400] appeared twice as
+    a [~max_v] bound for [keeper.proactive.min_interval_sec] without
+    naming the "1 day" intent at the call site. *)
+let one_day_seconds_int = Masc_time_constants.day_int
+
+(** Default cascade name for keeper turns. Resolved through the live
+    [Cascade_catalog_runtime] snapshot so the answer reflects the
+    currently-installed catalog rather than module-init state. Falls
+    back to [Cascade_routes.cascade_name_for_use Keeper_turn] (canonical
+    route path) when the snapshot is not yet available, which matches
+    pre-RFC-0066 behavior during early boot.
+
+    RFC-0066 Phase 1: was a string value evaluated at module init,
+    freezing to the static fallback when the catalog was empty at
+    init time. See issue #14624. *)
+let default_cascade_name () =
+  match Cascade_catalog_runtime.resolve_declared_name ~raw_name:"" () with
+  | Ok name -> Cascade_name.to_string name
+  | Error _ ->
+    Keeper_cascade_profile.cascade_name_for_use
+      Keeper_cascade_profile.Keeper_turn
 
 
 (** Cascade name for recovery turns when keeper is in Failing phase.
     Two-profile deployments no longer maintain a separate local recovery lane;
     recovery reuses the canonical keeper cascade. *)
-let local_recovery_cascade_name =
+let phase_recovery_cascade_name =
   Keeper_cascade_profile.cascade_name_for_use
     Keeper_cascade_profile.Phase_recovery
 
 (** Cascade name for buffer operations (compacting, handing off). *)
-let local_only_cascade_name =
+let phase_buffer_cascade_name =
   Keeper_cascade_profile.cascade_name_for_use
     Keeper_cascade_profile.Phase_buffer
 
 let phase_routing_cascade_names =
-  [ local_only_cascade_name; local_recovery_cascade_name ]
+  [ phase_buffer_cascade_name; phase_recovery_cascade_name ]
   |> List.sort_uniq String.compare
 ;;
 
 (** Cascade name for turns that must use a tool-capable provider lane. *)
-let tool_use_strict_cascade_name =
+let tool_required_cascade_name =
   Keeper_cascade_profile.cascade_name_for_use
     Keeper_cascade_profile.Tool_required
 
@@ -38,7 +62,7 @@ let min_keeper_context_tokens = 64_000
 
 (** Maximum context window (tokens) accepted for [max_context_override] on
     keeper turn-up args (#9953).  Matches the largest published context
-    window among supported providers (Claude Opus 4.7 / Sonnet 4.6 = 1M).
+    window among supported providers (largest published = 1M).
     Bumps to a 2M-class model must update this constant alongside the
     provider registry entry. *)
 let max_keeper_context_tokens = 1_000_000
@@ -84,356 +108,8 @@ let () =
   if tool_first_sentence_max_chars <= 0 then
     invalid_arg "Keeper_config tool_first_sentence_max_chars must be positive"
 
-let bool_default_true_of_env name =
-  match Env_config_core.raw_value_opt name with
-  | None -> true
-  | Some v ->
-      let v = String.trim v |> String.lowercase_ascii in
-      not (v = "0" || v = "false" || v = "no" || v = "n")
+include Keeper_config_text
 
-let bool_of_env_default name ~(default : bool) =
-  match Env_config_core.raw_value_opt name with
-  | None -> default
-  | Some raw ->
-      let v = String.trim raw |> String.lowercase_ascii in
-      if v = "1" || v = "true" || v = "yes" || v = "y" || v = "on" then true
-      else if v = "0" || v = "false" || v = "no" || v = "n" || v = "off" then false
-      else default
-
-let bool_of_env_opt name =
-  match Env_config_core.raw_value_opt name with
-  | None -> None
-  | Some raw ->
-      let v = String.trim raw |> String.lowercase_ascii in
-      if v = "1" || v = "true" || v = "yes" || v = "y" || v = "on" then Some true
-      else if v = "0" || v = "false" || v = "no" || v = "n" || v = "off" then Some false
-      else None
-
-let valid_name_re = Re.Pcre.re "^[A-Za-z0-9._-]+$" |> Re.compile
-
-let validate_name name =
-  name <> "" && Re.execp valid_name_re name
-
-let default_proactive_enabled = true
-let default_proactive_idle_sec = 120
-let default_proactive_cooldown_sec = 300
-let approval_queue_stale_max_wait_sec = 600.0
-let default_room_signal_prompt_enabled = false
-let default_goal_horizon_max_chars = 480
-let default_drift_max_clauses = 6
-let prompt_render_max_bytes = 320
-
-let keeper_room_signal_prompt_enabled_override () =
-  bool_of_env_opt "MASC_KEEPER_ROOM_SIGNAL_PROMPT_ENABLED"
-
-
-let removed_keeper_input_key_names =
-  [
-    "models";
-    "allowed_models";
-    "active_model";
-    "presence_keepalive";
-    "presence_keepalive_sec";
-    "trigger_mode";
-    "policy_action_budget";
-    "initiative_scope";
-    "initiative_enabled";
-    "initiative_idle_sec";
-    "initiative_cooldown_sec";
-    "policy_mode";
-    "policy_shell_mode";
-    "tool_preset";
-    "tool_also_allow";
-    "tool_custom_allowlist";
-  ]
-
-let non_public_keeper_input_key_names =
-  [
-    "social_model";
-  ]
-
-let removed_keeper_msg_input_key_names =
-  [
-    "goal";
-    "short_goal";
-    "mid_goal";
-    "long_goal";
-    "instructions";
-    
-    "will";
-    "needs";
-    "desires";
-    "require_existing";
-    "new_goal";
-    "new_short_goal";
-    "new_mid_goal";
-    "new_long_goal";
-    "new_instructions";
-    
-    "new_will";
-    "new_needs";
-    "new_desires";
-  ]
-
-let removed_keeper_meta_key_names =
-  [
-    "persona_profile_path";
-  ]
-  @ removed_keeper_input_key_names
-
-let present_json_keys (keys : string list) (json : Yojson.Safe.t) : string list =
-  match json with
-  | `Assoc fields ->
-      keys
-      |> List.filter (fun key -> List.mem_assoc key fields)
-  | _ -> []
-
-let reject_removed_keeper_input_keys ~tool_name (args : Yojson.Safe.t) =
-  (* #9752: non-public args (currently only [social_model]) should not
-     fail the whole call. External clients like codex-mcp-client have
-     sent [social_model] in real traffic — hard-rejecting DoS's the
-     call for a field that is never consumed downstream from the args
-     blob anyway ([social_model] runtime value comes from the keeper
-     meta, not the MCP args). Warn and continue; the policy from #7447
-     (social_model off the public OAS/MCP surface) is preserved because
-     no caller path reads [args.social_model] to drive behaviour. *)
-  let non_public = present_json_keys non_public_keeper_input_key_names args in
-  (match non_public with
-   | _ :: _ as fields ->
-       Log.Keeper.warn
-         "%s: ignoring non-public keeper args %s (see #7447, #9752 — \
-          accepted for external-client compatibility, no runtime effect)"
-         tool_name (String.concat ", " fields)
-   | [] -> ());
-  let present = present_json_keys removed_keeper_input_key_names args in
-  match present with
-  | [] -> Ok ()
-  | fields ->
-      Error
-        (Printf.sprintf
-           "removed keeper args for %s: %s. Keepers are always-on by definition."
-           tool_name
-           (String.concat ", " fields))
-
-let reject_removed_keeper_msg_input_keys ~tool_name (args : Yojson.Safe.t) =
-  let present = present_json_keys removed_keeper_msg_input_key_names args in
-  match present with
-  | [] -> Ok ()
-  | fields ->
-      Error
-        (Printf.sprintf
-           "removed keeper message args for %s: %s. Use masc_keeper_up for keeper creation or persisted updates."
-           tool_name
-           (String.concat ", " fields))
-
-let utf8_safe_prefix_bytes (s : string) ~(max_bytes : int) : string =
-  if max_bytes <= 0 then ""
-  else
-    let len = String.length s in
-    if len <= max_bytes then s
-    else
-      let rec loop i last_good =
-        if i >= len || i >= max_bytes then last_good
-        else
-          let dec = String.get_utf_8_uchar s i in
-          let dlen = Uchar.utf_decode_length dec in
-          if dlen <= 0 then last_good
-          else
-            let next = i + dlen in
-            if next > max_bytes then last_good
-            else loop next next
-      in
-      let cut = loop 0 0 in
-      if cut <= 0 then ""
-      else String.sub s 0 cut
-
-let utf8_repair_string (s : string) : string =
-  let len = String.length s in
-  let buf = Buffer.create len in
-  let rec loop i =
-    if i >= len then ()
-    else
-      let dec = String.get_utf_8_uchar s i in
-      let dlen = Uchar.utf_decode_length dec in
-      if dlen > 0 && Uchar.utf_decode_is_valid dec then (
-        Buffer.add_substring buf s i dlen;
-        loop (i + dlen))
-      else (
-        Buffer.add_string buf "\xEF\xBF\xBD";
-        loop (i + 1))
-  in
-  loop 0;
-  Buffer.contents buf
-
-(* #10552: trim BOTH before and after [utf8_safe_prefix_bytes].  The
-   pre-fix sequence was [trim → prefix], but [utf8_safe_prefix_bytes]
-   can cut at a position that leaves trailing ASCII whitespace
-   (e.g. nick0cave's 322-byte desires field ends with [...는 것.] —
-   the prefix at max_bytes=320 backs up to byte 318, ending at the
-   space before [것]).  That makes [normalize_self_model_text]
-   non-idempotent: applying it once produces a 318-byte string ending
-   in a space; applying it AGAIN trims the space to 317 bytes.
-   [personality_text_equal] then sees [normalize meta_318 = 317] and
-   [normalize raw_322 = 318] — unequal — and re-sync fires every
-   reconcile tick.  Trimming after prefix makes the function
-   idempotent: [normalize(normalize(x)) = normalize(x)]. *)
-let normalize_self_model_text ~(max_bytes : int) (raw : string) : string =
-  let s = String.trim raw in
-  if s = "" then ""
-  else
-    let cut = utf8_safe_prefix_bytes s ~max_bytes in
-    String.trim cut
-
-let normalize_goal_horizon_text ?(max_len = default_goal_horizon_max_chars) (raw : string) : string =
-  let s = String.trim raw in
-  if s = "" then ""
-  else utf8_safe_prefix_bytes s ~max_bytes:max_len
-
-let normalize_goal_horizon_opt (raw_opt : string option) : string option =
-  match raw_opt with
-  | None -> None
-  | Some raw ->
-    let normalized = normalize_goal_horizon_text raw in
-    if normalized = "" then None else Some normalized
-
-let parse_goal_horizon_opt args key : string option =
-  normalize_goal_horizon_opt (get_string_opt args key)
-
-let resolve_goal_horizons
-    ~(goal : string)
-    ~(short_goal_opt : string option)
-    ~(mid_goal_opt : string option)
-    ~(long_goal_opt : string option) : string * string * string =
-  let short_goal =
-    Option.value ~default:goal short_goal_opt
-    |> normalize_goal_horizon_text
-  in
-  let mid_goal =
-    Option.value ~default:goal mid_goal_opt
-    |> normalize_goal_horizon_text
-  in
-  let long_goal =
-    Option.value ~default:goal long_goal_opt
-    |> normalize_goal_horizon_text
-  in
-  (short_goal, mid_goal, long_goal)
-
-let split_semicolon_clauses (raw : string) : string list =
-  raw
-  |> String.split_on_char ';'
-  |> List.map String.trim
-  |> List.filter (fun s -> s <> "")
-
-let take_last n xs =
-  if n <= 0 then []
-  else
-    let len = List.length xs in
-    if len <= n then xs
-    else
-      let rec drop k ys =
-        if k <= 0 then ys
-        else
-          match ys with
-          | [] -> []
-          | _ :: tl -> drop (k - 1) tl
-      in
-      drop (len - n) xs
-
-let compact_self_model_text
-    ?(max_clauses = default_drift_max_clauses)
-    ~(max_bytes : int)
-    (raw : string) : string =
-  raw
-  |> split_semicolon_clauses
-  |> take_last max_clauses
-  |> String.concat "; "
-  |> normalize_self_model_text ~max_bytes
-
-let parse_self_model_opt args key : string option =
-  match get_string_opt args key with
-  | None -> None
-  | Some raw ->
-    Some (normalize_self_model_text ~max_bytes:prompt_render_max_bytes raw)
-
-let clamp_int v ~min_v ~max_v =
-  max min_v (min max_v v)
-
-let int_of_env_default name ~default ~min_v ~max_v =
-  match Env_config_core.raw_value_opt name with
-  | None -> default
-  | Some raw ->
-      let v =
-        Option.value ~default:default (int_of_string_opt (String.trim raw))
-      in
-      clamp_int v ~min_v ~max_v
-
-let float_of_env_default name ~default ~min_v ~max_v =
-  match Env_config_core.raw_value_opt name with
-  | None -> default
-  | Some raw ->
-      let v =
-        Option.value ~default (float_of_string_opt (String.trim raw))
-      in
-      max min_v (min max_v v)
-
-(* ================================================================ *)
-(* Runtime_params helpers — serialization/validation for dashboard   *)
-(* ================================================================ *)
-
-let _rp_validate_int ~min ~max key v =
-  if v >= min && v <= max then Ok ()
-  else Error (Printf.sprintf "%s must be in [%d, %d], got %d" key min max v)
-
-let _rp_validate_float ~min ~max key v =
-  if v >= min && v <= max then Ok ()
-  else Error (Printf.sprintf "%s must be in [%g, %g], got %g" key min max v)
-
-let _rp_deser_int json =
-  match json with
-  | `Int i -> Ok i
-  | `Float f ->
-      let i = Float.to_int f in
-      if Float.equal (Float.of_int i) f then Ok i
-      else Error (Printf.sprintf "expected integer, got %g" f)
-  | _ -> Error "expected integer"
-
-let _rp_deser_float json =
-  match json with
-  | `Float f -> Ok f
-  | `Int i -> Ok (float_of_int i)
-  | _ -> Error "expected number"
-
-let _rp_deser_bool json =
-  match json with
-  | `Bool b -> Ok b
-  | _ -> Error "expected boolean"
-
-let _rp_int ~key ~default ~min_v ~max_v ~description () =
-  Runtime_params.register ~key
-    ~default
-    ~validate:(_rp_validate_int ~min:min_v ~max:max_v key)
-    ~serialize:(fun v -> `Int v)
-    ~meta:{ Runtime_params.description; value_type = "int";
-            min_value = Some (`Int min_v); max_value = Some (`Int max_v) }
-    ~deserialize:_rp_deser_int ()
-
-let _rp_float ~key ~default ~min_v ~max_v ~description () =
-  Runtime_params.register ~key
-    ~default
-    ~validate:(_rp_validate_float ~min:min_v ~max:max_v key)
-    ~serialize:(fun v -> `Float v)
-    ~meta:{ Runtime_params.description; value_type = "float";
-            min_value = Some (`Float min_v); max_value = Some (`Float max_v) }
-    ~deserialize:_rp_deser_float ()
-
-let _rp_bool ~key ~default ~description () =
-  Runtime_params.register ~key
-    ~default
-    ~validate:(fun _ -> Ok ())
-    ~serialize:(fun v -> `Bool v)
-    ~meta:{ Runtime_params.description; value_type = "bool";
-            min_value = None; max_value = None }
-    ~deserialize:_rp_deser_bool ()
 
 let keeper_status_fast_default () : bool =
   bool_of_env_default "MASC_KEEPER_STATUS_FAST_DEFAULT" ~default:false
@@ -476,8 +152,8 @@ let keeper_compact_max_tokens () : int =
 let keeper_continuity_compaction_cooldown_sec_rp =
   _rp_int ~key:"keeper.compaction.cooldown_sec"
     ~default:(fun () -> int_of_env_default "MASC_KEEPER_CONTINUITY_COMPACTION_COOLDOWN_SEC"
-                          ~default:15 ~min_v:0 ~max_v:172800)
-    ~min_v:0 ~max_v:172800
+                          ~default:15 ~min_v:0 ~max_v:two_days_seconds_int)
+    ~min_v:0 ~max_v:two_days_seconds_int
     ~description:"Compaction cooldown (seconds)" ()
 let keeper_continuity_compaction_cooldown_sec () : int =
   Runtime_params.get keeper_continuity_compaction_cooldown_sec_rp
@@ -485,8 +161,8 @@ let keeper_continuity_compaction_cooldown_sec () : int =
 let keeper_bootstrap_proactive_warmup_sec_rp =
   _rp_int ~key:"keeper.proactive.warmup_sec"
     ~default:(fun () -> int_of_env_default "MASC_KEEPER_BOOTSTRAP_PROACTIVE_WARMUP_SEC"
-                          ~default:60 ~min_v:0 ~max_v:172800)
-    ~min_v:0 ~max_v:172800
+                          ~default:60 ~min_v:0 ~max_v:two_days_seconds_int)
+    ~min_v:0 ~max_v:two_days_seconds_int
     ~description:"Bootstrap proactive warmup delay (seconds)" ()
 let keeper_bootstrap_proactive_warmup_sec () : int =
   Runtime_params.get keeper_bootstrap_proactive_warmup_sec_rp
@@ -530,8 +206,8 @@ let keeper_proactive_min_cooldown_sec () : int =
 let keeper_proactive_min_interval_sec_rp =
   _rp_int ~key:"keeper.proactive.min_interval_sec"
     ~default:(fun () -> int_of_env_default "MASC_KEEPER_PROACTIVE_MIN_INTERVAL_SEC"
-                          ~default:900 ~min_v:60 ~max_v:86400)
-    ~min_v:60 ~max_v:86400
+                          ~default:900 ~min_v:60 ~max_v:one_day_seconds_int)
+    ~min_v:60 ~max_v:one_day_seconds_int
     ~description:"Minimum proactive turn interval (seconds). Keeper fires a \
                   housekeeping turn at least this often, even with no observable \
                   work signals." ()
@@ -571,7 +247,116 @@ let normalize_compaction_token_gate (v : int) : int =
   clamp_int v ~min_v:0 ~max_v:5000000
 
 let normalize_continuity_compaction_cooldown_sec (v : int) : int =
-  clamp_int v ~min_v:0 ~max_v:172800
+  clamp_int v ~min_v:0 ~max_v:two_days_seconds_int
+
+(** Default number of recent tool results to keep verbatim during
+    OAS context compaction (consumed by
+    [Agent_sdk.Context_reducer.stub_tool_results ~keep_recent]).
+    Preserves prior hardcoded behavior in [keeper_compact_policy.ml]. *)
+let default_keep_recent_tool_results = 2
+
+(** Default message-count floor for the tool-heavy compaction gate.
+    Mirrors the prior global constant in [keeper_compact_policy.ml].
+    Per-keeper override lives at [compaction_policy.tool_heavy_msg_threshold];
+    wired into [decide_compaction] by PR-B.
+
+    Operator override (PR-C, this commit): [MASC_KEEPER_TOOL_HEAVY_MSG_THRESHOLD]
+    sets the global default that personas without an explicit value inherit.
+    Valid range [1, 10_000]; out-of-range or unparseable values warn and fall
+    back to the built-in default 40 (parse-correctness, not silent coercion —
+    mirrors [emergency_compact_ratio_threshold] in
+    [Keeper_compact_policy]). Read once at module init; restart required. *)
+let default_tool_heavy_msg_threshold : int =
+  let env_var = "MASC_KEEPER_TOOL_HEAVY_MSG_THRESHOLD" in
+  let default_value = 40 in
+  let min_valid = 1 in
+  let max_valid = 10_000 in
+  match Sys.getenv_opt env_var with
+  | None -> default_value
+  | Some raw ->
+    (match int_of_string_opt (String.trim raw) with
+     | None ->
+       Log.Keeper.warn
+         "[keeper_config] %s=%S is not a parseable int; falling back to default \
+          %d"
+         env_var raw default_value;
+       default_value
+     | Some parsed when parsed < min_valid || parsed > max_valid ->
+       Log.Keeper.warn
+         "[keeper_config] %s=%d out of range [%d, %d]; falling back to default \
+          %d"
+         env_var parsed min_valid max_valid default_value;
+       default_value
+     | Some parsed -> parsed)
+
+(** Default context-ratio floor for the tool-heavy compaction gate.
+    Mirrors the prior global constant in [keeper_compact_policy.ml].
+    Per-keeper override lives at [compaction_policy.tool_heavy_ratio_floor];
+    wired into [decide_compaction] by PR-B.
+
+    Operator override (PR-C, this commit): [MASC_KEEPER_TOOL_HEAVY_RATIO_FLOOR]
+    sets the global default that personas without an explicit value inherit.
+    Valid range [0.0, 1.0); out-of-range, non-finite, or unparseable values
+    warn and fall back to the built-in default 0.15 (parse-correctness;
+    mirrors [emergency_compact_ratio_threshold]). Read once at module init. *)
+let default_tool_heavy_ratio_floor : float =
+  let env_var = "MASC_KEEPER_TOOL_HEAVY_RATIO_FLOOR" in
+  let default_value = 0.15 in
+  let min_valid = 0.0 in
+  let max_valid = 1.0 in
+  match Sys.getenv_opt env_var with
+  | None -> default_value
+  | Some raw ->
+    (match Float.of_string_opt (String.trim raw) with
+     | None ->
+       Log.Keeper.warn
+         "[keeper_config] %s=%S is not a parseable float; falling back to \
+          default %.2f"
+         env_var raw default_value;
+       default_value
+     | Some parsed when not (Float.is_finite parsed) ->
+       Log.Keeper.warn
+         "[keeper_config] %s=%s parsed to non-finite %f; falling back to \
+          default %.2f"
+         env_var raw parsed default_value;
+       default_value
+     | Some parsed when parsed < min_valid || parsed >= max_valid ->
+       Log.Keeper.warn
+         "[keeper_config] %s=%f out of range [%.2f, %.2f); falling back to \
+          default %.2f"
+         env_var parsed min_valid max_valid default_value;
+       default_value
+     | Some parsed -> parsed)
+
+(** Hard upper bound for operator-supplied [keep_recent_tool_results].
+    Values above this likely indicate operator typos (e.g. 5000); we
+    log a warn and clamp back to the safe default so a typo does not
+    silently disable compaction.  Lower bound is 0 (keep none). *)
+let keep_recent_tool_results_max = 50
+
+(** Validate and normalize [keep_recent_tool_results].
+    Returns the in-range value untouched, or [default_keep_recent_tool_results]
+    after logging a warn when the operator-supplied value is out of
+    [0, keep_recent_tool_results_max].  Caller context (keeper name)
+    is included in the warn for triage. *)
+let normalize_keep_recent_tool_results ?keeper_name (v : int) : int =
+  if v >= 0 && v <= keep_recent_tool_results_max
+  then v
+  else begin
+    let ctx =
+      match keeper_name with
+      | Some n -> Printf.sprintf " keeper=%s" n
+      | None -> ""
+    in
+    Log.Keeper.warn
+      "[compaction] keep_recent_tool_results=%d out of range [0,%d];%s \
+       clamping to default %d"
+      v
+      keep_recent_tool_results_max
+      ctx
+      default_keep_recent_tool_results;
+    default_keep_recent_tool_results
+  end
 
 let default_compaction_profile = "custom"
 
@@ -642,10 +427,10 @@ let resolve_compaction_policy
   (base_profile, ratio, message_gate, token_gate)
 
 let normalize_proactive_idle_sec (v : int) : int =
-  clamp_int v ~min_v:0 ~max_v:172800
+  clamp_int v ~min_v:0 ~max_v:two_days_seconds_int
 
 let normalize_proactive_cooldown_sec (v : int) : int =
-  clamp_int v ~min_v:0 ~max_v:172800
+  clamp_int v ~min_v:0 ~max_v:two_days_seconds_int
 
 
 let keeper_batch_limit_rp =
@@ -656,6 +441,15 @@ let keeper_batch_limit_rp =
     ~description:"Max batch size per keeper cycle" ()
 let keeper_batch_limit () : int =
   Runtime_params.get keeper_batch_limit_rp
+
+let keeper_board_debounce_window_sec_rp =
+  _rp_float ~key:"keeper.board.debounce_window_sec"
+    ~default:(fun () -> float_of_env_default "MASC_KEEPER_BOARD_DEBOUNCE_SEC"
+                          ~default:2.0 ~min_v:0.0 ~max_v:30.0)
+    ~min_v:0.0 ~max_v:30.0
+    ~description:"Time window to coalesce board signals into one turn (seconds)" ()
+let keeper_board_debounce_window_sec () : float =
+  Runtime_params.get keeper_board_debounce_window_sec_rp
 
 let keeper_tool_cost_max_usd_rp =
   _rp_float ~key:"keeper.turn.tool_cost_max_usd"
@@ -709,72 +503,7 @@ let keeper_llm_rerank_cascade () : string =
       Keeper_cascade_profile.cascade_name_for_use
         Keeper_cascade_profile.Tool_rerank_use
 
-(* ================================================================ *)
-(* Rule engine thresholds                                           *)
-(* ================================================================ *)
-
-let keeper_rule_reflect_repetition_rp =
-  _rp_float ~key:"keeper.rule.reflect_repetition"
-    ~default:(fun () -> float_of_env_default "MASC_KEEPER_RULE_REFLECT_REPETITION"
-                          ~default:0.86 ~min_v:0.0 ~max_v:1.0)
-    ~min_v:0.0 ~max_v:1.0
-    ~description:"Reflect rule: repetition similarity threshold" ()
-let keeper_rule_reflect_repetition_threshold () : float =
-  Runtime_params.get keeper_rule_reflect_repetition_rp
-
-let keeper_rule_plan_goal_alignment_rp =
-  _rp_float ~key:"keeper.rule.plan_goal_alignment_max"
-    ~default:(fun () -> float_of_env_default "MASC_KEEPER_RULE_PLAN_GOAL_ALIGNMENT_MAX"
-                          ~default:0.06 ~min_v:0.0 ~max_v:1.0)
-    ~min_v:0.0 ~max_v:1.0
-    ~description:"Plan rule: goal alignment max distance" ()
-let keeper_rule_plan_goal_alignment_threshold () : float =
-  Runtime_params.get keeper_rule_plan_goal_alignment_rp
-
-let keeper_rule_plan_response_alignment_rp =
-  _rp_float ~key:"keeper.rule.plan_response_alignment_max"
-    ~default:(fun () -> float_of_env_default "MASC_KEEPER_RULE_PLAN_RESPONSE_ALIGNMENT_MAX"
-                          ~default:0.10 ~min_v:0.0 ~max_v:1.0)
-    ~min_v:0.0 ~max_v:1.0
-    ~description:"Plan rule: response alignment max distance" ()
-let keeper_rule_plan_response_alignment_threshold () : float =
-  Runtime_params.get keeper_rule_plan_response_alignment_rp
-
-let keeper_rule_guardrail_repetition_rp =
-  _rp_float ~key:"keeper.rule.guardrail_repetition"
-    ~default:(fun () -> float_of_env_default "MASC_KEEPER_RULE_GUARDRAIL_REPETITION"
-                          ~default:0.90 ~min_v:0.0 ~max_v:1.0)
-    ~min_v:0.0 ~max_v:1.0
-    ~description:"Guardrail rule: repetition similarity threshold" ()
-let keeper_rule_guardrail_repetition_threshold () : float =
-  Runtime_params.get keeper_rule_guardrail_repetition_rp
-
-let keeper_rule_guardrail_goal_alignment_rp =
-  _rp_float ~key:"keeper.rule.guardrail_goal_alignment_max"
-    ~default:(fun () -> float_of_env_default "MASC_KEEPER_RULE_GUARDRAIL_GOAL_ALIGNMENT_MAX"
-                          ~default:0.04 ~min_v:0.0 ~max_v:1.0)
-    ~min_v:0.0 ~max_v:1.0
-    ~description:"Guardrail rule: goal alignment max distance" ()
-let keeper_rule_guardrail_goal_alignment_threshold () : float =
-  Runtime_params.get keeper_rule_guardrail_goal_alignment_rp
-
-let keeper_rule_guardrail_response_alignment_rp =
-  _rp_float ~key:"keeper.rule.guardrail_response_alignment_max"
-    ~default:(fun () -> float_of_env_default "MASC_KEEPER_RULE_GUARDRAIL_RESPONSE_ALIGNMENT_MAX"
-                          ~default:0.08 ~min_v:0.0 ~max_v:1.0)
-    ~min_v:0.0 ~max_v:1.0
-    ~description:"Guardrail rule: response alignment max distance" ()
-let keeper_rule_guardrail_response_alignment_threshold () : float =
-  Runtime_params.get keeper_rule_guardrail_response_alignment_rp
-
-let keeper_rule_guardrail_context_rp =
-  _rp_float ~key:"keeper.rule.guardrail_context_min"
-    ~default:(fun () -> float_of_env_default "MASC_KEEPER_RULE_GUARDRAIL_CONTEXT_MIN"
-                          ~default:0.70 ~min_v:0.0 ~max_v:1.0)
-    ~min_v:0.0 ~max_v:1.0
-    ~description:"Guardrail rule: minimum context ratio" ()
-let keeper_rule_guardrail_context_threshold () : float =
-  Runtime_params.get keeper_rule_guardrail_context_rp
+include Keeper_config_rule_thresholds
 
 (* ================================================================ *)
 (* Keeper execution — previously hardcoded magic numbers             *)
@@ -798,7 +527,7 @@ let keeper_unified_max_tokens_rp =
     ~default:(fun () -> int_of_env_default "MASC_KEEPER_UNIFIED_MAX_TOKENS"
                           ~default:65536 ~min_v:256 ~max_v:262144)
     ~min_v:256 ~max_v:262144
-    ~description:"Keeper turn max output tokens fallback (cascade.json overrides to 16384 in production)" ()
+    ~description:"Keeper turn max output tokens fallback (cascade.toml may override in production)" ()
 let keeper_unified_max_tokens () : int =
   Runtime_params.get keeper_unified_max_tokens_rp
 
@@ -823,19 +552,19 @@ let keeper_tool_search_top_k () : int =
 let ensure_runtime_params_init () =
   ignore (Runtime_params.get keeper_unified_temperature_rp)
 
-let keeper_llama_slots_rp =
-  _rp_int ~key:"keeper.turn.llama_slots"
-    ~default:(fun () -> int_of_env_default "MASC_KEEPER_LLAMA_SLOTS"
+let keeper_slot_pool_size_rp =
+  _rp_int ~key:"keeper.turn.slot_pool_size"
+    ~default:(fun () -> int_of_env_default "MASC_KEEPER_SLOT_POOL_SIZE"
                           ~default:4 ~min_v:0 ~max_v:32)
     ~min_v:0 ~max_v:32
-    ~description:"llama-server KV cache slots for keeper pinning (0=disabled)" ()
-let keeper_llama_slots () : int =
-  Runtime_params.get keeper_llama_slots_rp
+    ~description:"slot pool size for keeper deterministic pinning (0=disabled)" ()
+let keeper_slot_pool_size () : int =
+  Runtime_params.get keeper_slot_pool_size_rp
 
 (** Compute a deterministic slot_id for a keeper name.
     Returns [None] when slot pinning is disabled (num_slots = 0). *)
 let keeper_slot_id (name : string) : int option =
-  let num_slots = keeper_llama_slots () in
+  let num_slots = keeper_slot_pool_size () in
   if num_slots <= 0 then None
   else
     let h = Hashtbl.hash name in

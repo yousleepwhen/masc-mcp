@@ -1,21 +1,14 @@
 (** Env_config_sandbox — sandbox configuration SSOT.
 
     See {!Env_config_sandbox} module doc in the .mli for the full
-    rationale.  This .ml stays as close to the original sources as
-    possible:
+    rationale.  Notes:
 
-    - Same env vars and same defaults as
-      {!Env_config_keeper.KeeperSandbox},
-      {!Env_config_keeper.DockerPlayground}, and the bucket
-      timeouts in [lib/keeper/keeper_exec_shell.ml].
-    - Fresh read per call (matching the {!Env_config_keeper} style);
-      callers are not yet migrated, so this co-existence does not
-      drift.
+    - Fresh read per call.
     - The four currently-hardcoded values
       ([Cleanup.managed_sleep_sec], [Preflight.min_timeout_sec],
       [Preflight.max_timeout_sec], [Shell_timeout.Cleanup_rm]) are
       exposed as getters that return the historical literal —
-      enabling future env-override without P2a behavior change. *)
+      enabling future env-override without behavior change. *)
 
 open Env_config_core
 
@@ -24,9 +17,6 @@ open Env_config_core
 (* --------------------------------------------------------------- *)
 
 module Hardening = struct
-  let hard_mode () =
-    get_bool ~default:false "MASC_KEEPER_SANDBOX_HARD_MODE"
-
   let pids_limit () =
     max 32 (get_int ~default:128 "MASC_KEEPER_SANDBOX_PIDS_LIMIT")
 
@@ -54,12 +44,10 @@ module Hardening = struct
     get_string ~default:"" "MASC_KEEPER_SANDBOX_SECCOMP_PROFILE"
 
   let require_rootless () =
-    hard_mode ()
-    || get_bool ~default:false "MASC_KEEPER_SANDBOX_REQUIRE_ROOTLESS"
+    get_bool ~default:false "MASC_KEEPER_SANDBOX_REQUIRE_ROOTLESS"
 
   let require_userns () =
-    hard_mode ()
-    || get_bool ~default:false "MASC_KEEPER_SANDBOX_REQUIRE_USERNS"
+    get_bool ~default:false "MASC_KEEPER_SANDBOX_REQUIRE_USERNS"
 end
 
 (* --------------------------------------------------------------- *)
@@ -94,11 +82,21 @@ module Runtime = struct
       "MASC_KEEPER_SANDBOX_DOCKER_IMAGE"
 
   let git_dispatch () =
-    (not (Hardening.hard_mode ()))
-    && get_bool ~default:true "MASC_KEEPER_SANDBOX_GIT_DISPATCH"
+    get_bool ~default:true "MASC_KEEPER_SANDBOX_GIT_DISPATCH"
 
   let docker_playground_enabled () =
     get_bool ~default:false "MASC_KEEPER_DOCKER_PLAYGROUND"
+
+  (** @category Sandbox
+      @ops_class operator *)
+  let docker_playground_container_name () =
+    get_string ~default:"keeper-playground" "MASC_KEEPER_DOCKER_CONTAINER"
+
+  (** @category Sandbox
+      @ops_class operator *)
+  let docker_playground_container_root () =
+    get_string ~default:"/home/keeper/playground"
+      "MASC_KEEPER_DOCKER_PLAYGROUND_ROOT"
 end
 
 (* --------------------------------------------------------------- *)
@@ -150,11 +148,29 @@ module Shell_timeout = struct
   let known_buckets () =
     [ Io; Read; Git_meta; Gh_min; User_max; Cleanup_rm ]
 
+  (* [Gh_min] is the only read-only floor bucket — see .mli: operators
+     MUST NOT lower it via env (doing so cascades 401 retries, #8688).
+     Exhaustive match (warning 4) so a new bucket forces a deliberate
+     floor/non-floor classification here, once, rather than at every
+     call site that branches on it. *)
+  type timeout_floor =
+    | Tool_dispatch_floor
+
+  let timeout_floor : bucket -> timeout_floor option = function
+    | Gh_min -> Some Tool_dispatch_floor
+    | Io | Read | Git_meta | User_max | Cleanup_rm | Unknown _ -> None
+
+  let timeout_floor_default_sec = function
+    | Tool_dispatch_floor -> 15.0
+
+  let is_floor_bucket bucket =
+    Option.is_some (timeout_floor bucket)
+
   let known_default_sec = function
     | Io -> Some 30.0
     | Read -> Some 15.0
     | Git_meta -> Some 5.0
-    | Gh_min -> Some 15.0
+    | Gh_min -> Some (timeout_floor_default_sec Tool_dispatch_floor)
     | User_max -> Some 180.0
     | Cleanup_rm -> Some 5.0
     | Unknown _ -> None
@@ -183,12 +199,12 @@ module Shell_timeout = struct
     | None -> None
 
   let timeout_sec ~bucket () =
-    match bucket with
-    | Gh_min ->
+    match timeout_floor bucket with
+    | Some floor ->
       (* Read-only floor — see .mli.  Operators MUST NOT lower this
          via env; doing so cascades 401 retries (#8688). *)
-      15.0
-    | _ ->
+      timeout_floor_default_sec floor
+    | None ->
       let per_bucket_env = per_bucket_env_var ~bucket in
       match trimmed_value_opt per_bucket_env with
       | Some v ->
@@ -245,10 +261,7 @@ let string_v s : Yojson.Safe.t = `String s
 
 let raw_hardening () : Yojson.Safe.t =
   `Assoc
-    [ "hard_mode",
-      entry_env_overridable ~env_var:"MASC_KEEPER_SANDBOX_HARD_MODE"
-        (bool_v (Hardening.hard_mode ()))
-    ; "pids_limit",
+    [ "pids_limit",
       entry_env_overridable ~env_var:"MASC_KEEPER_SANDBOX_PIDS_LIMIT"
         (int_v (Hardening.pids_limit ()))
     ; "nofile_limit",
@@ -302,6 +315,13 @@ let raw_runtime () : Yojson.Safe.t =
     ; "docker_playground_enabled",
       entry_env_overridable ~env_var:"MASC_KEEPER_DOCKER_PLAYGROUND"
         (bool_v (Runtime.docker_playground_enabled ()))
+    ; "docker_playground_container_name",
+      entry_env_overridable ~env_var:"MASC_KEEPER_DOCKER_CONTAINER"
+        (string_v (Runtime.docker_playground_container_name ()))
+    ; "docker_playground_container_root",
+      entry_env_overridable
+        ~env_var:"MASC_KEEPER_DOCKER_PLAYGROUND_ROOT"
+        (string_v (Runtime.docker_playground_container_root ()))
     ]
 
 let raw_preflight () : Yojson.Safe.t =
@@ -325,9 +345,8 @@ let raw_shell_timeout () : Yojson.Safe.t =
     let key = Shell_timeout.bucket_key b in
     let value = float_v (Shell_timeout.timeout_sec ~bucket:b ()) in
     let entry =
-      match b with
-      | Gh_min -> entry_floor value
-      | _ ->
+      if Shell_timeout.is_floor_bucket b then entry_floor value
+      else
         entry_env_overridable
           ~env_var:(Shell_timeout.per_bucket_env_var ~bucket:b)
           value

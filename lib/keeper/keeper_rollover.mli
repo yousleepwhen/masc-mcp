@@ -4,7 +4,7 @@
     and cooldown has elapsed, a new session is created with the
     current context carried forward to the next generation.
 
-    Extracted from [Keeper_exec_context] as part of #4955 god-file split. *)
+    Extracted from [Keeper_context_runtime] as part of #4955 god-file split. *)
 
 (** Outcome of [maybe_rollover_oas_handoff].
     [updated_meta] reflects post-rollover state when the rollover
@@ -22,10 +22,12 @@ type handoff_rollover =
   ; message_count : int
   }
 
-(** Returns [true] when [blocker] matches any provider-specific
-    context-overflow string (GLM / OpenAI / Ollama / Anthropic
-    wording). Pure — exposed for unit testing. *)
-val blocker_indicates_overflow : string -> bool
+(** Returns [true] when [klass] is the typed equivalent of a provider
+    context-overflow signal.  The keeper layer never substring-matches
+    error phrasing — the SDK boundary classifies once into
+    [Keeper_types.blocker_class], and downstream code reasons only over
+    the typed enum.  Pure — exposed for unit testing. *)
+val blocker_class_indicates_overflow : Keeper_types.blocker_class -> bool
 
 (** Verdict from [classify_rollover_gate]; [Skip] carries a stable
     skip reason, [Go] carries the trigger reason that will appear
@@ -43,7 +45,6 @@ val append_lineage_artifacts_best_effort :
   parent_trace_id:string ->
   trigger_reason:string ->
   context_ratio:float ->
-  model:string ->
   unit
 
 (** Classify the rollover gate without side effects. The [signal_gate]
@@ -56,8 +57,8 @@ val classify_rollover_gate :
   ratio:float ->
   handoff_threshold:float ->
   last_outcome:Keeper_types.proactive_cycle_outcome ->
-  last_blocker:string ->
-  ?current_turn_overflow_blocker:string option ->
+  last_blocker_info:Keeper_types.blocker_info option ->
+  ?current_turn_blocker_info:Keeper_types.blocker_info option ->
   unit ->
   rollover_gate_decision
 
@@ -71,6 +72,6 @@ val maybe_rollover_oas_handoff :
   meta:Keeper_types.keeper_meta ->
   model:string ->
   primary_model_max_tokens:int ->
-  current_turn_overflow_blocker:string option ->
+  current_turn_blocker_info:Keeper_types.blocker_info option ->
   checkpoint:Agent_sdk.Checkpoint.t option ->
   handoff_rollover

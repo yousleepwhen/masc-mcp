@@ -47,17 +47,16 @@ module Deadline : sig
     -> t
 
   val elapsed : t -> now:float -> float
+
   val remaining : t -> now:float -> float
+  (** [remaining t ~now] is [t.wall_cap_s -. elapsed t ~now].
+      Negative values mean the deadline has passed by that many seconds. *)
 end
 
-val default_overshoot_slack_s : float
-(** Default grace window applied when distinguishing expected cleanup tail
-    from a cooperative-cancel miss. Callers may override per site. *)
-
 val metric_overshoot_total : string
-(** #9662: canonical Prometheus metric name for overshoot events.
-    Labels: [layer, origin].  Internal series name is
-    [masc_timeout_policy_overshoot_total]. *)
+(** Canonical Prometheus counter name (pinned by #9662 contract test):
+    [masc_timeout_policy_overshoot_total].  Incremented by
+    [overshoot_warn] with [layer] and [origin] labels. *)
 
 val overshoot_warn
   :  ?slack_s:float

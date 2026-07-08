@@ -30,7 +30,6 @@ let test_classify_mcp_accept () =
     let same =
       match (expected, actual) with
       | Streamable, Streamable
-      | Legacy_accepted, Legacy_accepted
       | Rejected, Rejected ->
           true
       | _ -> false
@@ -39,14 +38,10 @@ let test_classify_mcp_accept () =
   in
   check_mode "strict streamable"
     Streamable
-    (classify_mcp_accept ~allow_legacy:false
-       (Some "application/json, text/event-stream"));
-  check_mode "legacy accepted"
-    Legacy_accepted
-    (classify_mcp_accept ~allow_legacy:true (Some "text/event-stream"));
+    (classify_mcp_accept (Some "application/json, text/event-stream"));
   check_mode "strict reject"
     Rejected
-    (classify_mcp_accept ~allow_legacy:false (Some "text/event-stream"));
+    (classify_mcp_accept (Some "text/event-stream"));
   ()
 
 let test_protocol_continuity_allows_missing_header () =
@@ -99,17 +94,14 @@ let test_protocol_continuity_rejects_mismatch () =
             (String.length msg > 0
             && String.contains msg ':'))
 
-let test_notification_body_relaxes_accept () =
+let test_notification_json_only_rejected () =
   let module Transport = Masc_mcp.Server_mcp_transport_http in
   let headers = Httpun.Headers.of_list [("accept", "application/json")] in
   let request = Httpun.Request.create ~headers `POST "/mcp" in
-  let body =
-    {|{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}|}
-  in
-  let mode = Transport.classify_mcp_accept_for_body request body in
-  check bool "notification legacy accepted" true
+  let mode = Transport.classify_mcp_accept request in
+  check bool "notification json-only is rejected" true
     (match mode with
-    | Mcp_transport_protocol.Http_negotiation.Legacy_accepted -> true
+    | Mcp_transport_protocol.Http_negotiation.Rejected -> true
     | _ -> false)
 
 let test_request_json_only_accepted () =
@@ -117,10 +109,7 @@ let test_request_json_only_accepted () =
   let module Transport = Masc_mcp.Server_mcp_transport_http in
   let headers = Httpun.Headers.of_list [("accept", "application/json")] in
   let request = Httpun.Request.create ~headers `POST "/mcp" in
-  let body =
-    {|{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}|}
-  in
-  let mode = Transport.classify_mcp_accept_for_body request body in
+  let mode = Transport.classify_mcp_accept request in
   check bool "json-only accept is rejected" true
     (match mode with
     | Mcp_transport_protocol.Http_negotiation.Rejected -> true
@@ -131,10 +120,7 @@ let test_initialize_json_only_accepted () =
   let module Transport = Masc_mcp.Server_mcp_transport_http in
   let headers = Httpun.Headers.of_list [("accept", "application/json")] in
   let request = Httpun.Request.create ~headers `POST "/mcp" in
-  let body =
-    {|{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"0.1"}}}|}
-  in
-  let mode = Transport.classify_mcp_accept_for_body request body in
+  let mode = Transport.classify_mcp_accept request in
   check bool "initialize with json-only is rejected" true
     (match mode with
     | Mcp_transport_protocol.Http_negotiation.Rejected -> true
@@ -145,10 +131,7 @@ let test_no_accept_header_rejected () =
   let module Transport = Masc_mcp.Server_mcp_transport_http in
   let headers = Httpun.Headers.of_list [] in
   let request = Httpun.Request.create ~headers `POST "/mcp" in
-  let body =
-    {|{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}|}
-  in
-  let mode = Transport.classify_mcp_accept_for_body request body in
+  let mode = Transport.classify_mcp_accept request in
   check bool "no accept header is rejected" true
     (match mode with
     | Mcp_transport_protocol.Http_negotiation.Rejected -> true
@@ -174,16 +157,19 @@ let test_sse_guard_registry_is_shared_with_cleanup_loop () =
   let session_id = "shared-sse-guard-registry" in
   match Transport.check_sse_connect_guard session_id with
   | Error (reason, retry_after_s) ->
-      failf "expected first guard insert to succeed, got %s %.3f" reason
+      failf "expected first guard insert to succeed, got %s %.3f"
+        (Masc_mcp.Sse_reject_reason.to_label reason)
         retry_after_s
   | Ok () ->
       check int "cleanup keeps fresh guard entries" 0
         (Cleanup_view.reap_stale_guards ());
       (match Transport.check_sse_connect_guard session_id with
-      | Error ("session_cooldown", retry_after_s) ->
+      | Error (Masc_mcp.Sse_reject_reason.Session_cooldown, retry_after_s) ->
           check bool "cooldown stays positive" true (retry_after_s > 0.0)
       | Error (reason, retry_after_s) ->
-          failf "expected shared cooldown guard, got %s %.3f" reason retry_after_s
+          failf "expected shared cooldown guard, got %s %.3f"
+            (Masc_mcp.Sse_reject_reason.to_label reason)
+            retry_after_s
       | Ok () ->
           fail "expected second guard check to observe shared cooldown state")
 
@@ -193,14 +179,17 @@ let test_preserve_guard_keeps_ag_ui_cooldown () =
   let session_id = "ag-ui-preserve-guard" in
   match Transport.check_sse_connect_guard session_id with
   | Error (reason, retry_after_s) ->
-      failf "expected first guard insert to succeed, got %s %.3f" reason
+      failf "expected first guard insert to succeed, got %s %.3f"
+        (Masc_mcp.Sse_reject_reason.to_label reason)
         retry_after_s
   | Ok () ->
       Cleanup_view.stop_sse_session_preserve_guard session_id;
       (match Transport.check_sse_connect_guard session_id with
       | Ok () -> fail "expected preserved guard to enforce reconnect cooldown"
       | Error (reason, retry_after_s) ->
-          check string "preserves session cooldown reason" "session_cooldown" reason;
+          check string "preserves session cooldown reason"
+            "session_cooldown"
+            (Masc_mcp.Sse_reject_reason.to_label reason);
           check bool "preserved retry-after is positive" true (retry_after_s > 0.0));
       ignore (Cleanup_view.reap_stale_guards ())
 
@@ -211,14 +200,15 @@ let () =
     [
       ("accepts_sse_header", [test_case "parses Accept" `Quick test_accepts_sse_header]);
       ("accepts_streamable_mcp", [test_case "requires json+sse" `Quick test_accepts_streamable_mcp]);
-      ("classify_mcp_accept", [test_case "strict vs legacy fallback" `Quick test_classify_mcp_accept]);
+      ("classify_mcp_accept", [test_case "strict classification" `Quick test_classify_mcp_accept]);
       ("protocol_continuity", [
         test_case "missing header falls back to session" `Quick test_protocol_continuity_allows_missing_header;
         test_case "remembered session version is reused" `Quick test_protocol_version_for_session_falls_back_to_negotiated_version;
         test_case "mismatch still rejects" `Quick test_protocol_continuity_rejects_mismatch;
       ]);
-      ("body_aware_accept", [
-        test_case "notification relaxes accept" `Quick test_notification_body_relaxes_accept;
+      ("accept_contract", [
+        test_case "notification json-only rejected" `Quick
+          test_notification_json_only_rejected;
         test_case "json-only accept is rejected" `Quick test_request_json_only_accepted;
         test_case "initialize json-only is rejected" `Quick test_initialize_json_only_accepted;
         test_case "no accept header rejected" `Quick test_no_accept_header_rejected;

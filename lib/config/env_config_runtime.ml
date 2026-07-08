@@ -54,14 +54,6 @@ module Tempo = struct
     get_float ~default:300.0 "MASC_TEMPO_DEFAULT_INTERVAL_SEC"
 end
 
-(** {1 Decision Configuration} *)
-
-module Decision = struct
-  (** Default TTL for pending decisions (seconds, default 1 hour) *)
-  let ttl_seconds =
-    get_float ~default:3600.0 "MASC_DECISION_TTL_SEC"
-end
-
 (** {1 Cache Configuration} *)
 
 module Cache = struct
@@ -72,6 +64,20 @@ module Cache = struct
   (** Maximum total number of cache entries (default 1000) *)
   let max_entries =
     get_int ~default:1000 "MASC_CACHE_MAX_ENTRIES"
+end
+
+(** {1 Executor / Domain Pool Configuration} *)
+
+module Executor = struct
+  (** Shared executor worker-domain count override.
+      Env: [MASC_EXECUTOR_DOMAIN_COUNT]. Default: unset, use {!Domain_pool}'s
+      host-aware recommendation.
+      @category Concurrency
+      @ops_class operator *)
+  let domain_count_override () =
+    let n = get_int_nonneg ~default:0 "MASC_EXECUTOR_DOMAIN_COUNT" in
+    if n <= 0 then None else Some n
+  ;;
 end
 
 (** {1 Task Claim Configuration} *)
@@ -109,13 +115,6 @@ end
 module Relay = struct
   let target_agent =
     get_string ~default:"auto" "MASC_RELAY_TARGET_AGENT"
-end
-
-(** {1 CLI Configuration} *)
-
-module Cli = struct
-  let default_agent =
-    get_string ~default:"auto" "MASC_CLI_AGENT"
 end
 
 (** {1 Spawn Configuration} *)
@@ -169,20 +168,12 @@ module Local_runtime = struct
     | None -> Env_config_core.masc_http_base_url () ^ "/mcp"
 end
 
-(** Backward-compatible alias so existing [Env_config.Llama] references
-    continue to compile without changes. *)
-module Llama = Local_runtime
-
 module Ollama = struct
   let server_url =
     get_string ~default:Masc_network_defaults.ollama_default_url "OLLAMA_SERVER_URL"
 
   let default_model =
     get_string ~default:"" "OLLAMA_DEFAULT_MODEL"
-end
-
-module Glm = struct
-  let server_url = Env_config_core.get_string ~default:"https://api.z.ai" "ZAI_BASE_URL"
 end
 
 (** {1 Cancellation Token Configuration} *)
@@ -197,13 +188,10 @@ end
 
 module Voice = struct
   (** Default Voice MCP server host *)
-  let default_host =
-    get_string ~default:Masc_network_defaults.masc_http_default_host
-      "VOICE_MCP_HOST"
+  let default_host = Masc_network_defaults.masc_http_default_host
 
   (** Default Voice MCP server port *)
-  let default_port =
-    get_int ~default:8936 "VOICE_MCP_PORT"
+  let default_port = 8936
 
   (** Voice MCP HTTP request budget (seconds).
 
@@ -227,14 +215,6 @@ module Voice = struct
   let audio_test_tone_timeout_sec =
     Float.max 0.2
       (get_float ~default:2.0 "VOICE_AUDIO_TEST_TONE_TIMEOUT_SEC")
-end
-
-(** {1 Timeout Defaults} *)
-
-module Timeout = struct
-  (** gcloud auth token fetch (used by a2a_tools, model_client, keeper_alerting) *)
-  let gcloud_auth_sec =
-    get_float ~default:15.0 "MASC_TIMEOUT_GCLOUD_AUTH_SEC"
 end
 
 (** {1 Message GC Configuration} *)
@@ -399,6 +379,14 @@ module Goal_janitor = struct
       to be tight; a coarse sweep keeps the fleet log uncluttered. *)
   let interval_seconds =
     get_float ~default:3600.0 "MASC_GOAL_JANITOR_INTERVAL_SEC"
+
+  (** Stagnate threshold (days) for auto-generated goals.  Default: 7.
+      Auto-generated = title suffix [" (auto)"] from
+      [Keeper_goal_repair.goal_title_of_purpose].  Separate from the
+      manual [stagnant_days] (30) so keeper-repair leftovers do not
+      accumulate while operator-authored long-running goals survive. *)
+  let auto_stagnant_days () =
+    get_int ~default:7 "MASC_GOAL_JANITOR_AUTO_STAGNATE_DAYS"
 end
 
 (** {1 Approval Janitor}
@@ -430,6 +418,32 @@ module Approval_janitor = struct
       pattern (interval is operational cadence, not policy). *)
   let interval_seconds =
     get_float ~default:60.0 "MASC_APPROVAL_JANITOR_INTERVAL_SEC"
+end
+
+(** {1 Keeper Max-Turn Watchdog (RFC-0109 P4)}
+
+    Opt-in keeper-level wall-clock watchdog. Default disabled — opt-in
+    via [MASC_KEEPER_MAX_TURN_WATCHDOG_TIMEOUT_SEC]. Backward-compat
+    until an operator turns it on.
+
+    When enabled, the supervisor races each keeper's keepalive loop
+    against [Eio.Time.sleep clock t] via [Eio.Fiber.first]. Timer
+    expiry cancels the loop fiber and the registry is stamped with
+    [Stale_turn_timeout "max_turn_watchdog"], which the existing
+    [sweep_and_recover] crash-recovery path already understands.
+
+    Closes the sangsu / masc-improver mid_turn_no_progress class of
+    stucks without touching the existing stale_turn_timeout fast path
+    (which only detects in-turn no-progress, not "stuck for too long
+    in a single attempt"). *)
+module Keeper_max_turn_watchdog = struct
+  let timeout_sec_opt () =
+    let v =
+      get_float
+        ~default:0.0
+        "MASC_KEEPER_MAX_TURN_WATCHDOG_TIMEOUT_SEC"
+    in
+    if v > 0.0 then Some v else None
 end
 
 (** {1 Slot Scheduling} *)
@@ -492,8 +506,9 @@ end
 (** {1 Tool Surface Configuration} *)
 
 module Tools = struct
-  (** Dispatch v2 feature flag. Default: true (since v2.102). *)
-  let dispatch_v2_enabled = Feature_flag_registry.get_bool "MASC_DISPATCH_V2"
+  (* RFC-0084 host-config-cleanup-J — [dispatch_v2_enabled] removed.
+     The [MASC_DISPATCH_V2] feature flag and the legacy match chain
+     it gated are gone; the Hashtbl dispatch path is the only path. *)
 
   (** Full tool surface override. Default: false.
       Re-readable within the process; callers should still document the
@@ -579,25 +594,6 @@ module Rate_bucket = struct
 
   (** Per-agent burst capacity. Default: 50. *)
   let agent_burst = get_int ~default:50 "MASC_AGENT_RATE_BURST"
-end
-
-(** {1 Per-Agent Rate Limit Bucket Configuration}
-
-    A separate, lower-rate bucket applied per authenticated bearer token
-    (i.e. per agent identity).  This limits how many requests a single
-    agent can make regardless of how many different source IPs it uses,
-    complementing the IP-level {!Rate_bucket} above.
-
-    Configuration via environment:
-    - MASC_AGENT_RATE_LIMIT: requests per second per agent (default: 30)
-    - MASC_AGENT_RATE_BURST: burst capacity per agent (default: 60) *)
-
-module Agent_rate_bucket = struct
-  (** Requests per second per authenticated agent token. Default: 30. *)
-  let rate = get_float ~default:30.0 "MASC_AGENT_RATE_LIMIT"
-
-  (** Per-agent burst capacity. Default: 60. *)
-  let burst = get_int ~default:60 "MASC_AGENT_RATE_BURST"
 end
 
 (** {1 Worker / Local Runtime Configuration} *)
@@ -779,6 +775,36 @@ module Dashboard = struct
   let render_timeout_sec =
     Float.max 5.0
       (get_float ~default:60.0 "MASC_DASHBOARD_RENDER_TIMEOUT_SEC")
+
+  (** Full-health snapshot proactive refresh timeout (seconds).
+
+      Caps a single [/health?full=1] cache refresh attempt in
+      [Server_routes_http_runtime.start_full_health_snapshot_refresh_loop].
+      Default 20s (bumped from 8s) reduces F-6 fan-in tail: make_health_json
+      synchronously fans 17 components, and Team BBBB2 observed 27% tail
+      at 16s live override (307/24h timeouts). Bumping the floor default
+      to 20s is the bridge expected to drop tail to <10% (<50/24h).
+      Floor 1s prevents degenerate operator overrides.
+
+      WORKAROUND: This is a cap raise (§4 anti-pattern signature) accepted
+      as bridge until structural RFC lands (per-component health cache so
+      make_health_json no longer fans 17 sync calls per refresh).
+      Removal target: per-component health cache RFC (TBD). *)
+  let full_health_refresh_timeout_sec =
+    Float.max 1.0
+      (get_float ~default:20.0 "MASC_FULL_HEALTH_REFRESH_TIMEOUT_SEC")
+
+  (** Number of consecutive [/health?full=1] cache-refresh failures
+      that must accumulate before
+      [masc_full_health_refresh_critical_total] is incremented exactly
+      once (the counter fires on the edge, not on every subsequent
+      failure).  Default 5 matches the observed "still warming"
+      threshold in production logs where 1-4 transient timeouts
+      typically self-recover.  Floor 1 keeps the counter at least
+      reachable.  *)
+  let full_health_critical_failure_threshold =
+    Stdlib.max 1
+      (get_int ~default:5 "MASC_FULL_HEALTH_CRITICAL_FAILURE_THRESHOLD")
 end
 
 (** {1 Internal Timers and TTLs}
@@ -894,17 +920,10 @@ end
 
 (** {1 Coord local git operation timeouts}
 
-    Inline literals extracted from {!Coord_git} and
-    {!Coord_worktree} (#10426 audit):
-
-    - [coord_git.ml:45]        30.0  → run_argv_line  helper default
-    - [coord_git.ml:74]        30.0  → run_argv_lines helper default
-    - [coord_worktree.ml:21]   30.0  → run_argv_lines helper default
-    - [coord_worktree.ml:868]  30.0  → direct [worktree add -B] call
-
-    All four sites share the same semantic bucket: "local-only git
-    operations" (rev-parse, status, branch, worktree add — no
-    network IO).  Network-bound git ops (fetch, push) already use
+    Inline literals extracted from {!Coord_git} (#10426 audit).
+    These sites share the same semantic bucket: local-only git
+    operations such as [rev-parse], [status], and [branch] with no
+    network IO.  Network-bound git ops (fetch, push) already use
     {!Env_config_core.git_fetch_timeout_sec}, which is the long
     counterpart and is intentionally a separate knob.
 
@@ -917,9 +936,8 @@ end
 
 module Coord_git = struct
   (** Budget (seconds) for local-only git operations under
-      [Masc_exec.Exec_gate.run_argv*] in {!Coord_git} and
-      {!Coord_worktree}: [rev-parse], [status], [branch],
-      [worktree add], etc.
+      [Masc_exec.Exec_gate.run_argv*] in {!Coord_git}: [rev-parse],
+      [status], [branch], etc.
 
       Default 30.0 preserves the four inline literals.  Floor 5.0
       keeps the budget above subprocess startup + small index

@@ -3,13 +3,21 @@ import { signal } from '@preact/signals'
 import { lazy, Suspense } from 'preact/compat'
 import { useEffect } from 'preact/hooks'
 import type { RouteState, TabId } from '../types'
+import type { DashboardCdalHealth, DashboardFleetSafetyHealth, DashboardKeeperReactionLedgerHealth, DashboardRuntimeResolution, Keeper } from '../types'
 import { hashForRoute, navigate, route } from '../router'
 import { connected, reconnectCount, lastDisconnectedAt } from '../sse'
 import { dashboardWsOnlyEnabled } from '../dashboard-ws-cutover'
-import { dashboardWsConnected } from '../dashboard-ws-state'
-import { dashboardLoading, serverStatus } from '../store'
+import { dashboardWsConnected, dashboardWsSseFallbackActive } from '../dashboard-ws-state'
+import { isKeeperPaused } from '../lib/keeper-predicates'
+import { dashboardLoading, executionError, keepers, serverStatus, shellCounts, shellRuntimeResolution } from '../store'
 import { missionSnapshot, missionLoading } from '../mission-signals'
-import { namespaceTruthInitializing } from '../namespace-truth-store'
+import { namespaceTruth, namespaceTruthInitializing } from '../namespace-truth-store'
+import {
+  configuredCountSourceLabel,
+  formatKeeperCountBreakdown,
+  resolveRuntimeCounts,
+  runtimeCountSourceLabel,
+} from '../runtime-counts'
 import { ErrorBoundary } from './common/error-boundary'
 import { TimeAgo } from './common/time-ago'
 import { LoadingState } from './common/feedback-state'
@@ -52,7 +60,7 @@ function BuildInfoRow({ label, children }: { label: string; children: unknown })
 const LazyOverview = lazy(async () => ({ default: (await import('./overview/overview')).Overview }))
 const LazyStatus = lazy(async () => ({ default: (await import('./status')).Status }))
 const LazyWork = lazy(async () => ({ default: (await import('./work')).Work }))
-const LazyOperations = lazy(async () => ({ default: (await import('./control')).Operations }))
+const LazyOperations = lazy(async () => ({ default: (await import('./operations-panel')).OperationsPanel }))
 const LazyConnectors = lazy(async () => ({ default: (await import('./connector-status')).ConnectorStatusPanel }))
 const LazyLabSurface = lazy(async () => ({ default: (await import('./lab')).Lab }))
 const LazyLogViewer = lazy(async () => ({ default: (await import('./logs')).LogViewer }))
@@ -104,7 +112,9 @@ function describeReconnecting(args: {
 
 export function ConnectionStatus() {
   const wsOnly = dashboardWsOnlyEnabled()
-  const isConnected = wsOnly ? dashboardWsConnected.value : connected.value
+  const isConnected = wsOnly
+    ? dashboardWsConnected.value || dashboardWsSseFallbackActive.value
+    : connected.value
   const snap = missionSnapshot.value
   const attentionCount = snap?.attention_queue?.length ?? 0
   const reconn = reconnectCount.value
@@ -141,18 +151,469 @@ export function ConnectionStatus() {
   `
 }
 
+type DashboardHealthChipTone = 'ok' | 'warn' | 'bad' | 'muted'
+
+interface DashboardHealthChipRoute {
+  tab: TabId
+  params: Record<string, string>
+}
+
+interface DashboardHealthChip {
+  key: string
+  label: string
+  detail: string
+  tone: DashboardHealthChipTone
+  // Optional drill-down route. When set, DashboardHealthStrip renders this
+  // chip as a RouteLink so operators can jump from "Source mismatch" /
+  // "Paused keepers N" / "Reaction ledger pending N" straight to the page
+  // that explains the signal. Chips without a route render as static spans
+  // (e.g. transport-offline — no view helps).
+  route?: DashboardHealthChipRoute
+}
+
+interface DashboardHealthInput {
+  connected: boolean
+  counts: {
+    agents?: number
+    tasks?: number
+    keepers: number
+    total_runtimes?: number
+    configured_keepers: number
+  } | null
+  namespaceTruthCounts?: {
+    agents?: number
+    tasks?: number
+    keepers?: number
+    total_runtimes?: number
+  }
+  namespaceTruthConfiguredKeepers?: number
+  keepers: Keeper[]
+  runtimeResolution: DashboardRuntimeResolution | null
+  executionError: string | null
+  loading: boolean
+}
+
+// RFC-0135 PR-3: the local `keeperLooksPaused` was one of four
+// parallel paused-predicate chains. Canonical implementation now in
+// `../lib/keeper-predicates.ts` covers exactly the same four axes
+// (paused / phase / pipeline_stage / status).
+//
+// Note: the canonical predicate compares `phase === 'Paused'` (PascalCase
+// per `KeeperPhase`) instead of the previous lowercased comparison —
+// this matches the wire type and the three other former chains.
+
+function fdPressureBlockedKeepers(fleetSafety: DashboardFleetSafetyHealth): number {
+  const candidates = [
+    fleetSafety.keeper_fd_pressure?.admission_blocked_keepers,
+    fleetSafety.keeper_fd_pressure?.blocked_keepers,
+    fleetSafety.keeper_fd_pressure?.blocked_count,
+  ].filter((value): value is number => typeof value === 'number' && Number.isFinite(value))
+  return candidates.length > 0 ? Math.max(...candidates) : 0
+}
+
+function fleetSafetyHealthChip(fleetSafety: DashboardFleetSafetyHealth | null): DashboardHealthChip | null {
+  if (!fleetSafety) return null
+  const fibers = fleetSafety.keeper_fibers
+  const paused = fleetSafety.paused_keepers ?? 0
+  const fleet = fleetSafety.keeper_fleet_safety
+  const fleetStatus = fleet?.status
+  const runningFibers = fleet?.running_keeper_fiber_count ?? fibers
+  const healthyRunningFibers = fleet?.healthy_running_keeper_fiber_count ?? runningFibers
+  const failingFibers = fleet?.failing_keeper_fiber_count ?? null
+  const executableFibers = fleet?.executable_keeper_fiber_count
+    ?? fleet?.executable_reaction_capacity_count
+    ?? runningFibers
+  const pausedKeepers = fleet?.paused_keeper_count ?? paused
+  const pausedAutobootKeepers = fleet?.paused_autoboot_enabled_keeper_count ?? null
+  const targetCapacity = fleet?.target_reaction_capacity_count ?? fleet?.autoboot_enabled_keeper_count ?? null
+  const bootableKeepers = fleet?.bootable_keeper_count ?? null
+  const minimumRunning = fleet?.minimum_running_fibers ?? null
+  const noFibers = fleet?.no_running_fibers ?? fleetSafety.keeper_fleet_no_fibers
+  const requiresAction = fleet?.operator_action_required === true
+  const capacityBelowTarget = fleet?.reaction_capacity_below_target === true
+  const capacityShortfall = fleet?.reaction_capacity_shortfall_count ?? (
+    targetCapacity != null && runningFibers != null ? Math.max(0, targetCapacity - runningFibers) : null
+  )
+  const fdPressureBlocked = fdPressureBlockedKeepers(fleetSafety)
+  const pausedOnlyNoExecutable =
+    executableFibers === 0
+    && pausedAutobootKeepers != null
+    && pausedAutobootKeepers > 0
+    && targetCapacity != null
+    && pausedAutobootKeepers >= targetCapacity
+  if (pausedOnlyNoExecutable) {
+    const capacityDetail = [
+      `status=${fleetStatus ?? 'paused'}`,
+      `running_keeper_fiber_count=${runningFibers ?? 0}`,
+      `executable_keeper_fiber_count=${executableFibers}`,
+      `paused_keeper_count=${pausedKeepers}`,
+      `paused_autoboot_enabled_keeper_count=${pausedAutobootKeepers}`,
+      targetCapacity != null ? `target_reaction_capacity_count=${targetCapacity}` : null,
+      minimumRunning != null ? `minimum_running_fibers=${minimumRunning}` : null,
+    ].filter((item): item is string => item != null).join(', ')
+    return {
+      key: 'fleet-liveness-risk',
+      label: 'Fleet paused',
+      detail: `${capacityDetail}; paused is lifecycle state. Inspect row-level runtime blocker evidence before treating it as a blocker.`,
+      tone: 'warn',
+    }
+  }
+  if (fleetStatus === 'blocked' || (requiresAction && (runningFibers === 0 || noFibers === true))) {
+    const capacityDetail = [
+      `status=${fleetStatus ?? 'blocked'}`,
+      `running_keeper_fiber_count=${runningFibers ?? 0}`,
+      executableFibers != null ? `executable_keeper_fiber_count=${executableFibers}` : null,
+      `paused_keeper_count=${pausedKeepers}`,
+      pausedAutobootKeepers != null ? `paused_autoboot_enabled_keeper_count=${pausedAutobootKeepers}` : null,
+      bootableKeepers != null ? `bootable_keeper_count=${bootableKeepers}` : null,
+      targetCapacity != null ? `target_reaction_capacity_count=${targetCapacity}` : null,
+      minimumRunning != null ? `minimum_running_fibers=${minimumRunning}` : null,
+    ].filter((item): item is string => item != null).join(', ')
+    return {
+      key: 'fleet-liveness-risk',
+      label: 'P0 fleet blocked',
+      detail: `${capacityDetail}; resume selected paused keepers or confirm an intentional operator pause policy.`,
+      tone: 'bad',
+    }
+  }
+  if (fdPressureBlocked >= 24) {
+    return {
+      key: 'fleet-liveness-risk',
+      label: 'Fleet liveness risk',
+      detail: `FD pressure admission is blocking ${fdPressureBlocked} keepers; keeper turns may not start.`,
+      tone: 'bad',
+    }
+  }
+  if (fleetStatus === 'degraded' || (requiresAction && capacityBelowTarget)) {
+    const capacityDetail = [
+      `status=${fleetStatus ?? 'degraded'}`,
+      `healthy_running_keeper_fiber_count=${healthyRunningFibers ?? 0}`,
+      executableFibers != null ? `executable_keeper_fiber_count=${executableFibers}` : null,
+      failingFibers != null ? `failing_keeper_fiber_count=${failingFibers}` : null,
+      targetCapacity != null ? `target_reaction_capacity_count=${targetCapacity}` : null,
+      capacityShortfall != null ? `reaction_capacity_shortfall_count=${capacityShortfall}` : null,
+      fleet?.blocker ? `blocker=${fleet.blocker}` : null,
+    ].filter((item): item is string => item != null).join(', ')
+    return {
+      key: 'fleet-liveness-risk',
+      label: 'Fleet capacity degraded',
+      detail: `${capacityDetail}; restore missing keeper fibers or confirm a reduced target capacity.`,
+      tone: 'warn',
+    }
+  }
+  if (fleetSafety.keeper_fleet_no_fibers === true || (fibers != null && fibers <= 1 && paused > 0)) {
+    return {
+      key: 'fleet-liveness-risk',
+      label: 'Fleet liveness risk',
+      detail: `keeper_fibers=${fibers ?? 0}, paused_keepers=${paused}; keeper fleet may be stalled.`,
+      tone: 'bad',
+    }
+  }
+  return null
+}
+
+function ledgerCount(value: number | null | undefined): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0
+}
+
+function reactionLedgerHealthChip(
+  ledger: DashboardKeeperReactionLedgerHealth | null | undefined,
+): DashboardHealthChip | null {
+  if (!ledger) return null
+  const pending = ledgerCount(ledger.pending_stimulus_count)
+  const cursorSwept = ledgerCount(ledger.cursor_swept_stimulus_count)
+  const legacySwept = ledgerCount(ledger.legacy_cursor_swept_stimulus_count)
+  const readErrors = ledgerCount(ledger.read_error_count)
+  const cursorAck = ledgerCount(ledger.cursor_ack_count)
+  const status = ledger.status ?? 'unknown'
+  const requiresAction = ledger.operator_action_required === true
+  const totalSwept = cursorSwept + legacySwept
+  if (!requiresAction && pending === 0 && readErrors === 0 && totalSwept === 0 && status !== 'degraded') {
+    return null
+  }
+  const tone: DashboardHealthChipTone = readErrors > 0
+    ? 'bad'
+    : requiresAction || pending > 0 || status === 'degraded'
+      ? 'warn'
+      : 'ok'
+  const label = pending > 0
+    ? `Reaction ledger pending ${pending}`
+    : totalSwept > 0
+      ? `Reaction ledger swept ${totalSwept}`
+      : `Reaction ledger ${status}`
+  return {
+    key: 'reaction-ledger',
+    label,
+    detail: [
+      `status=${status}`,
+      `pending=${pending}`,
+      `cursor_swept=${cursorSwept}`,
+      `legacy_swept=${legacySwept}`,
+      `cursor_ack=${cursorAck}`,
+      `read_errors=${readErrors}`,
+    ].join(', '),
+    tone,
+    route: {
+      tab: 'monitoring',
+      params: { section: 'fleet-health', view: 'keeper-health' },
+    },
+  }
+}
+
+function cdalHealthChip(cdal: DashboardCdalHealth | null | undefined): DashboardHealthChip | null {
+  if (!cdal) return null
+  const writerStatus = cdal.writer_status ?? 'unknown'
+  const proofStatus = cdal.proof_store?.status ?? 'unknown'
+  const taskStatus = cdal.task_scope?.status ?? 'unknown'
+  const incomplete = cdal.proof_store?.completeness?.incomplete_run_dirs ?? 0
+  const stale = cdal.proof_store?.completeness?.stale_incomplete_run_dirs ?? 0
+  const terminal = cdal.proof_store?.completeness?.terminal_incomplete_run_dirs ?? 0
+  const currentMissing = cdal.task_scope?.current_writer_missing_task_scope_rows ?? 0
+  const requiresAction = cdal.operator_action_required === true
+  if (!requiresAction && writerStatus === 'active' && incomplete === 0 && currentMissing === 0) {
+    return null
+  }
+  const tone: DashboardHealthChipTone =
+    requiresAction || stale > 0 || currentMissing > 0 ? 'bad' : terminal > 0 || incomplete > 0 ? 'warn' : 'ok'
+  const label = stale > 0 || terminal > 0 || incomplete > 0
+    ? `CDAL proof incomplete ${incomplete}`
+    : currentMissing > 0
+      ? `CDAL task scope ${currentMissing}`
+      : `CDAL ${writerStatus}`
+  return {
+    key: 'cdal-runtime-health',
+    label,
+    detail: [
+      `writer_status=${writerStatus}`,
+      `proof_store=${proofStatus}`,
+      `task_scope=${taskStatus}`,
+      `incomplete=${incomplete}`,
+      `stale=${stale}`,
+      `terminal=${terminal}`,
+      `current_missing_task_scope=${currentMissing}`,
+    ].join(', '),
+    tone,
+    route: {
+      tab: 'monitoring',
+      params: { section: 'fleet-health' },
+    },
+  }
+}
+
+// Drill-down routes for each chip key. Centralized so the builder stays
+// readable and tests can audit the routing table separately. Returning
+// undefined keeps the chip as a static span (transport-offline,
+// execution-error: no view helps; hydrating/runtime-ok: nothing to drill).
+function chipRouteFor(key: string): DashboardHealthChipRoute | undefined {
+  switch (key) {
+    case 'source-mismatch':
+    case 'runtime-warning':
+      return { tab: 'monitoring', params: { section: 'runtime' } }
+    case 'paused-keepers':
+    case 'fleet-liveness-risk':
+    case 'no-keeper-rows':
+      return { tab: 'monitoring', params: { section: 'fleet-health' } }
+    case 'keeper-count-basis':
+      return { tab: 'monitoring', params: { section: 'agents', view: 'keepers' } }
+    default:
+      return undefined
+  }
+}
+
+export function dashboardHealthChips(input: DashboardHealthInput): DashboardHealthChip[] {
+  const chips: DashboardHealthChip[] = []
+  if (!input.connected) {
+    chips.push({
+      key: 'transport-offline',
+      label: 'Transport offline',
+      detail: 'Dashboard stream is disconnected; live state can be stale.',
+      tone: 'bad',
+    })
+  }
+
+  const runtime = input.runtimeResolution
+  if (runtime?.source_mismatch || runtime?.server_workspace_mismatch) {
+    chips.push({
+      key: 'source-mismatch',
+      label: 'Source mismatch',
+      detail: 'Server, workspace, or resolved base path source differs.',
+      tone: 'warn',
+    })
+  } else if (runtime?.status && runtime.status !== 'ready') {
+    chips.push({
+      key: 'runtime-warning',
+      label: 'Runtime warning',
+      detail: runtime.warnings[0] ?? runtime.status,
+      tone: 'warn',
+    })
+  }
+
+  const pausedKeepers = input.keepers.filter(isKeeperPaused).length
+  const fallbackRunningKeepers = Math.max(0, input.keepers.length - pausedKeepers)
+  const runtimeCounts = resolveRuntimeCounts({
+    executionLoaded: input.counts !== null || input.keepers.length > 0,
+    agentsCount: input.counts?.agents ?? 0,
+    keepersCount: input.counts?.keepers ?? fallbackRunningKeepers,
+    pausedKeepersCount: pausedKeepers,
+    namespaceTruthCounts: input.namespaceTruthCounts,
+    namespaceTruthConfiguredKeepers: input.namespaceTruthConfiguredKeepers,
+    shellCounts: input.counts,
+    shellConfiguredKeepers: input.counts?.configured_keepers,
+  })
+  const configured = runtimeCounts.configured.keepers
+  const liveKeepers = runtimeCounts.live.keepers
+  const activeCountSource = input.counts !== null
+    ? 'shell'
+    : input.keepers.length > 0
+      ? '상세 행'
+      : runtimeCountSourceLabel(runtimeCounts.source)
+  if (configured > 0 && (configured !== liveKeepers || pausedKeepers > 0)) {
+    chips.push({
+      key: 'keeper-count-basis',
+      label: formatKeeperCountBreakdown({
+        liveKeepers,
+        pausedKeepers,
+        configuredKeepers: configured,
+      }),
+      detail: `활성=${activeCountSource} runtime, paused=상세 행 lifecycle, 설정=${configuredCountSourceLabel(runtimeCounts.configured.source)} keeper inventory.`,
+      tone: 'muted',
+    })
+  }
+
+  if (pausedKeepers > 0) {
+    chips.push({
+      key: 'paused-keepers',
+      label: `Paused keepers ${pausedKeepers}`,
+      detail: 'One or more keeper rows are paused; board/tool activity may look quiet.',
+      tone: 'warn',
+    })
+  }
+
+  const fleetChip = fleetSafetyHealthChip(runtime?.fleet_safety ?? null)
+  if (fleetChip) {
+    chips.push(fleetChip)
+  }
+
+  const reactionLedgerChip = reactionLedgerHealthChip(runtime?.fleet_safety?.keeper_reaction_ledger)
+  if (reactionLedgerChip) {
+    chips.push(reactionLedgerChip)
+  }
+
+  const cdalChip = cdalHealthChip(runtime?.cdal)
+  if (cdalChip) {
+    chips.push(cdalChip)
+  }
+
+  if (configured > 0 && liveKeepers === 0) {
+    chips.push({
+      key: 'no-keeper-rows',
+      label: 'No keeper rows',
+      detail: `${configured} keepers are configured but no live keeper rows are visible.`,
+      tone: 'warn',
+    })
+  }
+
+  if (input.executionError) {
+    chips.push({
+      key: 'execution-error',
+      label: 'Execution refresh failed',
+      detail: input.executionError,
+      tone: 'bad',
+    })
+  }
+
+  if (chips.length === 0) {
+    chips.push({
+      key: input.loading ? 'hydrating' : 'runtime-ok',
+      label: input.loading ? 'Hydrating' : 'Runtime UI healthy',
+      detail: input.loading
+        ? 'Dashboard data is still loading.'
+        : 'No transport, source, paused-keeper, or execution-refresh issue is currently visible.',
+      tone: input.loading ? 'muted' : 'ok',
+    })
+  }
+
+  // Attach drill-down routes via the central chipRouteFor() table. Chips
+  // that already carry an inline `route` (reaction-ledger) keep theirs.
+  return chips.map(chip => chip.route ? chip : { ...chip, route: chipRouteFor(chip.key) })
+}
+
+function healthChipClass(tone: DashboardHealthChipTone): string {
+  switch (tone) {
+    case 'ok':
+      return 'border-[var(--ok-30)] bg-[var(--ok-soft)] text-[var(--color-status-ok)]'
+    case 'warn':
+      return 'border-[var(--warn-20)] bg-[var(--warn-10)] text-[var(--warn-bright)]'
+    case 'bad':
+      return 'border-[var(--bad-30)] bg-[var(--bad-10)] text-[var(--color-status-err)]'
+    case 'muted':
+      return 'border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] text-[var(--color-fg-muted)]'
+  }
+}
+
+export function DashboardHealthStrip() {
+  const wsOnly = dashboardWsOnlyEnabled()
+  const live = wsOnly
+    ? dashboardWsConnected.value || dashboardWsSseFallbackActive.value
+    : connected.value
+  const chips = dashboardHealthChips({
+    connected: live,
+    counts: shellCounts.value,
+    namespaceTruthCounts: namespaceTruth.value?.root.counts,
+    namespaceTruthConfiguredKeepers: namespaceTruth.value?.root.configured_keepers,
+    keepers: keepers.value,
+    runtimeResolution: shellRuntimeResolution.value,
+    executionError: executionError.value,
+    loading: dashboardLoading.value || namespaceTruthInitializing.value,
+  })
+
+  return html`
+    <div
+      class="flex shrink-0 flex-wrap items-center gap-2 border-b border-[var(--color-border-default)] bg-[var(--color-bg-panel-alt)] px-3 py-1.5 text-2xs"
+      role="status"
+      aria-label="Dashboard runtime health"
+      data-testid="dashboard-health-strip"
+    >
+      <span class="font-mono uppercase tracking-[var(--track-caps)] text-[var(--color-fg-muted)]">Health</span>
+      ${chips.map(chip => chip.route ? html`
+        <${RouteLink}
+          key=${chip.key}
+          tab=${chip.route.tab}
+          params=${chip.route.params}
+          class=${`inline-flex min-h-6 items-center rounded-[var(--r-1)] border px-2 py-0.5 font-medium transition-opacity hover:opacity-80 ${healthChipClass(chip.tone)}`}
+          title=${chip.detail}
+          data-testid=${`dashboard-health-chip-${chip.key}`}
+        >${chip.label}<//>
+      ` : html`
+        <span
+          key=${chip.key}
+          class=${`inline-flex min-h-6 items-center rounded-[var(--r-1)] border px-2 py-0.5 font-medium ${healthChipClass(chip.tone)}`}
+          title=${chip.detail}
+          data-testid=${`dashboard-health-chip-${chip.key}`}
+        >
+          ${chip.label}
+        </span>
+      `)}
+    </div>
+  `
+}
+
 const errorPanelOpen = signal(false)
 
 export function ErrorCounterBadge() {
   const count = unacknowledgedCount.value
   const open = errorPanelOpen.value
+  const label = count > 0
+    ? `${count} unacknowledged dashboard errors`
+    : 'No dashboard errors'
 
   return html`
     <div class="relative" role="status">
       <button
         type="button"
         class="flex items-center gap-1.5 cursor-pointer rounded-[var(--r-1)] px-1 py-0.5 transition-colors hover:bg-[var(--color-bg-elevated)] ${count > 0 ? 'text-[var(--color-status-err)]' : 'text-[var(--color-fg-muted)]'}"
-        title=${count > 0 ? `${count} unacknowledged errors` : 'No errors'}
+        title=${label}
+        aria-label=${label}
         onClick=${() => { errorPanelOpen.value = !errorPanelOpen.value }}
         aria-expanded=${open}
         aria-haspopup="true"
@@ -366,7 +827,9 @@ function dashboardRouteBoundaryKey(routeState: RouteState): string {
 
 function HealthIndicator({ collapsed }: { collapsed?: boolean }) {
   const wsOnly = dashboardWsOnlyEnabled()
-  const live = wsOnly ? dashboardWsConnected.value : connected.value
+  const live = wsOnly
+    ? dashboardWsConnected.value || dashboardWsSseFallbackActive.value
+    : connected.value
   const snap = missionSnapshot.value
   const sessions = snap?.sessions ?? []
   let blockers = 0
@@ -381,17 +844,17 @@ function HealthIndicator({ collapsed }: { collapsed?: boolean }) {
 
   if (!live) {
     dotClass = 'bg-[var(--color-status-err)]'
-    label = 'Offline'
+    label = 'Transport offline'
   } else if (!snap) {
     dotClass = 'bg-[var(--color-fg-muted)]'
-    label = missionLoading.value ? 'Loading' : 'Idle'
+    label = missionLoading.value ? 'Mission loading' : 'Mission idle'
   } else if (blockers > 0 || attentionCount > 0) {
     dotClass = 'bg-[var(--color-status-warn)]'
     const total = blockers + attentionCount
-    label = `Attention ${total}`
+    label = `Mission attention ${total}`
   } else {
     dotClass = 'bg-[var(--color-status-ok)]'
-    label = 'Healthy'
+    label = 'Mission healthy'
   }
 
   const attentionLines = attentionCount > 0 ? summarizeAttentionPreview(attentionQueue) : []
@@ -476,7 +939,7 @@ export function SideRail({ collapsed, onToggle }: { collapsed?: boolean; onToggl
                   </div>
                 <//>
 
-                ${sections.length > 0 ? html`
+                ${sections.length > 1 ? html`
                   <div class="ml-2.5 flex flex-col gap-px border-l border-[var(--color-border-divider)] pl-2.5" role="list">
                     ${sections.map(item => {
                       const isSectionActive = isSurfaceActive && currentSection?.id === item.id

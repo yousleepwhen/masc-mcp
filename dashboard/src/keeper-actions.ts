@@ -5,6 +5,7 @@ import {
   streamKeeperMessage,
 } from './api/keeper'
 import { invalidateDashboardCache, refreshDashboard } from './store'
+import { isAbortError } from './lib/async-state'
 import type {
   KeeperConversationDelivery,
   KeeperDiagnostic,
@@ -50,7 +51,10 @@ async function refreshDashboardState(): Promise<void> {
   try {
     await refreshDashboard({ force: true })
   } catch (err) {
-    console.warn('[keeper-runtime] dashboard refresh failed', err)
+    console.warn(
+      '[keeper-runtime] dashboard refresh failed',
+      err instanceof Error ? err.message : err,
+    )
   }
 }
 
@@ -136,7 +140,10 @@ export async function loadFullKeeperHistory(name: string): Promise<void> {
       // yet."  Logging surfaces the parse failure to DevTools while
       // normalizeStatusDetail still degrades gracefully (uses raw
       // text + null parsed).
-      console.warn('[keeper] masc_keeper_status response parse failed', { keeperName, err })
+      console.warn(
+        `[keeper] masc_keeper_status response parse failed for ${keeperName}:`,
+        err instanceof Error ? err.message : err,
+      )
       parsed = null
     }
     const detail = normalizeStatusDetail(keeperName, text, parsed)
@@ -219,9 +226,7 @@ export async function sendKeeperThreadMessage(name: string, prompt: string): Pro
       error: null,
     })
   } catch (err) {
-    const isAbort =
-      err instanceof Error && err.name === 'AbortError'
-    if (isAbort) {
+    if (isAbortError(err)) {
       finalizeAssistantEntry(keeperName, assistantId, {
         delivery: 'timeout',
         streamState: null,

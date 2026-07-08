@@ -60,7 +60,7 @@ to widen the `0.x` train before that pending tag is published.
 
 ## Intake and Triage
 
-The user remains the primary dogfooding reporter, but Codex and internal agents are also allowed to file issues when they observe a concrete problem.
+The user remains the primary dogfooding reporter, but Agent-Code and internal agents are also allowed to file issues when they observe a concrete problem.
 Agent-filed reports should follow the same evidence standard as human-filed reports.
 To keep reports actionable, intake is split into three buckets:
 
@@ -217,7 +217,7 @@ Tracking issue: `#1012 v2.92.0 closeout: Product Portfolio Trim`
 
 Includes:
 
-- category review for TRPG, Voice, Autoresearch, MDAL, and RISC
+- category review for TRPG, Voice, MDAL, and RISC
 - explicit graduation criteria for Tier 2 promotion
 - archive decisions for stale or unowned surfaces
 

@@ -1,8 +1,53 @@
-# Dashboard Section Route Inventory (Phase -1a)
+# Dashboard Section Route Inventory (Phase -1a, Historical)
 
 **목적**: Dashboard consolidation을 위한 section ID 참조 전수 조사.
 **수집일**: 2026-04-14.
 **수집 방법**: `rg` 기반 정적 분석. section 문자열 리터럴이 있는 모든 파일.
+
+> **Status (2026-05-17)**: 아래 표는 consolidation 전 정적 스냅샷이다.
+> Current Dashboard v1 navigation의 SSOT로 쓰지 않는다. 현재 SSOT는
+> `dashboard/src/config/navigation.ts`, `lib/dashboard/dashboard_surface_readiness.ml`,
+> `lib/dashboard/dashboard_nav_event.ml`이며, drift 검증은
+> `scripts/check-dashboard-surface-parity.sh`와
+> `scripts/check-dashboard-nav-event-parity.sh`가 담당한다.
+>
+> [근거] `bash scripts/check-dashboard-surface-parity.sh`
+> (2026-05-17 KST, High) ->
+> `Dashboard surface parity OK: 25 canonical surfaces aligned between
+> navigation.ts and dashboard_surface_readiness.ml`.
+>
+> [근거] `bash scripts/check-dashboard-nav-event-parity.sh`
+> (2026-05-17 KST, High) ->
+> `dashboard nav-event allowlist parity: OK`.
+
+## Current Canonical Inventory (2026-05-17)
+
+| Surface | Sections |
+|---------|----------|
+| `cockpit` | none; hidden surface |
+| `overview` | none |
+| `monitoring` | `runtime`, `cascade-config`, `agents`, `fleet-health`, `doctor`, `transport-health`, `feature-health`, `observatory`, `cognition`; hidden diagnostics: `journey` |
+| `command` | `operations` |
+| `connectors` | `connector-status` |
+| `workspace` | `board`, `sub-boards`, `moderation`, `planning`, `repositories`, `verification` |
+| `lab` | `tools`, `harness` |
+| `code` | `ide-shell` |
+| `logs` | none |
+
+Retired sections are not canonical dashboard surfaces:
+
+- `monitoring:memory-subsystems` remains only as a legacy redirect to
+  `monitoring:cognition&view=memory`.
+- `workspace:collab-mvp` is retired and has no current canonical route or
+  readiness entry.
+- `monitoring:sessions`, `monitoring:telemetry`, `monitoring:fleet`,
+  `monitoring:tool-quality`, `monitoring:governance`, `monitoring:metrics`,
+  and `monitoring:fsm-hub` remain legacy redirect inputs only.
+- `monitoring:goal-loop` remains a legacy redirect input only. The canonical
+  home is `workspace:planning?view=goal-loop`.
+
+The historical tables below are kept to explain the consolidation work that
+led to the current route table.
 
 ---
 
@@ -17,15 +62,13 @@
 | tab-refresh.ts:73 | `planning` | if section === |
 | tab-refresh.ts:76 | `goals` | if section === |
 | tab-refresh.ts:79 | `board` | if section === |
-| tab-refresh.ts:84 | `autoresearch` | if section === |
 | tab-refresh.ts:87 | `harness` | if section === |
 | status.ts:26-29 | observatory, activity, runtime, telemetry, governance, memory-subsystems, fsm-hub, metrics, tool-quality, fleet | currentSection() union |
 | status.ts:40-63 | 동일 집합 | ternary chain 렌더 |
 | control.ts:14-17 | governance, connectors, inspector (fallback: intervene) | if section === |
 | work.ts:13-14 | board, planning, goals | isWorkSection guard |
-| lab.ts:11-15 | autoresearch, harness (fallback: tools) | if section === |
+| lab.ts:11-15 | harness (fallback: tools) | if section === |
 | ops/index.ts:386 | `intervene` | **useEffect hydration 조건** — 이름 변경 시 주의 |
-| sse-store.ts:245 | `autoresearch` | `tab === 'lab' && section === 'autoresearch'` SSE gate |
 | tool-full-inventory.ts:41,44 | `tools` | `tab === 'lab' && section === 'tools'` |
 | config/navigation.ts:282 | `sessions` → `agents` | 기존 redirect 패턴 (확장 대상) |
 | config/navigation.ts:302 | 전체 | section 매칭 로직 |

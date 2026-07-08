@@ -14,6 +14,7 @@
 open Alcotest
 
 module Transport = Masc_mcp.Transport
+module Sdk_tool_contract = Masc_mcp.Sdk_tool_contract
 
 (* ============================================================
    protocol Tests
@@ -232,12 +233,12 @@ let test_request_with_params () =
   let req : Transport.request = {
     id = Some "req-002";
     method_name = "masc_join";
-    params = `Assoc [("agent_name", `String "claude")];
+    params = `Assoc [("agent_name", `String "agent_llm_a")];
     headers = [];
   } in
   let open Yojson.Safe.Util in
   let agent = req.params |> member "agent_name" |> to_string in
-  check string "param value" "claude" agent
+  check string "param value" "agent_llm_a" agent
 
 (* ============================================================
    response Tests
@@ -502,12 +503,12 @@ let test_rest_tool_to_endpoint_websocket_discovery () =
   check string "path" "/ws" path
 
 let test_rest_tool_to_endpoint_webrtc_offer () =
-  let (m, path) = Transport.Rest.tool_to_endpoint "masc_webrtc_offer" in
+  let (m, path) = Transport.Rest.tool_to_endpoint "webrtc_offer" in
   check string "method" "POST" (Transport.Rest.method_to_string m);
   check string "path" "/webrtc/offer" path
 
 let test_rest_tool_to_endpoint_webrtc_answer () =
-  let (m, path) = Transport.Rest.tool_to_endpoint "masc_webrtc_answer" in
+  let (m, path) = Transport.Rest.tool_to_endpoint "webrtc_answer" in
   check string "method" "POST" (Transport.Rest.method_to_string m);
   check string "path" "/webrtc/answer" path
 
@@ -539,7 +540,7 @@ let test_rest_parse_request_operator_digest () =
   let req =
     Transport.Rest.parse_request ~http_method:"GET"
       ~path:"/api/v1/operator/digest"
-      ~query_params:[ ("target_type", `String "namespace") ] ~body:""
+      ~query_params:[ ("target_type", `String "root") ] ~body:""
   in
   check string "method_name" "masc_operator_digest" req.method_name
 
@@ -582,14 +583,14 @@ let test_rest_parse_request_webrtc_offer () =
     Transport.Rest.parse_request ~http_method:"POST" ~path:"/webrtc/offer"
       ~query_params:[] ~body:"{\"agent_name\":\"a\"}"
   in
-  check string "method_name" "masc_webrtc_offer" req.method_name
+  check string "method_name" "webrtc_offer" req.method_name
 
 let test_rest_parse_request_webrtc_answer () =
   let req =
     Transport.Rest.parse_request ~http_method:"POST" ~path:"/webrtc/answer"
       ~query_params:[] ~body:"{\"offer_id\":\"offer-1\",\"agent_name\":\"b\"}"
   in
-  check string "method_name" "masc_webrtc_answer" req.method_name
+  check string "method_name" "webrtc_answer" req.method_name
 
 let test_rest_parse_request_tool () =
   let req = Transport.Rest.parse_request ~http_method:"POST" ~path:"/api/v1/tools/custom_tool" ~query_params:[] ~body:"" in
@@ -627,8 +628,8 @@ let test_rest_parse_request_roundtrips_direct_bindings () =
       "masc_operator_action";
       "masc_operator_confirm";
       "masc_websocket_discovery";
-      "masc_webrtc_offer";
-      "masc_webrtc_answer";
+      "webrtc_offer";
+      "webrtc_answer";
       "masc_broadcast";
       "masc_agent_card";
     ]
@@ -680,6 +681,34 @@ let test_rest_generate_openapi_document () =
   check bool "mcp security present" true
     (mcp_post |> member "security" <> `Null);
   let operations = mcp_post |> member "x-mcp-operations" |> to_list in
+  let deleted_command_plane_operations =
+    [
+      "masc_policy_approve";
+      "masc_policy_freeze_unit";
+      "masc_policy_kill_switch";
+      "masc_observe_operations";
+      "masc_observe_capacity";
+      "masc_observe_traces";
+      "decision_create";
+      "decision_finalize";
+      "decision_status";
+      "masc_execution_orders";
+    ]
+  in
+  List.iter
+    (fun operation_id ->
+      check bool
+        (operation_id ^ " removed from core remote operations")
+        false
+        (List.exists (String.equal operation_id)
+           Sdk_tool_contract.core_remote_operation_names);
+      check bool
+        (operation_id ^ " absent from OpenAPI operation catalog")
+        false
+        (List.exists
+           (fun row -> row |> member "operationId" |> to_string = operation_id)
+           operations))
+    deleted_command_plane_operations;
   let operation_entry operation_id =
     operations
     |> List.find (fun row ->
@@ -702,7 +731,7 @@ let test_rest_generate_openapi_document () =
   let sdk_aliases =
     status_entry |> member "x-agent-sdk" |> member "aliases" |> to_list
   in
-  check bool "has sdk alias masc_room_status" true
+  check bool "status has no sdk alias masc_room_status" false
     (List.exists
        (fun row -> row |> member "name" |> to_string = "masc_room_status")
        sdk_aliases);

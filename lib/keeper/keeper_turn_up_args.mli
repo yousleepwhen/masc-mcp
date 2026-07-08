@@ -16,14 +16,11 @@ type parsed_args =
   ; short_goal_opt : string option
   ; mid_goal_opt : string option
   ; long_goal_opt : string option
-  ; policy_voice_enabled_opt : bool option
+  ; cascade_name_opt : string option
   ; allowed_paths_opt : string list option
   ; autoboot_enabled_opt : bool option
   ; sandbox_profile_opt : sandbox_profile option
   ; network_mode_opt : network_mode option
-  ; voice_enabled_opt : bool option
-  ; voice_channel_opt : string option
-  ; voice_agent_id_opt : string option
   ; mention_targets_in : string list
   ; active_goal_ids_opt : string list option
   ; max_context_override_opt : int option
@@ -147,14 +144,13 @@ val sandbox_allowed_path_within_private_root :
   string ->
   bool
 
-(** Validate sandbox + network + allowed_paths against
-    [MASC_KEEPER_SANDBOX_HARD_MODE] policy and the
+(** Validate sandbox + network + allowed_paths against the
     [Local | Docker] profile constraints. Returns [Error msg] with
     a remediation hint when settings are inconsistent. *)
 val validate_sandbox_settings :
   config:Coord.config ->
   keeper_name:string ->
-  github_identity:'a option ->
+  repo_cli_identity:'a option ->
   sandbox_profile:sandbox_profile ->
   network_mode:network_mode ->
   allowed_paths:string list ->

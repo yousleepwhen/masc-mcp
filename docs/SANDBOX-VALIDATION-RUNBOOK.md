@@ -19,14 +19,14 @@ silent host-fallback bypass:
 | —  | `make_tool_bundle` cold-started a new container per tool call | #11679 (PR-3b) |
 
 Static validation (counting `sandbox_profile` fields across
-`~/.masc/keepers/*.json` and `<repo>/.masc/keepers/*.json`) is
+`<base-path>/.masc/keepers/*.json` and `<repo>/.masc/keepers/*.json`) is
 necessary but not sufficient.  The dynamic check below confirms the
 container actually executes the tool call.
 
 ## Static validation
 
 ```bash
-for k in ~/.masc/keepers/*.json /path/to/masc-mcp/.masc/keepers/*.json; do
+for k in /path/to/base/.masc/keepers/*.json /path/to/masc-mcp/.masc/keepers/*.json; do
   name=$(basename "$k" .json)
   profile=$(jq -r '.sandbox_profile // "<missing>"' "$k" 2>/dev/null)
   network=$(jq -r '.network_mode // "<missing>"' "$k" 2>/dev/null)
@@ -53,10 +53,10 @@ For each `sandbox_profile=docker` keeper:
    ```bash
    sb keeper restart <keeper-name>
    ```
-2. From the masc-mcp client, dispatch `keeper_bash` with the
+2. From the masc-mcp client, dispatch `Execute` with the
    container hostname probe:
    ```text
-   keeper_bash { "cmd": "cat /etc/hostname" }
+   Execute { "executable": "cat", "argv": ["/etc/hostname"] }
    ```
 3. Pass criteria — the response body must contain a hostname
    matching `masc-keeper-turn-<name>-*` (the convention from
@@ -69,7 +69,7 @@ For each `sandbox_profile=docker` keeper:
 
 A second probe pins the cwd mapping:
 ```text
-keeper_bash { "cmd": "pwd" }
+Execute { "executable": "pwd" }
 ```
 The response should report a path under
 `Keeper_turn_sandbox_runtime.container_root` (e.g.
@@ -78,7 +78,7 @@ The response should report a path under
 ## Negative test — Local keeper
 
 For one `sandbox_profile=local` keeper:
-1. Same probe (`keeper_bash { "cmd": "cat /etc/hostname" }`).
+1. Same probe (`Execute { "executable": "cat", "argv": ["/etc/hostname"] }`).
 2. Pass criteria — the response contains the host hostname and the
    `via` field reads `host`.  This confirms PR-3 did not over-rotate
    Local→Docker.
@@ -86,7 +86,7 @@ For one `sandbox_profile=local` keeper:
 ## Performance check (PR-3b)
 
 PR-3b memoizes per `(in_playground, cwd)`.  Two consecutive
-`keeper_bash` calls with the same cwd should reuse the same
+`Execute` calls with the same cwd should reuse the same
 container:
 
 ```bash
@@ -109,5 +109,5 @@ four are closed) when:
 
 Reference threads:
 - Sandbox root-fix family — #11594, #11610, #11627, #11679
-- Plan SSOT — `planning/claude-plans/30m-users-dancer-downloads-kimi-agent-greedy-pebble.md`
+- Plan SSOT — `planning/claude-plans/30m-users-dancer-downloads-provider-c-agent-greedy-pebble.md`
 - TLA spec — `specs/boundary/SandboxDispatch.tla` (#11638)

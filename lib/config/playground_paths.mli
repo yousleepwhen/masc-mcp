@@ -40,16 +40,20 @@ val bundle_paths : string -> string list
 (** All three bundle subdirs in canonical order:
     [\[bundle_root; mind_path; repos_path\]]. *)
 
-(** {1 Worktree Naming}
+val parse_playground_repo_path
+  :  base_path:string
+  -> abs_path:string
+  -> (string * string) option
+(** RFC-0128 §4.5. Parse a sandbox playground absolute file path back
+    into [(repo_id, rel_path)].
 
-    Worktree directory names and git branch names for keeper task
-    isolation. [room_worktree.ml] and [worktree_remove_r] delegate
-    here so the naming convention exists in one place. *)
+    Layouts accepted (relative to [base_path]):
+    - [.masc/playground/<keeper>/repos/<repo_id>/<rel>]          (Local)
+    - [.masc/playground/docker/<keeper>/repos/<repo_id>/<rel>]   (Docker)
 
-val worktree_dir_name : string -> string -> string
-(** [worktree_dir_name agent task_id] -> ["<agent>-<task_id>"]. The
-    caller is responsible for passing either a raw or sanitized agent
-    name — this function formats only. *)
-
-val worktree_branch_name : string -> string -> string
-(** [worktree_branch_name agent task_id] -> ["<agent>/<task_id>"]. *)
+    Used by the keeper write path so files keepers edit inside their
+    per-keeper repo clones map to the same canonical-URL bucket as
+    files in the user's working tree. Returns [None] when [abs_path]
+    is not absolute, not under [base_path], not anchored at the
+    base-relative [.masc/playground/] root, or does not match one of
+    the accepted structural layouts. *)

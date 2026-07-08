@@ -4,7 +4,7 @@
 
     Routes:
     - model:"keeper:<name>" -> dispatches to Keeper_turn.handle_keeper_msg
-    - model:"default" or other -> direct MASC named-cascade execution via [Oas_worker.run_named]
+    - model:"default" or other -> direct MASC named-cascade execution via [Keeper_turn_driver.run_named]
 
     Request/response format follows the OpenAI Chat Completions API spec. *)
 
@@ -17,15 +17,17 @@ let generate_completion_id () =
     (Random.bits () land 0x7FFFFFFF)
     (Random.bits () land 0x7FFFFFFF)
 
-(** Build an OpenAI-format error response JSON string. *)
-let error_response ~(status : string) ~(message : string) : string =
+(** Build an OpenAI-format error response JSON string.
+    [code] populates the envelope's typed code field (null when absent). *)
+let error_response ~(status : string) ?(code : string option) ~(message : string) () : string =
+  let code_json = match code with None -> `Null | Some c -> `String c in
   Yojson.Safe.to_string
     (`Assoc [
       ("error", `Assoc [
         ("message", `String message);
         ("type", `String status);
         ("param", `Null);
-        ("code", `Null);
+        ("code", code_json);
       ]);
     ])
 
@@ -74,7 +76,7 @@ let extract_user_message (messages : Yojson.Safe.t) : string option =
 let route_keeper ~config ~sw ~clock ~keeper_name ~message : (string, string) result =
   let ctx : _ Keeper_types.context = {
     config;
-    agent_name = "openai-compat";
+    agent_name = "provider_d-compat";
     sw;
     clock;
     proc_mgr = None;
@@ -84,8 +86,9 @@ let route_keeper ~config ~sw ~clock ~keeper_name ~message : (string, string) res
     ("name", `String keeper_name);
     ("message", `String message);
   ] in
-  let (ok, body) = Keeper_turn.handle_keeper_msg ctx args in
-  if ok then
+  let result = Keeper_turn.handle_keeper_msg ctx args in
+  let body = Tool_result.message result in
+  if Tool_result.is_success result then
     (* body is JSON with "reply" field *)
     (try
       let json = Yojson.Safe.from_string body in
@@ -98,9 +101,12 @@ let route_keeper ~config ~sw ~clock ~keeper_name ~message : (string, string) res
   else
     Error body
 
-(** Route to direct MASC named-cascade execution via [Oas_worker.run_named]. *)
+(** Route to direct MASC named-cascade execution via [Keeper_turn_driver.run_named].
+    RFC-0105: the [Error] tag carries the typed [Openai_compat_error_map.t]
+    mapping rather than a flattened [string], preserving HTTP status / kind / code
+    classification from the underlying [Agent_sdk.Error.t]. *)
 let route_cascade ~message ~system_prompt ~max_tokens ~temperature
-  : (string, string) result =
+  : (string, Openai_compat_error_map.t) result =
   let cascade_name =
     Keeper_cascade_profile.cascade_name_for_use
       Keeper_cascade_profile.Openai_compat
@@ -108,7 +114,7 @@ let route_cascade ~message ~system_prompt ~max_tokens ~temperature
   match
     Masc_oas_bridge.run_with_caller
       ~caller:Env_config_oas_bridge.Server_openai_compat (fun () ->
-      Oas_worker.run_named
+      Keeper_turn_driver.run_named
         ~cascade_name
         ~goal:message
         ~system_prompt
@@ -120,9 +126,9 @@ let route_cascade ~message ~system_prompt ~max_tokens ~temperature
     )
   with
   | Ok result ->
-    Ok (Oas_response.text_of_response result.response)
+    Ok (Agent_sdk_response.text_of_response result.response)
   | Error err ->
-    Error (Agent_sdk.Error.to_string err)
+    Error (Openai_compat_error_map.of_sdk_error err)
 
 (** Handle a POST /v1/chat/completions request.
     Parses the OpenAI-format request body, routes to keeper or cascade,
@@ -138,19 +144,19 @@ let handle_chat_completions ~config ~sw ~clock (body : string)
       | None -> `List []
     in
     let max_tokens = Safe_ops.json_int
-      ~default:Oas_worker_cascade.default_max_tokens "max_tokens" json in
+      ~default:Llm_provider.Constants.Inference_profile.agent_default.max_tokens "max_tokens" json in
     let temperature = Safe_ops.json_float
-      ~default:Oas_worker_cascade.default_temperature "temperature" json in
+      ~default:Llm_provider.Constants.Inference_profile.agent_default.temperature "temperature" json in
     if model = "" then
       (`Bad_request,
        error_response ~status:"invalid_request_error"
-         ~message:"Missing or invalid 'model' field")
+         ~message:"Missing or invalid 'model' field" ())
     else
     match extract_user_message messages with
     | None ->
       (`Bad_request,
        error_response ~status:"invalid_request_error"
-         ~message:"No user message found in messages array")
+         ~message:"No user message found in messages array" ())
     | Some user_message ->
       (* Check if this is a keeper route *)
       let is_keeper_prefix =
@@ -163,9 +169,10 @@ let handle_chat_completions ~config ~sw ~clock (body : string)
         | Ok reply ->
           (`OK, completion_response ~model ~content:reply)
         | Error e ->
+          (* Keeper path: error remains string-typed upstream (out of RFC-0105 scope). *)
           (`Internal_server_error,
            error_response ~status:"server_error"
-             ~message:(Printf.sprintf "Keeper error: %s" e))
+             ~message:(Printf.sprintf "Keeper error: %s" e) ())
       end
       else begin
         (* Build system prompt from system messages *)
@@ -184,13 +191,17 @@ let handle_chat_completions ~config ~sw ~clock (body : string)
                 ~max_tokens ~temperature with
         | Ok reply ->
           (`OK, completion_response ~model ~content:reply)
-        | Error e ->
-          (`Internal_server_error,
-           error_response ~status:"server_error"
-             ~message:(Printf.sprintf "Cascade error: %s" e))
+        | Error mapped ->
+          (* RFC-0105: typed sdk_error → HTTP status / kind / code / message.
+             Replaces the prior blanket [`Internal_server_error / "server_error"`]. *)
+          let { Openai_compat_error_map.http_status; openai_kind; openai_code; message } = mapped in
+          (* Openai_compat_error_map.http_status is a closed subset of Httpun.Status.t —
+             upcast via :> coercion since polymorphic variant subtyping cannot infer. *)
+          ((http_status :> Httpun.Status.t),
+           error_response ~status:openai_kind ?code:openai_code ~message ())
       end
   with
   | Yojson.Json_error e ->
     (`Bad_request,
      error_response ~status:"invalid_request_error"
-       ~message:(Printf.sprintf "Invalid JSON: %s" e))
+       ~message:(Printf.sprintf "Invalid JSON: %s" e) ())

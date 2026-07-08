@@ -26,15 +26,15 @@ let test_task_status_todo () =
   | Error e -> Alcotest.fail e
 
 let test_task_status_claimed () =
-  let status = Claimed { assignee = "claude"; claimed_at = "2024-01-01T00:00:00Z" } in
+  let status = Claimed { assignee = "agent_llm_a"; claimed_at = "2024-01-01T00:00:00Z" } in
   let json = task_status_to_yojson status in
   match task_status_of_yojson json with
-  | Ok (Claimed { assignee; _ }) -> Alcotest.(check string) "assignee" "claude" assignee
+  | Ok (Claimed { assignee; _ }) -> Alcotest.(check string) "assignee" "agent_llm_a" assignee
   | Ok _ -> Alcotest.fail "wrong variant"
   | Error e -> Alcotest.fail e
 
 let test_task_status_done () =
-  let status = Done { assignee = "gemini"; completed_at = "2024-01-01T00:00:00Z"; notes = Some "test" } in
+  let status = Done { assignee = "provider_f"; completed_at = "2024-01-01T00:00:00Z"; notes = Some "test" } in
   let json = task_status_to_yojson status in
   match task_status_of_yojson json with
   | Ok (Done { notes = Some n; _ }) -> Alcotest.(check string) "notes" "test" n
@@ -44,27 +44,48 @@ let test_task_status_done () =
 let test_message_roundtrip () =
   let msg = {
     seq = 1;
-    from_agent = "claude";
+    from_agent = "agent_llm_a";
     msg_type = "broadcast";
-    content = "Hello @gemini!";
-    mention = Some "gemini";
+    content = "Hello @provider_f!";
+    mention = Some "provider_f";
     timestamp = "2024-01-01T00:00:00Z";
     trace_context = None;
+    expires_at = Some 1704067200.0;
+    relevance = "high";
   } in
   let json = message_to_yojson msg in
   match message_of_yojson json with
   | Ok parsed ->
       Alcotest.(check int) "seq" 1 parsed.seq;
-      Alcotest.(check string) "from" "claude" parsed.from_agent;
-      Alcotest.(check (option string)) "mention" (Some "gemini") parsed.mention
+      Alcotest.(check string) "from" "agent_llm_a" parsed.from_agent;
+      Alcotest.(check (option string)) "mention" (Some "provider_f") parsed.mention;
+      Alcotest.(check (option (float 0.001))) "expires_at"
+        (Some 1704067200.0) parsed.expires_at;
+      Alcotest.(check string) "relevance" "high" parsed.relevance
+  | Error e -> Alcotest.fail e
+
+let test_message_temporal_decay_defaults () =
+  let json =
+    `Assoc [
+      ("seq", `Int 2);
+      ("from", `String "provider_f");
+      ("type", `String "broadcast");
+      ("content", `String "status ping");
+      ("timestamp", `String "2024-01-01T00:00:00Z");
+    ]
+  in
+  match message_of_yojson json with
+  | Ok parsed ->
+      Alcotest.(check (option (float 0.001))) "expires_at default" None
+        parsed.expires_at;
+      Alcotest.(check string) "relevance default" "medium"
+        parsed.relevance
   | Error e -> Alcotest.fail e
 
 let test_parse_iso8601_epoch_utc () =
   let parsed = parse_iso8601 "1970-01-01T00:00:00Z" in
   Alcotest.(check (float 0.001)) "utc epoch" 0.0 parsed
 
-(* Issue #8312: lenient parser must accept target-state aliases without
-   widening canonical Variant SSOT. *)
 let action_to_canonical = function
   | Claim -> "claim"
   | Start -> "start"
@@ -76,30 +97,23 @@ let action_to_canonical = function
   | Reject_verification -> "reject"
   | Submit_pr_evidence -> "submit_pr_evidence"
 
-let check_lenient input expected =
-  match task_action_of_string_lenient input with
+let check_action input expected =
+  match task_action_of_string input with
   | Ok a -> Alcotest.(check string) input expected (action_to_canonical a)
   | Error e -> Alcotest.failf "expected %s for %s, got error: %s" expected input e
 
-let test_action_alias_claimed () = check_lenient "claimed" "claim"
-let test_action_alias_todo () = check_lenient "todo" "release"
-let test_action_alias_in_progress () = check_lenient "in_progress" "start"
-let test_action_alias_completed () = check_lenient "completed" "done"
-let test_action_alias_cancelled () = check_lenient "cancelled" "cancel"
-let test_action_canonical_still_works () = check_lenient "claim" "claim"
-let test_action_case_insensitive () = check_lenient "CLAIMED" "claim"
+let test_action_canonical_claim () = check_action "claim" "claim"
+let test_action_canonical_case_insensitive () = check_action "CLAIM" "claim"
 
-let test_action_unknown_still_rejected () =
-  match task_action_of_string_lenient "definitely-not-an-action" with
+let test_action_unknown_rejected () =
+  match task_action_of_string "definitely-not-an-action" with
   | Error _ -> ()
-  | Ok _ -> Alcotest.fail "lenient parser must reject genuine garbage"
+  | Ok _ -> Alcotest.fail "parser must reject genuine garbage"
 
-(* Strict parser must NOT have grown alias support — preserves SSOT
-   for places that document only canonical vocabulary. *)
-let test_strict_parser_unchanged () =
+let test_action_alias_rejected () =
   match task_action_of_string "claimed" with
   | Error _ -> ()
-  | Ok _ -> Alcotest.fail "strict parser must reject aliases; lenient owns aliases"
+  | Ok _ -> Alcotest.fail "parser must reject retired action aliases"
 
 (* Issue #8372: schema enums for [agent_status] used to be hand-rolled.
    The witness function ensures every variant produces a string that
@@ -225,7 +239,7 @@ let test_backlog_parse_live_shape_with_null_optional_nested_fields () =
                     [
                       ("strict", `Bool false);
                       ("completion_contract", `List []);
-                      ("required_tools", `List [ `String "keeper_bash" ]);
+                      ("required_tools", `List [ `String "tool_execute" ]);
                       ("required_evidence", `List []);
                       ("inspect_gate_evidence", `List []);
                       ("verify_gate_evidence", `List []);
@@ -234,7 +248,6 @@ let test_backlog_parse_live_shape_with_null_optional_nested_fields () =
                           [
                             ("operation_id", `Null);
                             ("session_id", `Null);
-                            ("autoresearch_loop_id", `Null);
                           ] );
                     ] );
               ];
@@ -269,11 +282,8 @@ let test_backlog_parse_live_shape_with_null_optional_nested_fields () =
              contract.links.operation_id;
            Alcotest.(check (option string)) "session_id null -> None" None
              contract.links.session_id;
-           Alcotest.(check (option string))
-             "autoresearch_loop_id null -> None" None
-             contract.links.autoresearch_loop_id;
            Alcotest.(check (list string)) "required_tools parsed"
-             [ "keeper_bash" ] contract.required_tools)
+             [ "tool_execute" ] contract.required_tools)
 
 let () =
   Alcotest.run "Types" [
@@ -288,6 +298,8 @@ let () =
     ];
     "message", [
       Alcotest.test_case "roundtrip" `Quick test_message_roundtrip;
+      Alcotest.test_case "temporal decay defaults" `Quick
+        test_message_temporal_decay_defaults;
     ];
     "timestamp", [
       Alcotest.test_case "parse utc epoch" `Quick test_parse_iso8601_epoch_utc;
@@ -300,16 +312,11 @@ let () =
       Alcotest.test_case "live shape with nested null optionals" `Quick
         test_backlog_parse_live_shape_with_null_optional_nested_fields;
     ];
-    "task_action_lenient", [
-      Alcotest.test_case "alias claimed -> claim" `Quick test_action_alias_claimed;
-      Alcotest.test_case "alias todo -> release" `Quick test_action_alias_todo;
-      Alcotest.test_case "alias in_progress -> start" `Quick test_action_alias_in_progress;
-      Alcotest.test_case "alias completed -> done" `Quick test_action_alias_completed;
-      Alcotest.test_case "alias cancelled -> cancel" `Quick test_action_alias_cancelled;
-      Alcotest.test_case "canonical claim still works" `Quick test_action_canonical_still_works;
-      Alcotest.test_case "case insensitive" `Quick test_action_case_insensitive;
-      Alcotest.test_case "garbage still rejected" `Quick test_action_unknown_still_rejected;
-      Alcotest.test_case "strict parser ssot preserved" `Quick test_strict_parser_unchanged;
+    "task_action", [
+      Alcotest.test_case "canonical claim works" `Quick test_action_canonical_claim;
+      Alcotest.test_case "canonical case insensitive" `Quick test_action_canonical_case_insensitive;
+      Alcotest.test_case "garbage rejected" `Quick test_action_unknown_rejected;
+      Alcotest.test_case "retired alias rejected" `Quick test_action_alias_rejected;
     ];
     "agent_status_ssot", [
       Alcotest.test_case "witness covers all variants" `Quick test_agent_status_witness_in_enum;
@@ -338,7 +345,7 @@ let () =
         ) ["worker"; "admin"]);
     ];
     "tool_preset_ssot", [
-      (* Issue #8430: witness covers all 8 variants — adding a 9th
+      (* Issue #8430: witness covers all 7 variants — adding an 8th
          constructor will fail to compile here AND in
          tool_preset_to_string. *)
       Alcotest.test_case "witness covers all variants" `Quick (fun () ->
@@ -348,9 +355,9 @@ let () =
           if not (List.mem actual valid_tool_preset_strings) then
             Alcotest.failf "tool_preset_to_string %S not in valid_tool_preset_strings" actual
         in
-        witness Minimal; witness Social; witness Messaging; witness Dispatch; witness Coding;
-        witness Research; witness Delivery; witness Full;
-        Alcotest.(check int) "count" 8 (List.length valid_tool_preset_strings));
+        witness Minimal; witness Social; witness Messaging; witness Dispatch; witness Research;
+        witness Delivery; witness Full;
+        Alcotest.(check int) "count" 7 (List.length valid_tool_preset_strings));
       Alcotest.test_case "schema mirror stays in sync" `Quick (fun () ->
         (* Keeper_schema.tool_preset_enum_strings is a hand-mirrored copy
            of Keeper_types.valid_tool_preset_strings (cycle-avoidance).
@@ -461,18 +468,6 @@ let () =
         in
         witness Local; witness Docker;
         Alcotest.(check int) "count" 2 (List.length valid_sandbox_profile_strings));
-      Alcotest.test_case "cmd_targets_git_or_gh dispatch predicate" `Quick (fun () ->
-        let p = Masc_mcp.Keeper_exec_shell.cmd_targets_git_or_gh in
-        Alcotest.(check bool) "git status" true (p "git status");
-        Alcotest.(check bool) "gh pr list" true (p "gh pr list");
-        Alcotest.(check bool) "leading whitespace tolerated" true
-          (p "  git diff HEAD~1");
-        Alcotest.(check bool) "bare git" true (p "git");
-        Alcotest.(check bool) "ls is not git" false (p "ls -la");
-        Alcotest.(check bool) "git substring is not git command" false
-          (p "git-foo bar");
-        Alcotest.(check bool) "github CLI other binary" false
-          (p "github-cli pr list"));
       Alcotest.test_case "network_mode witness covers both variants" `Quick (fun () ->
         let open Masc_mcp.Keeper_types_profile in
         let witness s =
@@ -578,41 +573,6 @@ let () =
           "reject";
         ]);
     ];
-    "pr_review_event_ssot", [
-      (* Issue #8480: introduces [pr_review_event] Variant where 4 sites
-         previously hand-validated raw strings. Witness covers all 3
-         constructors; mirror sync test asserts [Tool_shard]'s
-         hand-mirrored enum stays in lock-step with the SSOT (cycle
-         avoidance: Tool_shard -> Keeper_tool_pr_review -> Keeper_alerting
-         -> Tool_shard). *)
-      Alcotest.test_case "witness covers all 3 variants" `Quick (fun () ->
-        let module K = Masc_mcp.Keeper_tool_pr_review in
-        let witness e =
-          let actual = K.pr_review_event_to_string e in
-          if not (List.mem actual K.valid_pr_review_event_strings) then
-            Alcotest.failf "pr_review_event_to_string %S not in valid_pr_review_event_strings" actual
-        in
-        witness K.Comment; witness K.Approve; witness K.Request_changes;
-        Alcotest.(check int) "count" 3 (List.length K.valid_pr_review_event_strings));
-      Alcotest.test_case "of_string_opt accepts canonical and case-insensitive" `Quick (fun () ->
-        let module K = Masc_mcp.Keeper_tool_pr_review in
-        Alcotest.(check bool) "COMMENT" true (K.pr_review_event_of_string_opt "COMMENT" <> None);
-        Alcotest.(check bool) "approve (lower)" true (K.pr_review_event_of_string_opt "approve" <> None);
-        Alcotest.(check bool) "  request_changes  " true
-          (K.pr_review_event_of_string_opt "  request_changes  " <> None);
-        Alcotest.(check bool) "garbage rejected" true
-          (K.pr_review_event_of_string_opt "MERGE" = None));
-      Alcotest.test_case "gh flag mapping" `Quick (fun () ->
-        let module K = Masc_mcp.Keeper_tool_pr_review in
-        Alcotest.(check string) "comment" "--comment" (K.pr_review_event_to_gh_flag K.Comment);
-        Alcotest.(check string) "approve" "--approve" (K.pr_review_event_to_gh_flag K.Approve);
-        Alcotest.(check string) "request" "--request-changes"
-          (K.pr_review_event_to_gh_flag K.Request_changes));
-      Alcotest.test_case "schema mirror stays in sync" `Quick (fun () ->
-        Alcotest.(check (list string)) "tool_shard mirror == SSOT"
-          Masc_mcp.Keeper_tool_pr_review.valid_pr_review_event_strings
-          Masc_mcp.Tool_shard.pr_review_event_enum_strings);
-    ];
     "memory_search_source_ssot", [
       (* Issue #8484: introduces [memory_search_source] Variant where 3
          sites previously hand-validated raw strings + relied on a silent
@@ -621,7 +581,7 @@ let () =
          in lock-step with the SSOT (cycle-avoidance pattern from #8467/
          #8480). *)
       Alcotest.test_case "witness covers all 3 variants" `Quick (fun () ->
-        let module M = Masc_mcp.Keeper_exec_memory in
+        let module M = Masc_mcp.Agent_tool_memory_runtime in
         let witness s =
           let actual = M.memory_search_source_to_string s in
           if not (List.mem actual M.valid_memory_search_source_strings) then
@@ -630,7 +590,7 @@ let () =
         witness M.Memory; witness M.History; witness M.All;
         Alcotest.(check int) "count" 3 (List.length M.valid_memory_search_source_strings));
       Alcotest.test_case "of_string_opt sound partial" `Quick (fun () ->
-        let module M = Masc_mcp.Keeper_exec_memory in
+        let module M = Masc_mcp.Agent_tool_memory_runtime in
         Alcotest.(check bool) "memory" true (M.memory_search_source_of_string_opt "memory" <> None);
         Alcotest.(check bool) "HISTORY (case)" true (M.memory_search_source_of_string_opt "HISTORY" <> None);
         Alcotest.(check bool) "  all  (trim)" true
@@ -639,7 +599,7 @@ let () =
           (M.memory_search_source_of_string_opt "definitely-not-a-source" = None));
       Alcotest.test_case "schema mirror stays in sync" `Quick (fun () ->
         Alcotest.(check (list string)) "tool_shard mirror == SSOT"
-          Masc_mcp.Keeper_exec_memory.valid_memory_search_source_strings
+          Masc_mcp.Agent_tool_memory_runtime.valid_memory_search_source_strings
           Masc_mcp.Tool_shard.memory_search_source_enum_strings);
     ];
     "memory_kind_ssot", [
@@ -669,7 +629,7 @@ let () =
          hand-mirrored enum stays in lock-step with the SSOT
          (cycle-avoidance pattern from #8467/#8480/#8484). *)
       Alcotest.test_case "witness covers both variants" `Quick (fun () ->
-        let module F = Masc_mcp.Keeper_exec_fs in
+        let module F = Masc_mcp.Agent_tool_filesystem_runtime in
         let witness m =
           let actual = F.fs_write_mode_to_string m in
           if not (List.mem actual F.valid_fs_write_mode_strings) then
@@ -678,7 +638,7 @@ let () =
         witness F.Overwrite; witness F.Append; witness F.Patch;
         Alcotest.(check int) "count" 3 (List.length F.valid_fs_write_mode_strings));
       Alcotest.test_case "of_string_opt sound partial + empty back-compat" `Quick (fun () ->
-        let module F = Masc_mcp.Keeper_exec_fs in
+        let module F = Masc_mcp.Agent_tool_filesystem_runtime in
         Alcotest.(check bool) "overwrite" true (F.fs_write_mode_of_string_opt "overwrite" <> None);
         Alcotest.(check bool) "APPEND (case)" true (F.fs_write_mode_of_string_opt "APPEND" <> None);
         Alcotest.(check bool) "  empty -> Overwrite (back-compat)" true
@@ -689,7 +649,7 @@ let () =
           (F.fs_write_mode_of_string_opt "definitely-not-a-mode" = None));
       Alcotest.test_case "schema mirror stays in sync" `Quick (fun () ->
         Alcotest.(check (list string)) "tool_shard mirror == SSOT"
-          Masc_mcp.Keeper_exec_fs.valid_fs_write_mode_strings
+          Masc_mcp.Agent_tool_filesystem_runtime.valid_fs_write_mode_strings
           Masc_mcp.Tool_shard.fs_write_mode_enum_strings);
     ];
     "vote_direction_ssot", [
@@ -707,12 +667,12 @@ let () =
         in
         witness Masc_mcp.Board_votes.Up; witness Masc_mcp.Board_votes.Down;
         Alcotest.(check int) "count" 2 (List.length B.valid_vote_direction_strings));
-      Alcotest.test_case "of_string_opt sound partial + back-compat" `Quick (fun () ->
+      Alcotest.test_case "of_string_opt sound partial" `Quick (fun () ->
         let module B = Masc_mcp.Board_votes in
         Alcotest.(check bool) "up" true (B.vote_direction_of_string_opt "up" <> None);
         Alcotest.(check bool) "DOWN (case)" true (B.vote_direction_of_string_opt "DOWN" <> None);
-        Alcotest.(check bool) "  empty -> Up back-compat" true
-          (B.vote_direction_of_string_opt "" = Some Masc_mcp.Board_votes.Up);
+        Alcotest.(check bool) "empty rejected" true
+          (B.vote_direction_of_string_opt "" = None);
         Alcotest.(check bool) "garbage rejected" true
           (B.vote_direction_of_string_opt "left" = None));
       Alcotest.test_case "schema mirror stays in sync" `Quick (fun () ->
@@ -735,36 +695,6 @@ let () =
         let actual = Masc_mcp.Tool_shard.sort_order_enum_strings in
         Alcotest.(check bool) "trending present" true (List.mem "trending" actual);
         Alcotest.(check bool) "discussed present" true (List.mem "discussed" actual));
-    ];
-    "git_action_ssot", [
-      (* Issue #8522: introduces [Tool_code_write.git_action] Variant
-         where 3 sites within the same file co-validated the same 11-
-         action vocabulary (allowlist + schema enum + 6 inline string
-         comparisons). Witness covers all 11 constructors. *)
-      Alcotest.test_case "witness covers all 11 variants" `Quick (fun () ->
-        let module T = Masc_mcp.Tool_code_write in
-        let witness a =
-          let actual = T.git_action_to_string a in
-          if not (List.mem actual T.valid_git_action_strings) then
-            Alcotest.failf "git_action_to_string %S not in valid_git_action_strings" actual
-        in
-        witness T.Add; witness T.Commit; witness T.Push;
-        witness T.Diff; witness T.Status; witness T.Log;
-        witness T.Branch; witness T.Checkout; witness T.Stash;
-        witness T.Fetch; witness T.Clone;
-        Alcotest.(check int) "count" 11 (List.length T.valid_git_action_strings));
-      Alcotest.test_case "of_string_opt sound partial" `Quick (fun () ->
-        let module T = Masc_mcp.Tool_code_write in
-        Alcotest.(check bool) "commit" true (T.git_action_of_string_opt "commit" <> None);
-        Alcotest.(check bool) "PUSH (case)" true (T.git_action_of_string_opt "PUSH" <> None);
-        Alcotest.(check bool) "  clone  (trim)" true
-          (T.git_action_of_string_opt "  clone  " <> None);
-        Alcotest.(check bool) "garbage rejected" true
-          (T.git_action_of_string_opt "rebase" = None));
-      Alcotest.test_case "allowed_git_actions == SSOT" `Quick (fun () ->
-        Alcotest.(check (list string)) "allowlist == valid_git_action_strings"
-          Masc_mcp.Tool_code_write.valid_git_action_strings
-          Masc_mcp.Tool_code_write.allowed_git_actions);
     ];
     "mcp_session_action_ssot", [
       (* Issue #8520: introduces [Mcp_session.action] Variant where 2
@@ -797,13 +727,13 @@ let () =
           Mcp_session.valid_action_strings
           Tool_schemas_inline_infra.mcp_session_action_enum_strings);
     ];
-    "keeper_shell_op_ssot", [
-      (* Issue #8524: keep the keeper_shell structured-op variant and
+    "tool_search_files_op_ssot", [
+      (* Issue #8524: keep the tool_search_files structured-op variant and
          tool_shard schema mirror in sync. 2026-04-30 also pins that
-         generic bash execution is no longer advertised through
-         keeper_shell; Bash/keeper_bash owns command execution. *)
-      Alcotest.test_case "witness covers all 15 variants" `Quick (fun () ->
-        let module S = Masc_mcp.Keeper_exec_shell in
+         generic shell execution is no longer advertised through
+         tool_search_files; Execute/tool_execute owns command execution. *)
+      Alcotest.test_case "witness covers all 12 variants" `Quick (fun () ->
+        let module S = Masc_mcp.Agent_tool_command_runtime in
         let witness o =
           let actual = S.shell_op_to_string o in
           if not (List.mem actual S.valid_shell_op_strings) then
@@ -812,18 +742,19 @@ let () =
         witness S.Pwd; witness S.Ls; witness S.Cat; witness S.Rg;
         witness S.Git_status; witness S.Find; witness S.Head; witness S.Tail;
         witness S.Wc; witness S.Tree; witness S.Git_log; witness S.Git_diff;
-        witness S.Git_worktree; witness S.Git_clone; witness S.Gh;
-        Alcotest.(check int) "count" 15 (List.length S.valid_shell_op_strings));
+        Alcotest.(check int) "count" 12 (List.length S.valid_shell_op_strings));
       Alcotest.test_case "schema mirror matches SSOT" `Quick (fun () ->
         Alcotest.(check (list string)) "tool_shard mirror == SSOT"
-          Masc_mcp.Keeper_exec_shell.valid_shell_op_strings
-          Masc_mcp.Tool_shard.keeper_shell_op_enum_strings);
-      Alcotest.test_case "git_worktree now in schema" `Quick (fun () ->
-        Alcotest.(check bool) "git_worktree present" true
-          (List.mem "git_worktree" Masc_mcp.Tool_shard.keeper_shell_op_enum_strings));
+          Masc_mcp.Agent_tool_command_runtime.valid_shell_op_strings
+          Masc_mcp.Tool_shard.tool_search_files_op_enum_strings);
       Alcotest.test_case "bash op not advertised" `Quick (fun () ->
         Alcotest.(check bool) "bash absent" false
-          (List.mem "bash" Masc_mcp.Tool_shard.keeper_shell_op_enum_strings));
+          (List.mem "bash" Masc_mcp.Tool_shard.tool_search_files_op_enum_strings));
+      Alcotest.test_case "legacy git/gh ops not advertised" `Quick (fun () ->
+        Alcotest.(check bool) "git_clone absent" false
+          (List.mem "git_clone" Masc_mcp.Tool_shard.tool_search_files_op_enum_strings);
+        Alcotest.(check bool) "gh absent" false
+          (List.mem "gh" Masc_mcp.Tool_shard.tool_search_files_op_enum_strings));
     ];
     "channel_label_ssot", [
       (* Issue #8569: keeper_keepalive used to hand-build the
@@ -914,14 +845,12 @@ let () =
           if not (List.mem actual C.valid_kind_strings) then
             Alcotest.failf "kind_to_string %S not in valid_kind_strings" actual)
           C.all_kinds;
-        Alcotest.(check int) "count" 7 (List.length C.all_kinds);
-        Alcotest.(check int) "strings count" 7
+        Alcotest.(check int) "count" 2 (List.length C.all_kinds);
+        Alcotest.(check int) "strings count" 2
           (List.length C.valid_kind_strings));
       Alcotest.test_case "valid_kind_strings pinned to wire format" `Quick (fun () ->
         Alcotest.(check (list string)) "wire-format names"
-          [ "failover"; "capacity_aware"; "weighted_random";
-            "circuit_breaker_cycling"; "priority_tier"; "sticky";
-            "round_robin" ]
+          [ "failover"; "priority_tier" ]
           Masc_mcp.Cascade_strategy.valid_kind_strings);
       Alcotest.test_case "parse_kind error mentions every valid kind" `Quick (fun () ->
         let module C = Masc_mcp.Cascade_strategy in
@@ -991,7 +920,7 @@ let () =
     ];
     "assertion_kind_ssot", [
       (* Issue #8636: 3-way drift on masc_check assertion vocabulary —
-         schema enum (5), handler match (5 + namespace_ready alias),
+         schema enum (5), handler match (5 + deprecated alias),
          default fallback (4 — missing worktree_active). The fix
          introduces [Tool_coord.assertion_kind] variant + helpers and
          a cycle-safe schema mirror in Tool_schemas_coord_core. These
@@ -1009,22 +938,21 @@ let () =
         witness C.Joined;
         witness C.Task_claimed;
         witness C.Current_task_set;
-        witness C.Worktree_active;
         Alcotest.(check int) "count" 5 (List.length C.all_assertion_kinds));
       Alcotest.test_case "valid_assertion_strings pinned to wire format" `Quick (fun () ->
         Alcotest.(check (list string)) "wire-format strings"
-          [ "room_set"; "joined"; "task_claimed"; "current_task_set"; "worktree_active" ]
+          [ "room_set"; "joined"; "task_claimed"; "current_task_set" ]
           Masc_mcp.Tool_coord.valid_assertion_strings);
       Alcotest.test_case "schema mirror stays in sync" `Quick (fun () ->
         Alcotest.(check (list string)) "schema mirror == SSOT"
           Masc_mcp.Tool_coord.valid_assertion_strings
           Tool_schemas_coord_core.assertion_kind_enum_strings);
-      Alcotest.test_case "lenient parser accepts namespace_ready alias" `Quick (fun () ->
+      Alcotest.test_case "parser accepts canonical room_set" `Quick (fun () ->
         let module C = Masc_mcp.Tool_coord in
-        match C.assertion_kind_of_string_lenient "namespace_ready" with
+        match C.assertion_kind_of_string_lenient "room_set" with
         | Some C.Room_set -> ()
-        | Some _ -> Alcotest.fail "alias should map to Room_set"
-        | None -> Alcotest.fail "alias should parse");
+        | Some _ -> Alcotest.fail "room_set should map to Room_set"
+        | None -> Alcotest.fail "room_set should parse");
       Alcotest.test_case "lenient parser rejects unknown" `Quick (fun () ->
         Alcotest.(check bool) "unknown -> None" true
           (Masc_mcp.Tool_coord.assertion_kind_of_string_lenient
@@ -1062,9 +990,9 @@ let () =
           c'.compact_retry_exhausted);
     ];
     "lifecycle_events_ssot", [
-      (* Issue #8575: Oas_events.publish_keeper_lifecycle docstring
+      (* Issue #8575: Cascade_events.publish_keeper_lifecycle docstring
          used to list 5 event names (started/stopped/crashed/restarted/
-         dead) while the supervisor + keepalive together emit 10 —
+         dead) while the supervisor + keepalive together emit 12 —
          operators reading the doc silently missed the cleanup /
          self-healing events (reconciled / dead_cleaned /
          self_preservation / paused_pruned). The fix introduces
@@ -1087,7 +1015,8 @@ let () =
         witness L.Self_preservation;
         witness L.Paused_pruned;
         witness L.Auto_resumed;
-        Alcotest.(check int) "all_custom_events count" 7
+        witness L.Admission_denied;
+        Alcotest.(check int) "all_custom_events count" 8
           (List.length L.all_custom_events));
       Alcotest.test_case "phase-derived strings match Keeper_state_machine SSOT" `Quick (fun () ->
         let open Masc_mcp.Keeper_state_machine in
@@ -1106,11 +1035,11 @@ let () =
           Alcotest.(check bool) (Printf.sprintf "%s present" n) true
             (List.mem n names))
           [ "reconciled"; "dead_cleaned"; "self_preservation"; "paused_pruned";
-            "auto_resumed" ]);
-      Alcotest.test_case "all_event_names totals 11 distinct names" `Quick (fun () ->
+            "auto_resumed"; "admission_denied" ]);
+      Alcotest.test_case "all_event_names totals 12 distinct names" `Quick (fun () ->
         let names = Masc_mcp.Keeper_lifecycle_events.all_event_names in
         let dedup = List.sort_uniq String.compare names in
-        Alcotest.(check int) "11 distinct" 11 (List.length names);
+        Alcotest.(check int) "12 distinct" 12 (List.length names);
         Alcotest.(check int) "no duplicates" (List.length names)
           (List.length dedup));
     ];
@@ -1167,20 +1096,26 @@ let () =
          future regression that re-introduces a way to flip
          AwaitingVerification back into the pool fails compilation
          (witness exhaustive over [task_status]) or the assertion. *)
-      Alcotest.test_case "Todo is the only claim pool candidate" `Quick (fun () ->
+      Alcotest.test_case "claim pool respects status and typed policy" `Quick (fun () ->
         let module S = Coord_task_schedule in
         let dummy_task ts : Masc_domain.task =
           { id = "t-1"; title = "x"; description = ""; goal_id = None;
             files = []; created_at = "2026-04-19T00:00:00Z";
             task_status = ts; priority = 5;
-            worktree = None;
             created_by = None;
             stage = None; contract = None; handoff_context = None;
             cycle_count = 0;
+            reclaim_policy = None;
             do_not_reclaim_reason = None; }
         in
         Alcotest.(check bool) "Todo -> claim pool" true
           (S.task_is_claim_pool_candidate (dummy_task Masc_domain.Todo));
+        Alcotest.(check bool) "Todo blocked by typed policy -> NOT claim pool" false
+          (S.task_is_claim_pool_candidate
+             { (dummy_task Masc_domain.Todo) with
+               reclaim_policy = Some Masc_domain.Block_reclaim
+             ; do_not_reclaim_reason = Some "operator hard stop"
+             });
         Alcotest.(check bool) "Claimed -> NOT claim pool" false
           (S.task_is_claim_pool_candidate
              (dummy_task (Masc_domain.Claimed { assignee = "a"; claimed_at = "t" })));

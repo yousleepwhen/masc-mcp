@@ -1,9 +1,10 @@
 # RFC-0005: Typed Capability Substrate for Local Exec Core
 
-**Status**: Draft
-**Date**: 2026-04-17
+**Status**: Phase 1 closed (S1-S4 + Tool_id) · Phase 2-4 open
+**Date**: 2026-04-17 (drafted) · 2026-05-09 (Phase 1 closeout)
+**Implementation tracking**: see [Implementation Status](#implementation-status) below
 **Scope**: `lib/exec/` (신규 internal sub-library), `lib/process/`, 87 Process_eio / Unix.* exec 사이트, `Tool_dispatch` handler 시그니처, `Keeper_approval_queue` source 필드 확장
-**One sentence**: LLM이 emit하는 bash 입력을 OCaml 5 typed IR (`Bin`/`Path_scope`/`Shell_ir`/`Capability`/`Verdict`)로 강제 변환하고, capability extraction → approval policy → 중앙 executor를 거쳐 문자열 substring 방어에서 **타입 수준 fail-closed 증명**으로 이동하는 8-11주 리팩터링.
+**One sentence**: LLM이 emit하는 bash 입력을 OCaml 5 typed IR (`Exec_program`/`Path_scope`/`Shell_ir`/`Capability`/`Verdict`)로 강제 변환하고, capability extraction → approval policy → 중앙 executor를 거쳐 문자열 substring 방어에서 **타입 수준 fail-closed 증명**으로 이동하는 8-11주 리팩터링.
 
 ## Related Documents
 
@@ -43,9 +44,9 @@ masc-mcp의 LLM 도구 실행 경로는 현재 문자열 중심 검증이다. �
 
 **핵심 차별화 — OCaml 5 타입 경계**:
 - `Parsed.t = Parsed of 'a | Parse_error | Parse_aborted | Too_complex` sum type — 소비자 exhaustive match 강제
-- `Bin.t` opaque — unknown bin → `risk_class = Privileged` → Ask (변환 site 한 곳에만)
+- `Exec_program.t` opaque — unknown bin → `risk_class = Privileged` → Ask (변환 site 한 곳에만)
 - `Verdict.t = Allow of approved | Ask of request | Deny of reason` 3-way
-- `type trusted_argv = private { bin: Bin.t; args: Arg.t list }` smart ctor만
+- `type trusted_argv = private { bin: Exec_program.t; args: Arg.t list }` smart ctor만
 - Layer 1 functor: `module Extract (L : LANGUAGE) : CAPABILITY_SOURCE` — bash만 instantiate, 2번째 언어는 미래
 - Layer 2-3: parametric over Layer 1
 
@@ -78,7 +79,7 @@ masc-mcp의 LLM 도구 실행 경로는 현재 문자열 중심 검증이다. �
 
 **Phase A (이 RFC, 8-11주 솔로 full-time)**:
 - Bash subset hand-rolled parser (Menhir LR(1), simple+pipeline+redirect+cwd+env만)
-- Typed IR (Capability/Verdict/Bin opaque/Path_scope/Shell_ir)
+- Typed IR (Capability/Verdict/Exec_program opaque/Path_scope/Shell_ir)
 - AST → Shell_ir walker (exhaustive match, fail-closed allowlist)
 - Capability extraction + Approval policy + per-agent TOML
 - Exec gate + 87-사이트 cutover
@@ -86,7 +87,7 @@ masc-mcp의 LLM 도구 실행 경로는 현재 문자열 중심 검증이다. �
 - Approval drawer 자동 e2e 테스트
 
 **Phase B (별도 RFC, 실제 수요 발생 시)**:
-- Utility structural argv typing (find / curl / xargs / docker / ssh 등) — 지금은 `Bin.t` unknown → Ask. 확장 trigger = A 운영 중 Ask 비율 UX 저하
+- Utility structural argv typing (find / curl / xargs / docker / ssh 등) — 지금은 `Exec_program.t` unknown → Ask. 확장 trigger = A 운영 중 Ask 비율 UX 저하
 - Multicore Domain parallel (LLM blob 10KB+ 입력)
 - Algebraic effect scanner (2번째 언어 합류)
 - Persistent tree / incremental reparse (LLM streaming 분석)
@@ -116,14 +117,14 @@ masc-mcp의 LLM 도구 실행 경로는 현재 문자열 중심 검증이다. �
 
 | 자산 | 파일:라인 | 활용 |
 |------|---------|-----|
-| `Capability_registry.risk_class` (Safe/Audited/Privileged) | `lib/capability_registry.ml:12-48` | `Bin.risk_class` vocabulary SSOT |
+| `Capability_registry.risk_class` (Safe/Audited/Privileged) | `lib/capability_registry.ml:12-48` | `Exec_program.risk_class` vocabulary SSOT |
 | `Cdal_verdict_gate` Allow/Reject 2-way | `lib/cdal_verdict_gate.ml:7-48` | 3-way `Verdict.t`로 generalize |
 | `Operator_approval.pipeline` | `lib/operator_approval.ml:30-41` | `Approval_policy.decide` emit 경로 |
 | `Approval_callbacks.auto_approve` | `lib/approval_callbacks.mli:8` | OAS Hooks 정합 |
 | `Keeper_approval_queue` — Eio.Promise + SSE 완성 | `lib/keeper/keeper_approval_queue.ml:1-120` | **widen only**, source 필드 추가 |
 | `Typed_tool.create` bridge | `lib/typed_tool_masc.ml:15` | canonical 승격 |
 | `Tool_result.wrap` + `structured_payload_of_message` | `lib/tool_result.ml:44-62` | `of_exec_verdict` 추가 |
-| `Tool_code.normalize_path` | `lib/tool_code_write.ml:26-27` | `Path_containment.classify`의 primitive |
+| `Retired_file_tool.normalize_path` | `retired file-write tool module:26-27` | `Path_containment.classify`의 primitive |
 | `Tool_name.ml` (compile-time typed identifier) | `lib/tool_name.ml:1` | Layer 2 extraction에서 재사용 |
 
 ## Module 구성 (masc-mcp 내부)
@@ -132,7 +133,7 @@ masc-mcp의 LLM 도구 실행 경로는 현재 문자열 중심 검증이다. �
 masc-mcp/lib/exec/
 ├── capability.ml/.mli          — closed variant Capability.t
 ├── path_scope.ml/.mli          — abstract t + smart ctor
-├── bin.ml/.mli                 — opaque Bin.t + of_string → (t, unknown) result
+├── exec_program.ml/.mli                 — opaque Exec_program.t + of_string → (t, unknown) result
 ├── git_op.ml/.mli              — typed subcommand + destructive variant
 ├── redirect_scope.ml/.mli      — File | Fd_to_fd only
 ├── shell_ir.ml/.mli            — closed variant Simple | Pipeline | ...
@@ -163,10 +164,10 @@ masc-mcp/test/exec/
 
 소비자 exhaustive match를 강제하기 위해 **각 sum type의 arm을 plan 단계에서 확정**한다. A0 진입 직전 이 정의로 `.mli` 작성, A0 이후 arm 추가는 RFC 개정 필요.
 
-### `Bin.t` — opaque + smart constructor
+### `Exec_program.t` — opaque + smart constructor
 
 ```ocaml
-(* lib/exec/bin.mli *)
+(* lib/exec/exec_program.mli *)
 type t  (* opaque; 내부 rep은 string + risk_class cached *)
 
 type unknown = [ `Unknown of string ]
@@ -203,7 +204,7 @@ val scope : t -> scope
 val raw : t -> string
 ```
 
-`Tool_code.normalize_path` primitive 재사용. `..`/symlink escape는 `classify`에서 `Outside_worktree`로.
+`Retired_file_tool.normalize_path` primitive 재사용. `..`/symlink escape는 `classify`에서 `Outside_worktree`로.
 
 ### `Git_op.t` — subcommand 3-class polymorphic variant
 
@@ -241,7 +242,7 @@ Heredoc / here-string / process substitution / `&>` bash-ism 등은 파서 단�
 ```ocaml
 (* lib/exec/shell_ir.mli *)
 type simple = {
-  bin : Bin.t;
+  bin : Exec_program.t;
   args : Arg.t list;
   env : (string * Arg.t) list;   (* FOO=bar prefix *)
   cwd : Path_scope.t option;
@@ -300,7 +301,7 @@ type 'a t =
 type t =
   | Read_path of Path_scope.t
   | Write_path of Path_scope.t * Redirect_scope.mode  (* Write | Append *)
-  | Exec_bin of Bin.t * Arg.t list
+  | Exec_program of Exec_program.t * Arg.t list
   | Git of Git_op.t
   | Env_set of string * Arg.t          (* FOO=bar prefix *)
   | Pipeline_fold of t list            (* pipeline 내부 집합 *)
@@ -315,7 +316,7 @@ type t =
 type request = {
   caps : Capability.t list;
   summary : string;                    (* human-readable *)
-  bin : Bin.t;                         (* approval UI용 *)
+  bin : Exec_program.t;                         (* approval UI용 *)
   raw_source : string;                 (* 원문 한 번만 표시용 *)
 }
 
@@ -333,7 +334,7 @@ type t =
   | Deny of { caps : Capability.t list; reason : deny_reason }
 
 and Trusted_argv.t = private {
-  bin : Bin.t;
+  bin : Exec_program.t;
   args : Arg.t list;
   env : (string * Arg.t) list;
   cwd : Path_scope.t option;
@@ -383,11 +384,11 @@ A0 이후 이 9개 타입에 arm을 추가할 때:
 |-------|-----------|---------|
 | Node type allowlist | 런타임 switch + default throw | 닫힌 variant → 컴파일러가 누락 arm 거부 |
 | "simple" vs "too-complex" | tagged union + 런타임 검사 | private ctor + exhaustive match, 우회 타입으로 차단 |
-| argv 신뢰 경계 | `string[]` 그냥 흘림 | `private { bin: Bin.t; args }`, smart ctor만 |
+| argv 신뢰 경계 | `string[]` 그냥 흘림 | `private { bin: Exec_program.t; args }`, smart ctor만 |
 | Parsed/Aborted/TooComplex | 3-way tagged union, 소비자 보장 없음 | sum type + exhaustive match, 새 variant = 모든 소비자 컴파일 에러 |
 | 언어 확장 | 각 언어 별 파서 + validator | functor instantiate (Phase B 확장 여지) |
 | Grammar DSL | 외부 CLI (tree-sitter CLI) | Menhir `.mly` 직접 선언 |
-| Bin 안전 | string | opaque + of_string 한 곳 |
+| Exec_program 안전 | string | opaque + of_string 한 곳 |
 
 이득은 파서 본체(어느 언어든 동일 복잡도)가 아니라 **allowlist → IR → Verdict 경계의 타입 증명**. 압축비 1.5-2×, 컴파일러가 보안 누락 차단.
 
@@ -396,7 +397,7 @@ A0 이후 이 9개 타입에 arm을 추가할 때:
 - Algebraic effect scanner: 토큰당 50-200ns 누적. 단일 언어에 composition 이득 미미. Phase B
 - Persistent tree: LLM emit fresh, no edit. streaming 분석은 Phase B
 - Workflow grammar: 2번째 소비자 미지명. Phase B
-- Utility structural argv typing (awk/sed/find/curl 등): Phase A의 `Bin.of_string unknown → Ask`로 Safe 범위 커버. 확장 근거는 실측 UX 저하 이후에만 수용
+- Utility structural argv typing (awk/sed/find/curl 등): Phase A의 `Exec_program.of_string unknown → Ask`로 Safe 범위 커버. 확장 근거는 실측 UX 저하 이후에만 수용
 
 ## Phase breakdown
 
@@ -424,7 +425,7 @@ A0 이후 이 9개 타입에 arm을 추가할 때:
 **Scope**: `masc-mcp/lib/exec/` 서브트리 초기화. 타입 모듈 + 빈 Menhir grammar 빌드 통과.
 
 **Files new**:
-- `lib/exec/capability.ml/.mli`, `path_scope.ml/.mli`, `bin.ml/.mli`, `git_op.ml/.mli`, `redirect_scope.ml/.mli`, `shell_ir.ml/.mli`, `parsed.ml`, `verdict.ml/.mli`
+- `lib/exec/capability.ml/.mli`, `path_scope.ml/.mli`, `exec_program.ml/.mli`, `git_op.ml/.mli`, `redirect_scope.ml/.mli`, `shell_ir.ml/.mli`, `parsed.ml`, `verdict.ml/.mli`
 - `lib/exec/language.ml` (functor signature)
 - `lib/exec/parser/bash_lexer.mll` (skeleton)
 - `lib/exec/parser/bash_subset.mly` (skeleton, 단순 token pass-through)
@@ -461,7 +462,7 @@ A0 이후 이 9개 타입에 arm을 추가할 때:
 
 ### A3 — Exec gate + Approval queue widen (1-1.5주)
 
-**Layer 경계 (근본적 해결)**: bash execution gate는 **MASC 내부 문제**.  OAS `Hooks.approval_callback`은 SDK consumer가 외부 MCP tool을 호출할 때 사용자 승인 받는 hook — keeper가 내부적으로 bash 실행할 때와는 layer가 다르다.  Claude Code가 Claude Agent SDK 이용자인 것과 같이, MASC는 OAS 이용자이지만 keeper의 shell action 정책은 MASC 내부에서 완결.  A3는 OAS touch 0, bridge 파일 없음, pin bump 없음.  기존 `governance_pipeline.ml`가 쓰는 OAS hook은 MCP tool approval path — A3 exec gate와 독립 유지.
+**Layer 경계 (근본적 해결)**: bash execution gate는 **MASC 내부 문제**.  OAS `Hooks.approval_callback`은 SDK consumer가 외부 MCP tool을 호출할 때 사용자 승인 받는 hook — keeper가 내부적으로 bash 실행할 때와는 layer가 다르다.  CLI-Tool-A가 Agent-LLM-A Agent SDK 이용자인 것과 같이, MASC는 OAS 이용자이지만 keeper의 shell action 정책은 MASC 내부에서 완결.  A3는 OAS touch 0, bridge 파일 없음, pin bump 없음.  기존 `governance_pipeline.ml`가 쓰는 OAS hook은 MCP tool approval path — A3 exec gate와 독립 유지.
 
 **Files**:
 - `lib/exec/exec_gate.ml/.mli` — `run : Verdict.t → result`
@@ -480,16 +481,16 @@ A0 이후 이 9개 타입에 arm을 추가할 때:
 각 sub-phase 24-48h shadow (`MASC_EXEC_GATE=parallel` flag).
 
 #### A4a — Simple callers (3일, ~20 사이트)
-- `lib/notify.ml`, `graphql_client.ml`, `task_sandbox.ml`, `tool_code.ml` ...
+- `lib/notify.ml`, `graphql_client.ml`, `sandbox.ml`, `retired_file_tool.ml` ...
 
 #### A4b — Coord/Swarm/Autoresearch (3일, ~20 사이트)
 - `lib/coord/*`, `lib/swarm/*`, `lib/autoresearch/*`, `lib/auto_responder.ml`
 
 #### A4c — Keeper (4일, 31 사이트, 48h shadow)
-- `lib/keeper/keeper_exec_shell.ml` (19) 외
+- `lib/keeper/agent_tool_command_runtime.ml` (19) 외
 
 #### A4d — 잔존 Unix.* + deprecation (2일, 9 + 삭제)
-- `lib/spawn.ml`, `worker_runtime_docker.ml` 등 + `tool_code_write.ml:36-48` allowlist 삭제, `worker_dev_tools.ml:76-150,283-300` 삭제, `eval_gate.ml:100-130` `@@deprecated`
+- `lib/spawn.ml`, `worker_runtime_docker.ml` 등 + `retired_file_write_tool.ml:36-48` allowlist 삭제, `worker_dev_tools.ml:76-150,283-300` 삭제, `eval_gate.ml:100-130` `@@deprecated`
 
 **Exit criteria**:
 - `rg -e 'Process_eio\.run_argv' -e 'Unix\.(create_process|open_process|system)' lib/ | grep -v lib/exec/exec_gate` = 0
@@ -501,12 +502,12 @@ A0 이후 이 9개 타입에 arm을 추가할 때:
 **Files**:
 - `lib/tool_dispatch.ml:14` — `type handler = ... -> Tool_result.t option`
 - `lib/tool_dispatch.ml:50-54` — `| Ask of Verdict.approval_request` 추가
-- `lib/tool_result.ml:62-68` — `to_legacy_compat [@@alert deprecated]`
+- `lib/tool_types/tool_result.ml` — typed `Tool_result.result` SSOT; compatibility converters removed by RFC-0189 PR-2
 - 14 tuple 사이트 전원 제거
 - `rollback/revert-rfc-v5-A5.patch` + runbook 사전 작성
 
 **Exit criteria**:
-- `rg '\(bool \* string\)' lib/ | rg -v CHANGELOG | rg -v to_legacy_compat` = 0
+- `rg '\(bool \* string\)' lib/ | rg -v CHANGELOG` = 0
 - 3개월 유예 deprecated warning 활성
 
 ### A6 — Drawer 자동 e2e (2-3일, A5와 병행)
@@ -548,7 +549,7 @@ clean.cfg + buggy.cfg 쌍. buggy는 TLC fail 강제. CI:
 rg -e 'Process_eio\.run_argv' \
    -e 'Unix\.(create_process|open_process|system)' \
    lib/ | grep -v lib/exec/exec_gate | wc -l  # 0
-rg '\(bool \* string\)' lib/ | rg -v CHANGELOG | rg -v to_legacy_compat | wc -l  # 0
+rg '\(bool \* string\)' lib/ | rg -v CHANGELOG | wc -l  # 0
 rg 'MASC_AUTO_APPROVE' lib/ | wc -l  # 0
 ```
 
@@ -564,7 +565,7 @@ rg 'MASC_AUTO_APPROVE' lib/ | wc -l  # 0
 | R7 | In-flight gate flip race | 중 | 중 | TLA+ InFlightContinuity + arrival-time 구현 |
 | R8 | Fiber cancel Promise.u leak | 중 | 중 | `Eio.Switch.on_release` cleanup + TLA+ liveness |
 | R9 | TLA+ spec checkbox | 중 | 중 | outcome trichotomy CI gate |
-| R10 | A5 rollback 곤란 | 낮 | 치명 | `to_legacy_compat @@alert deprecated` 3개월 + pre-drafted revert patch |
+| R10 | A5 rollback 곤란 | 낮 | 치명 | typed-result PR stack + pre-drafted revert patch |
 | R11 | eval_gate.ml 기존 방어 삭제로 regression | 중 | 중 | secondary-only `@@deprecated`로 **유지**, primary는 `Approval_policy.decide` |
 | R12 | `lib/exec/`가 masc-mcp 다른 모듈과 엉킴 | 중 | 중 | sub-tree 경계 + dune internal library. public interface 최소화 (Exec.run / Exec.classify만 export) |
 | R13 | unknown utility (awk/sed/find/curl 등)를 LLM 대량 emit → Ask flood | 중 | 중 | T0에서 unknown bin 빈도 집계. threshold 초과 시 Phase B utility typing trigger, 아니면 per-agent TOML allow-safe로 흡수 |
@@ -575,7 +576,7 @@ rg 'MASC_AUTO_APPROVE' lib/ | wc -l  # 0
 | Metric | Before | After | 측정 |
 |--------|-------|-------|-----|
 | exec entry 사이트 | **87** | **1** (`lib/exec/exec_gate.ml`) | invariants CI |
-| `(bool * string)` tuple 파일 | 14 | 0 (`to_legacy_compat @@alert`) | rg |
+| `(bool * string)` tuple 파일 | 14 | 0 | rg |
 | Typed_tool producer | **1** | 2-4 (Exec_gate 인접) | rg |
 | Bypass corpus 차단율 | ~60% (regex/substring) | 100% (subset 내, 나머지 Parse_aborted → Ask/Deny) | fuzz |
 | eval_gate.ml 역할 | primary defense | **secondary-only**, primary = Approval_policy | `@@deprecated` mark |
@@ -607,15 +608,15 @@ T0 tap (5 cal days) ─┐
 1. **typed capability substrate** — 구현 위치 `masc-mcp/lib/exec/` 내부 (별도 repo 없음)
 2. **분리 금지** — 별도 public/private repo 추출은 소비자 2+ & 유지 비용 < 통합 혼잡도 증명 후에만
 3. **Parser**: Menhir LR(1) bash subset (simple+pipe+redir+cwd+env). heredoc/`$()`/subshell 전부 Parse_error → Too_complex → Ask
-4. **Bin.t**: opaque + `of_string: string → (t, unknown) result`. Unknown → `risk_class = Privileged` → Ask
+4. **Exec_program.t**: opaque + `of_string: string → (t, unknown) result`. Unknown → `risk_class = Privileged` → Ask
 5. **Executor boundary**: `Process_eio.run_argv*` + `Unix.create_process/open_process/system` 모두 포함, invariant grep 확장
 6. **Approval**: `Keeper_approval_queue` widen, 전역 env knob 삭제, per-agent TOML
 7. **A4 4 sub-phase + shadow 24-48h** (big-bang 금지)
 8. **OAS 무관**: bash execution gate는 MASC 내부 문제. OAS approval hook은 MCP tool approval path 전용(layer 다름). A3 exec gate가 OAS import 신규 추가 금지. pin bump / cross-repo PR / bridge 모듈 전부 **없음**
 9. **TLA+**: outcome trichotomy, clean+buggy 쌍, CI gate
-10. **Rollback**: `to_legacy_compat @@alert deprecated` 3개월 + pre-drafted revert patch
+10. **Rollback**: typed-result PR stack + pre-drafted revert patch
 11. **Drawer test**: 자동 e2e
-12. **Path_containment**: `Tool_code.normalize_path` primitive 재사용, 자체 canonicalization 0
+12. **Path_containment**: `Retired_file_tool.normalize_path` primitive 재사용, 자체 canonicalization 0
 13. **In-flight race**: arrival-time flip + TLA+ 포함
 14. **Fiber cancel**: `Eio.Switch.on_release` cleanup
 15. **Sequencing**: T0 tap 선행 PR, empirical-before-design
@@ -631,3 +632,83 @@ T0 tap (5 cal days) ─┐
 - MCP Spec 2025-11-25 (consent는 host/client 책임)
 - Morbig SLE 2018 (Menhir POSIX shell subset 가능성 증명)
 - memory/feedback `empirical-before-design`, `tla-spec-audit-outcome-trichotomy`, `no-invented-abstractions`, `consider-base-library`, `no-lifecycle-invasion-from-masc`, `no-derived-tag-when-existing-identifier-suffices`
+
+## Implementation Status
+
+> Added 2026-05-09. RFC-0005's original phase breakdown (§A0-§A6) was
+> the *target* state. The actual landed work groups into S1-S4 + Tool_id
+> (Phase 1) and the GADT pipeline (Phase 2 partial). This section
+> records what shipped vs what remains, anchored to merged PRs.
+
+### Phase 1 — Typed dispatch keys (CLOSED 2026-05-09)
+
+The original §A0/§A1/§A2 mention typed IR for `Exec_program.t`, `Path_scope.t`,
+`Shell_ir.t`, etc. Phase 1 implemented the **dispatch-key** subset
+that the dependent typing analysis surfaced as the highest-leverage
+points (S1-S4). Plus a follow-up that closed `mode_enforcer.ml`'s
+default classification table.
+
+| Item | What | PR | Status |
+|---|---|---|---|
+| S1 | `Exec_program.kind` typed dispatch (replaces `String.equal "git" …` etc.) | [#14216](https://github.com/jeong-sik/masc-mcp/pull/14216) | ✅ MERGED 2026-05-08 |
+| S2 | `Agent_id.t` poly variant for approval-config keys | [#14227](https://github.com/jeong-sik/masc-mcp/pull/14227) | ✅ MERGED 2026-05-08 |
+| S3 | `exec_gate` rollout keys typed (per-agent overlay table) | [#14227](https://github.com/jeong-sik/masc-mcp/pull/14227) | ✅ MERGED 2026-05-08 |
+| S4 | `Capability_check` `Exec_program.kind` pattern matching (replaces string compare) | [#14216](https://github.com/jeong-sik/masc-mcp/pull/14216) | ✅ MERGED 2026-05-08 |
+| §3.1 | `Tool_id.t` typed key for `Mode_enforcer.default_tool_entries` (46 known + `Other_tool of string` fallback) | [#14282](https://github.com/jeong-sik/masc-mcp/pull/14282) | ✅ MERGED 2026-05-09 |
+
+Compile-time enforcement now catches: unknown bin in `Capability_check`,
+typo in approval-config rollout keys, typo in `default_tool_entries`
+table. Plugin tools entering at runtime via
+`Mode_enforcer.register_tool_class : string -> ...` continue to work —
+the typing surface is internal-only by design.
+
+### Phase 2 — GADT Shell IR + walkers (PARTIAL — pipeline live, PPX deferred)
+
+| Item | What | PR | Status |
+|---|---|---|---|
+| §A0/§A1 | `Shell_ir_typed` GADT (`('i,'o,'r,'s) command`, 9 ctors + `Generic` fail-closed catch-all) | [#14240](https://github.com/jeong-sik/masc-mcp/pull/14240) | ✅ MERGED 2026-05-08 |
+| §A2 | `Capability_check_typed` GADT walker | [#14240](https://github.com/jeong-sik/masc-mcp/pull/14240) | ✅ MERGED 2026-05-08 |
+| §A2 | `Risk_classifier_typed` GADT classification | [#14240](https://github.com/jeong-sik/masc-mcp/pull/14240) | ✅ MERGED 2026-05-08 |
+| §A2 | `Approval_policy_typed` GADT → existing `Approval_policy` bridge | [#14240](https://github.com/jeong-sik/masc-mcp/pull/14240) | ✅ MERGED 2026-05-08 |
+| §A3 | `exec_gate.verdict_for_argv` consumes `Capability_check_typed.of_command` (parallel to legacy untyped path) | [#14258](https://github.com/jeong-sik/masc-mcp/pull/14258) | ✅ MERGED 2026-05-09 |
+| — | PPX `[@@deriving shell_ir]` (auto-generate `to_simple` / `of_simple` / `risk` / `sandbox` from GADT decl) | — | 🔄 OPEN |
+| — | PPX `[@@deriving tool]` (auto-generate JSON schema for tool descriptors from variant) | — | 🔄 OPEN |
+| — | `mode_enforcer.ml` → `tool_effect.ml` rename + scope refinement | — | 🔄 OPEN |
+
+The GADT pipeline is *parallel* to the existing untyped path:
+`Capability_check.of_simple` (legacy) and `Capability_check_typed.of_command`
+(GADT) both feed into `Approval_policy.decide`. Cutover from legacy to
+typed-only is part of §A4 — not yet started; both paths must remain in
+sync until then.
+
+### Phase 3-4 — Wide migration + supporting infra (NOT STARTED)
+
+These are progress_report.md §3.3 items, all multi-week scope:
+
+- §A4 cutover: 87 `Process_eio.run_argv*` / `Unix.create_process` sites
+  to typed dispatch
+- 61-tool migration into a single GADT registry
+- Multi-provider JSON Schema auto-generation (depends on `[@@deriving tool]` PPX)
+- Dashboard telemetry typed surface/section IDs (depends on RFC-0048 IA settling)
+- FSM/TLA+ spec updates for typed IR
+- 64 Keeper Fiber stability verification under typed dispatch
+
+### Drift detection
+
+- `lib/exec/test/test_approval_config.ml` — Agent_id.t round-trip
+- `lib/exec/test/test_exec_gate_runtime.ml` — GADT dispatch 3 scenarios
+- `lib/exec/test/test_shell_ir_typed.ml` — risk/sandbox GADT assertion
+- `test/test_cdal_tool_id.ml` — Tool_id.t 46-constructor baseline + `Other_tool` fallback + uniqueness
+
+If any of those break, Phase 1 has regressed. Add new typed items by
+extending the relevant variant and re-running the test suite — the
+compiler will flag every site that needs to acknowledge.
+
+### Sources for this status section
+
+- progress_report.md (2026-05-09, external snapshot)
+- Direct verification: each cited PR opened in GitHub, each cited
+  module read at origin/main @ ab39d69080 before this update.
+
+When a future PR adds Phase 2 PPX or starts Phase 3 cutover, append
+a row to the relevant table above with the merge date and PR link.

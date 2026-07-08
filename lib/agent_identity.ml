@@ -36,12 +36,40 @@ module Random = Stdlib.Random
    every RNG access through [with_identity_rng].  Same discipline
    used by [Lib.A2a_tools] ([a2a_rng] / [a2a_rng_mutex]). *)
 
-module StringMap = Map.Make (String)
+module StringMap = Set_util.StringMap
 
 let identity_rng = Random.State.make_self_init ()
 let identity_rng_mutex = Eio.Mutex.create ()
 let with_identity_rng f =
   Eio.Mutex.use_ro identity_rng_mutex (fun () -> f identity_rng)
+
+(** Typed classification of a session_key's display prefix.
+
+    Replaces the previous string-collapsing helpers that mapped
+    zero-length keys to the literal ["unknown"] inside both
+    [from_mcp_params] and [to_display_string]. The collapse made it
+    impossible for callers to distinguish a genuinely empty key from a
+    key whose first eight bytes happened to spell ["unknown"], and it
+    silenced short-key cases that downstream display logic might want
+    to flag.
+
+    Each call site now matches exhaustively on this closed sum, so any
+    future variant (e.g. truncated/hashed prefix) forces an explicit
+    decision at every consumer instead of being silently merged into a
+    catch-all string. *)
+type session_key_prefix =
+  | Empty_session_key
+      (** Original key had zero length — no usable display prefix. *)
+  | Short_session_key of string
+      (** Key shorter than 8 bytes; the entire key is the prefix. *)
+  | Prefix of string
+      (** Exactly the first 8 bytes of a key ≥ 8 bytes long. *)
+
+let classify_session_key_prefix session_key =
+  let len = String.length session_key in
+  if len = 0 then Empty_session_key
+  else if len < 8 then Short_session_key session_key
+  else Prefix (String.sub session_key 0 8)
 
 (** {1 Core Types} *)
 
@@ -92,13 +120,26 @@ let channel_of_yojson = function
       Ok (External (normalize_channel_label s))
   | `List [ `String "Unknown"; `String s ] ->
       Ok (External (normalize_channel_label s))
-  | _ -> Error "channel_of_yojson: expected string or tagged external variant"
+  | other ->
+      (* Accepted contract is one of:
+         - bare [`String "api" | "internal" | "telegram" | ... | "<freeform>"]
+         - tagged 2-tuple [`List [`String "External"|"Unknown"; `String _]]
+         Non-conforming inputs now name the kind we actually saw, so
+         operators chasing a misshapen [channel] field can tell a
+         wrong-type bug ([`Int] / [`Null]) apart from a wrong-shape
+         tagged variant ([`List] of wrong length / wrong leading tag)
+         by reading the kind alone — without re-dumping the payload. *)
+      Error
+        (Printf.sprintf
+           "channel_of_yojson: expected JSON string (e.g. \"api\" / \"telegram\") \
+            or 2-element tagged list [\"External\"|\"Unknown\"; <label>], got %s"
+           (Json_util.kind_name other))
 
 (** Agent identity - extracted from session/request context *)
 type t = {
   uuid : string;                  (** Permanent unique identifier (UUIDv4 or hash) *)
   session_key : string;           (** Unique session identifier *)
-  agent_name : string;            (** Display name (e.g., "claude-agent-001") *)
+  agent_name : string;            (** Display name (e.g., "agent_llm_a-agent-001") *)
   channel : channel option;       (** Source channel if known *)
   user_id : string option;        (** User ID from channel (e.g., telegram user id) *)
   room_id : string option;        (** Current room if joined *)
@@ -136,15 +177,11 @@ let from_mcp_params params =
     | `String s -> Some s
     | _ -> None
   in
-  let session_key_prefix session_key =
-    let prefix_len = min 8 (String.length session_key) in
-    if prefix_len = 0 then "unknown"
-    else String.sub session_key 0 prefix_len
-  in
   let fallback_agent_name session_key =
-    let prefix = session_key_prefix session_key in
-    let prefix = if String.equal prefix "unknown" then "anon" else prefix in
-    Printf.sprintf "agent-%s" prefix
+    match classify_session_key_prefix session_key with
+    | Empty_session_key -> "agent-anon"
+    | Short_session_key s -> Printf.sprintf "agent-%s" s
+    | Prefix s -> Printf.sprintf "agent-%s" s
   in
   let session_key = match get_opt "_session_key" with
     | Some k ->
@@ -176,22 +213,6 @@ let from_mcp_params params =
     user_id;
     room_id;
     capabilities;
-    registered_at = now;
-    last_seen = now;
-    metadata = [];
-  }
-
-(** Create identity from agent_name (legacy support) *)
-let from_agent_name agent_name =
-  let now = Time_compat.now () in
-  {
-    uuid = generate_uuid ~agent_name;
-    session_key = generate_session_key ();
-    agent_name;
-    channel = None;
-    user_id = None;
-    room_id = None;
-    capabilities = [];
     registered_at = now;
     last_seen = now;
     metadata = [];
@@ -304,10 +325,11 @@ let has_capability identity cap =
 
 (** Get display string for logging *)
 let to_display_string identity =
-  let session_key_prefix session_key =
-    let prefix_len = min 8 (String.length session_key) in
-    if prefix_len = 0 then "unknown"
-    else String.sub session_key 0 prefix_len
+  let prefix_str =
+    match classify_session_key_prefix identity.session_key with
+    | Empty_session_key -> "unknown"
+    | Short_session_key s -> s
+    | Prefix s -> s
   in
   let channel_str = match identity.channel with
     | Some c -> Printf.sprintf " via %s" (string_of_channel c)
@@ -319,7 +341,7 @@ let to_display_string identity =
   in
   Printf.sprintf "%s (%s)%s%s"
     identity.agent_name
-    (session_key_prefix identity.session_key)
+    prefix_str
     channel_str
     room_str
 
@@ -357,29 +379,12 @@ let archetype_of_string_opt = function
   | "generalist" | "" -> Some Generalist
   | _ -> None
 
-(** Back-compat wrapper: callers that have no other recovery still
-    fall back to [Generalist] but a warning is logged so the typo /
-    drift becomes operator-visible. *)
-let archetype_of_string s =
-  match archetype_of_string_opt s with
-  | Some v -> v
-  | None ->
-      Log.Misc.warn
-        "archetype_of_string: unknown wire string %S → Generalist fallback (#8691)" s;
-      Generalist
-
 let archetype_emoji = function
   | Melchior -> "🔬"
   | Balthasar -> "🪞"
   | Casper -> "♟️"
   | Athena -> "🧠"
   | Generalist -> "🌐"
-
-(** Get archetype from identity metadata *)
-let get_archetype identity =
-  match List.assoc_opt "archetype" identity.metadata with
-  | Some s -> archetype_of_string s
-  | None -> Generalist
 
 (** Set archetype in identity metadata *)
 let set_archetype identity archetype =

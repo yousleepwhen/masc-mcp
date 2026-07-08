@@ -18,16 +18,7 @@ let identity_fields : (string * (keeper_meta -> string)) list =
     ("instructions", (fun m -> m.instructions));
   ]
 
-let string_list_to_json xs =
-  `List (List.map (fun s -> `String s) xs)
-
-let float_opt_to_json = function
-  | Some value -> `Float value
-  | None -> `Null
-
-let option_to_json f = function
-  | Some value -> f value
-  | None -> `Null
+let string_list_to_json = Json_util.json_string_list
 
 let generation_id ~keeper_name ~generation ~trace_id =
   Printf.sprintf "%s:%d:%s" keeper_name generation trace_id
@@ -114,8 +105,11 @@ let manifest_json
     ~(child : keeper_meta)
     ~(parent_trace_id : string)
     ~(trigger_reason : string)
-    ~(context_ratio : float)
-    ~(model : string) =
+    ~(context_ratio : float) =
+  (* RFC-0132 PR-2: lineage emit surface = external boundary; redact via SSOT. *)
+  let model =
+    Boundary_redaction.to_string Boundary_redaction.runtime_model_label
+  in
   let child_trace_id = Keeper_id.Trace_id.to_string child.runtime.trace_id in
   let parent_generation = parent.runtime.generation in
   let child_generation = child.runtime.generation in
@@ -161,8 +155,11 @@ let index_entry_json
     ~(child : keeper_meta)
     ~(parent_trace_id : string)
     ~(trigger_reason : string)
-    ~(context_ratio : float)
-    ~(model : string) =
+    ~(context_ratio : float) =
+  (* RFC-0132 PR-2: lineage emit surface = external boundary; redact via SSOT. *)
+  let model =
+    Boundary_redaction.to_string Boundary_redaction.runtime_model_label
+  in
   let child_trace_id = Keeper_id.Trace_id.to_string child.runtime.trace_id in
   let parent_generation = parent.runtime.generation in
   let child_generation = child.runtime.generation in
@@ -201,7 +198,7 @@ let index_entry_json
       ("context_ratio", `Float context_ratio);
       ("to_model", `String model);
       ("continuity_verdict", `String continuity.verdict);
-      ("continuity_similarity", float_opt_to_json continuity.similarity);
+      ("continuity_similarity", Json_util.float_opt_to_json continuity.similarity);
       ("identity_inherited_fields", string_list_to_json inherited_fields);
       ("identity_changed_fields", string_list_to_json changed_fields);
       ("identity_dropped_fields", string_list_to_json dropped_fields);
@@ -214,21 +211,20 @@ let record_handoff_artifacts
     ~(child : keeper_meta)
     ~(parent_trace_id : string)
     ~(trigger_reason : string)
-    ~(context_ratio : float)
-    ~(model : string) =
+    ~(context_ratio : float) =
   let child_trace_id = Keeper_id.Trace_id.to_string child.runtime.trace_id in
   let manifest_path =
-    keeper_generation_manifest_path config child_trace_id
+    Keeper_types_support.keeper_generation_manifest_path config child_trace_id
   in
-  let index_path = keeper_generation_index_path config child.name in
+  let index_path = Keeper_types_support.keeper_generation_index_path config child.name in
   let manifest =
     manifest_json
-      ~parent ~child ~parent_trace_id ~trigger_reason ~context_ratio ~model
+      ~parent ~child ~parent_trace_id ~trigger_reason ~context_ratio
   in
   let index_entry =
     index_entry_json
       ~manifest_path
-      ~parent ~child ~parent_trace_id ~trigger_reason ~context_ratio ~model
+      ~parent ~child ~parent_trace_id ~trigger_reason ~context_ratio
   in
   ignore (Keeper_fs.ensure_dir (Filename.dirname manifest_path));
   match
@@ -236,21 +232,21 @@ let record_handoff_artifacts
   with
   | Ok () ->
       (try
-         append_jsonl_line index_path index_entry
+         Keeper_types_support.append_jsonl_line index_path index_entry
        with
        | Eio.Cancel.Cancelled _ as e -> raise e
        | exn ->
            Prometheus.inc_counter
-             Prometheus.metric_keeper_generation_lineage_failures
-             ~labels:[("keeper", child.name); ("site", "index_append")]
+             Keeper_metrics.(to_string GenerationLineageFailures)
+             ~labels:[("keeper", child.name); ("site", Keeper_generation_lineage_failure_site.(to_label Index_append))]
              ();
            Log.Keeper.warn
              "keeper:%s failed to append generation index %s: %s"
              child.name index_path (Printexc.to_string exn))
   | Error err ->
       Prometheus.inc_counter
-        Prometheus.metric_keeper_generation_lineage_failures
-        ~labels:[("keeper", child.name); ("site", "manifest_save")]
+        Keeper_metrics.(to_string GenerationLineageFailures)
+        ~labels:[("keeper", child.name); ("site", Keeper_generation_lineage_failure_site.(to_label Manifest_save))]
         ();
       Log.Keeper.warn
         "keeper:%s failed to save generation manifest %s: %s"
@@ -259,10 +255,33 @@ let record_handoff_artifacts
 let load_json_file_opt path =
   if not (Fs_compat.file_exists path) then None
   else
-    try Some (Yojson.Safe.from_string (Fs_compat.load_file path))
+    let surface = "keeper_generation_lineage_manifest" in
+    let report_drop ~reason ~detail =
+      Safe_ops.report_persistence_read_drop
+        ~on_drop:(fun () ->
+          Prometheus.inc_counter Prometheus.metric_persistence_read_drops
+            ~labels:[("surface", surface); ("reason", reason)]
+            ())
+        ~surface
+        ~reason
+        ~path
+        ~detail
+    in
+    try
+      let contents = Fs_compat.load_file path in
+      try Some (Yojson.Safe.from_string contents)
+      with Yojson.Json_error detail ->
+        report_drop
+          ~reason:Safe_ops.persistence_read_drop_reason_entry_load_error
+          ~detail;
+        None
     with
     | Eio.Cancel.Cancelled _ as e -> raise e
-    | _ -> None
+    | exn ->
+        report_drop
+          ~reason:Safe_ops.persistence_read_drop_reason_entry_load_error
+          ~detail:(Printexc.to_string exn);
+        None
 
 let load_jsonl_file path =
   if not (Fs_compat.file_exists path) then []
@@ -281,8 +300,8 @@ let rec take n xs =
 
 let surface_json (config : Coord.config) (meta : keeper_meta) ~recent_limit =
   let trace_id = Keeper_id.Trace_id.to_string meta.runtime.trace_id in
-  let manifest_path = keeper_generation_manifest_path config trace_id in
-  let index_path = keeper_generation_index_path config meta.name in
+  let manifest_path = Keeper_types_support.keeper_generation_manifest_path config trace_id in
+  let index_path = Keeper_types_support.keeper_generation_index_path config meta.name in
   let manifest = load_json_file_opt manifest_path in
   let index_entries = load_jsonl_file index_path in
   let recent =
@@ -302,7 +321,7 @@ let surface_json (config : Coord.config) (meta : keeper_meta) ~recent_limit =
       ("manifest_path", `String manifest_path);
       ("index_path", `String index_path);
       ("manifest_available", `Bool (Option.is_some manifest));
-      ("manifest", option_to_json Fun.id manifest);
+      ("manifest", Json_util.option_to_yojson Fun.id manifest);
       ("recent_count", `Int (List.length index_entries));
       ("recent", `List recent);
     ]

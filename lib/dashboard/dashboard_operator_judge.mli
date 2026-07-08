@@ -13,7 +13,9 @@
 
 (** Read-only snapshot of judge runtime state, returned by
     {!runtime_status} and serialized into operator pending-confirm
-    payloads. All fields are read externally. *)
+    payloads. All fields are read externally. [model_used]
+    is retained for compatibility and redacted to [None] on
+    public snapshots. *)
 type runtime_snapshot = {
   enabled : bool;
   judge_online : bool;
@@ -35,7 +37,7 @@ val start :
   net:[ `Generic | `Unix ] Eio.Net.ty Eio.Resource.t ->
   config:Coord.config ->
   masc_tools:Masc_domain.tool_schema list ->
-  dispatch:(name:string -> args:Yojson.Safe.t -> Tool_result.t) ->
+  dispatch:(name:string -> args:Yojson.Safe.t -> Tool_result.result) ->
   build_facts:(unit -> Yojson.Safe.t) ->
   unit ->
   unit

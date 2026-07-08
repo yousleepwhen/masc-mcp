@@ -5,36 +5,29 @@ let ( let* ) = Result.bind
 let logged_mapping_errors : (string, unit) Hashtbl.t = Hashtbl.create 4
 
 let mappings_toml_path base_path =
-  Filename.concat base_path ".masc/config/keeper_repo_mappings.toml"
-
-let ensure_dir path =
-  let rec loop dir =
-    if dir = "" || dir = "." || Sys.file_exists dir then ()
-    else begin
-      loop (Filename.dirname dir);
-      try Unix.mkdir dir 0o755
-      with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
-    end
-  in
-  loop path
+  (* RFC-0121: layout SSOT via [Config_dir_resolver]. *)
+  Config_dir_resolver.keeper_repo_mappings_toml_path ~base_path
 
 let mapping_of_toml toml keeper_id =
   let path field = ["mapping"; keeper_id; field] in
   let* repository_ids =
     Otoml.Helpers.find_strings_result toml (path "repositories")
   in
-  let* github_credential_id =
+  let* credential_id =
     match Otoml.find_result toml Fun.id (path "credential_id") with
     | Error _ -> Ok None
     | Ok (Otoml.TomlString id) ->
         let id = String.trim id in
         Ok (if id = "" then None else Some id)
-    | Ok _ ->
+    | Ok (Otoml.TomlInteger _ | Otoml.TomlFloat _ | Otoml.TomlBoolean _
+         | Otoml.TomlOffsetDateTime _ | Otoml.TomlLocalDateTime _
+         | Otoml.TomlLocalDate _ | Otoml.TomlLocalTime _ | Otoml.TomlArray _
+         | Otoml.TomlTable _ | Otoml.TomlInlineTable _ | Otoml.TomlTableArray _) ->
         Error
           (Printf.sprintf
              "mapping.%s.credential_id must be a string when present" keeper_id)
   in
-  Ok { keeper_id; repository_ids; github_credential_id }
+  Ok { keeper_id; repository_ids; mapped_credential_id = credential_id }
 
 let credential_type_label = function
   | Github -> "GitHub"
@@ -50,7 +43,7 @@ let toml_of_mapping mapping =
     ]
   in
   let fields =
-    match mapping.github_credential_id with
+    match mapping.mapped_credential_id with
     | Some id ->
         let id = String.trim id in
         if id = "" then fields
@@ -71,21 +64,23 @@ let load_all ~base_path =
         | Ok (Otoml.TomlTable fields | Otoml.TomlInlineTable fields) ->
             let rec loop acc = function
               | [] -> Ok (List.rev acc)
-              | (keeper_id, value) :: rest -> (
-                  match value with
-                  | Otoml.TomlTable _ | Otoml.TomlInlineTable _ ->
-                      let mapping_toml =
-                        Otoml.TomlTable [("mapping", Otoml.TomlTable [(keeper_id, value)])]
-                      in
-                      (match mapping_of_toml mapping_toml keeper_id with
-                      | Ok mapping -> loop (mapping :: acc) rest
-                      | Error msg -> Error msg)
-                  | _ ->
-                      Error
-                        (Printf.sprintf "mapping.%s must be a table" keeper_id))
+              | (keeper_id, value) :: rest ->
+                  if is_toml_table value then
+                    let mapping_toml =
+                      Otoml.TomlTable [("mapping", Otoml.TomlTable [(keeper_id, value)])]
+                    in
+                    (match mapping_of_toml mapping_toml keeper_id with
+                    | Ok mapping -> loop (mapping :: acc) rest
+                    | Error msg -> Error msg)
+                  else
+                    Error (Printf.sprintf "mapping.%s must be a table" keeper_id)
             in
             loop [] fields
-        | Ok _ -> Ok [])
+        | Ok (Otoml.TomlString _ | Otoml.TomlInteger _ | Otoml.TomlFloat _
+             | Otoml.TomlBoolean _ | Otoml.TomlOffsetDateTime _
+             | Otoml.TomlLocalDateTime _ | Otoml.TomlLocalDate _
+             | Otoml.TomlLocalTime _ | Otoml.TomlArray _ | Otoml.TomlTableArray _) ->
+            Ok [])
 
 type mapping_lookup =
   | Mapping_found of keeper_repo_mapping
@@ -115,15 +110,40 @@ let allowed_repositories ~keeper_id ~base_path =
   let* mapping = find_mapping ~base_path keeper_id in
   Ok mapping.repository_ids
 
+let is_wildcard s = s = "*"
+
+(* Filter [repos] down to those whose id appears in
+   [mapping.repository_ids], with ["*"] as a wildcard that bypasses
+   filtering entirely.  Replaces two copy-pasted O(R x M) loops in
+   [credentials_for_keeper] and [apply_mapping]: each was
+   [List.filter (fun r -> List.exists (String.equal r.id) mapping.repository_ids) repos].
+   The Hashtbl materialisation is skipped when a wildcard short-circuits
+   the check, so the wildcard case avoids building the membership set
+   (the [is_wildcard] predicate itself is a fully-saturated function so
+   no closure is allocated per call, unlike [(String.equal "*")] which
+   would partially apply). *)
+let filter_repos_by_mapping (mapping : keeper_repo_mapping)
+    (repos : repository list) : repository list =
+  if List.exists is_wildcard mapping.repository_ids then
+    repos
+  else
+    let mapping_id_set =
+      let tbl = Hashtbl.create (List.length mapping.repository_ids) in
+      List.iter (fun id -> Hashtbl.replace tbl id ()) mapping.repository_ids;
+      tbl
+    in
+    List.filter
+      (fun (r : repository) -> Hashtbl.mem mapping_id_set r.id)
+      repos
+
 (** Resolve the credentials currently mapped to [keeper_id], by looking
     through every repository the keeper is allowed to access and
     extracting each repository's [credential_id] into a unique list of
     [credential] records.
 
-    Returns [Ok []] when the keeper has no mapping.  This is the
-    backward-compatibility branch consumed by the credential provider
-    bridge (RFC-0019 PR-A): a keeper without a mapping continues to use
-    the legacy [Keeper_gh_env.keeper_binding] resolver.
+    Returns [Ok []] when the keeper has no mapping.  Absence remains distinct
+    from load/parse errors so strict credential-provider dispatch can surface a
+    missing-mapping error.
 
     Repository IDs from the mapping are resolved against the loaded
     repositories; unknown repository IDs are ignored by this resolution path.
@@ -146,29 +166,21 @@ let credentials_for_keeper ~base_path ~keeper_id =
                   in credential store: %s"
                  id keeper_id msg)
       in
-      (match mapping.github_credential_id with
+      (match mapping.mapped_credential_id with
       | Some id when String.trim id <> "" ->
           let id = String.trim id in
           let* credential = resolve_credential id in
           if credential.cred_type <> Github then
             Error
               (Printf.sprintf
-                 "credential %s referenced by github_credential_id for keeper %s \
+                 "credential %s referenced by credential_id for keeper %s \
                   must be of type GitHub, got %s"
                  id keeper_id (credential_type_label credential.cred_type))
           else
             Ok [credential]
       | Some _ | None ->
       let* repos = Repo_store.load_all ~base_path in
-      let mapped_repos =
-        if List.exists (String.equal "*") mapping.repository_ids then
-          repos
-        else
-          List.filter
-            (fun (r : repository) ->
-              List.exists (String.equal r.id) mapping.repository_ids)
-            repos
-      in
+      let mapped_repos = filter_repos_by_mapping mapping repos in
       (* Unique credential ids preserving first-seen order, so a keeper
          with several repos pointing at the same credential collapses to
          a single entry; the bridge can then dispatch deterministically. *)
@@ -192,16 +204,16 @@ let credentials_for_keeper ~base_path ~keeper_id =
 
 let is_allowed ~keeper_id ~repository_id ~base_path =
   match lookup_mapping ~base_path keeper_id with
-  | Mapping_missing _ -> true
+  | Mapping_missing _ -> false
   | Mapping_load_error msg ->
       if not (Hashtbl.mem logged_mapping_errors keeper_id) then begin
         Hashtbl.add logged_mapping_errors keeper_id ();
         Log.Misc.warn
           "[KeeperRepoMapping] is_allowed: mapping load error for keeper %s \
-           — access control bypassed (error: %s)"
+           — access denied fail-closed (error: %s)"
           keeper_id msg
       end;
-      true
+      false
   | Mapping_found mapping ->
       List.exists
         (fun id -> String.equal id repository_id || String.equal id "*")
@@ -223,7 +235,7 @@ let save_all ~base_path mappings =
   in
   let toml = Otoml.TomlTable [("mapping", Otoml.TomlTable table)] in
   let dir = Filename.dirname path in
-  ensure_dir dir;
+  Fs_compat.mkdir_p dir;
   let content = Otoml.Printer.to_string toml in
   try
     let oc = open_out path in
@@ -245,21 +257,15 @@ let save_mapping ~base_path mapping =
 
 let apply_mapping ~keeper_id ~base_path ~repositories =
   match lookup_mapping ~base_path keeper_id with
-  | Mapping_missing _ -> repositories
+  | Mapping_missing _ -> []
   | Mapping_load_error msg ->
       Log.Misc.warn
         "[KeeperRepoMapping] apply_mapping: mapping load error for \
-         keeper %s — returning unfiltered repositories (error: %s)"
+         keeper %s — returning no repositories fail-closed (error: %s)"
         keeper_id msg;
-      repositories
+      []
   | Mapping_found mapping ->
-      if List.exists (String.equal "*") mapping.repository_ids then
-        repositories
-      else
-        List.filter
-          (fun (r : repository) ->
-            List.exists (String.equal r.id) mapping.repository_ids)
-          repositories
+      filter_repos_by_mapping mapping repositories
 
 (* Path normalization for prefix comparison. *)
 let normalize_path_for_prefix_check path =
@@ -338,12 +344,18 @@ let safe_file_exists path = Option.is_some (safe_lstat path)
 let safe_is_directory path =
   match safe_lstat path with
   | Some { Unix.st_kind = Unix.S_DIR; _ } -> true
-  | _ -> false
+  | Some { Unix.st_kind =
+             ( Unix.S_REG | Unix.S_CHR | Unix.S_BLK | Unix.S_LNK | Unix.S_FIFO
+             | Unix.S_SOCK ); _ } -> false
+  | None -> false
 
 let safe_is_symlink path =
   match safe_lstat path with
   | Some { Unix.st_kind = Unix.S_LNK; _ } -> true
-  | _ -> false
+  | Some { Unix.st_kind =
+             ( Unix.S_REG | Unix.S_DIR | Unix.S_CHR | Unix.S_BLK | Unix.S_FIFO
+             | Unix.S_SOCK ); _ } -> false
+  | None -> false
 
 let safe_realpath path =
   try Some (Unix.realpath path)
@@ -358,7 +370,10 @@ let read_file_opt path =
           (In_channel.with_open_bin path (fun ic ->
                really_input_string ic st_size))
       with Sys_error _ | End_of_file -> None)
-  | _ -> None
+  | Some { Unix.st_kind =
+             ( Unix.S_REG | Unix.S_DIR | Unix.S_CHR | Unix.S_BLK | Unix.S_LNK
+             | Unix.S_FIFO | Unix.S_SOCK ); _ } -> None
+  | None -> None
 
 let normalize_lexical_path path =
   let absolute = String.starts_with ~prefix:"/" path in

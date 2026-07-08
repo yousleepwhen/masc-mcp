@@ -8,7 +8,7 @@
     TTS Strategy (priority order):
     1. ElevenLabs API direct (ELEVENLABS_API_KEY)
     2. Railway proxy (ELEVENLABS_PROXY_URL)
-    3. Voice MCP session endpoint (HTTP /mcp, legacy VOICE_MCP_* fallback)
+    3. Voice MCP session endpoint (HTTP /mcp)
     4. text_fallback (silent)
 
     Eio Migration Notes:
@@ -46,9 +46,8 @@ let record_playback ~agent_id ~message =
   Atomic.set last_playback_ref
     (Some { agent_id; message_hash = Hashtbl.hash message; finished_at = Unix.gettimeofday () })
 
-(** Default agent voices from Provider_adapter registry (SSOT).
-    Hardcoded list removed — voices defined in Provider_adapter.direct_adapters. *)
-let default_agent_voices () = Provider_adapter.all_agent_voices ()
+(** Default agent voices from the voice runtime overlay. *)
+let default_agent_voices () = Voice_runtime_overlay.default_agent_voices ()
 
 let load_voice_config () = Voice_config.load ()
 
@@ -74,14 +73,14 @@ let local_playback_enabled_for_agent agent_id =
   | Error _ -> false
 
 let default_voice_uri path =
-  Uri.of_string (Provider_adapter.default_voice_session_url ~path)
+  Uri.of_string (Voice_runtime_overlay.default_session_url ~path)
 
 let voice_mcp_uri () =
   match load_voice_config () with
   | Ok config -> (
-      match Provider_adapter.voice_session_endpoint_result config with
+      match Voice_runtime_overlay.session_endpoint_result config with
       | Ok endpoint -> (
-          match Provider_adapter.voice_session_mcp_url_of_endpoint endpoint with
+          match Voice_runtime_overlay.session_mcp_url_of_endpoint endpoint with
           | Ok url -> Uri.of_string url
           | Error _ -> default_voice_uri "/mcp" )
       | Error _ -> default_voice_uri "/mcp")
@@ -90,9 +89,9 @@ let voice_mcp_uri () =
 let voice_health_uri () =
   match load_voice_config () with
   | Ok config -> (
-      match Provider_adapter.voice_session_endpoint_result config with
+      match Voice_runtime_overlay.session_endpoint_result config with
       | Ok endpoint -> (
-          match Provider_adapter.voice_session_health_url_of_endpoint endpoint with
+          match Voice_runtime_overlay.session_health_url_of_endpoint endpoint with
           | Ok url -> Uri.of_string url
           | Error _ -> default_voice_uri "/health" )
       | Error _ -> default_voice_uri "/health")
@@ -108,25 +107,6 @@ let voice_mcp_port () =
   | Some port -> port
   | None -> Env_config_runtime.Voice.default_port
 
-let client_for_uri ~sw ~net uri =
-  match
-    if Uri.scheme uri <> Some "https" then Ok None
-    else
-      match Eio_context.get_https_connector_result () with
-      | Ok connector -> Ok (Some connector)
-      | Error message -> Error message
-  with
-  | Ok https -> Ok (Masc_http_client.make_closing_client ~sw ~net ~https)
-  | Error message -> Error message
-
-let client_for_uri_result ~sw ~net uri =
-  try client_for_uri ~sw ~net uri with
-  | Eio.Cancel.Cancelled _ as e -> raise e
-  | exn ->
-      Error
-        (Printf.sprintf "HTTPS client init error: %s"
-           (Printexc.to_string exn))
-
 (** ============================================
     Structured Logging
     ============================================ *)
@@ -141,6 +121,9 @@ let log_error msg =
 
 let log_debug msg =
   Log.debug "%s %s" log_prefix msg
+
+let with_voice_output_turn ~agent_id:_ f =
+  Eio.Mutex.use_rw ~protect:true playback_mu f
 
 let split_path_env value =
   String.split_on_char ':' value
@@ -158,31 +141,30 @@ let find_executable_in_path ?path_value executable =
   in
   List.find_opt (fun path -> Sys.file_exists path && not (Sys.is_directory path)) candidates
 
-let local_playback_argv ?path_value ~audio_file () =
+let local_playback_argvs ?path_value ~audio_file () =
   let commands =
     [
+      ("afplay", []);
       ("ffplay", [ "-nodisp"; "-autoexit"; "-loglevel"; "error" ]);
       ("mpg123", [ "-q" ]);
       ("play", [ "-q" ]);
       ("open", []);
     ]
   in
-  let rec pick = function
-    | [] -> None
-    | (executable, args) :: rest -> (
-        match find_executable_in_path ?path_value executable with
-        | Some path -> Some (path :: args @ [ audio_file ])
-        | None -> pick rest)
-  in
-  pick commands
+  commands
+  |> List.filter_map (fun (executable, args) ->
+    match find_executable_in_path ?path_value executable with
+    | Some path -> Some (path :: args @ [ audio_file ])
+    | None -> None)
 
 (** Runs local playback with mutex-protected dedup check.
     Returns:
     - [`Dedup_hit] if another fiber already played this same message recently
       (check happens INSIDE the mutex to close the check-then-act race where two
       fibers both pass the outer [is_dedup_hit] before either records).
-    - [`Played None] if playback was disabled, unavailable, or failed.
-    - [`Played (Some dur)] if playback succeeded with the given duration.
+    - [`Skipped reason] if playback was intentionally skipped.
+    - [`Failed reason] if playback was requested but unavailable or failed.
+    - [`Played dur] if playback succeeded with the given duration.
 
     When [message] is [None] the dedup re-check is skipped (legacy callers that
     do not propagate the message string). *)
@@ -190,17 +172,20 @@ let run_local_playback ~sw:_ ~agent_id ?message ~audio_file () =
   match load_voice_config () with
   | Error e ->
     Log.Misc.warn "voice config load failed, skipping playback for %s: %s" agent_id e;
-    `Played None
+    `Failed ("voice config load failed: " ^ e)
   | Ok config ->
     if not (Voice_config.local_playback_enabled_for_agent config agent_id) then
-      `Played None
+      `Skipped "local playback disabled for agent"
     else
-      match local_playback_argv ~audio_file () with
-      | None ->
+      match local_playback_argvs ~audio_file () with
+      | [] ->
+        let reason =
+          "no afplay/ffplay/mpg123/play/open executable found"
+        in
         log_error
-          "local voice playback unavailable: no ffplay/mpg123/play/open executable found";
-        `Played None
-      | Some argv ->
+          (Printf.sprintf "local voice playback unavailable: %s" reason);
+        `Failed reason
+      | candidates ->
         Eio.Mutex.use_rw ~protect:true playback_mu (fun () ->
           let dedup_hit =
             match message with
@@ -219,66 +204,117 @@ let run_local_playback ~sw:_ ~agent_id ?message ~audio_file () =
             (match message with
              | Some m -> record_playback ~agent_id ~message:m
              | None -> ());
-            let t0 = Unix.gettimeofday () in
-            let raw_source =
-              String.concat " " (List.map Filename.quote argv)
+            let rec try_candidates failures = function
+              | [] ->
+                let reason =
+                  match List.rev failures with
+                  | [] -> "all local playback candidates failed"
+                  | failures -> String.concat " | " failures
+                in
+                `Failed reason
+              | argv :: rest ->
+                let t0 = Unix.gettimeofday () in
+                let raw_source =
+                  String.concat " " (List.map Filename.quote argv)
+                in
+                let executable =
+                  match argv with h :: _ -> h | [] -> "unknown"
+                in
+                try
+                  match
+                    Masc_exec.Exec_gate.run_argv_with_status
+                      ~actor:(Masc_exec.Agent_id.of_string "voice/bridge_core")
+                      ~raw_source
+                      ~summary:"voice local playback"
+                      ~timeout_sec:
+                        (Env_config_exec_timeout.timeout_sec ~caller:Voice ())
+                      argv
+                  with
+                  | Unix.WEXITED 0, _ ->
+                    let dur = Unix.gettimeofday () -. t0 in
+                    log_info
+                      (Printf.sprintf
+                         "local voice playback finished: agent=%s file=%s via=%s \
+                          duration=%.1fs"
+                         agent_id audio_file executable dur);
+                    `Played dur
+                  | Unix.WEXITED code, output ->
+                    let failure =
+                      Printf.sprintf "%s exited %d%s" executable code
+                        (if String.trim output = "" then ""
+                         else ": " ^ String.trim output)
+                    in
+                    log_error
+                      (Printf.sprintf
+                         "local voice playback candidate failed (exit=%d): %s%s"
+                         code (String.concat " " argv)
+                         (if String.trim output = "" then ""
+                          else " :: " ^ String.trim output));
+                    try_candidates (failure :: failures) rest
+                  | Unix.WSTOPPED signal, output ->
+                    let failure =
+                      Printf.sprintf "%s stopped by signal %d%s" executable signal
+                        (if String.trim output = "" then ""
+                         else ": " ^ String.trim output)
+                    in
+                    log_error
+                      (Printf.sprintf
+                         "local voice playback candidate stopped (sig=%d): %s%s"
+                         signal (String.concat " " argv)
+                         (if String.trim output = "" then ""
+                          else " :: " ^ String.trim output));
+                    try_candidates (failure :: failures) rest
+                  | Unix.WSIGNALED signal, output ->
+                    let failure =
+                      Printf.sprintf "%s signaled %d%s" executable signal
+                        (if String.trim output = "" then ""
+                         else ": " ^ String.trim output)
+                    in
+                    log_error
+                      (Printf.sprintf
+                         "local voice playback candidate signaled (sig=%d): %s%s"
+                         signal (String.concat " " argv)
+                         (if String.trim output = "" then ""
+                          else " :: " ^ String.trim output));
+                    try_candidates (failure :: failures) rest
+                with
+                | Eio.Cancel.Cancelled _ as e -> raise e
+                | exn ->
+                  let failure =
+                    Printf.sprintf "%s exception: %s" executable
+                      (Printexc.to_string exn)
+                  in
+                  log_error
+                    (Printf.sprintf "voice playback candidate exception: %s"
+                       (Printexc.to_string exn));
+                  try_candidates (failure :: failures) rest
             in
-            try
-              match
-                Masc_exec.Exec_gate.run_argv_with_status
-                  ~actor:"voice/bridge_core"
-                  ~raw_source
-                  ~summary:"voice local playback"
-                  ~timeout_sec:(Env_config_exec_timeout.timeout_sec ~caller:Voice ())
-                  argv
-              with
-              | Unix.WEXITED 0, _ ->
-                let dur = Unix.gettimeofday () -. t0 in
-                log_info
-                  (Printf.sprintf
-                     "local voice playback finished: agent=%s file=%s via=%s duration=%.1fs"
-                     agent_id audio_file
-                     (match argv with h :: _ -> h | [] -> "unknown")
-                     dur);
-                `Played (Some dur)
-              | Unix.WEXITED code, output ->
-                log_error
-                  (Printf.sprintf
-                     "local voice playback failed (exit=%d): %s%s"
-                     code (String.concat " " argv)
-                     (if String.trim output = "" then "" else " :: " ^ String.trim output));
-                `Played None
-              | Unix.WSTOPPED signal, output ->
-                log_error
-                  (Printf.sprintf
-                     "local voice playback stopped (sig=%d): %s%s"
-                     signal (String.concat " " argv)
-                     (if String.trim output = "" then "" else " :: " ^ String.trim output));
-                `Played None
-              | Unix.WSIGNALED signal, output ->
-                log_error
-                  (Printf.sprintf
-                     "local voice playback signaled (sig=%d): %s%s"
-                     signal (String.concat " " argv)
-                     (if String.trim output = "" then "" else " :: " ^ String.trim output));
-                `Played None
-            with
-            | Eio.Cancel.Cancelled _ as e -> raise e
-            | exn ->
-              log_error (Printf.sprintf "voice playback exception: %s"
-                (Printexc.to_string exn));
-              `Played None
+            try_candidates [] candidates
           end)
 
 let start_local_playback ~sw ~agent_id ~audio_file =
-  ignore (run_local_playback ~sw ~agent_id ~audio_file () : [`Dedup_hit | `Played of float option])
+  ignore
+    (run_local_playback ~sw ~agent_id ~audio_file ()
+      : [ `Dedup_hit | `Failed of string | `Played of float | `Skipped of string ])
 
-(** Get voice for agent, defaults to "Sarah" if config is unavailable *)
+(** Voice used when [load_voice_config ()] itself fails. This is the
+    only remaining hardcoded fallback; the normal "agent not listed"
+    path now reads [config.tts.default_voice] via {!default_voice}. *)
+let last_resort_voice = "Sarah"
+
+let default_voice () =
+  match load_voice_config () with
+  | Ok config -> config.tts.default_voice
+  | Error _ -> last_resort_voice
+
+(** Pick the voice for [agent_id]: the explicit per-agent mapping in
+    [config.tts.agent_voices] when present, otherwise
+    [config.tts.default_voice], otherwise [last_resort_voice]. *)
 let get_voice_for_agent agent_id =
   let voices = agent_voices () in
   match List.assoc_opt agent_id voices with
   | Some voice -> voice
-  | None -> "Sarah"
+  | None -> default_voice ()
 
 (** ============================================
     TTS Adapters
@@ -291,15 +327,11 @@ let elevenlabs_voice_ids = [
   ("Laura",  "FGY2WhTYpPnrIDTdsKH5");
 ]
 
-let trim_opt = function
-  | Some raw ->
-      let trimmed = String.trim raw in
-      if trimmed = "" then None else Some trimmed
-  | None -> None
+let trim_opt = Env_config_core.trim_opt
 
 (** Ensure .masc/audio/ directory exists *)
 let resolved_base_path_opt () =
-  match Env_config_core.base_path_opt () with
+  match (Host_config.from_env ()).base_path with
   | Some path -> Some path
   | None -> Coord_utils_backend_setup.find_git_root (Sys.getcwd ())
 

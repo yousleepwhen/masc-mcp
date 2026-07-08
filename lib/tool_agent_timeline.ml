@@ -28,7 +28,7 @@ module Float = Stdlib.Float
 
 open Tool_args
 
-type tool_result = bool * string
+type tool_result = Tool_result.result
 
 type context = {
   config : Coord.config;
@@ -67,6 +67,36 @@ type timeline_event = {
   event_type : string;
   detail : Yojson.Safe.t;
 }
+
+let dashboard_surface = "/api/v1/agent-timeline"
+let dashboard_source = "agent_timeline_read_model"
+
+let dashboard_retention_json =
+  `Assoc
+    [
+      ("scope", `String "multi_source_tail");
+      ( "durable_store",
+        `String
+          ".masc/agents/*.json + .masc/tasks/*.json + \
+           .masc/messages/*.json + \
+           .masc/activity-events/YYYY-MM/YYYY-MM-DD.jsonl" );
+      ( "durable_stores",
+        `List
+          [
+            `String ".masc/agents/*.json";
+            `String ".masc/tasks/*.json";
+            `String ".masc/messages/*.json";
+            `String ".masc/activity-events/YYYY-MM/YYYY-MM-DD.jsonl";
+          ] );
+      ( "activity_event_kinds",
+        `List
+          [
+            `String "tool.called";
+            `String "keeper.contract_verdict";
+            `String "keeper.friction";
+            `String "keeper.turn_completed";
+          ] );
+    ]
 
 let event_to_json (e : timeline_event) : Yojson.Safe.t =
   `Assoc
@@ -332,53 +362,29 @@ let turn_completed_events (config : Coord.config) ~agent_name ~limit :
   |> List.filter_map (fun (e : Activity_graph.event) ->
        let ts = Float.of_int e.ts_ms /. 1000.0 in
        let open Yojson.Safe.Util in
-       let keeper_name =
-         try e.payload |> member "keeper_name" |> to_string
-         with Eio.Cancel.Cancelled _ as ex -> raise ex | _ -> "unknown"
-       in
-       let input_tokens =
-         try Some (e.payload |> member "input_tokens" |> to_int)
-         with Eio.Cancel.Cancelled _ as ex -> raise ex | _ -> None
-       in
-       let output_tokens =
-         try Some (e.payload |> member "output_tokens" |> to_int)
-         with Eio.Cancel.Cancelled _ as ex -> raise ex | _ -> None
-       in
+       (* Pure-shape JSON access via Safe_ops: no exception swallow, no
+          performative [Cancelled] re-raise. Behavior parity with the prior
+          [try ... |> to_X with _ -> default] pattern on missing/wrong-typed
+          fields; widens acceptance to string-coerced numerics per the
+          codebase convention documented in Safe_ops.json_*_opt. *)
+       let keeper_name = Safe_ops.json_string ~default:"unknown" "keeper_name" e.payload in
+       let input_tokens = Safe_ops.json_int_opt "input_tokens" e.payload in
+       let output_tokens = Safe_ops.json_int_opt "output_tokens" e.payload in
        let cache_creation_tokens =
-         try Some (e.payload |> member "cache_creation_tokens" |> to_int)
-         with Eio.Cancel.Cancelled _ as ex -> raise ex | _ -> None
+         Safe_ops.json_int_opt "cache_creation_tokens" e.payload
        in
-       let cache_read_tokens =
-         try Some (e.payload |> member "cache_read_tokens" |> to_int)
-         with Eio.Cancel.Cancelled _ as ex -> raise ex | _ -> None
-       in
-       let cost_usd =
-         try Some (e.payload |> member "cost_usd" |> to_float)
-         with Eio.Cancel.Cancelled _ as ex -> raise ex | _ -> None
-       in
-       let latency_ms =
-         try e.payload |> member "latency_ms" |> to_int
-         with Eio.Cancel.Cancelled _ as ex -> raise ex | _ -> 0
-       in
-       let model_used =
-         try e.payload |> member "model_used" |> to_string
-         with Eio.Cancel.Cancelled _ as ex -> raise ex | _ -> "unknown"
-       in
+       let cache_read_tokens = Safe_ops.json_int_opt "cache_read_tokens" e.payload in
+       let cost_usd = Safe_ops.json_float_opt "cost_usd" e.payload in
+       let latency_ms = Safe_ops.json_int_opt "latency_ms" e.payload in
+       let model_used = Safe_ops.json_string ~default:"unknown" "model_used" e.payload in
        let work_kind =
-         Keeper_unified_metrics.work_kind_of_json e.payload
+         (* RFC-0182 §3.1 cycle break — codec moved to lib/Turn_mode_codec
+            (was Keeper_unified_metrics.work_kind_of_json in lib/keeper/). *)
+         Turn_mode_codec.work_kind_of_json e.payload
          |> Option.value ~default:"unknown"
        in
-       let context_ratio =
-         try e.payload |> member "context_ratio" |> to_float
-         with Eio.Cancel.Cancelled _ as ex -> raise ex | _ -> 0.0
-       in
-       let tools_used =
-         try e.payload |> member "tools_used" |> to_list
-             |> List.filter_map (fun j ->
-                  try Some (to_string j)
-                  with Eio.Cancel.Cancelled _ as ex -> raise ex | _ -> None)
-         with Eio.Cancel.Cancelled _ as ex -> raise ex | _ -> []
-       in
+       let context_ratio = Safe_ops.json_float_opt "context_ratio" e.payload in
+       let tools_used = Safe_ops.json_string_list "tools_used" e.payload in
        let optional_fields =
          let reasoning =
            try match e.payload |> member "reasoning_tokens" with
@@ -420,10 +426,10 @@ let turn_completed_events (config : Coord.config) ~agent_name ~limit :
                  ("cache_creation_tokens", Json_util.int_opt_to_json cache_creation_tokens);
                  ("cache_read_tokens", Json_util.int_opt_to_json cache_read_tokens);
                  ("cost_usd", Json_util.float_opt_to_json cost_usd);
-                 ("latency_ms", `Int latency_ms);
+                 ("latency_ms", Json_util.int_opt_to_json latency_ms);
                  ("model_used", `String model_used);
                  ("work_kind", `String work_kind);
-                 ("context_ratio", `Float context_ratio);
+                 ("context_ratio", Json_util.float_opt_to_json context_ratio);
                  ("tools_used", `List (List.map (fun s -> `String s) tools_used));
                ] @ optional_fields);
          })
@@ -433,7 +439,7 @@ let turn_completed_events (config : Coord.config) ~agent_name ~limit :
 let build_timeline (config : Coord.config) ~agent_name ~since_hours ~limit
     ~include_tasks ~include_board:_ ~include_tool_calls =
   let now = Time_compat.now () in
-  let cutoff = now -. (since_hours *. 3600.0) in
+  let cutoff = now -. (since_hours *. Masc_time_constants.hour) in
   (* Collect events from the default namespace. *)
   let all_events =
     let agent_evts = agent_events config ~agent_name in
@@ -498,26 +504,38 @@ let build_timeline (config : Coord.config) ~agent_name ~since_hours ~limit
     List.filter (fun e -> String.equal e.event_type "turn_completed") events
   in
   let turns_completed = List.length turn_events in
+  (* Aggregation fold-semantic decision (Task #28):
+     Silent-zero on missing/malformed field is intentional and acceptable
+     because (a) per-event detail is rendered separately in the
+     ["events"] array below, so operators can drill down to find the
+     event with the malformed payload, (b) under-reporting is honest —
+     a sum of "what we could parse" beats inventing values, (c) using
+     [Safe_ops.json_int_opt] / [json_float_opt] removes the implicit
+     try/catch that previously could absorb non-Cancelled exceptions
+     (Yojson.Safe.Util.Type_error etc.) without distinguishing them
+     from a legitimately missing field. The new shape uses pure
+     pattern-matching accessors and no try/catch on the hot path. *)
   let total_input_tokens =
-    List.fold_left (fun acc e ->
-      let open Yojson.Safe.Util in
-      acc + (try e.detail |> member "input_tokens" |> to_int
-             with Eio.Cancel.Cancelled _ as ex -> raise ex | _ -> 0))
-      0 turn_events
+    List.fold_left
+      (fun acc e ->
+        acc + Option.value (Safe_ops.json_int_opt "input_tokens" e.detail) ~default:0)
+      0
+      turn_events
   in
   let total_output_tokens =
-    List.fold_left (fun acc e ->
-      let open Yojson.Safe.Util in
-      acc + (try e.detail |> member "output_tokens" |> to_int
-             with Eio.Cancel.Cancelled _ as ex -> raise ex | _ -> 0))
-      0 turn_events
+    List.fold_left
+      (fun acc e ->
+        acc + Option.value (Safe_ops.json_int_opt "output_tokens" e.detail) ~default:0)
+      0
+      turn_events
   in
   let total_cost_usd =
-    List.fold_left (fun acc e ->
-      let open Yojson.Safe.Util in
-      acc +. (try e.detail |> member "cost_usd" |> to_float
-              with Eio.Cancel.Cancelled _ as ex -> raise ex | _ -> 0.0))
-      0.0 turn_events
+    List.fold_left
+      (fun acc e ->
+        acc
+        +. Option.value (Safe_ops.json_float_opt "cost_usd" e.detail) ~default:0.0)
+      0.0
+      turn_events
   in
   (* Active duration: time between first and last event *)
   let active_duration_minutes =
@@ -537,6 +555,10 @@ let build_timeline (config : Coord.config) ~agent_name ~since_hours ~limit
   let now_iso = Masc_domain.now_iso () in
   `Assoc
     [
+      ("dashboard_surface", `String dashboard_surface);
+      ("source", `String dashboard_source);
+      ("retention", dashboard_retention_json);
+      ("generated_at_iso", `String now_iso);
       ("agent", `String agent_name);
       ( "period",
         `Assoc [ ("from", `String since_iso); ("to", `String now_iso) ] );
@@ -624,11 +646,22 @@ let schemas : Masc_domain.tool_schema list =
     };
   ]
 
-(* Handler *)
-let handle_agent_timeline (ctx : context) args : tool_result =
+(* RFC-0189 PR-1b.13 — typed result. Caller-input violation
+   ("agent_name is required") tagged [Workflow_rejection]; success
+   carries the [build_timeline] [Yojson.Safe.t] envelope as
+   [~data:json] first-class (drops the [Yojson.Safe.to_string]
+   round-trip). *)
+
+let handle_agent_timeline ~tool_name ~start_time (ctx : context) args
+  : Tool_result.result
+  =
   let agent_name = get_string args "agent_name" "" in
   if String.length agent_name = 0 then
-    (false, "agent_name is required")
+    Tool_result.make_err
+      ~tool_name
+      ~class_:Tool_result.Workflow_rejection
+      ~start_time
+      "agent_name is required"
   else
     let since_hours = get_float args "since_hours" 24.0 in
     let limit = get_int args "limit" 50 in
@@ -639,12 +672,14 @@ let handle_agent_timeline (ctx : context) args : tool_result =
       build_timeline ctx.config ~agent_name ~since_hours ~limit ~include_tasks
         ~include_board ~include_tool_calls
     in
-    (true, Yojson.Safe.to_string json)
+    Tool_result.make_ok ~tool_name ~start_time ~data:json ()
 
 (* Dispatch *)
-let dispatch (ctx : context) ~name ~args : tool_result option =
+let dispatch (ctx : context) ~name ~args : Tool_result.result option =
+  let start = Time_compat.now () in
   match name with
-  | "masc_agent_timeline" -> Some (handle_agent_timeline ctx args)
+  | "masc_agent_timeline" ->
+      Some (handle_agent_timeline ~tool_name:name ~start_time:start ctx args)
   | _ -> None
 
 (* ================================================================ *)

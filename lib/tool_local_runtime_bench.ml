@@ -96,9 +96,9 @@ let finalize_runtime_breakdown json =
           ("runtime_id", Option.value ~default:`Null (List.assoc_opt "runtime_id" fields));
           ("success_count", Option.value ~default:`Null (List.assoc_opt "success_count" fields));
           ("failure_count", Option.value ~default:`Null (List.assoc_opt "failure_count" fields));
-          ("p50_latency_ms", int_opt_to_json (pctl 0.50 latencies));
-          ("p95_latency_ms", int_opt_to_json (pctl 0.95 latencies));
-          ("max_latency_ms", int_opt_to_json (pctl 1.0 latencies));
+          ("p50_latency_ms", Json_util.int_opt_to_json (pctl 0.50 latencies));
+          ("p95_latency_ms", Json_util.int_opt_to_json (pctl 0.95 latencies));
+          ("max_latency_ms", Json_util.int_opt_to_json (pctl 1.0 latencies));
         ]
   | _ -> json
 
@@ -142,7 +142,7 @@ let model_label_for_pool ~model_id runtime_pool =
   | Some pool ->
       let trimmed = String.trim pool in
       if is_oas_managed_runtime_pool (Some trimmed) then
-        Provider_adapter.make_local_label model_id
+        Cascade_runtime.local_model_label model_id
       else
         let base_url =
           if
@@ -154,7 +154,7 @@ let model_label_for_pool ~model_id runtime_pool =
             runtime_base_url_for_pool runtime_pool
         in
         Printf.sprintf "custom:%s@%s" model_id base_url
-  | None -> Provider_adapter.make_local_label model_id
+  | None -> Cascade_runtime.local_model_label model_id
 
 let ensure_runtime_reachable ?runtime_pool ~timeout_sec () =
   let base_url = runtime_base_url_for_pool runtime_pool |> String.trim in
@@ -286,10 +286,10 @@ let run_bench ?model_id ?runtime_pool ~parallelism ~rounds ~prompt ~max_tokens
       Ok
         (`Assoc
           [
-            ("server_url", `String Env_config.Llama.server_url);
+            ("server_url", `String Env_config.Local_runtime.server_url);
             ("source", `String "oas_complete");
-            ("model_id", string_opt_to_json model_id);
-            ("runtime_pool", string_opt_to_json runtime_pool);
+            ("model_id", Json_util.string_opt_to_json model_id);
+            ("runtime_pool", Json_util.string_opt_to_json runtime_pool);
             ("parallelism", `Int parallelism);
             ("rounds", `Int rounds);
             ("total_requests", `Int (List.length samples));
@@ -301,12 +301,12 @@ let run_bench ?model_id ?runtime_pool ~parallelism ~rounds ~prompt ~max_tokens
                  else
                    Stdlib.Float.of_int success_count
                    /. Stdlib.Float.of_int (List.length samples)) );
-            ("p50_latency_ms", int_opt_to_json (pctl 0.50 latencies));
-            ("p95_latency_ms", int_opt_to_json (pctl 0.95 latencies));
-            ("max_latency_ms", int_opt_to_json (pctl 1.0 latencies));
+            ("p50_latency_ms", Json_util.int_opt_to_json (pctl 0.50 latencies));
+            ("p95_latency_ms", Json_util.int_opt_to_json (pctl 0.95 latencies));
+            ("max_latency_ms", Json_util.int_opt_to_json (pctl 1.0 latencies));
             ("configured_max_concurrent_models", `Int Inference_utils.max_concurrent_models);
             ("configured_capacity", `Int (Local_runtime_pool.configured_capacity ()));
-            ("measured_ceiling", int_opt_to_json (Local_runtime_pool.measured_ceiling ()));
+            ("measured_ceiling", Json_util.int_opt_to_json (Local_runtime_pool.measured_ceiling ()));
             ("per_runtime_breakdown", `List runtime_breakdown);
             ( "errors",
               `List (errors |> List.map (fun message -> `String message)) );

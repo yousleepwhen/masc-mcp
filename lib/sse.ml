@@ -25,7 +25,7 @@
     waiting on a lock held by another fiber. *)
 
 (** Classification of an SSE session's traffic role. *)
-module SMap = Map.Make(String)
+module SMap = Set_util.StringMap
 
 (* Test-only hooks for forcing a CAS retry in white-box unit tests. *)
 let register_commit_test_hook : (unit -> unit) option Atomic.t = Atomic.make None
@@ -54,11 +54,26 @@ type broadcast_target =
 let max_clients = 200
 
 (** Per-client event stream capacity.
+
     Must be > 0 to avoid synchronous rendez-vous semantics
-    (Eio.Stream.create 0 blocks add until a matching take).
-    64 events at 3-10s intervals covers 3-10 minutes of buffering.
-    A client that falls this far behind should reconnect. *)
-let stream_capacity = 64
+    ([Eio.Stream.create 0] blocks add until a matching take).
+
+    Read from [MASC_SSE_STREAM_CAPACITY] (catalog: clamped 8-1024,
+    default 256).  256 events at 3-10s intervals covers 13-43 minutes of
+    buffering.  A client that falls this far behind should reconnect.
+    Cap exists because broadcast fan-out at 64+ keepers + multiple
+    dashboard tabs accumulates faster than slow consumers can drain;
+    the default is sized so silent eviction does not coincide with the
+    operator's keeper count.
+
+    The catalog entry in [Env_config_snapshot.sse_entries] documents the
+    same clamp range; keep them in sync. *)
+let stream_capacity =
+  let default = 256 in
+  let lower = 8 and upper = 1024 in
+  let clamp n = max lower (min upper n) in
+  clamp
+    (Env_config_core.get_int ~default "MASC_SSE_STREAM_CAPACITY")
 
 (** SSE client state.
     [event_stream] is the per-session mailbox.  [broadcast] pushes here;
@@ -189,8 +204,20 @@ let event_counter = Atomic.make 0
     [event_buffer] is written by every [broadcast_impl] / [send_to] and
     drained by the periodic [cleanup_expired_events] background fiber.
     The buffer is a newest-first persistent list behind [Atomic.t];
-    all mutations are pure list rewrites committed via CAS. *)
-let max_buffer_size = 100
+    all mutations are pure list rewrites committed via CAS.
+
+    Read from [MASC_SSE_REPLAY_BUFFER_SIZE] (default 1000, clamped 50..1000).
+    Sized to bound replay work for clients reconnecting with [Last-Event-Id]
+    after a network blip; previously fixed at 100, which was too small to
+    cover transient disconnects under 64+ keeper broadcast load and forced
+    operators to manually refresh the dashboard.  The upper bound matches
+    [test/test_sse_coverage.ml] expectations. *)
+let max_buffer_size =
+  let default = 1000 in
+  let lower = 50 and upper = 1000 in
+  let clamp n = max lower (min upper n) in
+  clamp
+    (Env_config_core.get_int ~default "MASC_SSE_REPLAY_BUFFER_SIZE")
 let buffer_ttl_seconds = Env_config.InternalTimers.sse_buffer_ttl_sec
 let event_buffer : (int * string * float) list Atomic.t = Atomic.make []
 
@@ -206,47 +233,10 @@ let buffer_event event_id event_str =
     in
     { next_state = trimmed; result = () })
 
-(** JSON-RPC payloads are the only durable events safe for MCP coordinator
-    clients. Dashboard/activity JSON may share this SSE hub, but it is not
-    JSON-RPC and causes strict MCP clients to raise parse errors. *)
-let jsonrpc_message_for_coordinator = function
-  | `Assoc fields -> (
-      match List.assoc_opt "jsonrpc" fields with
-      | Some (`String "2.0") ->
-          List.mem_assoc "method" fields
-          || List.mem_assoc "id" fields
-          || List.mem_assoc "result" fields
-          || List.mem_assoc "error" fields
-      | _ -> false)
-  | _ -> false
-
-let event_data_payload event =
-  let prefix = "data: " in
-  let prefix_len = String.length prefix in
-  let data_lines =
-    event
-    |> String.split_on_char '\n'
-    |> List.filter_map (fun line ->
-           if String.starts_with ~prefix line then
-             Some
-               (String.sub line prefix_len (String.length line - prefix_len))
-           else None)
-  in
-  match data_lines with
-  | [] -> None
-  | lines -> Some (String.concat "\n" lines)
-
-let event_string_jsonrpc_message_for_coordinator event =
-  match event_data_payload event with
-  | None -> false
-  | Some data -> (
-      try jsonrpc_message_for_coordinator (Yojson.Safe.from_string data) with
-      | Yojson.Json_error _ -> false)
-
 let event_matches_session_kind kind event =
   match kind with
   | Observer -> true
-  | Coordinator -> event_string_jsonrpc_message_for_coordinator event
+  | Coordinator -> Sse_jsonrpc_filter.event_string_jsonrpc_message_for_coordinator event
   | Presence -> false
 
 (** Get events after given ID for replay (MCP spec MUST) *)
@@ -347,17 +337,70 @@ let next_id () =
   (* Atomic fetch_and_add: returns old value, we want new value so +1 *)
   Atomic.fetch_and_add event_counter 1 + 1
 
+(** Per-session disconnect hook registry.
+
+    A disconnect hook fires when [unregister] / [unregister_if_current]
+    removes a session from [clients].  Its purpose is to wake the
+    transport-layer drain fiber that is otherwise blocked on
+    [Eio.Stream.take]: removing the session from the broadcast registry
+    stops new events from arriving, but the drain fiber holds the HTTP
+    connection's [info.stop] flag and must be signalled separately.
+
+    Without this hook, queue-overflow [unregister] calls (broadcast skip
+    fixup at [broadcast_impl]) leak HTTP connections with stale drain
+    fibers — manifesting as "WS events stop arriving but the browser
+    still shows connected" until keep-alive timeout reaps the socket
+    minutes later.  This was the silent half of the
+    [Transport_metrics.inc_broadcast_failure] path.
+
+    The hook is invoked exactly once: it is removed from the registry
+    inside the same atomic update that observes its presence, so even
+    racing [unregister] / [unregister_if_current] calls cannot double-fire.
+    Hook callbacks are wrapped in try/with — exceptions are logged and
+    swallowed (except [Eio.Cancel.Cancelled]) so a misbehaving callback
+    cannot strand the broadcast fan-out. *)
+let session_disconnect_hooks : (unit -> unit) SMap.t Atomic.t =
+  Atomic.make SMap.empty
+
+let set_disconnect_hook session_id hook =
+  Lockfree_atomic.update_with_commit session_disconnect_hooks (fun map ->
+    { next_state = SMap.add session_id hook map; result = () })
+
+let clear_disconnect_hook session_id =
+  Lockfree_atomic.update_with_commit session_disconnect_hooks (fun map ->
+    { next_state = SMap.remove session_id map; result = () })
+
+let take_disconnect_hook session_id =
+  let hook_ref = ref None in
+  Lockfree_atomic.update_with_commit session_disconnect_hooks (fun map ->
+    match SMap.find_opt session_id map with
+    | None -> { next_state = map; result = () }
+    | Some hook ->
+        hook_ref := Some hook;
+        { next_state = SMap.remove session_id map; result = () });
+  !hook_ref
+
+let invoke_disconnect_hook_for session_id =
+  match take_disconnect_hook session_id with
+  | None -> ()
+  | Some hook ->
+      (try hook () with
+       | Eio.Cancel.Cancelled _ as e -> raise e
+       | exn ->
+           Log.Server.error "SSE disconnect hook failed for %s: %s"
+             session_id (Printexc.to_string exn))
+
 (** Register a new SSE client.
     Returns (client_id, event_stream, evicted_session_id option).
-    The caller should spawn a fiber that drains [event_stream] and
-    writes events to the transport.  Evicts the oldest client when at
-    capacity.  The client stream/id are allocated once; map installation
-    is linearized via CAS over the immutable registry state.
-    [kind] defaults to [Coordinator] for backward compatibility. *)
-let register ?(kind = Coordinator) session_id ~last_event_id =
+    [?on_disconnect], if supplied, is installed BEFORE the client is
+    published to [clients] — closes the race window where a concurrent
+    [broadcast] could observe the new entry, hit queue overflow, fire
+    [unregister], and find no hook to wake the drain fiber. *)
+let register ?(kind = Coordinator) ?on_disconnect session_id ~last_event_id =
   let client_id = Atomic.fetch_and_add client_id_counter 1 + 1 in
   let last_event_id = Atomic.make last_event_id in
   let event_stream = Eio.Stream.create stream_capacity in
+  Option.iter (fun hook -> set_disconnect_hook session_id hook) on_disconnect;
   let base_client = {
     id = client_id;
     kind;
@@ -408,7 +451,15 @@ let register ?(kind = Coordinator) session_id ~last_event_id =
   in
   (match evicted with
    | Some sid ->
-       Log.Server.info "Evicting oldest client %s (at cap %d)" sid max_clients
+       Transport_metrics.inc_sse_client_evicted ();
+       Log.Server.info "Evicting oldest client %s (at cap %d)" sid max_clients;
+       (* Eviction is a form of disconnect: the broadcast-registry entry
+          is gone, so the evicted session's drain fiber will block on
+          [Eio.Stream.take] forever unless we wake it.  Callers also
+          invoke [stop_sse_session evicted_sid] explicitly today (legacy
+          path); that double-invocation is idempotent because
+          [close_sse_conn] guards on [info.closed]. *)
+       invoke_disconnect_hook_for sid
    | None ->
        ());
   sync_transport_snapshot ();
@@ -440,8 +491,20 @@ let unregister session_id =
           result = false;
         })
   in
-  if removed then
+  if removed then begin
+    (* Invoke the per-session disconnect hook BEFORE [sync_transport_snapshot].
+       The hook typically calls back into [Server_mcp_transport_http_conn.
+       stop_sse_session], which closes the HTTP body writer and re-enters
+       [unregister_if_current].  That re-entry is a no-op here because we
+       already removed the entry above, so there is no double-decrement risk
+       and no infinite-loop risk.  Snapshot recording is sequenced AFTER the
+       hook so observers see [info.closed = true] in the same tick. *)
+    invoke_disconnect_hook_for session_id;
     sync_transport_snapshot ()
+  end else
+    (* Even on no-op unregister we still clear any orphaned hook to avoid
+       slow leaks across reconnects.  [clear_disconnect_hook] is idempotent. *)
+    clear_disconnect_hook session_id
 
 (** Unregister only if the current client matches the given client_id.
     Prevents an old connection's cleanup from unregistering a newer connection
@@ -467,8 +530,11 @@ let unregister_if_current session_id client_id =
             result = false;
           })
   in
-  if removed then
+  if removed then begin
+    (* See [unregister] for the hook ordering rationale. *)
+    invoke_disconnect_hook_for session_id;
     sync_transport_snapshot ()
+  end
 
 (** Check if client exists *)
 let exists session_id =
@@ -487,17 +553,6 @@ let update_last_event_id session_id event_id =
       Atomic.set client.last_event_id event_id;
       mark_seen client
   | None -> ()
-
-(** Eio clock ref for per-client push timeout.
-    Set during startup via [set_clock]. Without a clock, push has no timeout. *)
-let clock_ref : float Eio.Time.clock_ty Eio.Resource.t option ref = ref None
-
-let set_clock (clock : float Eio.Time.clock_ty Eio.Resource.t) =
-  clock_ref := Some clock
-
-(** Per-client push timeout (seconds).
-    5s is generous for a local TCP write; slow clients beyond this are dropped. *)
-let push_timeout_s = 5.0
 
 let client_matches_target target ~jsonrpc_payload (client : client) =
   match target with
@@ -714,7 +769,9 @@ let broadcast_impl ?(buffer = true) ?(notify_external = true)
     ?(event_type = "message") target json =
   let t0 = Time_compat.now () in
   let data = Yojson.Safe.to_string json in
-  let jsonrpc_payload = jsonrpc_message_for_coordinator json in
+  let jsonrpc_payload =
+    Sse_jsonrpc_filter.jsonrpc_message_for_coordinator json
+  in
   (* Atomically allocate the event id so two concurrent broadcasts
      cannot observe the same peeked counter value and emit duplicates. *)
   let current_event_id = next_id () in
@@ -745,11 +802,23 @@ let broadcast_impl ?(buffer = true) ?(notify_external = true)
          See TLA+ SSEBroadcastBlock spec. *)
       (let queue_len = Eio.Stream.length client.event_stream in
        if queue_len >= stream_capacity then begin
-         (* P1 silent-failure fix: previously only logged.  Counter
-            lets operators see "all clients backlogged" as a Prometheus
-            rate, distinct from successful broadcasts. *)
+         (* Tier-A perf fix: queue overflow is now a {b disconnect}
+            signal, not a silent drop.  The session is added to
+            [failed] (so [unregister] runs below); the disconnect hook
+            installed at register-time wakes the drain fiber via
+            [stop_sse_session], closing the HTTP writer.  The client's
+            EventSource will reconnect with [Last-Event-Id]; the bumped
+            [max_buffer_size] (1000 vs. previous 100) covers the gap.
+
+            Previously the [unregister] removed the broadcast entry but
+            left the drain fiber blocked on [Eio.Stream.take], holding
+            the HTTP socket open until keep-alive timeout — operators
+            saw "WS events stop arriving" with no error indication and
+            had to manually refresh.  See plan
+            [planning/agent_llm_a-plans/me-workspace-yousleepwhen-masc-mcp-radiant-piglet.md]. *)
          Transport_metrics.inc_broadcast_failure ~target:target_label ();
-         Log.Server.warn "Broadcast skip: session %s stream full (%d/%d)"
+         Log.Server.warn
+           "Broadcast skip: session %s stream full (%d/%d) — disconnecting"
            session_id queue_len stream_capacity;
          failed := session_id :: !failed
        end else
@@ -798,7 +867,7 @@ let broadcast_presence json =
 (** Send a JSON-RPC message to a specific session.
     Enqueues the event in the session's stream for asynchronous delivery. *)
 let send_to session_id json =
-  if not (jsonrpc_message_for_coordinator json) then
+  if not (Sse_jsonrpc_filter.jsonrpc_message_for_coordinator json) then
     Log.Server.warn
       "Dropping non-JSON-RPC payload sent via Sse.send_to for session %s"
       session_id
@@ -856,6 +925,13 @@ let try_pop session_id =
 let client_count () =
   (Atomic.get clients).count
 
+let client_count_by_kind kind =
+  SMap.fold
+    (fun _session_id (client : client) count ->
+       if client.kind = kind then count + 1 else count)
+    (Atomic.get clients).entries
+    0
+
 (** Return list of session_ids for all connected clients.
     Used by transport metrics to report session count by kind. *)
 let all_session_ids () =
@@ -888,6 +964,7 @@ let cleanup_stale ?(max_age_s=1800.0) () =
   (* Remove under lock, one by one *)
   List.iter (fun (sid, last_seen) ->
     Log.Server.info "idle evict: %s (idle %.0fs)" sid (now -. last_seen);
+    Transport_metrics.inc_sse_idle_evicted ();
     unregister sid
   ) stale;
   List.map fst stale

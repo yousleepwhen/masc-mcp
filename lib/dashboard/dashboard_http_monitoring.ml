@@ -13,7 +13,7 @@ open Dashboard_http_helpers
 let tool_call_health_json ?(now_ts = Unix.gettimeofday ()) (config : Coord.config)
     : Yojson.Safe.t =
   let window_hours = 1.0 in
-  let since = now_ts -. (window_hours *. 3600.0) in
+  let since = now_ts -. (window_hours *. Masc_time_constants.hour) in
   let entries =
     try Audit_log.read_entries ~n:50_000 config
     with Eio.Cancel.Cancelled _ as e -> raise e | exn ->
@@ -22,7 +22,7 @@ let tool_call_health_json ?(now_ts = Unix.gettimeofday ()) (config : Coord.confi
       []
   in
   (* Single pass: aggregate totals and per-tool failure counts. *)
-  let module SMap = Map.Make (String) in
+  let module SMap = Set_util.StringMap in
   let total, failures, per_tool =
     List.fold_left
       (fun (t, f, m) (e : Audit_log.audit_entry) ->
@@ -109,7 +109,7 @@ let tool_call_health_json ?(now_ts = Unix.gettimeofday ()) (config : Coord.confi
   ]
 
 let board_monitoring_json ~(now_ts : float) : Yojson.Safe.t * bool =
-  let warn_age_s = 3600 in
+  let warn_age_s = Masc_time_constants.hour_int in
   let bad_age_s = 21600 in
   let slo_target_age_s = 900 in
   try
@@ -118,7 +118,7 @@ let board_monitoring_json ~(now_ts : float) : Yojson.Safe.t * bool =
     let new_posts_24h =
       List.fold_left
         (fun acc (p : Board.post) ->
-          if p.created_at >= (now_ts -. (24.0 *. 3600.0)) then acc + 1 else acc)
+          if p.created_at >= (now_ts -. Masc_time_constants.day) then acc + 1 else acc)
         0 posts
     in
     let unanswered_posts =

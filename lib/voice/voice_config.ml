@@ -53,20 +53,7 @@ open Result.Syntax
 
 let default_elevenlabs_base_url = "https://api.elevenlabs.io/v1"
 
-let trim_opt = function
-  | Some raw ->
-      let trimmed = String.trim raw in
-      if trimmed = "" then None else Some trimmed
-  | None -> None
-
-let dedupe_keep_order values =
-  let rec loop seen acc = function
-    | [] -> List.rev acc
-    | value :: rest ->
-        if List.mem value seen then loop seen acc rest
-        else loop (value :: seen) (value :: acc) rest
-  in
-  loop [] [] values
+let trim_opt = Env_config_core.trim_opt
 
 let voice_config_file_in root =
   let masc_dir =
@@ -77,12 +64,12 @@ let voice_config_file_in root =
   Filename.concat masc_dir "voice_config.json"
 
 let base_path_voice_config_path_opt () =
-  Env_config_core.base_path_opt ()
+  (Host_config.from_env ()).base_path
   |> Option.map voice_config_file_in
 
 let repo_voice_config_path_opt () =
   let root =
-    match Env_config_core.base_path_opt () with
+    match (Host_config.from_env ()).base_path with
     | Some bp -> bp
     | None ->
       let cwd = Sys.getcwd () in
@@ -94,7 +81,7 @@ let repo_voice_config_path_opt () =
 
 let fallback_voice_config_path () =
   let root =
-    match Env_config_core.base_path_opt () with
+    match (Host_config.from_env ()).base_path with
     | Some bp -> bp
     | None -> Sys.getcwd ()
   in
@@ -107,7 +94,7 @@ let config_path_candidates () =
     Some (fallback_voice_config_path ());
   ]
   |> List.filter_map Fun.id
-  |> dedupe_keep_order
+  |> Json_util.dedupe_keep_order
 
 let config_path () =
   let candidates = config_path_candidates () in
@@ -116,7 +103,7 @@ let config_path () =
   | None, path :: _ -> path
   | None, [] -> fallback_voice_config_path ()
 
-let trim_nonempty = function
+let trim_nonempty_json = function
   | `String value ->
       let trimmed = String.trim value in
       if trimmed = "" then None else Some trimmed
@@ -127,7 +114,7 @@ let string_list_opt = function
       let rec loop acc = function
         | [] -> Some (List.rev acc)
         | item :: rest -> (
-            match trim_nonempty item with
+            match trim_nonempty_json item with
             | Some value -> loop (value :: acc) rest
             | None -> None)
       in
@@ -154,19 +141,25 @@ let float_or_default default = function
   | _ -> default
 
 let require_string ~ctx ~field json =
-  match Yojson.Safe.Util.member field json |> trim_nonempty with
+  match Yojson.Safe.Util.member field json |> trim_nonempty_json with
   | Some value -> Ok value
   | None -> Error (Printf.sprintf "%s.%s is required" ctx field)
 
 let require_object ~ctx ~field json =
   match Yojson.Safe.Util.member field json with
   | `Assoc _ as obj -> Ok obj
-  | _ -> Error (Printf.sprintf "%s.%s must be object" ctx field)
+  | other ->
+      Error
+        (Printf.sprintf "%s.%s must be object, got %s: %s" ctx field
+           (Json_util.kind_name other) (Json_util.excerpt other))
 
 let require_list ~ctx ~field json =
   match Yojson.Safe.Util.member field json with
   | `List items -> Ok items
-  | _ -> Error (Printf.sprintf "%s.%s must be array" ctx field)
+  | other ->
+      Error
+        (Printf.sprintf "%s.%s must be array, got %s: %s" ctx field
+           (Json_util.kind_name other) (Json_util.excerpt other))
 
 let endpoint_kind_of_string = function
   | "openai_compat" -> Ok Openai_compat
@@ -188,10 +181,10 @@ let parse_endpoint ~ctx json =
   let* id = require_string ~ctx ~field:"id" json in
   let* kind_raw = require_string ~ctx ~field:"kind" json in
   let* kind = endpoint_kind_of_string kind_raw in
-  let base_url = Yojson.Safe.Util.member "base_url" json |> trim_nonempty in
-  let mcp_url = Yojson.Safe.Util.member "mcp_url" json |> trim_nonempty in
-  let health_url = Yojson.Safe.Util.member "health_url" json |> trim_nonempty in
-  let api_key_env = Yojson.Safe.Util.member "api_key_env" json |> trim_nonempty in
+  let base_url = Yojson.Safe.Util.member "base_url" json |> trim_nonempty_json in
+  let mcp_url = Yojson.Safe.Util.member "mcp_url" json |> trim_nonempty_json in
+  let health_url = Yojson.Safe.Util.member "health_url" json |> trim_nonempty_json in
+  let api_key_env = Yojson.Safe.Util.member "api_key_env" json |> trim_nonempty_json in
   let enabled =
     Yojson.Safe.Util.member "enabled" json |> bool_or_default true
   in
@@ -242,7 +235,7 @@ let parse_agent_voices json =
       let rec loop acc = function
         | [] -> Ok (List.rev acc)
         | (agent_id, value) :: rest -> (
-            match trim_nonempty value with
+            match trim_nonempty_json value with
             | Some voice ->
                 loop ((String.trim agent_id, voice) :: acc) rest
             | None ->
@@ -252,7 +245,10 @@ let parse_agent_voices json =
       in
       loop [] pairs
   | `Null -> Ok []
-  | _ -> Error "tts.agent_voices must be an object"
+  | other ->
+      Error
+        (Printf.sprintf "tts.agent_voices must be an object, got %s: %s"
+           (Json_util.kind_name other) (Json_util.excerpt other))
 
 let parse_voice_tuning ~ctx json =
   match json with
@@ -268,7 +264,10 @@ let parse_voice_tuning ~ctx json =
         }
   | `Null ->
       Ok { stability = 0.5; similarity_boost = 0.75; style = 0.0 }
-  | _ -> Error (Printf.sprintf "%s must be an object" ctx)
+  | other ->
+      Error
+        (Printf.sprintf "%s must be an object, got %s: %s" ctx
+           (Json_util.kind_name other) (Json_util.excerpt other))
 
 let parse_agent_voice_settings json =
   match Yojson.Safe.Util.member "agent_voice_settings" json with
@@ -282,7 +281,10 @@ let parse_agent_voice_settings json =
       in
       loop [] pairs
   | `Null -> Ok []
-  | _ -> Error "tts.agent_voice_settings must be an object"
+  | other ->
+      Error
+        (Printf.sprintf "tts.agent_voice_settings must be an object, got %s: %s"
+           (Json_util.kind_name other) (Json_util.excerpt other))
 
 let parse_tts json =
   let open Result in
@@ -338,12 +340,15 @@ let parse_local_playback json =
       in
       let agents =
         match Yojson.Safe.Util.member "agents" local_json with
-        | `List values -> List.filter_map trim_nonempty values
+        | `List values -> List.filter_map trim_nonempty_json values
         | _ -> []
       in
       Ok { enabled; agents }
   | `Null -> Ok { enabled = false; agents = [] }
-  | _ -> Error "root.local_playback must be an object"
+  | other ->
+      Error
+        (Printf.sprintf "root.local_playback must be an object, got %s: %s"
+           (Json_util.kind_name other) (Json_util.excerpt other))
 
 let parse_json json =
   let open Result in
@@ -447,9 +452,8 @@ let agent_voices_json config =
        config.tts.agent_voices)
 
 let public_json config =
-  `Assoc
+  Tool_args.ok_assoc
     [
-      ("status", `String "ok");
       ( "tts",
         `Assoc
           [

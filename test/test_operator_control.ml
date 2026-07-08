@@ -1,6 +1,6 @@
 let () =
   let base_path = Masc_test_deps.find_project_root () in
-  ignore (Result.get_ok (Masc_mcp.Keeper_exec_tools.init_policy_config ~base_path));
+  ignore (Result.get_ok (Masc_mcp.Agent_tool_dispatch_runtime.init_policy_config ~base_path));
   Alcotest.run "Operator_control"
     [
       ( "operator",
@@ -25,10 +25,10 @@ let () =
             `Quick
             Test_operator_control_snapshot
             .test_max_turns_override_source_accepts_raised_ceiling;
-          Alcotest.test_case "snapshot context ratio resolves cli provider budget"
+          Alcotest.test_case "snapshot context ratio does not infer provider budget"
             `Quick
             Test_operator_control_snapshot
-            .test_compute_context_ratio_uses_resolved_cli_context_budget;
+            .test_compute_context_ratio_does_not_infer_provider_budget;
           Alcotest.test_case "snapshot prefers metrics context truth over usage counters"
             `Quick
             Test_operator_control_snapshot
@@ -41,6 +41,10 @@ let () =
             "snapshot summary surfaces paused keeper runtime trust" `Quick
             Test_operator_control_snapshot
             .test_lightweight_snapshot_surfaces_paused_keeper_runtime_trust;
+          Alcotest.test_case "digest room includes keeper runtime attention"
+            `Quick
+            Test_operator_control_snapshot
+            .test_digest_room_includes_keeper_runtime_attention;
           Alcotest.test_case
             "snapshot lightweight summary preserves receipt causal event" `Quick
             Test_operator_control_snapshot
@@ -71,6 +75,10 @@ let () =
           Alcotest.test_case "snapshot waiters share inflight result" `Quick
             Test_operator_control_snapshot
             .test_snapshot_waiters_share_inflight_result;
+          Alcotest.test_case "snapshot waiters use stale inflight result"
+            `Quick
+            Test_operator_control_snapshot
+            .test_snapshot_waiter_returns_stale_inflight_result;
           (* orchestra room core shape removed (CP purge) *)
           Alcotest.test_case "digest room pending confirm attention" `Quick
             Test_operator_control_snapshot
@@ -98,12 +106,19 @@ let () =
             `Quick
             Test_operator_control_judgment
             .test_operator_judgment_write_and_latest_roundtrip;
+          Alcotest.test_case
+            "operator judgment rejects retired target type aliases" `Quick
+            Test_operator_control_judgment
+            .test_operator_judgment_rejects_retired_target_type_aliases;
           Alcotest.test_case "task inject immediate flow" `Quick
             Test_operator_control_actions
             .test_task_inject_executes_immediately;
-          Alcotest.test_case "digest defaults to namespace target" `Quick
+          Alcotest.test_case "digest defaults to root target" `Quick
             Test_operator_control_actions
-            .test_digest_defaults_to_namespace_target;
+            .test_digest_defaults_to_root_target;
+          Alcotest.test_case "operator action rejects legacy aliases" `Quick
+            Test_operator_control_actions
+            .test_operator_action_rejects_legacy_action_aliases;
           Alcotest.test_case "confirm keeps token on delegated failure" `Quick
             Test_operator_control_judgment
             .test_confirm_keeps_pending_token_when_delegated_action_fails;
@@ -132,14 +147,9 @@ let () =
             "keeper up keeps paused keeper behind pending approval" `Quick
             Test_operator_control_keeper
             .test_keeper_up_keeps_paused_keeper_with_pending_approval;
-          Alcotest.test_case "keeper status accepts agent alias" `Quick
+          Alcotest.test_case "keeper status rejects agent aliases" `Quick
             Test_operator_control_keeper
-            .test_keeper_status_accepts_agent_name_alias;
-          Alcotest.test_case
-            "keeper status accepts legacy separator agent alias"
-            `Quick
-            Test_operator_control_keeper
-            .test_keeper_status_accepts_legacy_separator_agent_alias;
+            .test_keeper_status_rejects_agent_name_aliases;
           Alcotest.test_case "keeper up reseeds identity drift" `Quick
             Test_operator_control_keeper
             .test_keeper_up_reseeds_identity_drift;
@@ -156,9 +166,9 @@ let () =
             `Quick
             Test_operator_control_keeper
             .test_keeper_status_ignores_stale_cascade_observation;
-          Alcotest.test_case "keeper down accepts agent alias" `Quick
+          Alcotest.test_case "keeper down does not resolve agent alias" `Quick
             Test_operator_control_keeper
-            .test_keeper_down_accepts_agent_name_alias;
+            .test_keeper_down_does_not_resolve_agent_name_alias;
           Alcotest.test_case "keeper list scoped to current base path" `Quick
             Test_operator_control_keeper
             .test_keeper_list_scoped_to_current_base_path;
@@ -169,14 +179,14 @@ let () =
             `Quick
             Test_operator_control_keeper
             .test_keeper_down_only_pauses_current_base_path;
-          Alcotest.test_case "operator keeper probe accepts agent alias"
+          Alcotest.test_case "operator keeper probe rejects agent alias"
             `Quick
             Test_operator_control_keeper
-            .test_operator_keeper_probe_accepts_agent_name_alias;
-          Alcotest.test_case "operator keeper recover accepts agent alias"
+            .test_operator_keeper_probe_rejects_agent_name_alias;
+          Alcotest.test_case "operator keeper recover rejects agent alias"
             `Quick
             Test_operator_control_keeper
-            .test_operator_keeper_recover_accepts_agent_name_alias;
+            .test_operator_keeper_recover_rejects_agent_name_alias_on_confirm;
           Alcotest.test_case "keeper status schema makes name optional" `Quick
             Test_operator_control_keeper
             .test_keeper_status_schema_makes_name_optional;
@@ -208,6 +218,10 @@ let () =
             "keeper sandbox fleet reuses docker preflight" `Quick
             Test_operator_control_keeper
             .test_keeper_sandbox_status_fleet_reuses_docker_preflight;
+          Alcotest.test_case
+            "keeper status detail reuses docker preflight cache" `Quick
+            Test_operator_control_keeper
+            .test_keeper_status_detail_reuses_docker_preflight_cache;
           Alcotest.test_case
             "keeper sandbox status reseeds separator identity drift" `Quick
             Test_operator_control_keeper
@@ -243,10 +257,11 @@ let () =
             Test_operator_control_keeper
             .test_snapshot_keeper_tool_audit_uses_decision_log;
           Alcotest.test_case "keeper msg auto team session bridge" `Quick
-            Test_operator_control_keeper.test_keeper_msg_auto_execution_session_bridge;
+            Test_operator_control_keeper_message
+            .test_keeper_msg_auto_execution_session_bridge;
           Alcotest.test_case "operator keeper_message rejects legacy models"
             `Quick
-            Test_operator_control_keeper
+            Test_operator_control_keeper_message
             .test_operator_keeper_message_rejects_legacy_model_args;
           Alcotest.test_case "expired confirmation rejected" `Quick
             Test_operator_control_confirm.test_confirm_rejects_expired_token;

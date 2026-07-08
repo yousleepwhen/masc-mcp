@@ -7,177 +7,84 @@
 open Masc_domain
 include Coord_utils
 include Coord_state
+open Coord_backlog
+open Coord_identity
 include Coord_broadcast
+open Coord_backlog
+open Coord_identity
 
-let is_legacy_auto_cycle_do_not_reclaim_reason reason =
-  let trimmed = String.trim reason in
-  let prefix = "auto: " in
-  let parse_suffix suffix =
-    let prefix_len = String.length prefix in
-    let suffix_len = String.length suffix in
-    let len = String.length trimmed in
-    if
-      len > prefix_len + suffix_len
-      && String.starts_with ~prefix trimmed
-      && String.ends_with ~suffix trimmed
-    then
-      let raw_count = String.sub trimmed prefix_len (len - prefix_len - suffix_len) in
-      match int_of_string_opt raw_count with
-      | Some count -> count >= 3
-      | None -> false
-    else
-      false
+let clear_reclaim_decision (task : Masc_domain.task) =
+  { task with reclaim_policy = None; do_not_reclaim_reason = None }
+;;
+
+(** Preempt Claimed-only tasks owned by [agent_name] back to Todo.
+    InProgress/AwaitingVerification tasks are left untouched. *)
+let auto_release_claimed_for_agent config ~agent_name ~exclude_task_id (backlog : Masc_domain.backlog)
+    =
+  let claimed_by_me =
+    backlog.tasks |> List.filter_map (fun (t : task) ->
+      match t.task_status with
+      | Claimed { assignee; _ }
+        when Coord_task_classify.same_task_actor config assignee agent_name
+             && t.id <> exclude_task_id -> Some t.id
+      | Todo | Claimed _ | InProgress _
+      | AwaitingVerification _ | Done _ | Cancelled _ -> None)
   in
-  parse_suffix " releases" || parse_suffix " cancellations"
+  match claimed_by_me with
+  | [] -> (backlog, [])
+  | ids ->
+    let new_tasks = List.map (fun (t : task) ->
+      if List.mem t.id ids then { t with task_status = Todo } else t) backlog.tasks in
+    ({ backlog with tasks = new_tasks }, ids)
+
+(* fire-and-forget: broadcast auto-release for operator visibility *)
+let broadcast_auto_releases config ~agent_name ~claimed_task_id auto_released_ids =
+  List.iter (fun released_id ->
+      ignore (broadcast config ~from_agent:agent_name
+        ~content:(Printf.sprintf "Auto-released %s (claimed, not started) to claim %s"
+           released_id claimed_task_id));
+      log_event config (`Assoc
+        [ ("type", `String "task_auto_release"); ("agent", `String agent_name)
+        ; ("task", `String released_id); ("reason", `String "preempted_for_claim")
+        ; ("ts", `String (now_iso ())) ]))
+    auto_released_ids
 ;;
 
-let is_routing_handoff_do_not_reclaim_reason reason =
-  let lower = String.trim reason |> String.lowercase_ascii in
-  let markers =
-    [ "auto_goal_fallback"
-    ; "releasing for keeper"
-    ; "release for keeper"
-    ; "executor pickup"
-    ; "needs executor"
-    ; "preset blocks code-write"
-    ; "sandbox-isolated keeper"
-    ; "no access to masc-mcp source"
-    ; "routing warning"
-    ; "tool-surface trap"
-    ]
-  in
-  List.exists
-    (fun marker -> String_util.contains_substring lower marker)
-    markers
+let active_owned_task_ids_for_agent config ~agent_name (backlog : Masc_domain.backlog)
+  =
+  backlog.tasks
+  |> List.filter_map (fun (task : Masc_domain.task) ->
+         match task.task_status with
+         | Claimed { assignee; _ } | InProgress { assignee; _ }
+           when Coord_task_classify.same_task_actor config assignee agent_name ->
+           Some task.id
+         | Todo
+         | Claimed _
+         | InProgress _
+         | AwaitingVerification _
+         | Done _
+         | Cancelled _ -> None)
+  |> List.sort_uniq String.compare
 ;;
 
-let do_not_reclaim_reason_blocks_claim = function
-  | Some reason when is_legacy_auto_cycle_do_not_reclaim_reason reason -> None
-  | Some reason when is_routing_handoff_do_not_reclaim_reason reason -> None
-  | Some _ as reason -> reason
-  | None -> None
+let active_ownership_conflict_message ~agent_name ~requested_task_id task_ids =
+  Printf.sprintf
+    "Agent %s has task(s) in progress: %s. Use keeper_task_done (task_id + result) \
+     or keeper_task_force_release (task_id + reason) to finish them before claiming %s."
+    agent_name
+    (String.concat ", " task_ids)
+    requested_task_id
 ;;
 
-let clear_soft_do_not_reclaim_reason (task : Masc_domain.task) =
-  match task.do_not_reclaim_reason with
-  | Some reason
-    when is_legacy_auto_cycle_do_not_reclaim_reason reason
-         || is_routing_handoff_do_not_reclaim_reason reason ->
-    { task with do_not_reclaim_reason = None }
-  | Some _ | None -> task
-;;
-
-let clear_stale_worktree_binding (task : Masc_domain.task) =
-  match task.worktree with
-  | None -> task
-  | Some _ -> { task with worktree = None }
-;;
-
-(** Claim task with file locking (TOCTOU prevention) *)
-let claim_task config ~agent_name ~task_id =
-  ensure_initialized config;
-  (* Validate inputs *)
-  match validate_agent_name agent_name, validate_task_id task_id with
-  | Error e, _ -> Printf.sprintf "%s" e
-  | _, Error e -> Printf.sprintf "%s" e
-  | Ok _, Ok _ ->
-    let backlog_path = Filename.concat (tasks_dir config) ".backlog" in
-    with_file_lock config backlog_path (fun () ->
-      match read_backlog_r config with
-      | Error msg -> Printf.sprintf "Error: %s" msg
-      | Ok backlog ->
-        (try
-           let found = ref false in
-           let already_claimed = ref None in
-           let blocked_reason = ref None in
-           let new_tasks =
-             List.map
-               (fun (task : task) ->
-                  if task.id = task_id
-                  then (
-                    found := true;
-                    (* Cycle-prevention gate: see _r variant below for rationale. *)
-                    (match do_not_reclaim_reason_blocks_claim task.do_not_reclaim_reason with
-                     | Some r -> blocked_reason := Some r
-                     | None -> ());
-                    match task.task_status with
-                    | _ when !blocked_reason <> None -> task
-                    | Todo ->
-                      let task =
-                        task
-                        |> clear_soft_do_not_reclaim_reason
-                        |> clear_stale_worktree_binding
-                      in
-                      { task with
-                        task_status =
-                          Claimed { assignee = agent_name; claimed_at = now_iso () }
-                      }
-                    | Claimed { assignee; _ }
-                    | InProgress { assignee; _ }
-                    | Done { assignee; _ }
-                    | AwaitingVerification { assignee; _ }
-                    | Cancelled { cancelled_by = assignee; _ } ->
-                      already_claimed := Some assignee;
-                      task)
-                  else task)
-               backlog.tasks
-           in
-           if not !found
-           then Printf.sprintf "Task %s not found" task_id
-           else (
-             match !blocked_reason with
-             | Some r -> Printf.sprintf "Task %s blocked from re-claim: %s" task_id r
-             | None ->
-               (match !already_claimed with
-                | Some other ->
-                  Printf.sprintf "Task %s is already claimed by %s" task_id other
-                | None ->
-                  let new_backlog =
-                    { tasks = new_tasks
-                    ; last_updated = now_iso ()
-                    ; version = backlog.version + 1
-                    }
-                  in
-                  write_backlog config new_backlog;
-                  Coord_task_classify.update_local_agent_state config ~agent_name (fun agent ->
-                    { agent with status = Busy; current_task = Some task_id });
-                  let _ =
-                    broadcast
-                      config
-                      ~from_agent:agent_name
-                      ~content:(Printf.sprintf "Claimed %s" task_id)
-                  in
-                  Coord_task_classify.emit_task_activity
-                    config
-                    ~agent_name
-                    ~task_id
-                    ~kind:(Event_kind.Task.to_string Event_kind.Task.Claimed)
-                    ~payload:(`Assoc [ "task_id", `String task_id ]);
-                  log_event
-                    config
-                    (`Assoc
-                           [ "type", `String "task_claim"
-                           ; "agent", `String agent_name
-                           ; "actor_kind", `String (Coord_task_classify.task_actor_kind agent_name)
-                           ; "task", `String task_id
-                           ; "ts", `String (now_iso ())
-                           ]);
-                  Coord_task_classify.observe_task_transition
-                    config
-                    ~agent_name
-                    ~task_id
-                    ~transition:Masc_domain.Claim
-                    ~details:
-                      (Coord_task_classify.task_transition_details
-                         ~from_status:Masc_domain.Todo
-                         ~to_status:
-                           (Masc_domain.Claimed
-                              { assignee = agent_name; claimed_at = now_iso () })
-                         ());
-                  Printf.sprintf "%s claimed %s" agent_name task_id))
-         with
-         | Eio.Cancel.Cancelled _ as e -> raise e
-         | e -> Printf.sprintf "Error: %s" (Printexc.to_string e)))
+let active_ownership_conflict_for_claim config ~agent_name ~requested_task_id
+    (backlog : Masc_domain.backlog) =
+  match
+    active_owned_task_ids_for_agent config ~agent_name backlog
+    |> List.filter (fun task_id -> not (String.equal task_id requested_task_id))
+  with
+  | [] -> None
+  | task_ids ->
+    Some (active_ownership_conflict_message ~agent_name ~requested_task_id task_ids)
 ;;
 
 (** Result-returning version of claim_task for type-safe error handling. *)
@@ -216,16 +123,39 @@ let claim_task_r config ~agent_name ~task_id ?agent_tool_names ()
          let* () =
            Coord_task_classify.required_tool_claim_guard config ~agent_name ?agent_tool_names task
          in
-         (* Cycle-prevention gate: refuse claim when do_not_reclaim_reason is set.
-         The reason can come from cancel/release hard-stop logic or be applied
-         directly by an operator. See PRs #7794 (schema), #7798 (cancel hook). *)
+         (* Claim gate: only typed policy blocks Todo reclaim.
+         do_not_reclaim_reason is an operator-facing explanation, not state;
+         task-local runtime repair is not part of the claim gate. *)
          let* () =
-           match do_not_reclaim_reason_blocks_claim task.do_not_reclaim_reason with
-           | None -> Ok ()
-           | Some r ->
+           match Masc_domain.task_claim_decision task with
+           | Claim_unavailable (Claim_block_reclaim_policy r) ->
              Error
                (Masc_domain.Task (Masc_domain.Task_error.InvalidState
                   (Printf.sprintf "Task %s is blocked from re-claim: %s" task_id r)))
+           | Claim_available _ | Claim_unavailable (Claim_block_not_todo _) -> Ok ()
+         in
+         let (backlog, auto_released_ids) =
+           auto_release_claimed_for_agent config ~agent_name ~exclude_task_id:task_id backlog
+         in
+         let* () =
+           match task.task_status with
+           | Todo ->
+             (match
+                active_ownership_conflict_for_claim
+                  config
+                  ~agent_name
+                  ~requested_task_id:task_id
+                  backlog
+              with
+              | None -> Ok ()
+              | Some msg ->
+                Error
+                  (Masc_domain.Task (Masc_domain.Task_error.InvalidState msg)))
+           | Claimed _
+           | InProgress _
+           | AwaitingVerification _
+           | Done _
+           | Cancelled _ -> Ok ()
          in
          (* fold_left to find+transform in a single pass without mutable refs.
          Uses polymorphic variants for inline state tracking. *)
@@ -236,11 +166,7 @@ let claim_task_r config ~agent_name ~task_id ?agent_tool_names ()
                 then (
                   match t.task_status with
                   | Todo ->
-                    let t =
-                      t
-                      |> clear_soft_do_not_reclaim_reason
-                      |> clear_stale_worktree_binding
-                    in
+                    let t = clear_reclaim_decision t in
                     let t' =
                       { t with
                         task_status =
@@ -310,27 +236,32 @@ let claim_task_r config ~agent_name ~task_id ?agent_tool_names ()
                   ~to_status:
                     (Masc_domain.Claimed { assignee = agent_name; claimed_at = now_iso () })
                   ());
-           (* task-103: best-effort auto-provision a sandbox worktree for
-              docker keepers. The hook itself decides whether to act based
-              on keeper sandbox_profile; failures are observed centrally and
-              must not block the claim. *)
-           (try
-              (Atomic.get Coord_hooks.claim_post_provision_fn) config ~agent_name ~task_id
-            with
-            | Eio.Cancel.Cancelled _ as e -> raise e
-            | exn ->
-                Coord_hooks.observe_claim_post_provision_failure
-                  ~site:"claim_task" ~agent_name ~task_id exn);
-           Ok (Printf.sprintf "%s claimed %s" agent_name task_id)
+           (* Broadcast auto-released tasks (Claimed-only, preempted for this claim) *)
+           broadcast_auto_releases config ~agent_name ~claimed_task_id:task_id auto_released_ids;
+           let claim_msg =
+             match auto_released_ids with
+             | [] -> Printf.sprintf "%s claimed %s" agent_name task_id
+             | ids ->
+               Printf.sprintf "%s claimed %s (auto-released %s)"
+                 agent_name task_id (String.concat ", " ids)
+           in
+           Ok claim_msg
        with
        | Eio.Cancel.Cancelled _ as e -> raise e
        | e -> Error (Masc_domain.System (Masc_domain.System_error.IoError (Printexc.to_string e)))))
 ;;
 
+(** Legacy string-returning claim_task. Delegates to [claim_task_r]. *)
+let claim_task config ~agent_name ~task_id =
+  match claim_task_r config ~agent_name ~task_id () with
+  | Ok msg -> msg
+  | Error e -> Masc_domain.to_string e
+;;
+
 (** Unified task transition (single entrypoint).
     When [~force:true], release/cancel/done bypass the assignee guard.
     Used by keeper for orphan task cleanup. *)
-let release_handoff_texts handoff_context =
+let release_handoff_texts (handoff_context : Masc_domain.task_handoff_context option) =
   let fields =
     match handoff_context with
     | None -> []
@@ -350,41 +281,36 @@ let release_handoff_texts handoff_context =
     fields
 ;;
 
-let release_hard_stop_markers =
-  [ "do not reclaim"
-  ; "not found"
-  ; "phantom"
-  ; "repo unavailable"
-  ; "already done"
-  ; "already completed"
-  ; "completed by another"
-  ; "invalid pr"
-  ; "invalid issue"
-  ]
+let release_reclaim_policy (handoff_context : Masc_domain.task_handoff_context option) =
+  match handoff_context with
+  | Some ({ reclaim_policy = Some policy; _ } : Masc_domain.task_handoff_context) ->
+    Some policy
+  | Some ({ reclaim_policy = None; _ } : Masc_domain.task_handoff_context) | None -> None
 ;;
 
-let release_should_block_reclaim handoff_context =
-  List.exists
-    (fun text ->
-       let lower = String.lowercase_ascii text in
-       List.exists
-         (fun marker -> String_util.contains_substring lower marker)
-         release_hard_stop_markers)
-    (release_handoff_texts handoff_context)
+let derive_release_do_not_reclaim_reason
+      (task : Masc_domain.task)
+      (handoff_context : Masc_domain.task_handoff_context option)
+  =
+  if release_reclaim_policy handoff_context = Some Masc_domain.Block_reclaim
+  then (
+    match release_handoff_texts handoff_context with
+    | text :: _ -> Some text
+    | [] -> Some "release hard-stop requested")
+  else
+    match task.reclaim_policy with
+    | Some Masc_domain.Block_reclaim -> task.do_not_reclaim_reason
+    | Some Masc_domain.Allow_reclaim | None -> None
 ;;
 
-let derive_release_do_not_reclaim_reason (task : Masc_domain.task) handoff_context =
-  match do_not_reclaim_reason_blocks_claim task.do_not_reclaim_reason with
-  | Some _ as existing -> existing
-  | None ->
-    let first_text =
-      match release_handoff_texts handoff_context with
-      | text :: _ -> Some text
-      | [] -> None
-    in
-    if release_should_block_reclaim handoff_context
-    then
-      Some
-        (Option.value first_text ~default:"release hard-stop requested")
-    else None
+let derive_release_reclaim_policy
+      (task : Masc_domain.task)
+      (handoff_context : Masc_domain.task_handoff_context option)
+  =
+  match release_reclaim_policy handoff_context with
+  | Some policy -> Some policy
+  | None -> (
+    match task.reclaim_policy with
+    | Some Masc_domain.Block_reclaim -> Some Masc_domain.Block_reclaim
+    | Some Masc_domain.Allow_reclaim | None -> None)
 ;;

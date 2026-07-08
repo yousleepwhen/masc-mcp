@@ -15,6 +15,87 @@ let check_json msg expected actual =
 let timeout_kind json =
   Yojson.Safe.Util.(member "timeout_kind" json |> to_string)
 
+let test_proactive_refresh_timeout_message_names_phase () =
+  let msg =
+    Proactive_refresh.For_testing.timeout_failure_message
+      ~label:"operator_snapshot"
+      ~phase:"refresh"
+      ~timeout_s:24.0
+      ~elapsed_s:33.2
+  in
+  Alcotest.(check string)
+    "typed proactive refresh timeout"
+    "refresh_timeout label=operator_snapshot phase=refresh timeout_s=24.0 \
+     elapsed_s=33.2"
+    msg
+
+let test_proactive_refresh_failure_warn_throttle () =
+  let should_warn =
+    Proactive_refresh.For_testing.should_warn_refresh_failure
+      ~failure_threshold:3
+  in
+  List.iter
+    (fun (count, expected) ->
+      Alcotest.(check bool)
+        (Printf.sprintf "failure %d warn decision" count)
+        expected (should_warn count))
+    [
+      (1, true);
+      (2, false);
+      (3, true);
+      (4, true);
+      (5, false);
+      (6, false);
+      (7, false);
+      (8, true);
+    ]
+
+let test_proactive_refresh_failure_can_suppress_first_warn () =
+  let should_warn =
+    Proactive_refresh.For_testing.should_warn_refresh_failure
+      ~warn_first_failure:false
+      ~failure_threshold:3
+  in
+  List.iter
+    (fun (count, expected) ->
+      Alcotest.(check bool)
+        (Printf.sprintf "failure %d warn decision" count)
+        expected (should_warn count))
+    [
+      (1, false);
+      (2, false);
+      (3, true);
+      (4, true);
+      (5, false);
+      (8, true);
+    ]
+
+let latest_log_seq () =
+  match Log.Ring.recent ~limit:1 () with
+  | [] -> -1
+  | entry :: _ -> entry.Log.Ring.seq
+
+let test_compute_timeout_not_logged_as_error ~clock () =
+  Dashboard_cache.invalidate_all ();
+  let before_seq = latest_log_seq () in
+  let result =
+    Dashboard_cache.get_or_compute_with_timeout "timeout-no-error" ~ttl:0.1
+      ~clock ~timeout_sec:0.01 (fun () ->
+        Eio.Time.sleep clock 0.1;
+        `String "never")
+  in
+  Alcotest.(check string) "timeout kind" "owner" (timeout_kind result);
+  let cache_revalidation_errors =
+    Log.Ring.recent ~since_seq:before_seq
+      ~min_level:(Log.level_to_int Log.Error)
+      ()
+    |> List.filter (fun entry ->
+      String_util.contains_substring entry.Log.Ring.message
+        "cache revalidation failed")
+  in
+  Alcotest.(check int) "compute timeout does not emit ERROR" 0
+    (List.length cache_revalidation_errors)
+
 (* -- 1. Nested get_or_compute must not deadlock ----------------------------- *)
 
 let test_nested_no_deadlock () =
@@ -186,6 +267,57 @@ let test_stats () =
   let stats = Dashboard_cache.stats () in
   let fresh = Yojson.Safe.Util.(member "ready_fresh" stats |> to_int) in
   Alcotest.(check int) "2 fresh entries" 2 fresh
+
+(* Phase 1 Action 2 — verify the extended stats surface that the
+   /api/v1/dashboard/cache-stats endpoint exposes.  This protects:
+   - per-entry ttl_remaining_ms and kind strings (UI filters on them)
+   - hit_ratio computation when there are both hits and misses
+   - bounded entry_details payload (no unbounded growth) *)
+let test_stats_detail_surface () =
+  Dashboard_cache.invalidate_all ();
+  (* Two misses (cold compute), then two hits on same keys. *)
+  ignore (Dashboard_cache.get_or_compute "d1" ~ttl:10.0 (fun () -> `Int 1));
+  ignore (Dashboard_cache.get_or_compute "d2" ~ttl:10.0 (fun () -> `Int 2));
+  ignore (Dashboard_cache.get_or_compute "d1" ~ttl:10.0 (fun () -> `Int 99));
+  ignore (Dashboard_cache.get_or_compute "d2" ~ttl:10.0 (fun () -> `Int 99));
+  let stats = Dashboard_cache.stats () in
+  let open Yojson.Safe.Util in
+  let hits = member "hits_total" stats |> to_int in
+  let misses = member "misses_total" stats |> to_int in
+  Alcotest.(check bool) "hits >= 2" true (hits >= 2);
+  Alcotest.(check bool) "misses >= 2" true (misses >= 2);
+  let ratio = member "hit_ratio" stats |> to_number in
+  Alcotest.(check bool) "ratio in [0,1]" true (ratio >= 0.0 && ratio <= 1.0);
+  Alcotest.(check int) "entries_truncated_to surfaced"
+    50 (member "entries_truncated_to" stats |> to_int);
+  (* entry_details must be a JSON list and each element a JSON object. *)
+  let details = member "entry_details" stats |> to_list in
+  Alcotest.(check bool) "details non-empty" true (List.length details >= 2);
+  List.iter (fun e ->
+    let key = member "key" e |> to_string in
+    let kind = member "kind" e |> to_string in
+    Alcotest.(check bool)
+      (Printf.sprintf "kind is fresh|stale|expired|computing for key=%s" key)
+      true (List.mem kind ["fresh"; "stale"; "expired"; "computing"])
+  ) details
+;;
+
+let test_stats_handles_empty_table () =
+  (* [invalidate_all] only clears the entry table; hit/miss counters are
+     cumulative monotonic (Prometheus convention). So after other tests in
+     the same harness, hit_ratio is non-zero — we assert it is still in
+     [0,1] and that the entries surface itself is empty.  This is the
+     invariant operators actually care about (no NaN, no negative). *)
+  Dashboard_cache.invalidate_all ();
+  let stats = Dashboard_cache.stats () in
+  let open Yojson.Safe.Util in
+  Alcotest.(check int) "no entries" 0 (member "entries" stats |> to_int);
+  Alcotest.(check bool) "empty details"
+    true (member "entry_details" stats |> to_list = []);
+  let ratio = member "hit_ratio" stats |> to_number in
+  Alcotest.(check bool) "ratio in [0,1] (no NaN, no negative)"
+    true (ratio >= 0.0 && ratio <= 1.0)
+;;
 
 (* -- 6. Stampede: N fibers, same key -> compute runs once ------------------- *)
 
@@ -466,6 +598,69 @@ let test_runtime_git_cache_returns_stale_and_refreshes ~clock () =
           Alcotest.(check int) "single background probe" 1
             (Atomic.get probes)))
 
+let test_runtime_git_upstream_cache_returns_stale_and_refreshes ~clock () =
+  let module Runtime = Server_dashboard_http_runtime_info in
+  let old_status =
+    { Runtime.branch = Some "main"
+    ; upstream_ref = Some "origin/main"
+    ; upstream_head_commit = Some "old"
+    ; ahead_count = Some 0
+    ; behind_count = Some 1
+    }
+  in
+  let new_status = { old_status with upstream_head_commit = Some "new"; behind_count = Some 0 } in
+  let check_status label expected actual =
+    match expected, actual with
+    | None, None -> ()
+    | Some expected, Some actual ->
+      Alcotest.(check (option string))
+        (label ^ " branch")
+        expected.Runtime.branch
+        actual.Runtime.branch;
+      Alcotest.(check (option string))
+        (label ^ " upstream ref")
+        expected.upstream_ref
+        actual.upstream_ref;
+      Alcotest.(check (option string))
+        (label ^ " upstream head")
+        expected.upstream_head_commit
+        actual.upstream_head_commit;
+      Alcotest.(check (option int))
+        (label ^ " ahead")
+        expected.ahead_count
+        actual.ahead_count;
+      Alcotest.(check (option int))
+        (label ^ " behind")
+        expected.behind_count
+        actual.behind_count
+    | _ -> Alcotest.failf "%s status mismatch" label
+  in
+  Runtime.clear_git_upstream_status_cache_for_tests ();
+  with_temp_dir "runtime-git-upstream-cache" (fun dir ->
+      Runtime.seed_git_upstream_status_cache_for_tests dir (Some old_status)
+        ~refreshed_at:(Time_compat.now () -. 120.0);
+      let probes = Atomic.make 0 in
+      Runtime.set_git_upstream_status_probe_hook_for_tests (fun _ ->
+          Atomic.incr probes;
+          Eio.Time.sleep clock 0.05;
+          Some new_status);
+      Fun.protect
+        ~finally:(fun () ->
+          Runtime.clear_git_upstream_status_probe_hook_for_tests ();
+          Runtime.clear_git_upstream_status_cache_for_tests ())
+        (fun () ->
+          check_status
+            "expired cache returns stale immediately"
+            (Some old_status)
+            (Runtime.git_upstream_status dir);
+          Eio.Time.sleep clock 0.15;
+          check_status
+            "background refresh stores fresh value"
+            (Some new_status)
+            (Runtime.git_upstream_status dir);
+          Alcotest.(check int) "single background probe" 1
+            (Atomic.get probes)))
+
 let test_runtime_git_probe_argv_disables_optional_locks () =
   let module Runtime = Server_dashboard_http_runtime_info in
   Alcotest.(check (list string))
@@ -503,6 +698,8 @@ let () =
           test_case "invalidate" `Quick test_invalidate;
           test_case "invalidate_prefix" `Quick test_invalidate_prefix;
           test_case "stats" `Quick test_stats;
+          test_case "stats detail surface" `Quick test_stats_detail_surface;
+          test_case "stats empty table" `Quick test_stats_handles_empty_table;
           test_case "exception recovery" `Quick test_exception_recovery;
           test_case "invalidate_all wakes waiters" `Quick
             test_invalidate_all_wakes_waiters;
@@ -512,11 +709,21 @@ let () =
           test_case "stampede protection" `Quick test_stampede;
           test_case "runtime git cache stale-first refresh" `Quick
             (test_runtime_git_cache_returns_stale_and_refreshes ~clock);
+          test_case "runtime git upstream cache stale-first refresh" `Quick
+            (test_runtime_git_upstream_cache_returns_stale_and_refreshes ~clock);
           test_case "runtime git probe disables optional locks" `Quick
             test_runtime_git_probe_argv_disables_optional_locks;
         ] );
       ( "timeout",
         [
+          test_case "proactive refresh timeout names phase" `Quick
+            test_proactive_refresh_timeout_message_names_phase;
+          test_case "proactive refresh failure WARN throttle" `Quick
+            test_proactive_refresh_failure_warn_throttle;
+          test_case "proactive refresh can suppress first WARN" `Quick
+            test_proactive_refresh_failure_can_suppress_first_warn;
+          test_case "compute timeout is not logged as error" `Quick
+            (test_compute_timeout_not_logged_as_error ~clock);
           test_case "stale preserved on timeout" `Quick
             (fun () ->
                Eio.Switch.run @@ fun sw ->

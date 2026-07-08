@@ -23,15 +23,78 @@ val tool_requirement_to_string : tool_requirement -> string
 val tool_requirement_of_string : string -> tool_requirement option
 val tool_requirement_to_yojson : tool_requirement -> Yojson.Safe.t
 
+(** Per-turn lane classification.  Closed sum type; the OCaml side
+    pins the alphabet emitted at keeper_run_tools.ml:963-973
+    ({"text_only", "tool_required", "tool_optional", "tool_disabled",
+    "retry"}).  Plain to_string/of_string (no [@@deriving tla] — that
+    derives module-level all_symbols which is already bound to
+    [tool_surface_class] below).  A future RFC-0065 spec extension
+    can add a TurnLaneSet catalog and lift this to deriving. *)
+type turn_lane =
+  | Lane_pre_dispatch
+      (** Pre-turn placeholder before [compute_tool_surface] runs.
+          Emitted only by [keeper_turn_helpers.pre_dispatch_tool_surface];
+          never produced by the per-turn lane logic at
+          keeper_run_tools.ml:963-973. *)
+  | Lane_text_only
+  | Lane_tool_required
+  | Lane_tool_optional
+  | Lane_tool_disabled
+  | Lane_retry
+
+val turn_lane_to_string : turn_lane -> string
+val turn_lane_of_string : string -> turn_lane option
+val turn_lane_to_yojson : turn_lane -> Yojson.Safe.t
+
+(** Tool-surface selection mode.  Closed sum type pinning the two
+    possible outputs of [keeper_run_tools.ml::compute_tool_surface]'s
+    [selection_mode] field:
+
+    - [Selection_deterministic_plus_llm_hint] when the keeper has
+      [llm_rerank_enabled = true] and the per-turn TopK_llm path
+      decorated the deterministic selection with an LLM-reranked hint.
+    - [Selection_core_plus_prefilter_plus_discovered] when the keeper
+      relies on the deterministic prefilter + discovered-tool union
+      only (no LLM rerank for this turn).
+
+    Disambiguated as [tool_selection_mode] (the [Keeper_skill_routing]
+    and [Keeper_alerting] modules each own their own [selection_mode]
+    sum type unrelated to tool-surface composition). *)
+type tool_selection_mode =
+  | Selection_deterministic_plus_llm_hint
+  | Selection_core_plus_prefilter_plus_discovered
+
+val tool_selection_mode_to_string : tool_selection_mode -> string
+val tool_selection_mode_of_string : string -> tool_selection_mode option
+val tool_selection_mode_to_yojson : tool_selection_mode -> Yojson.Safe.t
+
+
+(** Classification of the per-turn tool surface.  Closed sum type; the
+    OCaml side mirrors the RFC-0065 §3.2.2 KeeperToolSurface
+    SurfaceClassSet ({"none", "public_only", "mixed"}).
+    [@@deriving tla] emits [all_symbols : string list] so the
+    correspondence harness can parity-check against the spec catalog
+    without hand-pinning the label list. *)
+type tool_surface_class =
+  | Surface_none [@tla.symbol "none"]
+  | Surface_public_only [@tla.symbol "public_only"]
+  | Surface_mixed [@tla.symbol "mixed"]
+[@@deriving tla]
+
+val tool_surface_class_to_string : tool_surface_class -> string
+val tool_surface_class_of_string : string -> tool_surface_class option
+val tool_surface_class_to_yojson : tool_surface_class -> Yojson.Safe.t
+
 (** Diagnostic surface metrics emitted into trajectory entries. *)
 type tool_surface_metrics =
-  { turn_lane : string
-  ; tool_surface_class : string
+  { turn_lane : turn_lane
+  ; tool_surface_class : tool_surface_class
   ; tool_requirement : tool_requirement
   ; visible_tool_count : int
   ; tool_gate_enabled : bool
   ; tool_surface_fallback_used : bool
   ; required_tool_names : string list
+  ; required_tool_candidate_names : string list
   ; missing_required_tool_names : string list
   ; config_root : string
   ; cascade_config_path : string option
@@ -49,19 +112,21 @@ type computed_tool_surface =
   ; per_call_turn : int
   ; per_call_max_turns : int
   ; core_count : int
+  ; deterministic_prefilter : string list
   ; deterministic_prefilter_count : int
   ; discovered_count : int
   ; llm_selected_count : int
-  ; selection_mode : string
+  ; selection_mode : tool_selection_mode
   ; is_last_turn : bool
   ; is_warning_zone : bool
-  ; tool_surface_class : string
+  ; tool_surface_class : tool_surface_class
   ; tool_requirement : tool_requirement
   ; tool_gate_requested : bool
   ; tool_surface_fallback_used : bool
   ; required_tool_names : string list
+  ; required_tool_candidate_names : string list
   ; missing_required_tool_names : string list
-  ; lane : string
+  ; lane : turn_lane
   ; query_text : string
   }
 
@@ -74,8 +139,6 @@ type turn_affordance =
   | Task_claim
   | Task_audit
   | Task_verify
-  | Work_discovery
-  | Inspect_worktree_delta
 
 val turn_affordance_of_string : string -> turn_affordance option
 
@@ -88,6 +151,13 @@ val turn_affordances_require_tool_gate : string list -> bool
 (** Tools that satisfy a gated affordance (used by
     [turn_affordances_require_tool_gate_with_allowed]). *)
 val tools_for_gated_affordance : turn_affordance -> string list
+
+(** Compute the satisfying tools for a set of turn affordances,
+    intersected with [allowed_tool_names] and deduplicated.
+    Used to provide actionable alternatives in required-tool contract
+    violation messages. *)
+val satisfying_tools_for_turn :
+  turn_affordances:string list -> allowed_tool_names:string list -> string list
 
 (** Specific tools that should be force-included/preferred for an
     affordance, when the keeper policy exposes them. *)
@@ -104,6 +174,20 @@ val turn_affordances_require_tool_gate_with_allowed :
   -> string list
   -> bool
 
+(** On a required-action turn, trim the visible surface to tools that can make
+    progress when such tools exist. Passive status/read tools remain visible on
+    optional turns and on surfaces that have no actionable alternative.
+
+    Explicit [required_tool_names] are preserved even when they are read-only:
+    operator/harness calls such as [masc_keeper_msg.required_tools =
+    ["masc_web_search"]] are a direct evidence contract, not a generic
+    actionable-world-signal gate. *)
+val tool_names_for_required_gate_surface :
+  tool_gate_requested:bool ->
+  required_tool_names:string list ->
+  string list ->
+  string list
+
 (** Whether the very first turn of a multi-turn slot should require
     a tool call. *)
 val should_require_tools_for_initial_turn :
@@ -113,12 +197,40 @@ val has_turn_affordance : turn_affordance -> string list -> bool
 
 val has_task_claim_affordance : string list -> bool
 
+(** Ordered executable candidates for generic required-tool gates.
+    Claim/context tools are excluded when the keeper already owns active work,
+    and passive status/read tools are never recommended. *)
+val generic_required_actionable_tool_names :
+  has_current_task:bool ->
+  turn_affordances:string list ->
+  allowed_tool_names:string list ->
+  string list
+
 (** Pick the model-facing [tool_choice] when the gate fires. *)
 val preferred_tool_choice_for_required_turn :
   has_current_task:bool ->
   turn_affordances:string list ->
   allowed_tool_names:string list ->
   Agent_sdk.Types.tool_choice
+
+(** Human-readable instruction for generic affordance-driven required-tool
+    turns, where no explicit [required_tool_names] exist but the runtime still
+    requires a keeper tool call. *)
+val generic_required_tool_gate_guidance :
+  has_current_task:bool ->
+  turn_affordances:string list ->
+  allowed_tool_names:string list ->
+  string
+
+(** Candidate tools a generic required-tool gate can recommend. This is
+    distinct from explicit [required_tool_names]: callers may satisfy a
+    generic gate with any execution-progress tool, while this list explains
+    the preferred candidates exposed to the model/operator. *)
+val generic_required_tool_candidate_names :
+  has_current_task:bool ->
+  turn_affordances:string list ->
+  allowed_tool_names:string list ->
+  string list
 
 (** Per-call [masc_keeper_msg.required_tools] is an explicit operator/harness
     contract for this turn. When present, it takes precedence over the keeper's
@@ -129,9 +241,23 @@ val required_tool_names_for_turn :
   per_call_required_tool_names:string list ->
   string list
 
-(** Pick the model-facing [tool_choice] for an explicit required-tool list. A
-    single visible required tool should be forced specifically; multiple visible
-    required tools use [Any] and are checked after execution. *)
+(** Remove required tools that have already been satisfied in the current
+    Agent.run. This keeps a multi-turn keeper message from forcing the same
+    specific tool again after the successful tool call has already happened. *)
+val outstanding_required_tool_names :
+  required_tool_names:string list -> satisfied_tool_names:string list -> string list
+
+(** Extract successfully satisfied required-contract tools from observed
+    [(tool_name, outcome)] pairs. Failed calls and no-progress successes stay
+    outstanding. Explicit per-call requirements may include read-only tools, so
+    an [ok] outcome is enough to latch the named tool as satisfied. *)
+val satisfied_required_tool_names_of_outcomes :
+  (string * string) list -> string list
+
+(** Pick the model-facing [tool_choice] for an explicit required-tool list.
+    Visible required tools use [Any] so OAS enforces tool use without
+    exact-name matching before MASC canonicalizes MCP-prefixed tool names. The
+    specific required names are checked after execution. *)
 val preferred_tool_choice_for_required_tool_names :
   required_tool_names:string list ->
   allowed_tool_names:string list ->
@@ -167,12 +293,10 @@ val tool_names : Tool_name.t list -> string list
 
 val fallback_floor_tool_names : string list
 
-val fallback_repo_probe_tool_names : string list
-
-(** Re-export of [Keeper_tool_disclosure.is_claim_tool_name]. *)
+(** Re-export of [Keeper_tool_progress.is_claim_tool_name]. *)
 val is_claim_tool_name : string -> bool
 
-(** Re-export of [Keeper_tool_disclosure.is_claim_context_tool_name]. *)
+(** Re-export of [Keeper_tool_progress.is_claim_context_tool_name]. *)
 val is_claim_context_tool_name : string -> bool
 
 val keeper_selection_top_k : int

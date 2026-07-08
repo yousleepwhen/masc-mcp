@@ -14,6 +14,7 @@ type config = {
   on_error : (exn -> unit) option;
   health_check : (unit -> bool) option;
   warm_delay_s : float;
+  warn_first_failure : bool;
 }
 
 let default_config ~label ~interval_s =
@@ -26,6 +27,7 @@ let default_config ~label ~interval_s =
     on_error = None;
     health_check = None;
     warm_delay_s = 0.0;
+    warn_first_failure = true;
   }
 
 let is_internal_race_cancel exn =
@@ -41,15 +43,52 @@ let should_reraise_cancel exn =
   | Eio.Cancel.Cancelled _ -> not (is_internal_race_cancel exn)
   | _ -> false
 
+let timeout_failure_message ~label ~phase ~timeout_s ~elapsed_s =
+  Printf.sprintf
+    "refresh_timeout label=%s phase=%s timeout_s=%.1f elapsed_s=%.1f"
+    label
+    phase
+    timeout_s
+    elapsed_s
+
+let timeout_exception ~config ~phase ~elapsed_s =
+  Failure
+    (timeout_failure_message
+       ~label:config.label
+       ~phase
+       ~timeout_s:config.timeout_s
+       ~elapsed_s)
+
+let is_power_of_two n = n > 0 && n land (n - 1) = 0
+
+let should_warn_refresh_failure ?(warn_first_failure = true) ~failure_threshold
+    consecutive_failures =
+  (warn_first_failure && consecutive_failures = 1)
+  || consecutive_failures = failure_threshold
+  || (consecutive_failures > failure_threshold
+      && is_power_of_two consecutive_failures)
+
+let log_dashboard_refresh_failure ~warn message =
+  if warn then Log.Dashboard.warn "%s" message
+  else Log.Dashboard.debug "%s" message
+
 let log_refresh_failure ~config ~consecutive_failures ~current_interval ~dt exn =
   incr consecutive_failures;
   if !consecutive_failures >= config.failure_threshold then
     current_interval :=
       min config.max_backoff_s (!current_interval *. 2.0);
-  Log.Dashboard.warn
-    "%s refresh failed (%d consecutive, next in %.0fs, %.1fs): %s"
-    config.label !consecutive_failures !current_interval dt
-    (Printexc.to_string exn)
+  let message =
+    Printf.sprintf
+      "%s refresh failed (%d consecutive, next in %.0fs, %.1fs): %s"
+      config.label !consecutive_failures !current_interval dt
+      (Printexc.to_string exn)
+  in
+  log_dashboard_refresh_failure message
+    ~warn:
+      (should_warn_refresh_failure
+         ~failure_threshold:config.failure_threshold
+         ~warn_first_failure:config.warn_first_failure
+         !consecutive_failures)
 
 let notify_error config exn =
   match config.on_error with
@@ -85,9 +124,11 @@ let start ~sw ~clock ~config:raw_config ~compute ~on_result =
          Log.Dashboard.info "%s warm cache done (%.1fs)" config.label
            (Time_compat.now () -. t0)
        | Error `Timeout ->
-         notify_error config (Failure "timeout");
-         Log.Dashboard.warn "%s warm cache skipped (%.1fs timeout)" config.label
-           (Time_compat.now () -. t0)
+         let dt = Time_compat.now () -. t0 in
+         let timeout_exn = timeout_exception ~config ~phase:"warm_cache" ~elapsed_s:dt in
+         notify_error config timeout_exn;
+         Log.Dashboard.warn "%s warm cache skipped (%.1fs timeout=%.1fs): %s"
+           config.label dt config.timeout_s (Printexc.to_string timeout_exn)
      with
      | exn ->
        if should_reraise_cancel exn then
@@ -113,9 +154,17 @@ let start ~sw ~clock ~config:raw_config ~compute ~on_result =
         if !consecutive_failures >= config.failure_threshold then
           current_interval :=
             min config.max_backoff_s (!current_interval *. 2.0);
-        Log.Dashboard.warn
-          "%s skipped: health gate failed (%d consecutive, next in %.0fs)"
-          config.label !consecutive_failures !current_interval
+        let message =
+          Printf.sprintf
+            "%s skipped: health gate failed (%d consecutive, next in %.0fs)"
+            config.label !consecutive_failures !current_interval
+        in
+        log_dashboard_refresh_failure message
+          ~warn:
+            (should_warn_refresh_failure
+               ~failure_threshold:config.failure_threshold
+               ~warn_first_failure:config.warn_first_failure
+               !consecutive_failures)
       end else
       let t0 = Time_compat.now () in
       (try
@@ -146,7 +195,7 @@ let start ~sw ~clock ~config:raw_config ~compute ~on_result =
            Log.Dashboard.debug "%s refreshed (%.1fs)" config.label dt
          | Error `Timeout ->
              let dt = Time_compat.now () -. t0 in
-             let timeout_exn = Failure "timeout" in
+             let timeout_exn = timeout_exception ~config ~phase:"refresh" ~elapsed_s:dt in
              notify_error config timeout_exn;
              log_refresh_failure ~config ~consecutive_failures ~current_interval
                ~dt timeout_exn
@@ -159,3 +208,8 @@ let start ~sw ~clock ~config:raw_config ~compute ~on_result =
       loop ()
     in
     loop ())
+
+module For_testing = struct
+  let timeout_failure_message = timeout_failure_message
+  let should_warn_refresh_failure = should_warn_refresh_failure
+end

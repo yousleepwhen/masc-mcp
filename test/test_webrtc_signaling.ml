@@ -24,7 +24,7 @@ let with_env name value f =
 let test_create_offer () =
   Eio_main.run (fun _env ->
     let offer_id = Wrtc.create_offer
-      ~from_agent:"claude"
+      ~from_agent:"agent_llm_a"
       ~ice_candidates:["candidate:1"]
       ~dtls_fingerprint:"sha256:abc" in
     Alcotest.(check bool) "offer_id not empty"
@@ -37,13 +37,13 @@ let test_create_offer () =
 let test_get_offer () =
   Eio_main.run (fun _env ->
     let offer_id = Wrtc.create_offer
-      ~from_agent:"gemini"
+      ~from_agent:"provider_f"
       ~ice_candidates:["c1"; "c2"]
       ~dtls_fingerprint:"sha256:xyz" in
     let offer = Wrtc.get_offer offer_id in
     Alcotest.(check bool) "offer found" true (Option.is_some offer);
     let o = Option.get offer in
-    Alcotest.(check string) "from_agent" "gemini" o.from_agent;
+    Alcotest.(check string) "from_agent" "provider_f" o.from_agent;
     Alcotest.(check int) "ice count" 2 (List.length o.ice_candidates);
     ignore (Wrtc.cleanup_expired_offers ~max_age_s:0.0 ()))
 
@@ -82,7 +82,7 @@ let test_double_accept () =
 
 let test_handle_offer_request () =
   Eio_main.run (fun _env ->
-    let body = {|{"agent_name":"claude","ice_candidates":["c1"],"dtls_fingerprint":"fp"}|} in
+    let body = {|{"agent_name":"agent_llm_a","ice_candidates":["c1"],"dtls_fingerprint":"fp"}|} in
     let result = Wrtc.handle_offer_request body in
     Alcotest.(check bool) "ok" true (Result.is_ok result);
     let json = Result.get_ok result in
@@ -103,6 +103,32 @@ let test_cleanup_expired () =
       ~from_agent:"old" ~ice_candidates:[] ~dtls_fingerprint:"" in
     let cleaned = Wrtc.cleanup_expired_offers ~max_age_s:0.0 () in
     Alcotest.(check bool) "cleaned >= 1" true (cleaned >= 1))
+
+let test_cleanup_stale_peers () =
+  Eio_main.run (fun _env ->
+    let make_peer from_agent answerer_agent =
+      let offer_id =
+        Wrtc.create_offer ~from_agent ~ice_candidates:["c1"]
+          ~dtls_fingerprint:"fp"
+      in
+      let result = Wrtc.accept_offer ~offer_id ~answerer_agent in
+      Alcotest.(check bool) "accept ok" true (Result.is_ok result);
+      Result.get_ok result
+    in
+    ignore (Wrtc.cleanup_stale_peers ~max_idle_s:(-1.0) ());
+    let fresh = make_peer "fresh-a" "fresh-b" in
+    let fresh_cleaned = Wrtc.cleanup_stale_peers ~max_idle_s:3600.0 () in
+    Alcotest.(check int) "fresh peer not cleaned" 0 fresh_cleaned;
+    Alcotest.(check bool) "fresh peer still active"
+      true (Wrtc.active_peer_count () > 0);
+    Wrtc.remove_peer fresh.peer_id;
+    let _stale = make_peer "stale-a" "stale-b" in
+    let stale_cleaned = Wrtc.cleanup_stale_peers ~max_idle_s:(-1.0) () in
+    Alcotest.(check bool) "stale peer cleaned" true (stale_cleaned >= 1);
+    Alcotest.(check int) "no active peers after stale cleanup"
+      0 (Wrtc.active_peer_count ());
+    Alcotest.(check int) "no live webrtc after stale cleanup"
+      0 (Wrtc.live_webrtc_count ()))
 
 (* ====== Transport Enum ====== *)
 
@@ -221,6 +247,7 @@ let () =
     ]);
     ("cleanup", [
       Alcotest.test_case "expired offers" `Quick test_cleanup_expired;
+      Alcotest.test_case "stale peers" `Quick test_cleanup_stale_peers;
     ]);
     ("transport_enum", [
       Alcotest.test_case "webrtc variant" `Quick test_transport_webrtc_variant;

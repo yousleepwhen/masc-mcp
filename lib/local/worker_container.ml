@@ -175,6 +175,10 @@ let worker_meta_of_yojson json =
                         json |> member "turn_log_path" |> to_string_option
                         |> Option.value ~default:"";
                       last_run_at = json |> member "last_run_at" |> to_float_option;
+                      (* RFC-0084 host-config-cleanup-H — JSON I/O
+                         round-trip deferred; always [None] until a
+                         follow-up cleanup adds the schema. *)
+                      disclosure_strategy = None;
                     })))
   | _ -> Error "worker meta must be a JSON object"
 
@@ -326,6 +330,14 @@ let build_oas_mcp_tools ~sw ~auth_token ~session_id ~worker_name =
                }))
     listed_schemas
 
+let local_worker_failure_class_of_error_kind = function
+  | Worker_dev_tools.Path_blocked -> Tool_result.Policy_rejection
+  | Worker_dev_tools.Command_blocked -> Tool_result.Workflow_rejection
+  | Worker_dev_tools.File_read_error
+  | Worker_dev_tools.File_write_error
+  | Worker_dev_tools.Shell_error ->
+    Tool_result.Runtime_failure
+
 let build_local_shell_tools ~room_config ~worker_name ~workdir =
   match Process_eio.get_proc_mgr (), Process_eio.get_clock () with
   | Ok proc_mgr, Ok clock -> (
@@ -346,9 +358,12 @@ let build_local_shell_tools ~room_config ~worker_name ~workdir =
                     |> Telemetry_eio.error_kind_of_string)
                   error_kind
               in
+              let failure_class =
+                Option.map local_worker_failure_class_of_error_kind error_kind
+              in
               Telemetry_eio.track_tool_called ~fs config ~tool_name ~success
                 ~duration_ms ~agent_id:worker_name
-                ?error_kind:kind ?error_message ()
+                ?failure_class ?error_kind:kind ?error_message ()
             with Eio.Cancel.Cancelled _ as e -> raise e | exn ->
               Log.LocalWorker.warn "telemetry error for %s/%s: %s"
                 worker_name tool_name (Printexc.to_string exn))
@@ -405,6 +420,7 @@ let make_worker_meta ~base_path ~workspace_path ~worker_name
     turn_log_path =
       worker_turn_log_path ~base_path ~worker_name;
     last_run_at = None;
+    disclosure_strategy = None;
   }
 
 let append_worker_completion_log ~base_path ~worker_name
@@ -451,9 +467,9 @@ let build_resume_config ~worker_name ~provider ~model_id ~system_prompt ~tools
       system_prompt = Some system_prompt;
       max_tokens = Some (local_worker_max_tokens ());
       max_turns;
-      temperature = Some Oas_worker_cascade.worker_temperature;
-      top_p = Some Oas_worker_cascade.worker_top_p;
-      top_k = Some Oas_worker_cascade.worker_top_k;
+      temperature = Some Llm_provider.Constants.Inference_profile.worker_default.temperature;
+      top_p = Some Cascade_worker_defaults.top_p;
+      top_k = Some Cascade_worker_defaults.top_k;
       (* min_p is effectively disabled (0.0) and some cloud providers
          reject the field itself even when the value is a no-op. *)
       min_p = None;
@@ -467,7 +483,7 @@ let build_resume_config ~worker_name ~provider ~model_id ~system_prompt ~tools
     | None ->
         { Agent_sdk.Guardrails.tool_filter =
             Agent_sdk.Guardrails.AllowList (oas_tool_names tools);
-          max_tool_calls_per_turn = Some Oas_worker_cascade.worker_max_tool_calls_per_turn;
+          max_tool_calls_per_turn = Some Cascade_worker_defaults.max_tool_calls_per_turn;
         }
   in
   let options =
@@ -490,7 +506,7 @@ let materialize_direct_evidence ~base_path ~worker_name
   | None -> ()
   | Some session_id ->
       let aliases =
-        unique_preserve_order
+        Json_util.dedupe_keep_order
           ([ worker_name ]
           @
           match meta.role with
@@ -502,7 +518,7 @@ let materialize_direct_evidence ~base_path ~worker_name
       in
       let options =
         {
-          Agent_sdk.Direct_evidence.session_root =
+          Masc_mcp_cdal_runtime.Direct_evidence.session_root =
             Some (oas_trace_session_root ~base_path);
           session_id;
           goal = prompt;
@@ -519,7 +535,7 @@ let materialize_direct_evidence ~base_path ~worker_name
           workdir = Some workspace_path;
         }
       in
-      match Agent_sdk.Direct_evidence.persist ~agent ~raw_trace ~options () with
+      match Masc_mcp_cdal_runtime.Direct_evidence.persist ~agent ~raw_trace ~options () with
       | Ok _ -> ()
       | Error err ->
           Log.LocalWorker.error

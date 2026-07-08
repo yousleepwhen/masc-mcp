@@ -30,12 +30,9 @@ let resolve_active_goal_ids config p old_ids =
              (String.concat ", " missing))
 
 let blocker_requires_continue_gate (old : keeper_meta) =
-  match old.runtime.last_blocker_class with
-  | Some cls -> blocker_class_continue_gate cls
-  | None -> (
-      match Keeper_status_bridge.blocker_class_of_string old.runtime.last_blocker with
-      | Some cls -> blocker_class_continue_gate cls
-      | None -> false)
+  match old.runtime.last_blocker with
+  | Some info -> blocker_class_continue_gate info.klass
+  | None -> false
 
 let paused_state_requires_approval (old : keeper_meta) =
   Keeper_approval_queue.has_pending_for_keeper ~keeper_name:old.name
@@ -44,39 +41,49 @@ let paused_state_requires_approval (old : keeper_meta) =
 let update_keeper (ctx : _ context) (p : parsed_args) (old : keeper_meta) : tool_result =
   match p.tool_access_opt, old.tool_access, p.tool_preset_opt, p.tool_also_allow_opt with
   | None, Custom _, None, Some _ ->
-      (false, "tool_also_allow requires a preset-based keeper policy; set tool_preset first")
+      tool_result_error
+        "tool_also_allow requires a preset-based keeper policy; set tool_preset first"
   | _ ->
   match resolve_active_goal_ids ctx.config p old.active_goal_ids with
-  | Error msg -> (false, msg)
+  | Error msg -> tool_result_error msg
   | Ok active_goal_ids ->
   let goal_provided = Option.is_some p.goal_opt in
+  let profile_default_text opt fallback =
+    match opt with
+    | Some value when String.trim value <> "" -> value
+    | _ -> fallback
+  in
   let goal =
     match p.goal_opt with
     | Some g -> normalize_goal_horizon_text g
     | None ->
-        if String.trim old.goal <> "" then old.goal
-        else p.profile_defaults.goal |> Option.value ~default:""
+        profile_default_text p.profile_defaults.goal
+          (if String.trim old.goal <> "" then old.goal else "")
   in
   let short_goal_default = if goal_provided then goal else old.short_goal in
   let mid_goal_default = if goal_provided then goal else old.mid_goal in
   let long_goal_default = if goal_provided then goal else old.long_goal in
+  let horizon_default profile_opt old_default =
+    if goal_provided then old_default
+    else profile_default_text profile_opt old_default
+  in
   let short_goal =
-    Option.value ~default:short_goal_default p.short_goal_opt
+    Option.value
+      ~default:(horizon_default p.profile_defaults.short_goal short_goal_default)
+      p.short_goal_opt
     |> normalize_goal_horizon_text
   in
   let mid_goal =
-    Option.value ~default:mid_goal_default p.mid_goal_opt
+    Option.value
+      ~default:(horizon_default p.profile_defaults.mid_goal mid_goal_default)
+      p.mid_goal_opt
     |> normalize_goal_horizon_text
   in
   let long_goal =
-    Option.value ~default:long_goal_default p.long_goal_opt
+    Option.value
+      ~default:(horizon_default p.profile_defaults.long_goal long_goal_default)
+      p.long_goal_opt
     |> normalize_goal_horizon_text
-  in
-  let policy_voice_enabled =
-    first_some
-      p.policy_voice_enabled_opt
-      (first_some (Some old.policy_voice_enabled) p.profile_defaults.policy_voice_enabled)
-    |> Option.value ~default:false
   in
   let allowed_paths =
     Option.value ~default:old.allowed_paths p.allowed_paths_opt
@@ -98,7 +105,10 @@ let update_keeper (ctx : _ context) (p : parsed_args) (old : keeper_meta) : tool
           old.network_mode
   in
   let autoboot_enabled =
-    Option.value ~default:old.autoboot_enabled p.autoboot_enabled_opt
+    match p.autoboot_enabled_opt, p.profile_defaults.autoboot_enabled with
+    | Some value, _ -> value
+    | None, Some value -> value
+    | None, None -> old.autoboot_enabled
   in
   let mention_targets =
     resolve_mention_targets
@@ -119,21 +129,34 @@ let update_keeper (ctx : _ context) (p : parsed_args) (old : keeper_meta) : tool
       ~fallback_message:old.compaction.message_gate
       ~fallback_token:old.compaction.token_gate
   in
+  let profile_tool_preset =
+    Option.bind p.profile_defaults.tool_preset tool_preset_of_string
+  in
   let tool_access =
     match p.tool_access_opt with
     | Some access -> access
     | None ->
         match old.tool_access with
         | Preset current ->
-            let preset = Option.value ~default:current.preset p.tool_preset_opt in
+            let preset =
+              match p.tool_preset_opt with
+              | Some preset -> preset
+              | None -> (
+                  match profile_tool_preset with
+                  | Some preset -> preset
+                  | None -> current.preset)
+            in
             let also_allow =
               resolve_tool_name_list
                 ~preferred:p.tool_also_allow_opt
-                ~fallback:(Some current.also_allow)
+                ~fallback:
+                  (match p.profile_defaults.tool_also_allow with
+                   | Some _ as profile -> profile
+                   | None -> Some current.also_allow)
             in
             Preset { preset; also_allow }
         | Custom names -> (
-            match p.tool_preset_opt with
+            match Dashboard_utils.first_some p.tool_preset_opt profile_tool_preset with
             | Some preset ->
                 let also_allow =
                   resolve_tool_name_list
@@ -196,8 +219,8 @@ let update_keeper (ctx : _ context) (p : parsed_args) (old : keeper_meta) : tool
       let len = String.length new_value in
       if len > Keeper_config.prompt_render_max_bytes then
         Prometheus.inc_counter
-          Prometheus.metric_keeper_turn_up_update_failures
-          ~labels:[("keeper", old.name); ("site", "prompt_cap")]
+          Keeper_metrics.(to_string TurnUpUpdateFailures)
+          ~labels:[("keeper", old.name); ("site", Keeper_turn_up_update_failure_site.(to_label Prompt_cap))]
           ();
         Log.Keeper.warn
           "update_keeper personality.%s for %s exceeds prompt cap \
@@ -211,10 +234,10 @@ let update_keeper (ctx : _ context) (p : parsed_args) (old : keeper_meta) : tool
     old.paused && not (paused_state_requires_approval old)
   in
   if resume_paused_keeper then (
-    let blocker_class =
-      old.runtime.last_blocker_class
-      |> Option.map blocker_class_to_string
-      |> Option.value ~default:"none"
+    let blocker_class, blocker_detail =
+      match old.runtime.last_blocker with
+      | Some info -> blocker_class_to_string info.klass, info.detail
+      | None -> "none", ""
     in
     let auto_resume_after_sec =
       old.auto_resume_after_sec
@@ -223,8 +246,19 @@ let update_keeper (ctx : _ context) (p : parsed_args) (old : keeper_meta) : tool
     in
     Log.Keeper.warn
       "update_keeper resumed paused keeper %s; clearing \
-       auto_resume_after_sec=%s last_blocker_class=%s last_blocker=%S"
-      old.name auto_resume_after_sec blocker_class old.runtime.last_blocker);
+       auto_resume_after_sec=%s last_blocker.klass=%s last_blocker.detail=%S"
+      old.name auto_resume_after_sec blocker_class blocker_detail);
+  (* Clear any persisted livelock attempt counter on every update_keeper run,
+     not only the resume-paused branch.  Older turn-livelock guards only
+     recorded a `pause_human` receipt, while current guards may persist
+     [meta.paused = true].  A follow-up `masc_keeper_up` should clear the
+     stale in-memory counter in both cases. *)
+  Keeper_turn_livelock.reset_keeper_livelock ~keeper:old.name;
+  (* ETA-LIVELOCK: align typed-escalation classifier with the
+     livelock counter reset so an operator-triggered keeper_up
+     restores the next block to ERROR (not silent DEBUG demotion
+     from a previous threshold_park). *)
+  Keeper_livelock_state.reset_for_keeper ~keeper:old.name;
   if old.paused && not resume_paused_keeper then
     Log.Keeper.warn
       "update_keeper kept %s paused because an approval/reconcile gate is pending"
@@ -234,23 +268,22 @@ let update_keeper (ctx : _ context) (p : parsed_args) (old : keeper_meta) : tool
     short_goal;
     mid_goal;
     long_goal;
-    cascade_name =
-      (* TOML cascade_name takes precedence over runtime JSON when present.
-         Without this, changing cascade_name in keepers/*.toml has no effect
-         until the runtime JSON is deleted.  See #6747.
-
-         Store the raw string as declared in TOML / state JSON.  Downstream
-         consumers ([Cascade_runtime], [Keeper_status_bridge],
-         [Admission_queue], ...) already canonicalize at point-of-use, so
-         preserving the raw value here lets the dashboard surface config
-         drift (keeper TOML referencing an unknown cascade name) via the
-         [canonical] column of [Dashboard_cascade.keeper_profile_json]. *)
-      (match p.profile_defaults.cascade_name with
-       | Some name -> name
-       | None ->
-         if String.trim old.cascade_name <> "" then
-           old.cascade_name
-         else Keeper_config.default_cascade_name);
+    cascade_ref =
+      (* RFC-0041 (post-step-4): cascade_ref is the SSOT.
+         An explicit tool arg is an operator reconfiguration request.
+         Otherwise TOML cascade_name takes precedence over runtime when
+         present; otherwise preserve the existing keeper's cascade_ref so
+         dashboard drift remains visible.  See #6747. *)
+      (let group =
+         match p.cascade_name_opt, p.profile_defaults.cascade_name with
+         | Some name, _ -> name
+         | None, Some name -> name
+         | None, None ->
+           let prev = cascade_name_of_meta old in
+           if String.trim prev <> "" then prev
+           else (Keeper_config.default_cascade_name ())
+       in
+       Some Cascade_ref.{ group = Cascade_name.of_string_exn group; item = None });
     will = new_will;
     needs = new_needs;
     desires = new_desires;
@@ -260,7 +293,6 @@ let update_keeper (ctx : _ context) (p : parsed_args) (old : keeper_meta) : tool
           (if String.trim old.instructions <> "" then old.instructions
            else Option.value ~default:"" p.profile_defaults.instructions)
         p.instructions_opt;
-    policy_voice_enabled;
     allowed_paths;
     sandbox_profile;
     network_mode;
@@ -276,20 +308,21 @@ let update_keeper (ctx : _ context) (p : parsed_args) (old : keeper_meta) : tool
       (if resume_paused_keeper then
          {
            old.runtime with
-           last_blocker = "";
-           last_blocker_class = None;
+           last_blocker = None;
          }
        else old.runtime);
-    voice_enabled =
-      Option.value ~default:old.voice_enabled p.voice_enabled_opt;
-    voice_channel =
-      (p.voice_channel_opt
-      |> Option.map canonical_voice_channel
-      |> Option.value ~default:old.voice_channel);
-    voice_agent_id =
-      Option.value ~default:old.voice_agent_id p.voice_agent_id_opt;
     mention_targets;
     room_signal_prompt_enabled;
+    telemetry_feedback_enabled =
+      Dashboard_utils.first_some p.profile_defaults.telemetry_feedback_enabled
+        old.telemetry_feedback_enabled;
+    telemetry_feedback_window_hours =
+      Dashboard_utils.first_some p.profile_defaults.telemetry_feedback_window_hours
+        old.telemetry_feedback_window_hours;
+    per_provider_timeout_s =
+      Dashboard_utils.first_some p.profile_defaults.per_provider_timeout old.per_provider_timeout_s;
+    always_approve =
+      Dashboard_utils.first_some p.profile_defaults.always_approve old.always_approve;
     proactive = {
       enabled =
         (match p.proactive_enabled_opt with
@@ -326,6 +359,9 @@ let update_keeper (ctx : _ context) (p : parsed_args) (old : keeper_meta) : tool
           p.continuity_compaction_cooldown_sec_opt
         |> normalize_continuity_compaction_cooldown_sec;
       max_checkpoint_messages = old.compaction.max_checkpoint_messages;
+      keep_recent_tool_results = old.compaction.keep_recent_tool_results;
+      tool_heavy_msg_threshold = old.compaction.tool_heavy_msg_threshold;
+      tool_heavy_ratio_floor = old.compaction.tool_heavy_ratio_floor;
     };
     auto_handoff = Option.value ~default:old.auto_handoff p.auto_handoff_opt;
     handoff_threshold = Option.value ~default:old.handoff_threshold p.handoff_threshold_opt;
@@ -337,19 +373,19 @@ let update_keeper (ctx : _ context) (p : parsed_args) (old : keeper_meta) : tool
     validate_sandbox_settings
       ~config:ctx.config
       ~keeper_name:p.name
-      ~github_identity:p.profile_defaults.github_identity
+      ~repo_cli_identity:p.profile_defaults.repo_cli_identity
       ~sandbox_profile
       ~network_mode
       ~allowed_paths
   with
   | Error err ->
       Prometheus.inc_counter
-        Prometheus.metric_keeper_turn_up_update_failures
-        ~labels:[("keeper", p.name); ("site", "sandbox_validation")]
+        Keeper_metrics.(to_string TurnUpUpdateFailures)
+        ~labels:[("keeper", p.name); ("site", Keeper_turn_up_update_failure_site.(to_label Sandbox_validation))]
         ();
       Log.Keeper.warn "update_keeper failed sandbox validation for %s: %s"
         p.name err;
-      (false, err)
+      tool_result_error err
   | Ok () ->
       (match
          Keeper_sandbox_runtime.ensure_keeper_startup_preflight
@@ -357,21 +393,21 @@ let update_keeper (ctx : _ context) (p : parsed_args) (old : keeper_meta) : tool
        with
        | Error err ->
            Prometheus.inc_counter
-             Prometheus.metric_keeper_turn_up_update_failures
-             ~labels:[("keeper", p.name); ("site", "sandbox_preflight")]
+             Keeper_metrics.(to_string TurnUpUpdateFailures)
+             ~labels:[("keeper", p.name); ("site", Keeper_turn_up_update_failure_site.(to_label Sandbox_preflight))]
              ();
            Log.Keeper.warn "update_keeper failed sandbox preflight for %s: %s"
              p.name err;
-           (false, err)
+           tool_result_error err
        | Ok () ->
       (match write_meta ctx.config updated with
        | Error e ->
            Prometheus.inc_counter
-             Prometheus.metric_keeper_write_meta_failures
+             Keeper_metrics.(to_string WriteMetaFailures)
              ~labels:[("keeper", updated.name); ("phase", "update_keeper")]
              ();
-           (false, e)
+           tool_result_error e
        | Ok () ->
          stop_keepalive ~base_path:ctx.config.base_path updated.name;
          start_keepalive ctx updated;
-         (true, Yojson.Safe.to_string (meta_to_json updated))))
+         tool_result_ok (Yojson.Safe.to_string (meta_to_json updated))))

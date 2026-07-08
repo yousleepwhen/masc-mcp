@@ -2,7 +2,7 @@
 # sweep-tool-error-signatures.sh — daily bucketing of tool-call failures
 # by (tool_name, error_signature) for RFC #8760 R4.
 #
-# Reads ~/me/.masc/tool_calls/YYYY-MM/DD.jsonl (or $MASC_BASE_PATH) and emits
+# Reads <base-path>/.masc/tool_calls/YYYY-MM/DD.jsonl and emits
 # newline-delimited JSON records, one per (tool, signature) pair with count.
 #
 # Purpose: observe whether persona/hint changes reduce per-class repeats
@@ -17,7 +17,7 @@
 #   scripts/sweep-tool-error-signatures.sh 3 data/tool-error-sweeps
 #
 # Output record shape (one JSON per line):
-#   {"date":"2026-04-18","tool":"masc_code_read","sig":"...","count":48}
+#   {"date":"2026-04-18","tool":"tool_read_file","sig":"...","count":48}
 #
 # Requires: jq
 # Related: scripts/analyze-tool-call-quality.sh (human-readable counterpart)
@@ -26,7 +26,15 @@ set -euo pipefail
 
 DAYS="${1:-1}"
 OUT_DIR="${2:-}"
-BASE_PATH="${MASC_BASE_PATH:-${HOME}/me}"
+default_base_path() {
+  if [ -n "${MASC_BASE_PATH:-}" ]; then
+    printf '%s\n' "$MASC_BASE_PATH"
+  else
+    pwd
+  fi
+}
+
+BASE_PATH="$(default_base_path)"
 TOOL_CALLS_DIR="${BASE_PATH}/.masc/tool_calls"
 
 if ! command -v jq >/dev/null 2>&1; then

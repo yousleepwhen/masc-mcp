@@ -3,23 +3,26 @@ import { useEffect, useMemo, useReducer, useRef, useState } from 'preact/hooks'
 import { InlineSpinner } from './common/inline-spinner'
 import { DialogOverlay } from './common/dialog'
 import { TextInput } from './common/input'
+import { formatMsCompact } from '../lib/format-number'
 
 import {
   fetchKeeperComposite,
   type KeeperCompositeExecution,
   type KeeperCompositeSnapshot,
+  type KeeperRuntimeTraceResponse,
 } from '../api/keeper'
 import { fetchGateKeepers } from '../api/gate'
 import { executionLoaded, keepers, refreshExecution } from '../store'
 import { compositeTick } from '../composite-signals'
 import { nowSecondsSignal, useNowSecondsTicker } from '../lib/now-signal'
 import { useGlobalShortcut } from '../lib/use-global-shortcut'
-import { EmptyState } from './common/empty-state'
+import { EmptyState } from './common/feedback-state'
 import { Kbd } from './common/kbd'
 
 import {
   type HoveredSegment,
   type HubAction,
+  type HubFetchStatus,
   type HubState,
   initialHubState,
   fmtDuration,
@@ -37,50 +40,13 @@ import { OperationalMeaningPanel, HeroPhase, TurnPipelineStrip, CompositeGraphPa
 import { DwellHistogramPanel, SwimlaneTimeline, TopTransitionsPanel, TransitionTrail } from './fsm-hub-timeline-panels'
 import { MeasurementCard, InvariantsPanel } from './fsm-hub-health-panels'
 import { ringFocusClasses } from './common/ring'
+import { formatIndependentCounters, formatRatioPair } from './counter-format'
 
-// ── Backward-compatible re-exports ─────────────────────
-// External consumers (agents-unified.ts, fsm-hub.test.ts)
-// import from './fsm-hub' — these re-exports keep that working.
-
-export type {
-  CompositeObservation,
-  DwellEntry,
-  HoveredSegment,
-  LaneDwell,
-  OperationalInsight,
-  ObservedLaneSummary,
-  StateEntries,
-  TimeAxisTick,
-  SwimlaneSegment,
-  TopTransition,
+import {
+  toolRequirementLabel,
+  toolSurfaceClassLabel,
+  turnLaneLabel,
 } from './fsm-hub-types'
-
-export { displayState } from './fsm-hub-types'
-
-export {
-  appendCompositeObservation,
-  deriveLaneDwellHistograms,
-  deriveTransitionHistory,
-  deriveTopTransitions,
-  derivePhaseLog,
-  deriveStateEntries,
-  deriveTimeAxisTicks,
-  deriveSwimlaneSegments,
-  laneTransitionCount,
-  inferTransitionReason,
-} from './fsm-hub-derivations'
-
-export { deriveOperationalInsight } from './fsm-hub-invariant-analysis'
-export { deriveObservedLaneSummaries } from './fsm-hub-lane-analysis'
-
-export {
-  flagTooltip,
-  invariantDescription,
-} from './fsm-hub-health-panels'
-
-export {
-  isTransitionInSegment,
-} from './fsm-hub-timeline-panels'
 
 export function shouldUseGateKeeperFallback(
   executionLoadedValue: boolean,
@@ -121,18 +87,19 @@ function shortText(value: string | null | undefined, max = 80): string {
   return text.length > max ? `${text.slice(0, max)}...` : text
 }
 
-function formatMs(ms: number | null | undefined): string {
-  if (ms == null || !Number.isFinite(ms) || ms < 0) return ''
-  if (ms >= 1000) return `${Math.round(ms / 1000)}s`
-  return `${Math.round(ms)}ms`
-}
+const formatMs = formatMsCompact
 
 function executionReceiptTone(execution: KeeperCompositeExecution | undefined): 'ok' | 'warn' | 'bad' | 'muted' {
   if (!execution?.latest_receipt_present) return 'muted'
+  // `execution.outcome` wire format is the TLA-prefix form emitted by
+  // `outcome_kind_to_tla_receipt`
+  // (lib/keeper/keeper_execution_receipt.ml:24-29). 'ok' / 'error' short
+  // forms never appear on this field — those compares were dead, so the
+  // receipt tone never reached 'ok' or 'bad' regardless of actual outcome.
   const outcome = execution.outcome?.toLowerCase()
   const terminal = execution.terminal_reason_code?.toLowerCase() ?? ''
-  if (outcome === 'ok' || terminal === 'completed') return 'ok'
-  if (terminal.includes('config') || terminal.includes('exhausted') || outcome === 'error') return 'bad'
+  if (outcome === 'receipt_done' || outcome === 'receipt_skipped' || terminal === 'completed') return 'ok'
+  if (terminal.includes('config') || terminal.includes('exhausted') || outcome === 'receipt_failed') return 'bad'
   return 'warn'
 }
 
@@ -140,22 +107,26 @@ function executionReceiptLabel(execution: KeeperCompositeExecution | undefined):
   if (!execution) return null
   if (!execution.latest_receipt_present) return 'receipt 없음'
   const terminal = shortText(execution.terminal_reason_code, 32)
-  const model = shortText(execution.cascade?.selected_model ?? execution.model_used, 36)
   const elapsed = formatMs(execution.duration_ms)
   return [
     execution.outcome ?? 'unknown',
     terminal,
-    model,
     elapsed,
   ].filter(Boolean).join(' · ')
 }
 
 function executionReceiptTitle(execution: KeeperCompositeExecution | undefined): string {
   if (!execution?.latest_receipt_present) return '아직 execution receipt가 없습니다.'
+  const surface = execution.tool_surface
   return [
     execution.recorded_at ? `recorded_at: ${execution.recorded_at}` : '',
     execution.operator_disposition ? `operator: ${execution.operator_disposition}` : '',
     execution.operator_disposition_reason ? `reason: ${execution.operator_disposition_reason}` : '',
+    surface?.tool_requirement ? `tool_requirement: ${toolRequirementLabel(surface.tool_requirement) ?? surface.tool_requirement}` : '',
+    surface?.turn_lane ? `turn_lane: ${turnLaneLabel(surface.turn_lane) ?? surface.turn_lane}` : '',
+    surface?.tool_surface_class ? `tool_surface: ${toolSurfaceClassLabel(surface.tool_surface_class) ?? surface.tool_surface_class}` : '',
+    typeof surface?.visible_tool_count === 'number' ? `visible_tools: ${surface.visible_tool_count}` : '',
+    surface?.tool_surface_fallback_used === true ? 'tool_surface_fallback: true' : '',
     execution.cascade?.fallback_reason ? `fallback: ${execution.cascade.fallback_reason}` : '',
     execution.error?.kind ? `error: ${execution.error.kind}` : '',
     execution.error?.message_preview ? execution.error.message_preview : '',
@@ -175,6 +146,142 @@ function executionReceiptClass(execution: KeeperCompositeExecution | undefined):
   }
 }
 
+function runtimeTraceTone(trace: KeeperRuntimeTraceResponse): 'ok' | 'warn' | 'bad' | 'muted' {
+  const health = trace.health.toLowerCase()
+  if (health === 'ok' || health === 'healthy') return 'ok'
+  if (health === 'stale' || health === 'partial' || health === 'warning') return 'warn'
+  if (health === 'missing' || health === 'error' || health.includes('gap')) return 'bad'
+  return trace.manifest_path_present ? 'warn' : 'muted'
+}
+
+function runtimeTraceClass(trace: KeeperRuntimeTraceResponse): string {
+  switch (runtimeTraceTone(trace)) {
+    case 'ok':
+      return 'border-[var(--ok-20)] text-[var(--color-status-ok)] bg-[var(--ok-10)]'
+    case 'bad':
+      return 'border-[var(--bad-30)] text-[var(--bad-light)] bg-[var(--bad-6)]'
+    case 'warn':
+      return 'border-[var(--warn-20)] text-[var(--color-status-warn)] bg-[var(--warn-10)]'
+    case 'muted':
+      return 'border-[var(--color-border-default)] text-[var(--color-fg-disabled)] bg-[var(--color-bg-surface)]'
+  }
+}
+
+function runtimeProviderAttemptClass(trace: KeeperRuntimeTraceResponse): string {
+  const provider = trace.provider_attempts
+  const status = provider.terminal_status?.toLowerCase() ?? ''
+  if (provider.finished_count < provider.started_count) {
+    return 'border-[var(--bad-30)] text-[var(--bad-light)] bg-[var(--bad-6)]'
+  }
+  if (status === 'provider_returned') {
+    return 'border-[var(--ok-20)] text-[var(--color-status-ok)] bg-[var(--ok-10)]'
+  }
+  if (status === 'timeout' || status === 'error' || status === 'exception' || status === 'cancelled') {
+    return 'border-[var(--bad-30)] text-[var(--bad-light)] bg-[var(--bad-6)]'
+  }
+  return 'border-[var(--color-border-default)] text-[var(--color-fg-muted)] bg-[var(--color-bg-surface)]'
+}
+
+function runtimeProviderAttemptLabel(trace: KeeperRuntimeTraceResponse): string {
+  const provider = trace.provider_attempts
+  const status = shortText(provider.terminal_status, 18) || 'unknown'
+  return ['prov', status].filter(Boolean).join(' ')
+}
+
+function formatRuntimeTraceUnknown(value: unknown): string {
+  if (value == null) return ''
+  if (typeof value === 'string') return shortText(value, 160)
+  try {
+    return shortText(JSON.stringify(value), 160)
+  } catch {
+    return String(value)
+  }
+}
+
+function runtimeTraceTurnLabel(trace: KeeperRuntimeTraceResponse): string {
+  const keeperTurn = trace.turn_identity.requested_keeper_turn_id
+    ?? trace.turn_identity.manifest_keeper_turn_ids.at(-1)
+    ?? null
+  const oasTurn = trace.turn_identity.max_oas_turn_count
+  const keeperLabel = keeperTurn == null ? '—' : `#${keeperTurn}`
+  const oasLabel = oasTurn == null ? '—' : String(oasTurn)
+  return `turn ${keeperLabel} / oas ${oasLabel}`
+}
+
+function runtimeTraceTitle(trace: KeeperRuntimeTraceResponse): string {
+  const turn = trace.turn_identity
+  const eventBus = trace.event_bus
+  const memory = trace.memory
+  const provider = trace.provider_attempts
+  return [
+    `trace_id: ${trace.trace_id || '(unknown)'}`,
+    trace.stale_reason ? `stale_reason: ${trace.stale_reason}` : '',
+    trace.manifest_path ? `manifest: ${trace.manifest_path}` : '',
+    // manifest_returned_rows ≤ manifest_total_rows is a true invariant pair.
+    `manifest rows: ${formatRatioPair({ numerator: trace.manifest_returned_rows, denominator: trace.manifest_total_rows })}`,
+    `receipt rows: ${trace.receipt_returned_rows}`,
+	    turn.manifest_keeper_turn_ids.length > 0 ? `keeper_turn_ids: ${turn.manifest_keeper_turn_ids.join(', ')}` : '',
+	    turn.receipt_turn_counts.length > 0 ? `receipt_turn_counts: ${turn.receipt_turn_counts.join(', ')}` : '',
+	    // provider_attempt_finished ≤ provider_attempt_started is a true invariant pair
+	    // (a finish is always preceded by a start). Started is the denominator.
+	    `provider attempts: ${formatRatioPair({ numerator: turn.provider_attempt_finished_count, denominator: turn.provider_attempt_started_count })}`,
+	    provider.terminal_status ? `provider terminal: ${provider.terminal_status}` : '',
+	    provider.terminal_exception_kind ? `provider exception: ${provider.terminal_exception_kind}` : '',
+	    provider.terminal_error ? `provider error: ${shortText(provider.terminal_error, 220)}` : '',
+	    eventBus.correlation_ids.length > 0 ? `correlation_ids: ${eventBus.correlation_ids.join(', ')}` : '',
+    eventBus.run_ids.length > 0 ? `run_ids: ${eventBus.run_ids.join(', ')}` : '',
+    // context_compacted ≤ context_compact_started is a true invariant pair.
+    `context compaction: ${formatRatioPair({ numerator: eventBus.context_compacted_count, denominator: eventBus.context_compact_started_count })}`,
+    formatRuntimeTraceUnknown(eventBus.last_compaction),
+    // memory_injected_count and memory_flushed_count are independent monotonic
+    // lifetime counters — no invariant relation between them. Avoid slash UI
+    // (e.g. "909/722" would read as 126% ratio).
+    `memory: ${formatIndependentCounters({
+      leftLabel: 'injected',
+      leftValue: memory.memory_injected_count,
+      rightLabel: 'flushed',
+      rightValue: memory.memory_flushed_count,
+    })}`,
+    // memory_flush_success_count and memory_flush_error_count are independent
+    // outcome tallies (one or the other increments per flush), not a ratio.
+    `memory flush: ${formatIndependentCounters({
+      leftLabel: 'ok',
+      leftValue: memory.memory_flush_success_count,
+      rightLabel: 'error',
+      rightValue: memory.memory_flush_error_count,
+    })}`,
+  ].filter(Boolean).join('\n')
+}
+
+function RuntimeEvidenceSummary({
+  trace,
+}: {
+  trace?: KeeperRuntimeTraceResponse | null
+}) {
+  if (!trace) return null
+  const eventBus = trace.event_bus
+  const memory = trace.memory
+  const commonClass = 'px-1.5 py-0.5 rounded-[var(--r-1)] border text-3xs font-mono'
+  const title = runtimeTraceTitle(trace)
+  return html`
+    <span class=${`${commonClass} ${runtimeTraceClass(trace)}`} title=${title}>
+      증거 ${trace.health || 'unknown'}
+    </span>
+	    <span class=${`${commonClass} border-[var(--color-border-default)] text-[var(--color-fg-primary)]`} title=${title}>
+	      ${runtimeTraceTurnLabel(trace)}
+	    </span>
+	    <span class=${`${commonClass} ${runtimeProviderAttemptClass(trace)}`} title=${title}>
+	      ${runtimeProviderAttemptLabel(trace)}
+	    </span>
+	    <span class=${`${commonClass} border-[var(--info-border)] text-[var(--info-fg)]`} title=${title}>
+      evt ${eventBus.event_bus_correlated_count} · ctx ${formatRatioPair({ numerator: eventBus.context_compacted_count, denominator: eventBus.context_compact_started_count })}
+    </span>
+    <span class=${`${commonClass} border-[var(--color-border-default)] text-[var(--color-fg-muted)]`} title=${title}>
+      mem ${formatIndependentCounters({ leftLabel: 'inj', leftValue: memory.memory_injected_count, rightLabel: 'flush', rightValue: memory.memory_flushed_count })}
+    </span>
+  `
+}
+
 // ── State Reducer ──────────────────────────────────────
 
 function reduceHubState(state: HubState, action: HubAction): HubState {
@@ -187,12 +294,29 @@ function reduceHubState(state: HubState, action: HubAction): HubState {
         }
 
   switch (action.type) {
-    case 'fetch_started':
+    case 'fetch_started': {
+      // Preserve `'fresh'` payload across a refetch only as `'stale'`.
+      // The previous reducer kept `snapshot` populated and merely
+      // flipped `loading=true, error=null` — that is the Workaround
+      // Rejection Bar §2 surface (Unknown→Permissive Default).
+      const prev = current.status
+      const nextStatus: HubFetchStatus = ((): HubFetchStatus => {
+        switch (prev.kind) {
+          case 'idle':
+          case 'loading':
+          case 'error':
+            return { kind: 'loading' }
+          case 'fresh':
+          case 'stale':
+            return { kind: 'loading' }
+        }
+      })()
       return {
         ...current,
-        loading: true,
-        error: null,
+        keeperName: action.keeperName,
+        status: nextStatus,
       }
+    }
     case 'fetch_succeeded': {
       const observation = observeSnapshot(action.snapshot, action.fetchedAt)
       const inv = action.snapshot.invariants
@@ -202,21 +326,44 @@ function reduceHubState(state: HubState, action: HubAction): HubState {
       }
       return {
         keeperName: action.keeperName,
-        snapshot: action.snapshot,
-        loading: false,
-        error: null,
-        lastFetchAt: action.fetchedAt,
+        status: { kind: 'fresh', snapshot: action.snapshot, fetchedAt: action.fetchedAt },
         observations: appendCompositeObservation(current.observations, observation),
         invariantSampleCount: current.invariantSampleCount + 1,
         invariantViolations: violations,
       }
     }
-    case 'fetch_failed':
+    case 'fetch_failed': {
+      const prev = current.status
+      const nextStatus: HubFetchStatus = ((): HubFetchStatus => {
+        switch (prev.kind) {
+          case 'fresh':
+            return {
+              kind: 'stale',
+              snapshot: prev.snapshot,
+              fetchedAt: prev.fetchedAt,
+              stalenessMs: Math.max(0, action.failedAt - prev.fetchedAt),
+              error: action.error,
+            }
+          case 'stale':
+            return {
+              kind: 'stale',
+              snapshot: prev.snapshot,
+              fetchedAt: prev.fetchedAt,
+              stalenessMs: Math.max(0, action.failedAt - prev.fetchedAt),
+              error: action.error,
+            }
+          case 'idle':
+          case 'loading':
+          case 'error':
+            return { kind: 'error', error: action.error }
+        }
+      })()
       return {
         ...current,
-        loading: false,
-        error: action.error,
+        keeperName: action.keeperName,
+        status: nextStatus,
       }
+    }
   }
 }
 
@@ -235,16 +382,36 @@ export interface FsmHubProps {
    *  (LT-16d) to drive drill-through. When it changes, the hub
    *  switches to the requested keeper on the next render. */
   selectedName?: string | null
+  /** Surface variant. `'fleet'` (default) renders the keeper selector
+   *  tablist for in-hub switching. `'detail'` (RFC-0046) hides the
+   *  selector — the parent surface (keeper detail page) has already
+   *  pinned a single keeper, so re-offering selection is noise. */
+  mode?: 'fleet' | 'detail'
+  /** RFC-0046 §7 #2 follow-up: parent-supplied composite snapshot.
+   *  When the prop is present (not `undefined`), this hub stops
+   *  issuing its own /composite poll and feeds the parent value into
+   *  its reducer as a `fetch_succeeded` event. `null` means the
+   *  parent is loading — wait, do not race a duplicate fetch.
+   *  Only honoured in `mode='detail'`; in `'fleet'` mode the keeper
+   *  selector tablist drives `selectedName` directly and the parent
+   *  has no single snapshot to share. */
+  externalSnapshot?: KeeperCompositeSnapshot | null
+  /** Parent-supplied runtime manifest/receipt evidence for detail mode. */
+  runtimeTrace?: KeeperRuntimeTraceResponse | null
 }
 
 export function FsmHub(props: FsmHubProps = {}) {
+  const mode = props.mode ?? 'fleet'
+  // RFC-0046 §7 #2: parent-supplied snapshot only honoured in 'detail'
+  // mode. Fleet mode drives selection internally and has no single
+  // snapshot to share, so we fall back to the existing fetch path.
+  const externalSnapshot = mode === 'detail' ? props.externalSnapshot : undefined
   const [selected, setSelected] = useState<string | null>(props.selectedName ?? null)
   useEffect(() => {
     if (props.selectedName !== undefined && props.selectedName !== selected) {
       setSelected(props.selectedName)
     }
     // Only react to external changes; local selection stays internal.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.selectedName])
   const [hub, dispatch] = useReducer(reduceHubState, initialHubState)
   const [keeperFilter, setKeeperFilter] = useState('')
@@ -429,6 +596,25 @@ export function FsmHub(props: FsmHubProps = {}) {
 
   useEffect(() => {
     if (!activeSelected) return
+
+    // RFC-0046 §7 #2: parent supplies the snapshot in 'detail' mode.
+    // Inject it into the reducer instead of issuing a duplicate fetch.
+    // `null` = parent is still loading — emit fetch_started so the
+    // skeleton UI shows, then wait for the next prop update.
+    if (externalSnapshot !== undefined) {
+      if (externalSnapshot == null) {
+        dispatch({ type: 'fetch_started', keeperName: activeSelected })
+      } else {
+        dispatch({
+          type: 'fetch_succeeded',
+          keeperName: activeSelected,
+          snapshot: externalSnapshot,
+          fetchedAt: Date.now() / 1000,
+        })
+      }
+      return
+    }
+
     const requestId = requestIdRef.current + 1
     requestIdRef.current = requestId
     dispatch({ type: 'fetch_started', keeperName: activeSelected })
@@ -444,6 +630,7 @@ export function FsmHub(props: FsmHubProps = {}) {
         })
       } catch (err) {
         if (requestIdRef.current !== requestId) return
+        const failedAt = Date.now() / 1000
         if (isCompositeFetchNotFound(err)) {
           setGateKeeperNames(prev => prev.filter(name => name !== activeSelected))
           setSelected(prev => (prev === activeSelected ? null : prev))
@@ -452,6 +639,7 @@ export function FsmHub(props: FsmHubProps = {}) {
             type: 'fetch_failed',
             keeperName: activeSelected,
             error: '선택한 keeper가 종료되었거나 등록 해제되었습니다',
+            failedAt,
           })
           return
         }
@@ -459,10 +647,11 @@ export function FsmHub(props: FsmHubProps = {}) {
           type: 'fetch_failed',
           keeperName: activeSelected,
           error: err instanceof Error ? err.message : 'composite fetch failed',
+          failedAt,
         })
       }
     })()
-  }, [activeSelected, shouldRefetchForTick, pollTick])
+  }, [activeSelected, shouldRefetchForTick, pollTick, externalSnapshot])
 
   useGlobalShortcut(
     (ev) => ev.key >= '1' && ev.key <= '9',
@@ -509,7 +698,36 @@ export function FsmHub(props: FsmHubProps = {}) {
   // owns its own 5 s clock subscription so this component stays stable
   // on ticks. (Previously this useMemo recomputed every 5 s because of
   // the `now` dep, dragging fsm-hub through the same render every time.)
-  const { snapshot, loading, error, lastFetchAt } = view
+  // Project the typed status onto the flat shape the JSX expects.
+  // `snapshot` is only non-null when the status is `'fresh'` — the
+  // prior reducer leaked stale snapshots through error paths (the
+  // bug this PR closes). `'stale'` is intentionally surfaced via
+  // `error` so the empty-state panel takes over and the operator
+  // sees the failure message instead of rendered cards backed by a
+  // last-known snapshot. Consumers that want explicit stale rendering
+  // can `switch` on `view.status.kind` directly. Exhaustive — no
+  // `default:` clause so a new arm is a compile error.
+  const projectedView = ((): {
+    snapshot: KeeperCompositeSnapshot | null
+    loading: boolean
+    error: string | null
+    lastFetchAt: number
+  } => {
+    const status: HubFetchStatus = view.status
+    switch (status.kind) {
+      case 'idle':
+        return { snapshot: null, loading: false, error: null, lastFetchAt: 0 }
+      case 'loading':
+        return { snapshot: null, loading: true, error: null, lastFetchAt: 0 }
+      case 'fresh':
+        return { snapshot: status.snapshot, loading: false, error: null, lastFetchAt: status.fetchedAt }
+      case 'stale':
+        return { snapshot: null, loading: false, error: status.error, lastFetchAt: status.fetchedAt }
+      case 'error':
+        return { snapshot: null, loading: false, error: status.error, lastFetchAt: 0 }
+    }
+  })()
+  const { snapshot, loading, error, lastFetchAt } = projectedView
 
   const rootGap = density === 'compact' ? 'gap-1.5' : 'gap-3'
   return html`
@@ -532,10 +750,14 @@ export function FsmHub(props: FsmHubProps = {}) {
         refreshFlash=${refreshFlash}
         transitionCount=${history.length}
         observationCount=${view.observations.length}
+        mode=${mode}
+        runtimeTrace=${mode === 'detail' ? props.runtimeTrace ?? null : null}
       />
 
       ${activeSelected == null ? html`
-        <${EmptyState} message=${keeperNames.length > 0
+        <${EmptyState} message=${mode === 'detail'
+          ? 'composite snapshot을 받지 못했습니다 — keeper 이름을 확인하거나 새로고침하세요'
+          : keeperNames.length > 0
           ? `위 탭에서 키퍼를 선택하면 composite FSM 스냅샷을 표시합니다 (${keeperNames.length}개 사용 가능)`
           : '등록된 키퍼가 없습니다 — MASC에 키퍼를 기동하면 자동으로 표시됩니다'} />
       ` : loading && !snapshot ? html`
@@ -678,6 +900,8 @@ function StatusBar({
   refreshFlash,
   transitionCount,
   observationCount,
+  mode,
+  runtimeTrace,
 }: {
   snapshot: KeeperCompositeSnapshot | null
   lastFetchAt: number
@@ -695,6 +919,8 @@ function StatusBar({
   refreshFlash: boolean
   transitionCount: number
   observationCount: number
+  mode: 'fleet' | 'detail'
+  runtimeTrace?: KeeperRuntimeTraceResponse | null
 }) {
   useNowSecondsTicker()
   const now = nowSecondsSignal.value
@@ -763,6 +989,7 @@ function StatusBar({
               receipt ${receiptLabel}
             </span>
           ` : null}
+          <${RuntimeEvidenceSummary} trace=${runtimeTrace} />
           ${loading ? html`<${InlineSpinner} size="xs" />` : null}
           ${paused ? html`
             <span
@@ -782,6 +1009,7 @@ function StatusBar({
             </span>
           ` : null}
         </div>
+        ${mode === 'detail' ? null : html`
         <div class="flex items-center gap-1.5 flex-wrap" role="tablist" aria-label="Keeper 선택">
           ${keeperNames.length > 0 ? html`
             <${TextInput}
@@ -833,6 +1061,7 @@ function StatusBar({
             `
           })}
         </div>
+        `}
       </div>
       ${snapshot ? html`
         <div class="mt-1.5 flex items-center gap-2 text-3xs font-mono flex-wrap">

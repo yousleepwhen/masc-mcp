@@ -20,36 +20,32 @@ let global_fs : Eio.Fs.dir_ty Eio.Path.t option Atomic.t = Atomic.make None
 
 (** Set the global Eio filesystem. Call once at server startup.
     @param fs The Eio fs from [Eio.Stdenv.fs env] *)
-let set_fs fs =
-  Atomic.set global_fs (Some fs)
+let set_fs fs = Atomic.set global_fs (Some fs)
 
 (** Clear the global fs (testing/shutdown only — not called in production).
     Safe because test runners and shutdown are single-fiber sequential. *)
-let clear_fs () =
-  Atomic.set global_fs None
+let clear_fs () = Atomic.set global_fs None
 
-let get_fs_opt () =
-  Atomic.get global_fs
+let get_fs_opt () = Atomic.get global_fs
 
 (** Check if Eio fs is available *)
-let has_fs () =
-  Option.is_some (Atomic.get global_fs)
+let has_fs () = Option.is_some (Atomic.get global_fs)
 
 (** Normalize [Eio.Io] to [Sys_error] so callers only need one catch.
     Eio operations raise [Eio.Io _] on permission errors, missing files, etc.
     Stdlib I/O already raises [Sys_error], so wrapping only the Eio branch
     keeps the exception contract uniform. *)
 let with_io ~path f =
-  try f ()
-  with Eio.Io _ as e ->
+  try f () with
+  | Eio.Io _ as e ->
     raise (Sys_error (Printf.sprintf "%s: %s" path (Printexc.to_string e)))
+;;
 
 (* #9921: defense-in-depth write-boundary guard.
 
-   [Env_config_core.base_path_prod_guard] stops HOME fallback during path
-   resolution.  This stops writes when the resolved path nevertheless
-   points under HOME — any code that caches a stale [base_path ()] result
-   or builds a HOME-relative path directly hits this gate before the
+   [Env_config_core.base_path_prod_guard] stops test-time writes when path
+   resolution points under HOME.  Any code that caches a stale [base_path ()]
+   result or builds a HOME-relative path directly hits this gate before the
    write lands on the production ledger.
 
    The prod ledger observed 106 test-pattern rows
@@ -71,340 +67,517 @@ let test_exec_home_guard ~op path =
   let is_test_exec =
     String.length basename >= 5 && String.starts_with basename ~prefix:"test_"
   in
-  if not is_test_exec then ()
-  else
+  if not is_test_exec
+  then ()
+  else (
     let allow =
       match Sys.getenv_opt "MASC_TEST_ALLOW_HOME_BASE_PATH" with
       | Some v ->
-          let v = String.lowercase_ascii (String.trim v) in
-          String.equal v "1" || String.equal v "true" || String.equal v "yes"
+        let v = String.lowercase_ascii (String.trim v) in
+        String.equal v "1" || String.equal v "true" || String.equal v "yes"
       | None -> false
     in
-    if allow then ()
-    else
+    if allow
+    then ()
+    else (
       match Sys.getenv_opt "HOME" with
       | None | Some "" -> ()
       | Some home ->
-          let home_norm =
-            let trimmed = String.trim home in
-            let len = String.length trimmed in
-            if len > 1 && Char.equal trimmed.[len - 1] '/' then
-              String.sub trimmed 0 (len - 1)
-            else
-              trimmed
-          in
-          let home_len = String.length home_norm in
-          if home_len > 0
-             && String.length path >= home_len
-             && String.starts_with path ~prefix:home_norm
-          then
-            raise
-              (Test_isolation_breach
-                 (Printf.sprintf
-                    "#9921 %s blocked under HOME=%S (path=%S) in test executable %S. \
-                     MASC_BASE_PATH override did not apply — fix the test setup or \
-                     set MASC_TEST_ALLOW_HOME_BASE_PATH=1."
-                    op home_norm path
-                    (Stdlib.Filename.basename Stdlib.Sys.executable_name)))
+        let home_norm =
+          let trimmed = String.trim home in
+          let len = String.length trimmed in
+          if len > 1 && Char.equal trimmed.[len - 1] '/'
+          then String.sub trimmed 0 (len - 1)
+          else trimmed
+        in
+        let home_len = String.length home_norm in
+        if
+          home_len > 0
+          && String.length path >= home_len
+          && String.starts_with path ~prefix:home_norm
+        then
+          raise
+            (Test_isolation_breach
+               (Printf.sprintf
+                  "#9921 %s blocked under HOME=%S (path=%S) in test executable %S. \
+                   MASC_BASE_PATH override did not apply — fix the test setup or set \
+                   MASC_TEST_ALLOW_HOME_BASE_PATH=1."
+                  op
+                  home_norm
+                  path
+                  (Stdlib.Filename.basename Stdlib.Sys.executable_name)))))
+;;
 
 let with_fs_or_fallback ~path ~fallback f =
   match Atomic.get global_fs with
-  | Some fs -> (
-      try with_io ~path (fun () -> f fs)
-      with Stdlib.Effect.Unhandled _ -> fallback ())
+  | Some fs ->
+    (try with_io ~path (fun () -> f fs) with
+     | Stdlib.Effect.Unhandled _ -> fallback ())
   | None -> fallback ()
+;;
 
 let load_file_unix (path : string) : string =
   let ic = Stdlib.open_in path in
-  Stdlib.Fun.protect ~finally:(fun () -> Stdlib.close_in_noerr ic) (fun () ->
-    let len = Stdlib.in_channel_length ic in
-    Stdlib.really_input_string ic len
-  )
+  Stdlib.Fun.protect
+    ~finally:(fun () -> Stdlib.close_in_noerr ic)
+    (fun () ->
+       let len = Stdlib.in_channel_length ic in
+       Stdlib.really_input_string ic len)
+;;
 
 let save_file_unix (path : string) (content : string) : unit =
   let oc = Stdlib.open_out path in
-  Stdlib.Fun.protect ~finally:(fun () -> Stdlib.close_out_noerr oc) (fun () ->
-    Stdlib.output_string oc content
-  )
+  Stdlib.Fun.protect
+    ~finally:(fun () -> Stdlib.close_out_noerr oc)
+    (fun () -> Stdlib.output_string oc content)
+;;
+
+(* RFC-0108: per-path Stdlib.Mutex registry + fresh-fd open/close
+   on every append.
+
+   Background: prior [Append_fd_cache] LRU cached an [out_channel]
+   per path and reused it across calls. Cache lookup was mutex-
+   protected, but the OCaml-runtime [out_channel] buffer state is
+   not domain-safe — two domains writing through the same cached
+   channel corrupted records mid-line (observed 2026-05-17:
+   utf-8 multibyte tears across trajectories/, keepers/*/reaction-
+   ledger/, plus "}{"-concat in oas-events/ — total 243 live
+   malformed lines).
+
+   PR #15936 (RFC-0108 root-fix scope #1) addressed [append_jsonl]
+   with its own per-path registry but left [append_file_unix] still
+   pointing at the cache. This PR extends the fix to
+   [append_file_unix] (and removes the now-dead [Append_fd_cache]
+   module and [at_exit] hook) so the ~15 [append_file] callers
+   (metrics_store_eio, memory_jsonl,
+   coord_utils_ops, board_core, keeper_chat_store, etc.) get the
+   same guarantee.
+
+   The mutex registry is shared between [append_file_unix] and
+   [append_jsonl] (single [append_path_mutex_registry]) so a
+   caller mixing the two helpers on a single path remains
+   race-free. Per-path granularity lets appends to *different*
+   files run concurrently.
+
+   Throughput trade-off (RFC-0108 §6 performance follow-up): the
+   removed cache folded three syscalls (open/output_string/close)
+   into one cached output_string under 64-keeper telemetry. Fresh
+   fd per call restores those three syscalls. A future domain-safe
+   cache (per-domain fd, or a single-writer coordinator fiber) can
+   reinstate the optimization without giving up correctness. *)
+let append_path_mutex_registry : (string, Stdlib.Mutex.t) Hashtbl.t =
+  Hashtbl.create 32
+let append_path_mutex_registry_mu = Stdlib.Mutex.create ()
+
+let get_append_path_mutex path =
+  Stdlib.Mutex.lock append_path_mutex_registry_mu;
+  Fun.protect
+    ~finally:(fun () -> Stdlib.Mutex.unlock append_path_mutex_registry_mu)
+    (fun () ->
+      match Hashtbl.find_opt append_path_mutex_registry path with
+      | Some m -> m
+      | None ->
+        let m = Stdlib.Mutex.create () in
+        Hashtbl.add append_path_mutex_registry path m;
+        m)
 
 let append_file_unix (path : string) (content : string) : unit =
-  let oc = Stdlib.open_out_gen [Stdlib.Open_append; Stdlib.Open_creat] 0o644 path in
-  Stdlib.Fun.protect ~finally:(fun () -> Stdlib.close_out_noerr oc) (fun () ->
-    Stdlib.output_string oc content
-  )
+  let mu = get_append_path_mutex path in
+  Stdlib.Mutex.lock mu;
+  Fun.protect
+    ~finally:(fun () -> Stdlib.Mutex.unlock mu)
+    (fun () ->
+      let oc =
+        Stdlib.open_out_gen
+          [ Stdlib.Open_append; Stdlib.Open_creat; Stdlib.Open_wronly ]
+          0o644
+          path
+      in
+      Fun.protect
+        ~finally:(fun () -> Stdlib.close_out_noerr oc)
+        (fun () -> Stdlib.output_string oc content))
+;;
 
 let mkdir_p_unix (path : string) : unit =
   let rec ensure_dir (p : string) : unit =
-    if String.equal p "" || String.equal p "." || String.equal p "/" then ()
-    else if Stdlib.Sys.file_exists p then ()
-    else begin
+    if String.equal p "" || String.equal p "." || String.equal p "/"
+    then ()
+    else if Stdlib.Sys.file_exists p
+    then ()
+    else (
       ensure_dir (Stdlib.Filename.dirname p);
-      try Unix.mkdir p 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
-    end
+      try Unix.mkdir p 0o755 with
+      | Unix.Unix_error (Unix.EEXIST, _, _) -> ())
   in
   ensure_dir path
+;;
 
 (** Load entire file contents as string.
     Eio-native when available, fallback to Unix.
     @raises Sys_error on all I/O failures. Eio.Io is normalized internally. *)
 let load_file (path : string) : string =
-  with_fs_or_fallback ~path ~fallback:(fun () -> load_file_unix path) (fun fs ->
-      let eio_path = Eio.Path.(fs / path) in
-      Eio.Path.load eio_path)
+  with_fs_or_fallback
+    ~path
+    ~fallback:(fun () -> load_file_unix path)
+    (fun fs ->
+       let eio_path = Eio.Path.(fs / path) in
+       Eio.Path.load eio_path)
+;;
 
 (** Save string to file (overwrite).
     Eio-native when available, fallback to Unix.
     @raises Sys_error on all I/O failures. Eio.Io is normalized internally. *)
 let save_file (path : string) (content : string) : unit =
   test_exec_home_guard ~op:"save_file" path;
-  with_fs_or_fallback ~path ~fallback:(fun () -> save_file_unix path content) (fun fs ->
-      let eio_path = Eio.Path.(fs / path) in
-      Eio.Path.save ~create:(`Or_truncate 0o644) eio_path content)
+  with_fs_or_fallback
+    ~path
+    ~fallback:(fun () -> save_file_unix path content)
+    (fun fs ->
+       let eio_path = Eio.Path.(fs / path) in
+       Eio.Path.save ~create:(`Or_truncate 0o644) eio_path content)
+;;
 
-(* Durable atomic write: tmp → fsync(tmp) → rename → fsync(parent dir).
-   Without the fsync pair, a crash between the rename and the kernel's
-   dirty-page flush can leave the target truncated or zero-length — exactly
-   what we observed on backlog.json after an abrupt shutdown (2026-04-18). *)
-let fsync_path path =
-  let fd = Unix.openfile path [ Unix.O_RDONLY ] 0 in
-  Stdlib.Fun.protect
-    ~finally:(fun () -> try Unix.close fd with Eio.Cancel.Cancelled _ as e -> raise e | exn -> Stdlib.Printf.eprintf "[fs_compat] fsync_path close failed: %s\n%!" (Printexc.to_string exn))
-    (fun () ->
-      try Unix.fsync fd
-      with Unix.Unix_error ((Unix.EINVAL | Unix.EOPNOTSUPP), _, _) ->
-        (* Some filesystems (tmpfs on some kernels) reject fsync. The data
-           is still durable to the extent the underlying FS offers. *)
-        ())
+let save_file_atomic path content =
+  Atomic_write.save_file_atomic ~save_file path content
+;;
 
-(* #10205 finding 2: keep the atomic-tmp filename shape in one place
-   so the writer ([save_file_atomic]) and the orphan-sweep matcher
-   ([is_atomic_orphan_name]) cannot drift independently.  A
-   prefix/suffix change on one side without the other would cause
-   the sweep to either miss live orphans or scoop unrelated tmp
-   files. *)
-let atomic_tmp_prefix = ".atomic_"
-let atomic_tmp_suffix = ".tmp"
+let is_atomic_orphan_name = Atomic_write.is_atomic_orphan_name
 
-let save_file_atomic (path : string) (content : string) : (unit, string) Result.t =
-  let dir = Stdlib.Filename.dirname path in
-  let tmp =
-    Stdlib.Filename.temp_file ~temp_dir:dir atomic_tmp_prefix atomic_tmp_suffix
-  in
-  try
-    save_file tmp content;
-    fsync_path tmp;
-    Stdlib.Sys.rename tmp path;
-    (try fsync_path dir with Unix.Unix_error _ -> ());
-    Ok ()
-  with
-  | Eio.Cancel.Cancelled _ as e ->
-    (try Stdlib.Sys.remove tmp with Sys_error _ -> ());
-    raise e
-  | exn ->
-    (try Stdlib.Sys.remove tmp with Sys_error _ -> ());
-    Error (Printf.sprintf "save_file_atomic %s: %s" path (Printexc.to_string exn))
-
-(* #10130: orphaned [.atomic_*.tmp] files from [save_file_atomic]
-   that accumulated because the owning process was SIGKILL'd or
-   [Stdlib.Filename.temp_file] raised ENFILE/EMFILE (so the with-handler
-   never ran).  The 2026-04-24 audit found 33 orphans in
-   [~/me/.masc/] with 6 non-zero files carrying real keeper-meta
-   JSON — evidence of 6 silent atomic-save failures that
-   dropped data.
-
-   [cleanup_atomic_orphans] is a boot-time sweep.  Zero-byte
-   orphans are deleted (they lost the rename race but never
-   held data).  Non-zero orphans are MOVED to
-   [<base_path>/<recovered_subdir>/] instead of deleted so
-   operators can forensically inspect them — a data-loss event
-   deserves preservation, not silent cleanup.
-
-   Returns [(deleted, preserved)]:
-   - [deleted]: number of zero-byte orphans removed.
-   - [preserved]: number of non-zero orphans moved to the
-     recovered directory. *)
-let is_atomic_orphan_name name =
-  let n = String.length name in
-  let p = String.length atomic_tmp_prefix in
-  let s = String.length atomic_tmp_suffix in
-  n >= p + s
-  && String.starts_with name ~prefix:atomic_tmp_prefix
-  && String.ends_with ~suffix:atomic_tmp_suffix name
-
-let cleanup_atomic_orphans
-    ~(base_path : string)
-    ?(recovered_subdir = ".recovered")
-    () : int * int =
-  let recovered_dir = Stdlib.Filename.concat base_path recovered_subdir in
-  let deleted = ref 0 in
-  let preserved = ref 0 in
-  (* #10205 finding 3: previous body reinvented [mkdir_p] inline with
-     [Stdlib.Sys.file_exists]+[Unix.mkdir]+[Unix.Unix_error _] swallowing.  The
-     same module already exposes [mkdir_p_unix], which is recursive,
-     idempotent (handles [EEXIST] precisely instead of swallowing every
-     [Unix_error]), and correct when [base_path] itself does not exist
-     yet (boot-time race). *)
-  let ensure_recovered_dir () =
-    try mkdir_p_unix recovered_dir with Unix.Unix_error _ -> ()
-  in
-  let handle_file dir name =
-    let path = Stdlib.Filename.concat dir name in
-    match Unix.stat path with
-    | exception Unix.Unix_error _ -> ()
-    | stat when stat.Unix.st_size = 0 ->
-        (try Stdlib.Sys.remove path; incr deleted
-         with Sys_error _ -> ())
-    | _stat ->
-        ensure_recovered_dir ();
-        let target =
-          Stdlib.Filename.concat recovered_dir
-            (Printf.sprintf "%s.%.0f" name (Unix.gettimeofday () *. 1000.0))
-        in
-        (try Stdlib.Sys.rename path target; incr preserved
-         with Sys_error _ | Unix.Unix_error _ -> ())
-  in
-  let scan_dir dir entries =
-    Array.iter (fun name -> if is_atomic_orphan_name name then handle_file dir name) entries
-  in
-  let read_dir_entries dir =
-    match Stdlib.Sys.readdir dir with
-    | exception Sys_error _ -> [||]
-    | entries -> entries
-  in
-  (* #10205 finding 4: previous body called [Stdlib.Sys.readdir base_path]
-     twice — once via [scan_dir] for orphan-find, once for the
-     subdirectory recursion pass.  Read once, run both passes against
-     the cached entry array. *)
-  let entries = read_dir_entries base_path in
-  scan_dir base_path entries;
-  Array.iter (fun name -> if String.equal name recovered_subdir then ()
-      else
-        let sub = Stdlib.Filename.concat base_path name in
-        match Unix.stat sub with
-        | exception Unix.Unix_error _ -> ()
-        | stat when (=) stat.Unix.st_kind Unix.S_DIR ->
-            scan_dir sub (read_dir_entries sub)
-        | _ -> ()) entries;
-  (!deleted, !preserved)
+let cleanup_atomic_orphans ~base_path ?recovered_subdir () =
+  Atomic_write.cleanup_atomic_orphans ~mkdir_p_unix ~base_path ?recovered_subdir ()
+;;
 
 (** Append string to file.
     Eio-native when available, fallback to Unix.
     @raises Sys_error on all I/O failures. Eio.Io is normalized internally. *)
 let append_file (path : string) (content : string) : unit =
   test_exec_home_guard ~op:"append_file" path;
-  with_fs_or_fallback ~path ~fallback:(fun () -> append_file_unix path content) (fun fs ->
-      let eio_path = Eio.Path.(fs / path) in
-      Eio.Path.save ~append:true ~create:(`If_missing 0o644) eio_path content)
+  with_fs_or_fallback
+    ~path
+    ~fallback:(fun () -> append_file_unix path content)
+    (fun fs ->
+       let eio_path = Eio.Path.(fs / path) in
+       Eio.Path.save ~append:true ~create:(`If_missing 0o644) eio_path content)
+;;
 
 (** Check if file exists.
     Uses Stdlib.Sys.file_exists (works in both Eio and non-Eio contexts). *)
 let file_exists (path : string) : bool =
-  with_fs_or_fallback ~path ~fallback:(fun () -> Stdlib.Sys.file_exists path) (fun fs ->
-    try
-      let _ = Eio.Path.stat ~follow:true Eio.Path.(fs / path) in true
-    with Eio.Io _ -> false)
+  with_fs_or_fallback
+    ~path
+    ~fallback:(fun () -> Stdlib.Sys.file_exists path)
+    (fun fs ->
+       try
+         let _ = Eio.Path.stat ~follow:true Eio.Path.(fs / path) in
+         true
+       with
+       | Eio.Io _ -> false)
+;;
 
 let file_size (path : string) : int option =
-  with_fs_or_fallback ~path
-    ~fallback:(fun () -> try Some (Unix.stat path).st_size with Unix.Unix_error _ -> None)
+  with_fs_or_fallback
+    ~path
+    ~fallback:(fun () ->
+      try Some (Unix.stat path).st_size with
+      | Unix.Unix_error _ -> None)
     (fun _fs ->
-      try Some (Eio_unix.run_in_systhread (fun () -> (Unix.stat path).st_size))
-      with Unix.Unix_error _ -> None)
+       try Some (Eio_unix.run_in_systhread (fun () -> (Unix.stat path).st_size)) with
+       | Unix.Unix_error _ -> None)
+;;
 
 let file_mtime (path : string) : float option =
-  with_fs_or_fallback ~path
-    ~fallback:(fun () -> try Some (Unix.stat path).st_mtime with Unix.Unix_error _ -> None)
+  with_fs_or_fallback
+    ~path
+    ~fallback:(fun () ->
+      try Some (Unix.stat path).st_mtime with
+      | Unix.Unix_error _ -> None)
     (fun _fs ->
-      try Some (Eio_unix.run_in_systhread (fun () -> (Unix.stat path).st_mtime))
-      with Unix.Unix_error _ -> None)
-
+       try Some (Eio_unix.run_in_systhread (fun () -> (Unix.stat path).st_mtime)) with
+       | Unix.Unix_error _ -> None)
+;;
 
 let rename (src : string) (dst : string) : unit =
-  with_fs_or_fallback ~path:src ~fallback:(fun () -> Stdlib.Sys.rename src dst) (fun fs ->
-    Eio.Path.rename Eio.Path.(fs / src) Eio.Path.(fs / dst))
+  with_fs_or_fallback
+    ~path:src
+    ~fallback:(fun () -> Stdlib.Sys.rename src dst)
+    (fun fs -> Eio.Path.rename Eio.Path.(fs / src) Eio.Path.(fs / dst))
+;;
+
+(* Both runtime paths catch the missing-source case explicitly rather
+   than substring-matching on the libc error text. Stdlib's [Sys.rename]
+   raises [Sys_error] with a libc-translated, locale-sensitive message;
+   matching "No such file" against it skips the Eio path where
+   [Eio.Io (Eio.Fs.E (Eio.Fs.Not_found _))] is propagated instead (the
+   [with_io] normalizer wraps it into a [Sys_error] whose body does not
+   necessarily contain "No such file"). The result was a silent
+   path-dependent classifier failure: callers using the substring guard
+   only recognized the missing-source case under the Stdlib fallback. *)
+let rename_if_exists ~src ~dst =
+  with_fs_or_fallback
+    ~path:src
+    ~fallback:(fun () ->
+      try
+        Stdlib.Sys.rename src dst;
+        true
+      with
+      | Sys_error _ when not (Stdlib.Sys.file_exists src) -> false)
+    (fun fs ->
+      try
+        Eio.Path.rename Eio.Path.(fs / src) Eio.Path.(fs / dst);
+        true
+      with
+      | Eio.Io (Eio.Fs.E (Eio.Fs.Not_found _), _) -> false)
+;;
 
 let rmdir (path : string) : unit =
-  with_fs_or_fallback ~path ~fallback:(fun () -> Unix.rmdir path) (fun fs ->
-    Eio.Path.rmdir Eio.Path.(fs / path))
+  with_fs_or_fallback
+    ~path
+    ~fallback:(fun () -> Unix.rmdir path)
+    (fun fs -> Eio.Path.rmdir Eio.Path.(fs / path))
+;;
+
+let remove_tree_unix (path : string) : unit =
+  let rec remove path =
+    match Unix.lstat path with
+    | exception Unix.Unix_error (Unix.ENOENT, _, _) -> ()
+    | exception Unix.Unix_error (Unix.ENOTDIR, _, _) -> ()
+    | stat when stat.Unix.st_kind = Unix.S_DIR ->
+      Sys.readdir path
+      |> Array.iter (fun name -> remove (Filename.concat path name));
+      Unix.rmdir path
+    | _stat -> Sys.remove path
+  in
+  remove path
+;;
+
+let remove_tree (path : string) : unit =
+  let normalized = String.trim path in
+  if String.equal normalized "" || String.equal normalized "/" || String.equal normalized "."
+  then invalid_arg (Printf.sprintf "Fs_compat.remove_tree refuses unsafe path %S" path);
+  test_exec_home_guard ~op:"remove_tree" path;
+  with_fs_or_fallback
+    ~path
+    ~fallback:(fun () -> remove_tree_unix path)
+    (fun _fs -> Eio_unix.run_in_systhread (fun () -> remove_tree_unix path))
+;;
 
 let realpath (path : string) : string =
-  with_fs_or_fallback ~path
+  with_fs_or_fallback
+    ~path
     ~fallback:(fun () -> Unix.realpath path)
-    (fun _fs ->
-      Eio_unix.run_in_systhread (fun () -> Unix.realpath path))
+    (fun _fs -> Eio_unix.run_in_systhread (fun () -> Unix.realpath path))
+;;
 
 (** Create directory recursively if not exists.
     @raises Sys_error on all I/O failures. Eio.Io is normalized internally. *)
 let mkdir_p (path : string) : unit =
   test_exec_home_guard ~op:"mkdir_p" path;
-  with_fs_or_fallback ~path ~fallback:(fun () -> mkdir_p_unix path) (fun fs ->
-      let eio_path = Eio.Path.(fs / path) in
-      Eio.Path.mkdirs ~exists_ok:true ~perm:0o755 eio_path)
+  with_fs_or_fallback
+    ~path
+    ~fallback:(fun () -> mkdir_p_unix path)
+    (fun fs ->
+       let eio_path = Eio.Path.(fs / path) in
+       Eio.Path.mkdirs ~exists_ok:true ~perm:0o755 eio_path)
+;;
+
+(* RFC-0162 §3.1: once-per-path mkdir memoize. Hot append paths
+   ([append_jsonl] in particular) call [mkdir_p] on every record so
+   that the day-rollover dir gets created on first append. After the
+   dir exists, every subsequent call only burns a [Sys.file_exists]
+   or [Eio.Path.mkdirs ~exists_ok:true] stat syscall — yet on the
+   tool_call_io path this adds up to ~22k stats over a few hours and
+   contributes to the EMFILE/ENFILE pressure documented in the RFC.
+
+   The cache stores only the *fact* that the dir exists; it does not
+   keep an fd open. RFC-0108 §2.5's cached [out_channel] corruption
+   does not apply. RFC-0108 §3.3 (cross-domain fd cache) is unrelated.
+
+   Race: two domains may both miss-and-mkdir; the second [mkdir] is a
+   harmless EEXIST. The mutex covers the [Hashtbl] op only. *)
+let mkdir_p_memoized path = Mkdir_memo.mkdir_p_memoized ~mkdir_p path
+let reset_mkdir_memo_for_testing () = Mkdir_memo.reset_for_testing ()
 
 (** Parse pre-read string lines as JSONL.
-    Use when lines come from [Keeper_memory.read_file_tail_lines] or
-    other non-file sources.  Logs malformed lines with [source] tag. *)
-let parse_jsonl_lines ~(source : string) (lines : string list)
-    : Yojson.Safe.t list * int =
+    Use when lines come from typed tail readers such as
+    [Keeper_memory.read_file_tail_lines_result] or other non-file
+    sources.  Logs malformed lines with [source] tag.
+
+    Matches [fold_jsonl]'s line-tracking semantics: [line_no] is
+    1-based, increments only on non-blank lines so it tracks the
+    {b printed} JSONL row number an operator would see in [cat -n].
+    Aligns with the file-level diagnostic at line 559 ("line %d") so
+    a malformed log from either path uses the same coordinate system. *)
+let parse_jsonl_lines ~(source : string) (lines : string list) : Yojson.Safe.t list * int =
   let malformed = ref 0 in
+  let line_no = ref 0 in
   let parsed =
-    List.filter_map (fun line ->
-      let trimmed = String.trim line in
-      if String.equal trimmed "" then None
-      else
-        match Yojson.Safe.from_string trimmed with
-        | json -> Some json
-        | exception Yojson.Json_error msg ->
-            incr malformed;
-            Stdlib.Printf.eprintf "[fs_compat] malformed JSONL (%s): %s\n%!" source msg;
-            None
-    ) lines
+    List.filter_map
+      (fun line ->
+         let trimmed = String.trim line in
+         if String.equal trimmed ""
+         then None
+         else (
+           incr line_no;
+           match Yojson.Safe.from_string trimmed with
+           | json -> Some json
+           | exception Yojson.Json_error msg ->
+             incr malformed;
+             Stdlib.Printf.eprintf
+               "[fs_compat] malformed JSONL (%s) line %d: %s\n%!"
+               source
+               !line_no
+               msg;
+             None))
+      lines
   in
-  (parsed, !malformed)
+  parsed, !malformed
+;;
 
 (** Load JSONL file, returning parsed values and count of malformed lines.
     Delegates to [parse_jsonl_lines] for the actual parsing. *)
 let load_jsonl_diagnostics (path : string) : Yojson.Safe.t list * int =
-  if not (file_exists path) then ([], 0)
-  else
+  if not (file_exists path)
+  then [], 0
+  else (
     let content = load_file path in
     let lines = String.split_on_char '\n' content in
-    parse_jsonl_lines ~source:(Stdlib.Filename.basename path) lines
+    parse_jsonl_lines ~source:path lines)
+;;
 
 (** Load JSONL file as list of JSON values.
     Malformed lines are logged and dropped. *)
-let load_jsonl (path : string) : Yojson.Safe.t list =
-  fst (load_jsonl_diagnostics path)
+let load_jsonl (path : string) : Yojson.Safe.t list = fst (load_jsonl_diagnostics path)
 
-(** Append JSON value as line to JSONL file. *)
+(** Stream JSONL line-by-line, folding [f] over parsed values.
+
+    Uses [Eio.Buf_read.lines] over [Eio.Path.with_open_in] when the
+    global fs is registered ([set_fs] called at boot), giving O(1)
+    resident memory regardless of file size and non-blocking IO inside
+    the Eio scheduler.  Falls back to {!load_jsonl} + [List.fold_left]
+    when no fs is available (tests, pre-boot helpers).
+
+    [line_no] is 1-based and skips blank lines so it tracks the
+    {b printed} JSONL row number rather than the raw byte stream
+    position — matches {!load_jsonl_diagnostics} semantics.
+
+    Malformed JSON lines are skipped after a stderr warning, like
+    {!load_jsonl_diagnostics}.  Returns [init] when [path] does not
+    exist (no read attempt).  Raises [Sys_error] on read failures of
+    an existing file (e.g. permission denied, mid-stream IO error). *)
+let fold_jsonl_lines ~init ~f path =
+  if not (file_exists path)
+  then init
+  else
+    (* 16 MiB per-line cap — protects [Eio.Buf_read.of_flow] from a
+       corrupted/attacker-controlled JSONL with no newlines (which
+       would otherwise force the buf_read to grow unbounded).  Real
+       audit/metric rows are <1 KiB; 16 MiB is two orders of
+       magnitude over expected and still bounds the OOM blast. *)
+    let max_line_bytes = 16 * 1024 * 1024 in
+    with_fs_or_fallback
+      ~path
+      ~fallback:(fun () ->
+        (* Iterate raw lines so [line_no] reflects the same "non-blank
+           index, malformed counted but skipped" semantics as the Eio
+           branch; folding over [fst (load_jsonl_diagnostics ...)] alone
+           would skip malformed rows and desync the index. *)
+        let line_idx = ref 0 in
+        let acc = ref init in
+        let chan = Stdlib.open_in path in
+        Fun.protect
+          ~finally:(fun () -> Stdlib.close_in_noerr chan)
+          (fun () ->
+            try
+              while true do
+                let raw = Stdlib.input_line chan in
+                let trimmed = String.trim raw in
+                if not (String.equal trimmed "")
+                then begin
+                  incr line_idx;
+                  match Yojson.Safe.from_string trimmed with
+                  | json -> acc := f !acc ~line_no:!line_idx json
+                  | exception Yojson.Json_error msg ->
+                    Stdlib.Printf.eprintf
+                      "[fs_compat] malformed JSONL (%s) line %d: %s\n%!"
+                      path
+                      !line_idx
+                      msg
+                end
+              done
+            with End_of_file -> ());
+        !acc)
+      (fun fs ->
+         let eio_path = Eio.Path.(fs / path) in
+         Eio.Path.with_open_in eio_path (fun flow ->
+           let buf = Eio.Buf_read.of_flow ~max_size:max_line_bytes flow in
+           let line_idx = ref 0 in
+           let acc = ref init in
+           Eio.Buf_read.lines buf
+           |> Seq.iter (fun raw ->
+             let trimmed = String.trim raw in
+             if not (String.equal trimmed "")
+             then begin
+               incr line_idx;
+               match Yojson.Safe.from_string trimmed with
+               | json -> acc := f !acc ~line_no:!line_idx json
+               | exception Yojson.Json_error msg ->
+                 Stdlib.Printf.eprintf
+                   "[fs_compat] malformed JSONL (%s) line %d: %s\n%!"
+                   path
+                   !line_idx
+                   msg
+             end);
+           !acc))
+;;
+
+(** Append JSON value as line to JSONL file.
+
+    Atomic per record (in-process): the same [append_path_mutex_registry]
+    used by {!append_file_unix} serializes callers against each
+    other, and a fresh fd is opened and closed around a single
+    [output_string] of [record + "\n"]. Cross-domain safe. Records
+    of any size are written without interleaving (the mutex spans
+    the whole syscall sequence). Crash durability is not guaranteed
+    (no fsync).
+
+    PR #15936 introduced this helper with its own per-path
+    registry. This commit unifies the registry with
+    [append_file_unix] so a caller mixing the two helpers on a
+    single path remains race-free. *)
+(* RFC-0162 §3.4: per-path fd cache (single fd per path, cross-domain
+   serialized by [append_path_mutex_registry]).
+
+   RFC-0108 §3.3 declared cross-domain fd cache an explicit non-goal
+   under the assumption that fd count ≈ keeper N (≤64). Production
+   evidence (RFC-0162 §1.3) invalidated that on the open/close
+   *churn* axis: 22,440 tool calls × fresh open+close per record was
+   shifting host kernel filp_cachep slab pressure and contributing
+   to the EMFILE/ENFILE trace.
+
+   Design choice — Per-path (not per-domain) cache:
+   - A single [out_channel] per path eliminates the cross-domain
+     write interleave window that an early RFC draft's per-domain
+     design opened up (POSIX O_APPEND+write atomicity is only
+     guaranteed up to PIPE_BUF, ~4 KB, and tool-call records
+     routinely exceed that).
+   - The existing [get_append_path_mutex] is already a cross-domain
+     [Stdlib.Mutex] per path. Wrapping [output_string + flush]
+     inside it preserves RFC-0108 §3.2's Record-interleave-0
+     guarantee verbatim.
+   - The cache lookup uses a separate, microsecond-scoped mutex
+     ([fd_cache_mu]) so two appends to *different* paths never
+     contend on a global fd-cache lock. *)
+let close_all_cached_writers () = Fd_cache.close_all ()
+let reset_fd_cache_for_testing () = Fd_cache.reset_for_testing ()
+
 let append_jsonl (path : string) (json : Yojson.Safe.t) : unit =
+  test_exec_home_guard ~op:"append_jsonl" path;
   let dir = Stdlib.Filename.dirname path in
-  mkdir_p dir;
+  mkdir_p_memoized dir;
   let line = Yojson.Safe.to_string json ^ "\n" in
-  append_file path line
-
-(* ================================================================ *)
-(* Storage Backend Abstraction                                      *)
-(* ================================================================ *)
-
-type backend_kind =
-  | Local
-  | Remote of string
-
-type backend = {
-  kind : backend_kind;
-  base_path : string;
-}
-
-let create_backend ?(kind = Local) ~base_path () =
-  { kind; base_path }
-
-let backend_base_path (b : backend) =
-  b.base_path
-
-let backend_kind_to_string = function
-  | Local -> "local"
-  | Remote url -> Printf.sprintf "remote(%s)" url
-
-let default_backend ~base_path =
-  { kind = Local; base_path }
+  let oc = Fd_cache.get_writer path in
+  let path_mu = get_append_path_mutex path in
+  Stdlib.Mutex.protect path_mu (fun () ->
+    Stdlib.output_string oc line;
+    Stdlib.flush oc)
+;;

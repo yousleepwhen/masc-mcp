@@ -22,4 +22,8 @@ let of_yojson = function
       | None ->
           Error
             (Printf.sprintf "unknown worker execution backend: %s" value))
-  | _ -> Error "worker execution backend must be a string"
+  | other ->
+      Error
+        (Printf.sprintf
+           "worker execution backend must be a string (received %s)"
+           (Json_util.kind_name other))

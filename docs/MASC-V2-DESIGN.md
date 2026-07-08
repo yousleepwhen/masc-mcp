@@ -29,18 +29,18 @@ project-root/
 ├── .masc/                         # MASC coordination layer
 │   ├── state.json                 # Room state (agents, tasks)
 │   ├── agents/                    # Agent metadata
-│   │   ├── claude.json            # {capabilities, status, current_worktree}
-│   │   ├── gemini.json
-│   │   └── codex.json
+│   │   ├── agent-llm-a.json            # {capabilities, status, current_worktree}
+│   │   ├── provider-f.json
+│   │   └── agent-code.json
 │   ├── events/                    # Immutable event log (compact layer)
 │   │   └── YYYY-MM/
 │   │       └── DD.jsonl           # Append-only daily events
 │   └── backlog.json               # Task queue
 │
 ├── .worktrees/                    # Git worktrees (agent isolation)
-│   ├── claude-feature-x/          # Claude's isolated workspace
-│   ├── gemini-fix-y/              # Gemini's isolated workspace
-│   └── codex-refactor-z/          # Codex's isolated workspace
+│   ├── agent-llm-a-feature-x/          # Agent-LLM-A's isolated workspace
+│   ├── provider-f-fix-y/              # Provider-F's isolated workspace
+│   └── agent-code-refactor-z/          # Agent-Code's isolated workspace
 │
 └── src/                           # Main codebase
 ```
@@ -52,9 +52,9 @@ Current MASC runtime supports one storage mode: local filesystem under `.masc/`.
 ```
 Machine A:
 ┌───────────────┐
-│ Claude ─┐     │
-│ Gemini ─┼ .masc/
-│ Codex ──┘     │
+│ Agent-LLM-A ─┐     │
+│ Provider-F ─┼ .masc/
+│ Agent-Code ──┘     │
 └───────────────┘
 ```
 
@@ -65,10 +65,9 @@ Machine A:
 | `MASC_BASE_PATH` | Base path (determines `.masc/` location) |
 | `MASC_CLUSTER_NAME` | Cluster name override |
 | `MASC_STORAGE_TYPE` | Active value: `filesystem`; non-filesystem requests fall back to filesystem during bootstrap |
-| `MASC_POSTGRES_URL` | Retired runtime backend env; ignored by current bootstrap |
 
 **Use Cases**:
-- **Filesystem Mode**: Claude Code + terminal Gemini/Codex on the same machine. This is the only supported runtime storage lane.
+- **Filesystem Mode**: CLI-Tool-A + terminal Provider-F/Agent-Code on the same machine. This is the only supported runtime storage lane.
 
 ---
 
@@ -86,7 +85,7 @@ MASC에서 가장 혼동하기 쉬운 개념이 **Cluster**와 **Room**입니다
 │  │  (협업 공간 - 같은 .masc/ filesystem state)                │    │
 │  │                                                               │    │
 │  │   ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │    │
-│  │   │ claude-rare- │  │ gemini-      │  │ codex-swift- │      │    │
+│  │   │ agent-llm-a-rare- │  │ provider-f-      │  │ agent-code-swift- │      │    │
 │  │   │ koala        │  │ fierce-zebra │  │ falcon       │      │    │
 │  │   │ (Agent)      │  │ (Agent)      │  │ (Agent)      │      │    │
 │  │   └──────────────┘  └──────────────┘  └──────────────┘      │    │
@@ -96,7 +95,7 @@ MASC에서 가장 혼동하기 쉬운 개념이 **Cluster**와 **Room**입니다
 │  ┌─────────────────────────────────────────────────────────────┐    │
 │  │  Room: "frontend-team" (Future: 여러 Room 지원 예정)         │    │
 │  │   ┌──────────────┐  ┌──────────────┐                        │    │
-│  │   │ claude-web   │  │ codex-ui     │                        │    │
+│  │   │ agent-llm-a-web   │  │ agent-code-ui     │                        │    │
 │  │   └──────────────┘  └──────────────┘                        │    │
 │  └─────────────────────────────────────────────────────────────┘    │
 │                                                                      │
@@ -109,7 +108,7 @@ MASC에서 가장 혼동하기 쉬운 개념이 **Cluster**와 **Room**입니다
 |------|------|------|
 | **Cluster** | 서버/인스턴스 식별자. `MASC_CLUSTER_NAME` 또는 기본 label | `"default"` |
 | **Room** | 실제 협업 공간. 같은 Room = 같은 Task Board, Messages, Agents | `"default"` (기본 Room) |
-| **Agent** | Room 내에서 작업하는 개별 MODEL 인스턴스 | `claude-rare-koala`, `gemini-fierce-zebra` |
+| **Agent** | Room 내에서 작업하는 개별 MODEL 인스턴스 | `agent-llm-a-rare-koala`, `provider-f-fierce-zebra` |
 
 ### 협업 조건
 
@@ -124,12 +123,12 @@ MASC에서 가장 혼동하기 쉬운 개념이 **Cluster**와 **Room**입니다
 ```
 Cluster: me
 Room: default
-Path: /Users/dancer/me/.masc
+Path: <MASC_BASE_PATH>/.masc
 
 Active Agents (2)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-• claude-rare-koala (working on task-027)
-• gemini-fierce-zebra (idle)
+• agent-llm-a-rare-koala (working on task-027)
+• provider-f-fierce-zebra (idle)
 ```
 
 ---
@@ -145,18 +144,16 @@ Active Agents (2)
 **Workflow**:
 ```bash
 # Agent joins and creates worktree
-masc_join --agent claude --capabilities "typescript,review"
-git worktree add .worktrees/claude-PK-12345 -b claude/PK-12345 origin/develop
+masc_join --agent agent-llm-a --capabilities "typescript,review"
+git worktree add .worktrees/claude-PK-12345 -b agent-llm-a/PK-12345 origin/develop
 
 # Agent works in isolated worktree
 cd .worktrees/claude-PK-12345
 # ... make changes ...
 
-# Agent creates PR via gh CLI (not custom system)
-gh pr create --draft --title "[PK-12345] Feature X" --body "..."
-
-# Other agents can review
-masc_broadcast "PR ready for review: #123"
+# Agent publishes work through the repository's normal forge workflow.
+# MASC records coordination state; it does not wrap forge lifecycle actions.
+masc_broadcast "work ready for external review"
 ```
 
 ### 2. Capability-based Routing (not Role-based)
@@ -166,7 +163,7 @@ masc_broadcast "PR ready for review: #123"
 **Instead**:
 ```json
 {
-  "agent": "claude",
+  "agent": "agent-llm-a",
   "capabilities": ["typescript", "code-review", "architecture"],
   "availability": 0.8,
   "current_load": 2
@@ -178,7 +175,7 @@ masc_broadcast "PR ready for review: #123"
 Task: "Review TypeScript PR"
 Required: ["typescript", "code-review"]
 
-Match: claude (2/2 capabilities) > gemini (1/2) > codex (1/2)
+Match: agent-llm-a (2/2 capabilities) > provider-f (1/2) > agent-code (1/2)
 ```
 
 ### 3. Layered History (BALTHASAR 제안)
@@ -191,29 +188,18 @@ Match: claude (2/2 capabilities) > gemini (1/2) > codex (1/2)
 
 **Immutable Events** (`.masc/events/YYYY-MM/DD.jsonl`):
 ```jsonl
-{"seq":1,"type":"agent_join","agent":"claude","ts":"2025-01-02T10:00:00Z"}
-{"seq":2,"type":"task_claim","agent":"claude","task":"PK-12345","ts":"2025-01-02T10:01:00Z"}
-{"seq":3,"type":"pr_created","agent":"claude","pr":123,"ts":"2025-01-02T11:00:00Z"}
-{"seq":4,"type":"pr_merged","agent":"gemini","pr":123,"ts":"2025-01-02T12:00:00Z"}
+{"seq":1,"type":"agent_join","agent":"agent-llm-a","ts":"2025-01-02T10:00:00Z"}
+{"seq":2,"type":"task_claim","agent":"agent-llm-a","task":"PK-12345","ts":"2025-01-02T10:01:00Z"}
+{"seq":3,"type":"work_published","agent":"agent-llm-a","ref":"agent-llm-a/PK-12345","ts":"2025-01-02T11:00:00Z"}
+{"seq":4,"type":"work_reviewed","agent":"provider-f","ref":"agent-llm-a/PK-12345","ts":"2025-01-02T12:00:00Z"}
 ```
 
-### 4. PR Workflow (gh CLI 활용)
+### 4. Forge Workflow Boundary
 
-**CASPER 핵심 조언**: "PR 시스템 재발명 금지. `gh` CLI가 이미 충분함"
-
-```bash
-# Create PR
-gh pr create --draft --base develop --head claude/PK-12345
-
-# Request review from another agent
-gh pr edit 123 --add-reviewer @gemini
-
-# Merge when approved
-gh pr merge 123 --squash
-```
+**CASPER 핵심 조언**: "PR 시스템 재발명 금지."
 
 **MASC의 역할**:
-- PR 생성/머지를 이벤트 로그에 기록
+- worktree/task 상태와 외부 리뷰 준비 신호를 이벤트 로그에 기록
 - 에이전트 간 알림 브로드캐스트
 - Worktree 생성/정리 자동화
 
@@ -226,14 +212,10 @@ CASPER의 실용적 조언에 따라 최소 기능부터 시작:
 ### Must Have
 - [x] `masc_init` - 룸 초기화
 - [x] `masc_join` - 에이전트 참여 (capabilities 포함)
-- [ ] `masc_worktree_create` - Worktree 생성 래퍼
-- [ ] `masc_worktree_remove` - Worktree 정리
 - [x] `masc_broadcast` - 메시지 브로드캐스트
 - [x] `masc_status` - 상태 조회
 
 ### Should Have
-- [ ] `masc_pr_create` - `gh pr create` 래퍼 + 이벤트 로깅
-- [ ] `masc_pr_review` - 리뷰 요청/응답
 - [ ] Capability matching 알고리즘
 
 ### Won't Have (v2.1+)
@@ -278,21 +260,16 @@ git worktree prune
 
 ```jsonl
 // Agent lifecycle
-{"seq":1,"type":"agent_join","agent":"claude","capabilities":["ts","review"],"ts":"..."}
-{"seq":2,"type":"agent_leave","agent":"claude","reason":"session_end","ts":"..."}
+{"seq":1,"type":"agent_join","agent":"agent-llm-a","capabilities":["ts","review"],"ts":"..."}
+{"seq":2,"type":"agent_leave","agent":"agent-llm-a","reason":"session_end","ts":"..."}
 
 // Worktree lifecycle
-{"seq":3,"type":"worktree_create","agent":"claude","branch":"claude/PK-123","ts":"..."}
-{"seq":4,"type":"worktree_remove","agent":"claude","branch":"claude/PK-123","ts":"..."}
-
-// PR lifecycle
-{"seq":5,"type":"pr_create","agent":"claude","pr":123,"base":"develop","ts":"..."}
-{"seq":6,"type":"pr_review","agent":"gemini","pr":123,"verdict":"approve","ts":"..."}
-{"seq":7,"type":"pr_merge","agent":"gemini","pr":123,"ts":"..."}
+{"seq":3,"type":"worktree_create","agent":"agent-llm-a","branch":"agent-llm-a/PK-123","ts":"..."}
+{"seq":4,"type":"worktree_remove","agent":"agent-llm-a","branch":"agent-llm-a/PK-123","ts":"..."}
 
 // Task lifecycle
-{"seq":8,"type":"task_claim","agent":"claude","task":"PK-123","ts":"..."}
-{"seq":9,"type":"task_done","agent":"claude","task":"PK-123","ts":"..."}
+{"seq":5,"type":"task_claim","agent":"agent-llm-a","task":"PK-123","ts":"..."}
+{"seq":6,"type":"task_done","agent":"agent-llm-a","task":"PK-123","ts":"..."}
 ```
 
 ---
@@ -334,20 +311,8 @@ v1 → v2 마이그레이션:
 
 ## Related Documents
 
-### Analysis & Improvement
+### Current References
 
-  - 냉정한 비판자, YCombinator, Chomsky, Darwin, Musk, Neuroscientist, Haskell Master
-  - 평균 점수: 6.4/10
-  - 공통 지적: 학습/진화 메커니즘 부재, 메타포 과잉
-
-- **[RESEARCH-BASED-IMPROVEMENTS.md](./RESEARCH-BASED-IMPROVEMENTS.md)** - 학술 연구 기반 개선안
-  - 11개 논문 인용 (arXiv, ACM, IEEE, Springer, PMC)
-  - P0: Error Propagation Guard, Fitness Selection
-  - P1: Hebbian Learning, Effect System
-  - P2: Terminology Normalization, Telemetry
-
-### Vision Docs
-
-- **[HOLONIC-ARCHITECTURE.md](./HOLONIC-ARCHITECTURE.md)** - coordination layers from agent to institution
-  - conceptual vocabulary for scale discussion
-  - not a proof that higher-order layers are implemented
+- **[PRODUCT-OPERATING-PLAN.md](./PRODUCT-OPERATING-PLAN.md)** - current product promise and cleanup posture
+- **[OAS-MASC-BOUNDARY.md](./OAS-MASC-BOUNDARY.md)** - current OAS/MASC ownership split
+- **[spec/SPEC-INDEX.md](./spec/SPEC-INDEX.md)** - maintained specification index

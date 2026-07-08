@@ -18,7 +18,7 @@ open Keeper_tool_registry
    Phase B2 / Plan Part 2.5 Axis 4. *)
 
 let keeper_writable_prefixes = [
-  Playground_paths.all_playgrounds_prefix ^ "/";  (* coding workspace *)
+  Playground_paths.all_playgrounds_prefix ^ "/";  (* playground workspace *)
   ".masc/decision_audit/";   (* self audit logs — forensics, not trust input *)
   ".worktrees/";             (* git worktree workspace — repo-root, not .masc/ *)
 ]
@@ -92,17 +92,6 @@ let with_policy_config_or ?(on_none = fun () -> ()) ~accessor ~default f =
     default
   | Some cfg -> f cfg
 
-let require_policy_config ~accessor =
-  match !policy_config with
-  | Some cfg -> cfg
-  | None ->
-    observe_unloaded_policy_config ~accessor
-      ~outcome:"raising Invalid_argument";
-    invalid_arg
-      (Printf.sprintf
-         "tool_policy.%s requires init_policy_config; config/tool_policy.toml is not loaded"
-         accessor)
-
 let reset_policy_config_for_test () =
   policy_config := None;
   Stdlib.Mutex.lock policy_config_unloaded_mutex;
@@ -126,7 +115,6 @@ let preset_name_of_tool_preset = function
   | Social -> "social"
   | Messaging -> "messaging"
   | Dispatch -> "dispatch"
-  | Coding -> "coding"
   | Research -> "research"
   | Delivery -> "delivery"
   | Full -> "full"
@@ -134,7 +122,7 @@ let preset_name_of_tool_preset = function
 (* ── Privileged operation gates ------------------------------------ *)
 
 let preset_allows_privileged_operations = function
-  | Coding | Delivery | Full -> true
+  | Delivery | Full -> true
   | Minimal | Social | Messaging | Dispatch | Research -> false
 
 let allows_workflow_for_preset (preset : tool_preset) : bool =
@@ -142,54 +130,6 @@ let allows_workflow_for_preset (preset : tool_preset) : bool =
 
 let allows_shell_write_for_preset (preset : tool_preset) : bool =
   preset_allows_privileged_operations preset
-
-(* ── Git clone config accessors (config-driven) ──────────────── *)
-
-let git_clone_allowed_orgs () : string list option =
-  with_policy_config_or ~accessor:"git_clone_allowed_orgs" ~default:None
-    (fun cfg -> Some (Keeper_tool_policy_config.git_clone_allowed_orgs cfg))
-
-let git_clone_denied_repos () : string list option =
-  with_policy_config_or ~accessor:"git_clone_denied_repos" ~default:None
-    (fun cfg -> Some (Keeper_tool_policy_config.git_clone_denied_repos cfg))
-
-let clone_depth () : int =
-  require_policy_config ~accessor:"clone_depth"
-  |> Keeper_tool_policy_config.clone_depth
-
-let clone_timeout_sec () : float =
-  require_policy_config ~accessor:"clone_timeout_sec"
-  |> Keeper_tool_policy_config.clone_timeout_sec
-
-let push_timeout_sec () : float =
-  require_policy_config ~accessor:"push_timeout_sec"
-  |> Keeper_tool_policy_config.push_timeout_sec
-
-let pr_create_timeout_sec () : float =
-  require_policy_config ~accessor:"pr_create_timeout_sec"
-  |> Keeper_tool_policy_config.pr_create_timeout_sec
-
-(* ── GH cache config accessors (config-driven) ─────────────── *)
-
-let gh_cache_ttl_sec () : float =
-  require_policy_config ~accessor:"gh_cache_ttl_sec"
-  |> Keeper_tool_policy_config.gh_cache_ttl_sec
-
-let gh_cache_fetch_page_size () : int =
-  require_policy_config ~accessor:"gh_cache_fetch_page_size"
-  |> Keeper_tool_policy_config.gh_cache_fetch_page_size
-
-let gh_cache_fetch_timeout_sec () : float =
-  require_policy_config ~accessor:"gh_cache_fetch_timeout_sec"
-  |> Keeper_tool_policy_config.gh_cache_fetch_timeout_sec
-
-let gh_cache_max_alternatives () : int =
-  require_policy_config ~accessor:"gh_cache_max_alternatives"
-  |> Keeper_tool_policy_config.gh_cache_max_alternatives
-
-let gh_cache_max_output_bytes () : int =
-  require_policy_config ~accessor:"gh_cache_max_output_bytes"
-  |> Keeper_tool_policy_config.gh_cache_max_output_bytes
 
 (* ── Preset subsumption (config-driven) ──────────────────────── *)
 
@@ -235,15 +175,12 @@ let keeper_safe_inline_tools =
 let is_keeper_safe_inline_tool name =
   List.mem name keeper_safe_inline_tools
 
-let keeper_mcp_context_required_tools =
-  Tool_schemas_inline.schemas
-  |> List.map (fun (schema : Masc_domain.tool_schema) -> schema.name)
-  |> List.filter (fun name -> not (is_keeper_safe_inline_tool name))
-
 let is_keeper_mcp_context_required name =
-  not (is_keeper_safe_inline_tool name)
-  && (List.mem name keeper_mcp_context_required_tools
-      || Tool_dispatch.is_mcp_context_required name)
+  let stripped = Keeper_tool_alias.strip_mcp_masc_prefix name in
+  not (is_keeper_safe_inline_tool stripped)
+  && Agent_tool_descriptor_resolution.capability_has
+       Tool_capability.Mcp_context_required
+       name
 
 let keeper_supported_keeper_masc_tools =
   [ "masc_keeper_list"
@@ -297,7 +234,7 @@ let keeper_supported_masc_tool_names_from_schemas schemas =
   |> dedupe_tool_names
 
 let inject_masc_schemas (schemas : Masc_domain.tool_schema list) =
-  masc_schemas_ref := keeper_supported_masc_schemas schemas
+  set_masc_schemas (keeper_supported_masc_schemas schemas)
 
 let select_existing_masc_tool_names names =
   let injected = injected_masc_tool_names () in
@@ -338,12 +275,6 @@ let resolve_policy_group ~(fallback : string list) (group_name : string) : strin
           group_name (List.length fallback);
         fallback)
 
-(** Optional tools that require explicit opt-in via also_allow.
-    Reads [groups.optional] from tool_policy.toml; falls back to
-    hardcoded list when config is absent. *)
-let keeper_optional_tool_names () =
-  resolve_policy_group ~fallback:[ "keeper_board_delete" ] "optional"
-
 (** Tools allowed on the keeper's last turn.
     Reads [groups.last_turn_safe] from tool_policy.toml. *)
 let last_turn_safe_tool_names () =
@@ -351,20 +282,11 @@ let last_turn_safe_tool_names () =
     ~fallback:[ "keeper_board_post"; "keeper_board_comment";
                 "keeper_context_status"; "extend_turns";
                 "keeper_time_now"; "keeper_tool_search";
-                "keeper_broadcast"; "keeper_task_done";
-                "masc_web_search" ]
+                "keeper_broadcast"; "keeper_tasks_list"; "keeper_task_done";
+                "keeper_task_submit_for_verification"; "masc_tasks";
+                "masc_transition"; "tool_read_file"; "tool_search_files";
+                "tool_execute"; "masc_web_search"; "masc_web_fetch" ]
     "last_turn_safe"
-
-let explicit_optional_candidate_tool_names (meta : keeper_meta) =
-  let requested =
-    match meta.tool_access with
-    | Preset { also_allow; _ } -> also_allow
-    | Custom allowlist -> allowlist
-  in
-  let optional = keeper_optional_tool_names () in
-  requested
-  |> List.filter (fun name -> List.mem name optional)
-  |> dedupe_tool_names
 
 (* ── Presets (config-driven) ───────────────────────────────────── *)
 
@@ -373,8 +295,8 @@ let preset_allowlist preset =
   with_policy_config_or ~accessor:("preset_allowlist." ^ name) ~default:[]
     ~on_none:(fun () ->
       Prometheus.inc_counter
-        Prometheus.metric_keeper_tool_policy_failures
-        ~labels:[("site", "policy_config_not_loaded"); ("preset", name)]
+        Keeper_metrics.(to_string ToolPolicyFailures)
+        ~labels:[("site", Keeper_tool_policy_failure_site.(to_label Policy_config_not_loaded)); ("preset", name)]
         ();
       Log.Keeper.error
         "tool policy config not loaded; preset '%s' returns empty. \
@@ -407,7 +329,7 @@ let tool_policy_of_meta (meta : keeper_meta) =
     deny = Tool_access_policy.Names meta.tool_denylist;
   }
 
-module StringSet = Set.Make (String)
+module StringSet = Set_util.StringSet
 
 (* ── Access lookup (O(1) per tool) ────────────────────────────── *)
 
@@ -422,10 +344,11 @@ let tool_name_set names =
   List.fold_left (fun acc name -> StringSet.add name acc) StringSet.empty names
 
 let tool_access_lookup_of_meta (meta : keeper_meta) =
-  let candidate_names =
-    dedupe_tool_names
-      (keeper_base_candidate_tool_names () @ explicit_optional_candidate_tool_names meta)
-  in
+  (* keeper_base_candidate_tool_names pulls [groups.voice] from
+     tool_policy.toml via all_group_tools — voice tools are present iff
+     the keeper's preset includes the voice group. No per-keeper gate. *)
+  let base = keeper_base_candidate_tool_names () in
+  let candidate_names = dedupe_tool_names base in
   let candidate_set = tool_name_set candidate_names in
   let allow_names =
     Tool_access_policy.resolve
@@ -467,7 +390,7 @@ let can_execute ~(lookup : tool_access_lookup) (name : string) : bool =
 
 let keeper_masc_tool_names (meta : keeper_meta) : string list =
   let lookup = tool_access_lookup_of_meta meta in
-  !masc_schemas_ref
+  masc_schemas_snapshot ()
   |> List.filter_map (fun (schema : Masc_domain.tool_schema) ->
     if filter_by_access ~lookup schema.name
     then Some schema.name
@@ -475,7 +398,7 @@ let keeper_masc_tool_names (meta : keeper_meta) : string list =
 
 let keeper_masc_tool_schemas (meta : keeper_meta) : Masc_domain.tool_schema list =
   let lookup = tool_access_lookup_of_meta meta in
-  !masc_schemas_ref
+  masc_schemas_snapshot ()
   |> List.filter (fun (schema : Masc_domain.tool_schema) -> filter_by_access ~lookup schema.name)
 
 (* ── Layer 2: Universe (all executable tools, policy-independent) ── *)
@@ -484,7 +407,7 @@ let keeper_masc_tool_schemas (meta : keeper_meta) : Masc_domain.tool_schema list
     Used by make_tools to build Tool.t for BM25 retrieval scope. *)
 let keeper_universe_masc_tool_schemas (meta : keeper_meta) : Masc_domain.tool_schema list =
   let lookup = tool_access_lookup_of_meta meta in
-  !masc_schemas_ref
+  masc_schemas_snapshot ()
   |> List.filter (fun (schema : Masc_domain.tool_schema) ->
     filter_by_universe ~lookup schema.name)
 
@@ -500,10 +423,32 @@ let keeper_default_model_tools (_meta : keeper_meta) : Masc_domain.tool_schema l
     In Failing phase the keeper must retain a guaranteed floor of tools
     regardless of preset, deny-list, or policy config.  The floor is
     determined solely by shard removability (structural, not policy). *)
+(** Essential MASC tools always available in Failing recovery,
+    on top of [removable=false] shard floor. Mirrors [masc.essential]
+    in tool_policy.toml. Sync regression: any drift here vs the toml
+    group is caught by [test_failing_minimum_essential.ml].
+
+    Rationale (board P1, 9 keepers × 0 claimable masc_web_search):
+    a Failing keeper still needs to check coordination state, look up
+    information for recovery, and defer to operator approval. Removing
+    these from the recovery floor caused task contracts that require
+    [masc_web_search] to become unclaimable when any keeper entered
+    decision_layer >= 2. *)
+let essential_masc_minimum_names : string list = [
+  "masc_status";
+  "masc_web_search";
+  "masc_web_fetch";
+  "masc_approval_pending";
+]
+
 let failing_minimum_tool_names () : string list =
-  Tool_shard.recovery_minimum_shard_names ()
-  |> Tool_shard.tools_of_shards
-  |> List.map (fun (t : Masc_domain.tool_schema) -> t.Masc_domain.name)
+  let shard_floor =
+    Tool_shard.recovery_minimum_shard_names ()
+    |> Tool_shard.tools_of_shards
+    |> List.map (fun (t : Masc_domain.tool_schema) -> t.Masc_domain.name)
+  in
+  shard_floor @ essential_masc_minimum_names
+  |> List.sort_uniq String.compare
 
 let keeper_allowed_tool_names ?(write_done = false)
     ?(phase = Keeper_state_machine.Running) (meta : keeper_meta) :
@@ -569,12 +514,6 @@ let keeper_preset_universe_tool_names (meta : keeper_meta) : string list =
 let all_keeper_schemas ~(masc_schemas_fn : keeper_meta -> Masc_domain.tool_schema list)
     (meta : keeper_meta) : Masc_domain.tool_schema list =
   (keeper_default_model_tools meta)
-  @ Tool_shard.autoresearch_keeper_tools
-  @ Tool_shard.coding_tools
-  @ Tool_code_write.schemas
-  @ Tool_shard.keeper_preflight_tools
-  @ Tool_shard.keeper_github_pr_tools
-  @ Tool_shard.keeper_pr_review_tools
   @ (masc_schemas_fn meta)
 
 (** Filter schemas by a set of allowed names.  Uses Hashtbl for O(1) lookup
@@ -690,8 +629,7 @@ let tool_hint_of (name : string) : string option =
     @ Keeper_tool_registry.keeper_voice_tool_schemas
     @ [ Keeper_tool_registry.keeper_tool_search_schema ]
     @ Tool_schemas_inline.schemas
-    @ !masc_schemas_ref
-    @ Tool_code_write.schemas
+    @ masc_schemas_snapshot ()
   in
   match List.find_opt (fun (s : Masc_domain.tool_schema) -> s.name = name) all_schemas with
   | Some s ->

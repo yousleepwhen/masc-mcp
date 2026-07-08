@@ -27,7 +27,43 @@ open Tool_args
 
 module U = Yojson.Safe.Util
 
-type tool_result = bool * string
+type tool_result = Tool_result.result
+
+(* RFC-0189: typed [Tool_result.result] helpers, scoped to this module.
+
+   - [ok_result_typed]: structured success — uses [data] field directly,
+     mirroring the [Tool_args.ok_response]/[ok_assoc] envelope.
+   - [text_ok]: success carrying a free-form (often JSON-string) body.
+     Falls back to [`String body] when [structured_payload_of_message]
+     can't parse — same pattern as #18767.
+   - [error_workflow]: caller-input rejection (auth section unknown,
+     deprecated field, validation failure).  All three error paths
+     here surface caller-side issues, so they share
+     [Workflow_rejection]. *)
+let ok_result_typed ~tool_name ~start_time fields : Tool_result.result =
+  Tool_result.make_ok
+    ~tool_name
+    ~start_time
+    ~data:(Tool_args.ok_assoc fields)
+    ()
+;;
+
+let text_ok ~tool_name ~start_time body : Tool_result.result =
+  let data =
+    match Tool_result.structured_payload_of_message body with
+    | Some json -> json
+    | None -> `String body
+  in
+  Tool_result.make_ok ~tool_name ~start_time ~data ()
+;;
+
+let error_workflow ~tool_name ~start_time msg : Tool_result.result =
+  Tool_result.make_err
+    ~tool_name
+    ~class_:Tool_result.Workflow_rejection
+    ~start_time
+    msg
+;;
 
 (** SSOT for canonical `section` values accepted by
     [masc_tool_admin_update]. Adding a new section requires:
@@ -62,7 +98,17 @@ let bool_arg_opt args key =
 let int_arg_opt args key =
   match U.member key args with
   | `Int value -> Some value
-  | `Intlit raw -> Some (Option.value ~default:0 (Stdlib.int_of_string_opt raw))
+  (* [`Intlit raw] only appears for integers too large for the native
+     [int] domain (63-bit on 64-bit platforms).  The previous
+     implementation collapsed parse failure to [Some 0], which silently
+     corrupted overflow into a defined "zero" value — a Workaround
+     Rejection Bar §2 violation (unknown → permissive default).  By
+     composing [int_of_string_opt] into [Option.t] directly, an
+     overflow surfaces as [None], the same shape callers already
+     handle for "field missing" — no silent zero.  Small [`Intlit]
+     payloads (rare; values just above [max_int] depending on
+     platform) round-trip cleanly. *)
+  | `Intlit raw -> Stdlib.int_of_string_opt raw
   | _ -> None
 
 (* ================================================================ *)
@@ -71,7 +117,7 @@ let int_arg_opt args key =
 
 let permission_to_json tool_name =
   match Auth.permission_for_tool tool_name with
-  | Some permission -> `String (Masc_domain.show_permission permission)
+  | Some permission -> `String (Masc_domain.permission_to_string permission)
   | None -> `Null
 
 let auth_snapshot_json ctx =
@@ -106,7 +152,7 @@ let auth_snapshot_json ctx =
       ("credentials", `List credentials);
     ]
 
-let tool_inventory_json _ctx ~include_hidden ~include_deprecated =
+let tool_inventory_json _ctx ~include_hidden =
   (* Returns all tool schemas from catalog with metadata.
      enabled_in_current_mode=false because this is dashboard context (no keeper).
      Keeper-specific tool availability is determined by keeper_allowed_tool_names. *)
@@ -119,6 +165,10 @@ let tool_inventory_json _ctx ~include_hidden ~include_deprecated =
   in
   Config.raw_all_tool_schemas
   |> List.iter (fun (schema : Masc_domain.tool_schema) ->
+         Tool_catalog_surfaces.surfaces_for_tool schema.name
+         |> List.iter (fun surface ->
+                add_surface schema.name
+                  (Tool_catalog_surfaces.surface_to_string surface));
          if Tool_catalog.is_public_mcp schema.name then
            add_surface schema.name "public_mcp");
   List.iter
@@ -131,7 +181,7 @@ let tool_inventory_json _ctx ~include_hidden ~include_deprecated =
   let schemas =
     Config.raw_all_tool_schemas
     |> List.filter (fun (schema : Masc_domain.tool_schema) ->
-           Tool_catalog.is_visible ~include_hidden ~include_deprecated schema.name)
+           Tool_catalog.is_visible ~include_hidden schema.name)
     |> List.sort (fun (left : Masc_domain.tool_schema) right -> String.compare left.name right.name)
   in
   let rows =
@@ -146,6 +196,9 @@ let tool_inventory_json _ctx ~include_hidden ~include_deprecated =
              ([
                 ("name", `String schema.name);
                 ("description", `String help_entry.short_description);
+                ("registered_schema", `Bool true);
+                ( "dispatch_registered",
+                  `Bool (Option.is_some (Tool_dispatch.lookup_tag schema.name)) );
                 ("enabled_in_current_mode", `Bool false);
                 ("direct_call_allowed", `Bool (Tool_catalog.allow_direct_call schema.name));
                 ("required_permission", permission_to_json schema.name);
@@ -167,122 +220,28 @@ let tool_inventory_json _ctx ~include_hidden ~include_deprecated =
        Capability_registry.surface_snapshot_json Config.raw_all_tool_schemas);
     ]
 
-let enforcement_summary_json () =
-  `List
-    [
-      `Assoc
-        [
-          ("surface", `String "room.auth.permission_map");
-          ("status", `String "conditional");
-          ("reason",
-           `String
-             "Auth permission checks are enforced only when room auth is enabled.");
-        ];
-      `Assoc
-        [
-          ("surface", `String "tool_catalog.visibility");
-          ("status", `String "enforced");
-          ("reason",
-           `String
-             "Hidden tools are removed from default discovery and may be direct-call blocked.");
-        ];
-      `Assoc
-        [
-          ("surface", `String "keeper.eval_gate.allowed_tools");
-          ("status", `String "enforced");
-          ("reason",
-           `String
-             "Keeper uses Eval_gate allow/deny lists at tool-call time.");
-        ];
-      `Assoc
-        [
-          ("surface", `String "unit.policy.kill_switch");
-          ("status", `String "enforced");
-          ("reason",
-           `String
-             "Command-plane assignment blocks operations targeting units with kill-switch enabled.");
-        ];
-      `Assoc
-        [
-          ("surface", `String "unit.policy.frozen");
-          ("status", `String "enforced");
-          ("reason",
-           `String
-             "Command-plane assignment blocks operations targeting frozen units.");
-        ];
-      `Assoc
-        [
-          ("surface", `String "unit.policy.tool_allowlist");
-          ("status", `String "advisory_only");
-          ("reason",
-           `String
-             "Stored in CPv2 topology/policy JSON but not wired into runtime tool dispatch on main.");
-        ];
-      `Assoc
-        [
-          ("surface", `String "unit.policy.model_allowlist");
-          ("status", `String "advisory_only");
-          ("reason",
-           `String
-             "Stored in CPv2 topology/policy JSON but not wired into runtime model selection on main.");
-        ];
-    ]
-
 (* ================================================================ *)
 (* Handlers                                                         *)
 (* ================================================================ *)
 
-let handle_feature_flags args : tool_result =
-  let category_filter =
-    match U.member "category" args with
-    | `String c when not (String.equal (String.trim c) "") -> Some (String.lowercase_ascii (String.trim c))
-    | _ -> None
-  in
-  let only_overridden =
-    match U.member "only_overridden" args with
-    | `Bool true -> true
-    | _ -> false
-  in
-  let flags =
-    if only_overridden then Feature_flag_registry.overridden_flags ()
-    else Feature_flag_registry.all_flags
-  in
-  let flags = match category_filter with
-    | None -> flags
-    | Some cat -> List.filter (fun (f : Feature_flag_registry.flag) -> String.equal f.category cat) flags
-  in
-  let deprecated_tools = Tool_catalog.deprecated_tool_entries in
-  let json = `Assoc [
-    ("total", `Int (List.length Feature_flag_registry.all_flags));
-    ("shown", `Int (List.length flags));
-    ("flags", `List (List.map Feature_flag_registry.flag_to_json flags));
-    ("deprecated_flags", `Int (List.length (Feature_flag_registry.deprecated_flags ())));
-    ("deprecated_tools", `Int (List.length deprecated_tools));
-    ("deprecated_tool_names", `List (List.map (fun (name, _) -> `String name) deprecated_tools));
-  ] in
-  (true, Yojson.Safe.to_string json)
-
-let handle_config args : tool_result =
+let handle_config ~tool_name ~start_time args : tool_result =
   let cat = get_string_opt args "category" in
   let json = Env_config_introspect.to_json_filtered ?cat () in
-  (true, Yojson.Safe.to_string json)
+  text_ok ~tool_name ~start_time (Yojson.Safe.to_string json)
+;;
 
-let handle_tool_admin_snapshot ctx args =
+let handle_tool_admin_snapshot ~tool_name ~start_time ctx args : tool_result =
   let include_hidden = get_bool args "include_hidden" true in
-  let include_deprecated = get_bool args "include_deprecated" true in
-  let payload =
-    `Assoc
-      [
-        ("status", `String "ok");
-        ("generated_at", `String (Masc_domain.now_iso ()));
-        ("auth", auth_snapshot_json ctx);
-        ( "tool_inventory",
-          tool_inventory_json ctx ~include_hidden ~include_deprecated );
-      ]
-  in
-  (true, Yojson.Safe.to_string payload)
+  ok_result_typed ~tool_name ~start_time
+    [
+      ("generated_at", `String (Masc_domain.now_iso ()));
+      ("auth", auth_snapshot_json ctx);
+      ( "tool_inventory",
+        tool_inventory_json ctx ~include_hidden );
+    ]
+;;
 
-let handle_tool_admin_update ctx args =
+let handle_tool_admin_update ~tool_name ~start_time ctx args : tool_result =
   let section =
     get_string args "section" "" |> String.trim |> String.lowercase_ascii
   in
@@ -290,7 +249,7 @@ let handle_tool_admin_update ctx args =
   | "auth" ->
       let current = Auth.load_auth_config ctx.config.base_path in
       if not ((=) (U.member "default_role" args) `Null) then
-        (false, "default_role is no longer supported")
+        error_workflow ~tool_name ~start_time "default_role is no longer supported"
       else
       let require_token =
         match bool_arg_opt args "require_token" with
@@ -305,7 +264,7 @@ let handle_tool_admin_update ctx args =
         | None -> Ok current.token_expiry_hours
       in
       (match expiry_hours with
-      | Error err -> (false, err)
+      | Error err -> error_workflow ~tool_name ~start_time err
       | Ok token_expiry_hours ->
           let room_secret =
             match enabled_opt with
@@ -330,17 +289,14 @@ let handle_tool_admin_update ctx args =
             }
           in
           Auth.save_auth_config ctx.config.base_path updated;
-          let payload =
-            `Assoc
-              [
-                ("status", `String "ok");
-                ("section", `String "auth");
-                ("room_secret", json_string_option room_secret);
-                ("result", auth_snapshot_json ctx);
-              ]
-          in
-          (true, Yojson.Safe.to_string payload))
+          ok_result_typed ~tool_name ~start_time
+            [
+              ("section", `String "auth");
+              ("room_secret", json_string_option room_secret);
+              ("result", auth_snapshot_json ctx);
+            ])
   | _ ->
-      (false,
-       Printf.sprintf "section must be one of: %s"
-         (String.concat " | " valid_admin_section_strings))
+      error_workflow ~tool_name ~start_time
+        (Printf.sprintf "section must be one of: %s"
+           (String.concat " | " valid_admin_section_strings))
+;;

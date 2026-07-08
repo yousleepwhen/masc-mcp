@@ -2,26 +2,31 @@
 
 > masc-mcp + OAS 코드베이스의 OCaml 품질 기준.
 > 측정 가능하고, ROI가 높고, 학문적으로 올바른 개선 항목.
-> 생성일: 2026-04-21
+> 생성일: 2026-04-21 · §1 스냅샷 갱신: 2026-05-12
 
 ---
 
 ## 1. 현재 상태 (실측값)
 
+> ⚠️ §1·§5 의 수치는 측정 시점 스냅샷이다. masc-mcp 열은 2026-05-12 에 일부
+> 행을 재측정했다 — `find lib -name '*.ml'` 기준으로 코드베이스가 698 → 1033
+> `.ml` 파일로 커졌고 `.mli` 커버리지는 같은 기간에 53% → 97% 로 올랐다.
+> "(2026-04, 재측정 필요)" 표시된 행은 2026-04-21 측정값 그대로다.
+
 | 축 | masc-mcp | OAS | 평가 |
 |----|----------|-----|------|
-| `.mli` 커버리지 | 370/698 (53%) | 216/218 (99%) | masc-mcp 심각 |
-| `Obj.magic` | 0건 | 0건 | 깨끗함 |
-| `Stdlib.Mutex` 생성 | 13군데 | 2군데 | masc-mcp 과도 |
-| `Eio.Mutex` 사용 | 88군데 | 19군데 | masc-mcp 과잉 |
-| 와일드카드 `_` (Top 파일) | keeper_status_detail: 35, verification: 28 | runtime_server: 25 | 둘 다 과도 |
-| GADT | 2군데 | 5군데 | 미활용 |
-| Effect Handlers | 0건 | 0건 | **공백** |
-| First-class modules | 10군데 | 미측정 | 보통 |
-| Functor (Make) | 10+ (masc_log) | 2군데 | 보통 |
-| Result 사용 파일 | 50개 | 42개 | 양호 |
-| Error() 총 호출 | 799건 | 363건 | masc-mcp 과도 |
-| Polymorphic variants | test 파일 한정 | 미측정 | 미활용 |
+| `.mli` 커버리지 | 1005/1033 (97%, 2026-05-12) | 216/218 (99%) | Tier 1-A 사실상 완료 |
+| `Obj.magic` (실사용) | 0건 (2026-05-12; `lib/cdal/adversarial_eval.ml` 의 1건은 금지패턴 문자열 리터럴) | 0건 | 깨끗함 |
+| `Stdlib.Mutex` 생성 | `Stdlib.Mutex.create` 39 호출 / `module Mutex = Stdlib.Mutex` 105 파일 (2026-05-12) — 다수는 의도된 컨벤션 (`prometheus.ml` 등 짧은 critical section, Eio 의존 회피 주석 명시) | 2군데 | 무분별 신규 추가만 경계 |
+| `Eio.Mutex` 사용 | `Eio.Mutex.create` 113 호출 / `Eio.Mutex` 등장 142 파일 (2026-05-12) | 19군데 (호출/등장 횟수) | 과잉 여부 재평가 필요 — masc-mcp 열은 `Stdlib.Mutex` 행과 같은 단위 (호출 수 / 파일 수), OAS 열은 등장 횟수 |
+| 와일드카드 `_` (Top 파일) | (2026-04, 재측정 필요) keeper_status_detail: 35, verification: 28 | runtime_server: 25 | RFC-0071 §3.4 (warning 4 활성화) 이 진행 중 — §2-B/§3 참조 |
+| GADT | (2026-04) 2군데+ | 5군데 | 미활용 |
+| Effect Handlers | 0건 (2026-05-12; `Effect.perform`/`Effect.Deep`/`Effect.Shallow` 0건 — Eio 내부 사용 제외) | 0건 | **공백** |
+| First-class modules | (2026-04) 10군데 | 미측정 | 보통 |
+| Functor (Make) | (2026-04) 10+ (masc_log) | 2군데 | 보통 |
+| Result 사용 파일 | (2026-04) 50개 | 42개 | 양호 |
+| Error() 총 호출 | (2026-04, 재측정 필요) 799건 | 363건 | 과도 |
+| Polymorphic variants | (2026-04) test 파일 한정 | 미측정 | 미활용 |
 
 ---
 
@@ -29,26 +34,38 @@
 
 ### Tier 1: 즉시 개선 (ROI 극높음)
 
-#### A. `.mli` 커버리지 53% → 90%+
-**문제**: masc-mcp 328개 `.ml` 파일에 `.mli` 없음. 모듈 경계가 없으면:
+#### A. `.mli` 커버리지 53% → 90%+ — ✅ 사실상 완료 (2026-05-12 기준 97%, 1005/1033)
+
+> 2026-04-21 당시 53% (370/698). 이후 대규모 `.mli` 추가로 2026-05-12 기준 97%
+> (1005/1033). 남은 ~28 파일은 아래 타겟 명령으로 확인. 신규 `.ml` 은 `.mli`
+> 동반이 기본 관습.
+
+**문제**: 모듈 경계가 없으면:
 - AI 코드 생성 시 private 함수를 외부에서 호출 (컴파일러가 못 잡음)
 - 리팩토링 시 영향 범위 파악 불가
 - 순환 의존성 은닉
 
 **근거**: OCaml 매뉴얼 2장 "The module system" — `.mli`는 계약(contract)이고 `.ml`은 구현. 계약 없는 구현은 구조적 부채.
 
-**실행**: 우선순위 — `lib/types/`, `lib/coord/`, `lib/keeper/` 순.
-타겟: `for f in lib/**/*.ml; do [ ! -f "${f%.ml}.mli" ] && echo "$f"; done`
+**실행**: 남은 파일 — `find lib -name '*.ml' | while read -r f; do [ ! -f "${f%.ml}.mli" ] && echo "$f"; done` (`lib/**/*.ml` 글롭은 `shopt -s globstar` 가 켜져 있어야 동작하므로 `find` 사용)
 
 #### B. 와일드카드 `_` 패턴 — 정밀 분류 후 위험 건만 교체
-**실측** (masc-mcp `lib/` 전체):
+
+> ⚠️ 아래 Cat 1/2/3 수치와 `keeper_unified_turn.ml:NNN` 라인 번호는 2026-04
+> 측정 기준이다 (해당 파일은 현재 약 3k 줄). 그 후:
+> - `keeper_unified_turn.ml` 의 `_ -> Post_commit_failure` / `_ -> "text_turn"`
+>   fallback 은 현재 코드에 부재 — `turn_mode_of_result` 는 `Keeper_unified_metrics`
+>   로 이동, `work_kind` 는 dashboard/timeline projection 에서만 계산 (RFC-0070/0072
+>   turn_phase typed dispatch, #14918 등). §3-A/§3-B 의 "수정안" 은 적용된 것으로 판단.
+> - RFC-0071 §3.4 가 warning 4 (fragile pattern matching) 활성화를 모듈 단위로
+>   진행 중 (`feat(...): enable warning 4 + close N fragile sites`). 미해소 Cat 3
+>   잔량은 그 트랙의 진행 상황으로 재측정할 것.
+> - `dashboard_utils.ml` 의 `_ -> HL_unknown` (string→enum) 류는 여전히 합리적.
+
+**실측** (masc-mcp `lib/` 전체, 2026-04):
 - Cat 1 (JSON decode): 1,405건 — `Yojson` 파싱의 `| _ -> None/Error`. **합리적** (open-world JSON)
 - Cat 2 (HTTP/status): 436건 — HTTP 응답 코드 매칭. **부분 합리적**
-- Cat 3 (variant fallback): 912건 — **이 중 진짜 위험**:
-  - `dashboard_utils.ml:130` `_ -> HL_unknown` — string→enum 변환, 합리적
-  - `keeper_unified_turn.ml:220` `_ -> Post_commit_failure` — **위험**: variant 확장 시 silent wrong behavior
-  - `keeper_unified_turn.ml:761` `_ -> "text_turn"` — **위험**: turn type 분류의 silent fallback
-  - `keeper_unified_turn.ml:1519` `_ -> ()` — side-effect 무시, 맥락에 따라 위험
+- Cat 3 (variant fallback): 912건 — `variant -> variant` 매핑의 `_ -> default` 가 위험군
 
 **판단 기준**:
 - `string -> enum` 변환의 `_ -> Unknown` variant: 합리적 (open world)
@@ -136,9 +153,16 @@ OCaml 5.4 추가. 현재 keeper 우선순위 관리를 `List.sort`로 구현한 
 
 ## 3. 구체적 코드 수정안 (Tier 1 상세)
 
-### 3A. String-typed enum → variant 타입 (keeper_unified_metrics.ml)
+> ⚠️ 3A / 3B 는 적용된 것으로 보인다 (2026-05-12 확인): `keeper_unified_turn.ml` 에
+> `_ -> "text_turn"` / `_ -> Post_commit_failure` fallback 부재, `turn_mode_of_result`
+> 는 `Keeper_unified_metrics` 모듈, `work_kind` 는 dashboard/timeline projection 에서만
+> 계산 (RFC-0070/0072 turn_phase typed dispatch). 인용된 line 번호 (220 / 750-761 / 1519)
+> 는 2026-04 기준이며 현재 파일은 약 3k 줄 — **라인 번호 신뢰 금지, 심볼명으로 찾을 것**.
+> 아래 내용은 당시 분석 기록으로 남긴다. 3C / 3D 는 미확인.
 
-**현재** (line 750-761):
+### 3A. String-typed enum → variant 타입 (keeper_unified_metrics.ml) — ✅ 적용된 것으로 판단
+
+**(2026-04 당시)** `keeper_unified_metrics.ml` 의 `type turn_mode` (라인 번호 제거 — 위 §1 표 노트 "라인 번호 신뢰 금지, 심볼명으로 찾을 것" 참조):
 ```ocaml
 type turn_mode =
   | Tool_use
@@ -164,9 +188,9 @@ let work_kind_of_turn_mode = function
 - `work_kind`는 dashboard/timeline projection에서만 계산
 - future variant 추가 시 exhaustive match가 깨져서 컴파일 단계에서 바로 드러남
 
-### 3B. post_commit_failure_kind_of_error — 재분류
+### 3B. post_commit_failure_kind_of_error — 재분류 — ✅ `_ -> Post_commit_failure` 부재 (2026-05-12 확인)
 
-**현재** (line 220):
+**(2026-04 당시) 현재**:
 ```ocaml
 let post_commit_failure_kind_of_error (err : Oas.Error.sdk_error) =
   match err with
@@ -243,15 +267,18 @@ JSON 구조가 `Assoc`이 아니면 무시하는 것이 올바른 동작. **합�
 
 ## 5. 측정 지표 (정량)
 
-| 지표 | 현재 | 목표 (3개월) | 측정 방법 |
+> "기준" 열: `(2026-04)` 표시 없으면 2026-05-12 재측정값. 목표 열은 2026-04-21
+> 작성 시점 기준 (3개월) — `.mli` 는 이미 초과 달성.
+
+| 지표 | 기준 | 목표 (3개월) | 측정 방법 |
 |------|------|-------------|----------|
-| `.mli` 커버리지 | 53% | 85% | `find lib -name '*.mli' \| wc -l` |
-| 와일드카드 `_` (variant→variant) | ~100 | <20 | `grep -n '\| _ ->' lib/**/*.ml` 수동 분류 |
-| `Stdlib.Mutex` (Eio 안) | 13 | <5 | `grep -rl 'Stdlib\.Mutex' lib/` |
-| `Obj.magic` | 0 | 0 | `grep -rl 'Obj\.magic' lib/` |
-| Effect handler 사용 | 0 | 1-2 pilot | `grep -rl 'Effect\.' lib/` |
-| GADT 타입 | 7 | 12+ | `grep -c 'type _ .*=' lib/**/*.ml` |
-| Labelled tuple (5.4) | 0 | 신규 타입에 적용 | `grep '~.*:' lib/**/*.ml` |
+| `.mli` 커버리지 | 97% (1005/1033, 2026-05-12) ✅ | 85% | `find lib -name '*.mli' \| wc -l` ÷ `find lib -name '*.ml' \| wc -l` |
+| 와일드카드 `_` (variant→variant) | (2026-04) ~100 | <20 | RFC-0071 §3.4 warning 4 활성화 트랙으로 추적 |
+| `Stdlib.Mutex` (Eio fiber 안에서 yielding) | 재측정 필요 (2026-05-12: `create` 39 / alias 105 — 대부분 의도된 non-yielding) | <5 (yielding 한정) | 수동 검토 — 단순 카운트는 의도된 컨벤션과 위험 사용을 구분 못 함 |
+| `Obj.magic` (실사용) | 0 (2026-05-12) | 0 | `rg 'Obj\.magic' lib/` 후 문자열 리터럴 제외 |
+| Effect handler 사용 | 0 (2026-05-12) | 1-2 pilot | `rg 'Effect\.(perform\|Deep\|Shallow)' lib/` |
+| GADT 타입 | (2026-04) ~2+ | 12+ | 수동 (`type _ t = ... : ... -> _ t` 구문) |
+| Labelled tuple (5.4) | (2026-04) 0 | 신규 타입에 적용 | 수동 |
 
 ---
 
@@ -356,10 +383,10 @@ type keeper_stats = {
 
 ```ocaml
 (* Before — config array that never mutates *)
-let tool_presets = [| "minimal"; "social"; "messaging"; "coding"; "research"; "delivery"; "full" |]
+let tool_presets = [| "minimal"; "social"; "messaging"; "research"; "delivery"; "full" |]
 
 (* After — OCaml 5.4 *)
-let tool_presets : string Iarray.t = Iarray.of_array [| "minimal"; "social"; "messaging"; "coding"; "research"; "delivery"; "full" |]
+let tool_presets : string Iarray.t = Iarray.of_array [| "minimal"; "social"; "messaging"; "research"; "delivery"; "full" |]
 ```
 
 적용: config 상수, tool preset, priority level 등 초기화 후 변경 없는 배열. `Array.copy` 방어 코드 제거 가능.

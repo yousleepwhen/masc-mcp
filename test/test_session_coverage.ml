@@ -21,13 +21,13 @@ module Types = Masc_domain
 
 let test_session_type () =
   let s : Session.session = {
-    agent_name = "claude-test";
+    agent_name = "agent_llm_a-test";
     connected_at = 1704067200.0;
     last_activity = 1704067200.0;
     is_listening = false;
     message_queue = Eio.Stream.create 1000;
   } in
-  check string "agent_name" "claude-test" s.agent_name;
+  check string "agent_name" "agent_llm_a-test" s.agent_name;
   check (float 0.1) "connected_at" 1704067200.0 s.connected_at;
   check bool "is_listening" false s.is_listening
 
@@ -36,7 +36,7 @@ let test_session_with_messages () =
   let sq = Eio.Stream.create 1000 in
   Eio.Stream.add sq msg;
   let s : Session.session = {
-    agent_name = "gemini";
+    agent_name = "provider_f";
     connected_at = 1704067200.0;
     last_activity = 1704067250.0;
     is_listening = true;
@@ -281,74 +281,6 @@ let test_extract_mcp_session_id_other_headers () =
   | Some _ -> fail "expected None"
 
 (* ============================================================
-   handle_mcp_session_tool Tests
-   ============================================================ *)
-
-let test_handle_mcp_session_tool_create () =
-  let args = `Assoc [("action", `String "create"); ("agent_name", `String "test-agent")] in
-  let (success, response) = Session.handle_mcp_session_tool args in
-  check bool "create succeeds" true success;
-  check bool "response nonempty" true (String.length response > 0)
-
-let test_handle_mcp_session_tool_list () =
-  let args = `Assoc [("action", `String "list")] in
-  let (success, response) = Session.handle_mcp_session_tool args in
-  check bool "list succeeds" true success;
-  check bool "has count" true (
-    try let _ = Str.search_forward (Str.regexp "count") response 0 in true
-    with Not_found -> false)
-
-let test_handle_mcp_session_tool_get_missing () =
-  let args = `Assoc [("action", `String "get"); ("session_id", `String "nonexistent-xyz")] in
-  let (success, response) = Session.handle_mcp_session_tool args in
-  check bool "get missing fails" false success;
-  check bool "says not found" true (
-    try let _ = Str.search_forward (Str.regexp "not found") response 0 in true
-    with Not_found -> false)
-
-let test_handle_mcp_session_tool_get_no_id () =
-  let args = `Assoc [("action", `String "get")] in
-  let (success, response) = Session.handle_mcp_session_tool args in
-  check bool "get without id fails" false success;
-  check bool "says session_id required" true (
-    try let _ = Str.search_forward (Str.regexp "session_id required") response 0 in true
-    with Not_found -> false)
-
-let test_handle_mcp_session_tool_remove_no_id () =
-  let args = `Assoc [("action", `String "remove")] in
-  let (success, _) = Session.handle_mcp_session_tool args in
-  check bool "remove without id fails" false success
-
-let test_handle_mcp_session_tool_remove_missing () =
-  let args = `Assoc [("action", `String "remove"); ("session_id", `String "nonexistent-xyz")] in
-  let (success, _) = Session.handle_mcp_session_tool args in
-  check bool "remove missing fails" false success
-
-let test_handle_mcp_session_tool_cleanup () =
-  let args = `Assoc [("action", `String "cleanup")] in
-  let (success, response) = Session.handle_mcp_session_tool args in
-  check bool "cleanup succeeds" true success;
-  check bool "says removed" true (
-    try let _ = Str.search_forward (Str.regexp "Removed") response 0 in true
-    with Not_found -> false)
-
-let test_handle_mcp_session_tool_unknown_action () =
-  let args = `Assoc [("action", `String "unknown-action")] in
-  let (success, response) = Session.handle_mcp_session_tool args in
-  check bool "unknown action fails" false success;
-  check bool "says unknown" true (
-    try let _ = Str.search_forward (Str.regexp "Unknown action") response 0 in true
-    with Not_found -> false)
-
-let test_handle_mcp_session_tool_no_action () =
-  let args = `Assoc [] in
-  let (success, response) = Session.handle_mcp_session_tool args in
-  check bool "no action fails" false success;
-  check bool "says action required" true (
-    try let _ = Str.search_forward (Str.regexp "action required") response 0 in true
-    with Not_found -> false)
-
-(* ============================================================
    status_string Tests (requires Eio runtime - basic only)
    ============================================================ *)
 
@@ -375,6 +307,13 @@ let test_connected_agents_empty () =
   let registry = Session.create () in
   let agents = Session.connected_agents registry in
   check (list string) "empty" [] agents
+
+let test_registry_works_before_actor_loop_starts () =
+  Eio_main.run @@ fun _env ->
+  let registry = Session.create () in
+  let (_ : Session.session) = Session.register registry ~agent_name:"alice" in
+  let agents = Session.connected_agents registry |> List.sort String.compare in
+  check (list string) "registered before start_loop" [ "alice" ] agents
 
 (* ============================================================
    Test Runners
@@ -431,21 +370,12 @@ let () =
       test_case "missing" `Quick test_extract_mcp_session_id_missing;
       test_case "other headers" `Quick test_extract_mcp_session_id_other_headers;
     ];
-    "handle_mcp_session_tool", [
-      test_case "create" `Quick test_handle_mcp_session_tool_create;
-      test_case "list" `Quick test_handle_mcp_session_tool_list;
-      test_case "get missing" `Quick test_handle_mcp_session_tool_get_missing;
-      test_case "get no id" `Quick test_handle_mcp_session_tool_get_no_id;
-      test_case "remove no id" `Quick test_handle_mcp_session_tool_remove_no_id;
-      test_case "remove missing" `Quick test_handle_mcp_session_tool_remove_missing;
-      test_case "cleanup" `Quick test_handle_mcp_session_tool_cleanup;
-      test_case "unknown action" `Quick test_handle_mcp_session_tool_unknown_action;
-      test_case "no action" `Quick test_handle_mcp_session_tool_no_action;
-    ];
     "status_string", [
       test_case "empty" `Quick test_status_string_empty;
     ];
     "connected_agents", [
       test_case "empty" `Quick test_connected_agents_empty;
+      test_case "pre-loop registry calls do not hang" `Quick
+        test_registry_works_before_actor_loop_starts;
     ];
   ]

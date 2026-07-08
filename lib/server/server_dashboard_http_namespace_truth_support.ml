@@ -17,15 +17,15 @@ let pending_confirm_summary_empty_json =
       ("confirm_required_actions", `List []);
     ]
 
-let _last_good_pending_confirm_summary : Yojson.Safe.t Atomic.t =
+let last_good_pending_confirm_summary : Yojson.Safe.t Atomic.t =
   Atomic.make pending_confirm_summary_empty_json
 
 let pending_confirm_summary_cached (config : Coord.config) =
   let key = Printf.sprintf "pending_confirm_summary:%s" config.base_path in
-  let fallback = Atomic.get _last_good_pending_confirm_summary in
+  let fallback = Atomic.get last_good_pending_confirm_summary in
   let compute () =
     let json = Operator_control.pending_confirm_summary_json config in
-    Atomic.set _last_good_pending_confirm_summary json;
+    Atomic.set last_good_pending_confirm_summary json;
     json
   in
   if Option.is_some (Eio_context.get_switch_opt ()) then
@@ -365,10 +365,53 @@ let namespace_truth_command_summary_json command_summary_json =
       ("provenance", `String "truth");
     ]
 
-module String_set = Set.Make (String)
+let namespace_truth_dashboard_surface = "/api/v1/dashboard/namespace-truth"
+let namespace_truth_source = "namespace_truth_read_model"
+
+let namespace_truth_aliases =
+  [
+    "/api/v1/dashboard/project-snapshot";
+  ]
+
+let namespace_truth_aliases_json () =
+  `List (List.map (fun alias -> `String alias) namespace_truth_aliases)
+
+let namespace_truth_retention_json ~(config : Coord.config) =
+  `Assoc
+    [
+      ("scope", `String "dashboard_namespace_truth");
+      ("coordination_root", `String config.base_path);
+      ("workspace_path", `String config.workspace_path);
+      ("shell_input", `String "/api/v1/dashboard/shell");
+      ("execution_input", `String "/api/v1/dashboard/execution");
+      ("command_input", `String "command_summary_json");
+      ( "cache_policy",
+        `String "proactive_execution_cache_last_good_shell_fallback" );
+    ]
+
+let namespace_truth_metadata_fields ~(config : Coord.config) ~generated_at =
+  [
+    ("dashboard_surface", `String namespace_truth_dashboard_surface);
+    ("dashboard_aliases", namespace_truth_aliases_json ());
+    ("source", `String namespace_truth_source);
+    ("retention", namespace_truth_retention_json ~config);
+    ("generated_at_iso", `String generated_at);
+  ]
+
+let compose_namespace_truth_initializing ~(config : Coord.config) ~message =
+  let generated_at = Masc_domain.now_iso () in
+  `Assoc
+    (namespace_truth_metadata_fields ~config ~generated_at
+     @ [
+         ("status", `String "initializing");
+         ("generated_at", `String generated_at);
+         ("message", `String message);
+       ])
+
+module String_set = Set_util.StringSet
 
 let json_bool_field key json ~default =
-  match safe_member key json with
+  match Safe_ops.safe_member key json with
   | `Bool value -> value
   | _ -> default
 
@@ -791,8 +834,45 @@ let derive_readiness_and_attention ~execution_json ~execution_summary
       ],
     `List (take_n 10 (base_events @ keeper_events)) )
 
+let json_int_value_opt = function
+  | `Int value -> Some value
+  | `Intlit raw -> int_of_string_opt raw
+  | _ -> None
+
+let runtime_count_authority_json ~runtime_count ~shell_counts
+    ~configured_keepers =
+  let live_keepers = json_int_field "keepers" shell_counts ~default:0 in
+  let configured_keepers_count = json_int_value_opt configured_keepers in
+  let configured_minus_live =
+    Option.map
+      (fun configured -> max 0 (configured - live_keepers))
+      configured_keepers_count
+  in
+  `Assoc
+    [
+      ("source", `String namespace_truth_source);
+      ("authority", `String "root.counts");
+      ("configured_authority", `String "root.configured_keepers");
+      ( "fallback_policy",
+        `String "shell_last_good_only_when_namespace_unavailable" );
+      ("shell_arbitration_allowed", `Bool false);
+      ("live_total_runtimes", `Int runtime_count);
+      ("live_keepers", `Int live_keepers);
+      ("configured_keepers", json_int_opt configured_keepers_count);
+      ("configured_minus_live_keepers", json_int_opt configured_minus_live);
+      ( "count_roles",
+        `Assoc
+          [
+            ("root.counts", `String "authoritative_live_snapshot");
+            ("root.configured_keepers", `String "authoritative_inventory");
+            ("shell", `String "read_model_input");
+            ("execution", `String "diagnostic_summary_only");
+          ] );
+    ]
+
 let compose_namespace_truth_snapshot ~(config : Coord.config) ~initialized ~shell_json
     ~execution_json ~command_summary_json =
+  let generated_at = Masc_domain.now_iso () in
   let meta_cognition_summary = json_assoc_field "meta_cognition" shell_json in
   let meta_summary_input, meta_interpretation =
     match Meta_cognition.parse_summary meta_cognition_summary with
@@ -837,12 +917,16 @@ let compose_namespace_truth_snapshot ~(config : Coord.config) ~initialized ~shel
         ("status", json_assoc_field "status" shell_json);
         ("counts", json_assoc_field "counts" shell_json);
         ("configured_keepers", configured_keepers);
+        ( "runtime_count_authority",
+          runtime_count_authority_json ~runtime_count ~shell_counts
+            ~configured_keepers );
         ("provenance", `String "truth");
       ]
   in
   `Assoc
-      [
-        ("generated_at", `String (Masc_domain.now_iso ()));
+    (namespace_truth_metadata_fields ~config ~generated_at
+     @ [
+         ("generated_at", `String generated_at);
         ("root", namespace_block);
         ( "execution",
         `Assoc
@@ -878,4 +962,4 @@ let compose_namespace_truth_snapshot ~(config : Coord.config) ~initialized ~shel
       ("readiness", readiness_json);
       ("attention_events", attention_events_json);
       ("focus", focus_json);
-    ]
+    ])

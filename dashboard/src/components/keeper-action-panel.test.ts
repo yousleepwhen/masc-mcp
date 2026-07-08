@@ -18,7 +18,7 @@ vi.mock('../store', () => ({
   refreshDashboard: vi.fn(async () => undefined),
 }))
 
-import { keeperActionVisibility } from './keeper-action-panel'
+import { keeperActionVisibility } from '../lib/keeper-predicates'
 import type { Keeper } from '../types'
 
 function makeKeeper(overrides: Partial<Keeper>): Keeper {
@@ -59,6 +59,40 @@ describe('keeperActionVisibility', () => {
       const v = keeperActionVisibility(k)
       expect(v.canResume).toBe(true)
       expect(v.canPause).toBe(false)
+      expect(v.canWake).toBe(false)
+    })
+
+    it('detects paused via status even if phase is missing', () => {
+      const k = makeKeeper({ status: 'paused', phase: null, paused: false })
+      const v = keeperActionVisibility(k)
+      expect(v.canResume).toBe(true)
+      expect(v.canPause).toBe(false)
+      expect(v.canWake).toBe(false)
+    })
+
+    it('detects paused via pipeline_stage even if status is active', () => {
+      const k = makeKeeper({
+        status: 'active',
+        phase: 'Running',
+        paused: false,
+        pipeline_stage: 'paused',
+      })
+      const v = keeperActionVisibility(k)
+      expect(v.canResume).toBe(true)
+      expect(v.canPause).toBe(false)
+      expect(v.canWake).toBe(false)
+    })
+
+    it('does not show wake while paused even if a recoverable blocker is latched', () => {
+      const k = makeKeeper({
+        status: 'active',
+        phase: 'Paused',
+        paused: true,
+        runtime_blocker_class: 'turn_timeout',
+      })
+      const v = keeperActionVisibility(k)
+      expect(v.canResume).toBe(true)
+      expect(v.canWake).toBe(false)
     })
   })
 

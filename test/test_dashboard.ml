@@ -25,9 +25,55 @@ let cleanup_dir dir =
   in
   if Sys.file_exists dir then rm dir
 
+let write_file path content =
+  let oc = open_out_bin path in
+  Fun.protect ~finally:(fun () -> close_out_noerr oc) (fun () -> output_string oc content)
+
+let with_config_dir config_root f =
+  let prev = Sys.getenv_opt "MASC_CONFIG_DIR" in
+  Fun.protect
+    ~finally:(fun () ->
+      (match prev with
+       | Some value -> Unix.putenv "MASC_CONFIG_DIR" value
+       | None -> Unix.putenv "MASC_CONFIG_DIR" "");
+      Config_dir_resolver.reset ())
+    (fun () ->
+      Unix.putenv "MASC_CONFIG_DIR" config_root;
+      Config_dir_resolver.reset ();
+      f ())
+
 let setup_room config =
   (* Use Coord.init to properly initialize MASC *)
   ignore (Lib.Coord.init config ~agent_name:(Some "test-agent"))
+
+let test_raw_cascade_config_exposes_editable_source () =
+  let dir = test_dir () in
+  let source_text = "comment = \"dashboard-visible-sentinel\"\n" in
+  Fun.protect
+    ~finally:(fun () -> cleanup_dir dir)
+    (fun () ->
+      write_file (Filename.concat dir "cascade.toml") source_text;
+      with_config_dir dir @@ fun () ->
+      let open Yojson.Safe.Util in
+      let json = Lib.Dashboard_cascade.raw_config_json () in
+      Alcotest.(check bool)
+        "source editable"
+        true
+        (json |> member "source_editable" |> to_bool);
+      Alcotest.(check string)
+        "source text"
+        source_text
+        (json |> member "source_text" |> to_string);
+      Alcotest.(check bool)
+        "raw JSON materialized from source"
+        true
+        (contains (json |> member "raw_json" |> to_string) "dashboard-visible-sentinel");
+      match json |> member "materialization_error" with
+      | `Null -> ()
+      | other ->
+        Alcotest.failf
+          "unexpected materialization_error: %s"
+          (Yojson.Safe.to_string other))
 
 (* ===== format_section Tests ===== *)
 
@@ -126,17 +172,6 @@ let test_messages_section_empty () =
   Alcotest.(check string) "empty_msg" "(no messages)" section.empty_msg;
   cleanup_dir dir
 
-let test_worktrees_section_empty () =
-  Eio_main.run @@ fun env ->
-  Fs_compat.set_fs (Eio.Stdenv.fs env);
-  let dir = test_dir () in
-  let config = Coord_utils.default_config dir in
-  setup_room config;
-  let section = Lib.Dashboard.worktrees_section config in
-  Alcotest.(check string) "title" "Worktrees" section.title;
-  Alcotest.(check string) "empty_msg" "(no worktrees)" section.empty_msg;
-  cleanup_dir dir
-
 let make_test_meta name =
   match
     Masc_test_deps.meta_of_json_fixture
@@ -201,6 +236,23 @@ let test_generate_compact_contains_keepers () =
   Alcotest.(check bool) "contains KEEPERS line" true (contains output "KEEPERS:");
   cleanup_dir dir
 
+let test_generate_compact_surfaces_board_cap_without_failure () =
+  Eio_main.run @@ fun env ->
+  Fs_compat.set_fs (Eio.Stdenv.fs env);
+  let dir = test_dir () in
+  let config = Coord_utils.default_config dir in
+  setup_room config;
+  Lib.Prometheus.inc_counter
+    Lib.Keeper_metrics.(to_string BoardSignalWakeupCappedTotal)
+    ~labels:[("kind", "task")]
+    ();
+  let output = Lib.Dashboard.generate_compact config in
+  Alcotest.(check bool)
+    "contains board cap diagnostic"
+    true
+    (contains output "BOARD-CAPPED:");
+  cleanup_dir dir
+
 let test_keepers_section_dead_phase () =
   Eio_main.run @@ fun env ->
   Fs_compat.set_fs (Eio.Stdenv.fs env);
@@ -232,7 +284,7 @@ let test_keepers_section_with_error_truncated () =
   let long_err =
     "this is a long error message that should exceed the default display length of 35 chars and therefore be truncated with an ellipsis"
   in
-  Lib.Keeper_registry.record_error ~base_path:dir "echo" long_err;
+  Lib.Keeper_registry_error_recording.record ~base_path:dir "echo" long_err;
   let now = Unix.gettimeofday () in
   let section = Lib.Dashboard.keepers_section now in
   let line = List.hd section.content in
@@ -266,7 +318,9 @@ let section_tests = [
   "agents section empty", `Quick, test_agents_section_empty;
   "tasks section empty", `Quick, test_tasks_section_empty;
   "messages section empty", `Quick, test_messages_section_empty;
-  "worktrees section empty", `Quick, test_worktrees_section_empty;
+  ( "raw cascade config exposes editable source",
+    `Quick,
+    test_raw_cascade_config_exposes_editable_source );
 ]
 
 let keepers_tests = [
@@ -274,6 +328,9 @@ let keepers_tests = [
   "keepers section with entry", `Quick, test_keepers_section_with_entry;
   "generate full contains keepers", `Quick, test_generate_full_contains_keepers;
   "generate compact contains keepers", `Quick, test_generate_compact_contains_keepers;
+  ( "generate compact surfaces board cap",
+    `Quick,
+    test_generate_compact_surfaces_board_cap_without_failure );
   "keepers section dead phase", `Quick, test_keepers_section_dead_phase;
   "keepers section with error truncated", `Quick, test_keepers_section_with_error_truncated;
 ]

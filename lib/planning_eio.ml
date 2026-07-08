@@ -62,9 +62,6 @@ let create_context ~task_id =
 let planning_dir (config : Coord.config) task_id =
   Filename.concat config.base_path (Printf.sprintf "planning/%s" task_id)
 
-let ensure_dir path =
-  Fs_compat.mkdir_p path
-
 (** File read via Fs_compat (Eio-native when available, blocking fallback) *)
 let read_file_content path =
   if Fs_compat.file_exists path then
@@ -73,7 +70,7 @@ let read_file_content path =
 
 (** File write via Fs_compat (Eio-native when available, blocking fallback) *)
 let write_file_content path content =
-  ensure_dir (Filename.dirname path);
+  Fs_compat.mkdir_p (Filename.dirname path);
   Fs_compat.save_file path content
 
 let find_substring_from haystack ~needle ~from =
@@ -134,7 +131,7 @@ let parse_full_context_markdown content =
 let init (config : Coord.config) ~task_id : (planning_context, string) result =
   try
     let dir = planning_dir config task_id in
-    ensure_dir dir;
+    Fs_compat.mkdir_p dir;
     let ctx = create_context ~task_id in
     (* Create empty files - PDCA structure *)
     write_file_content (Filename.concat dir "task_plan.md") "# Task Plan\n\n";
@@ -306,25 +303,135 @@ let set_deliverable (config : Coord.config) ~task_id ~content : (planning_contex
 let current_task_file (config : Coord.config) =
   Filename.concat (Coord_utils.masc_dir config) "current_task"
 
+(* The planning [current_task] path must be a file, but runtime state can be
+   corrupted by external writers. Keep these helpers total for directory-shaped
+   corruption so one bad path cannot wedge keeper claim/transition flows. *)
+
+let is_directory_path path =
+  try Sys.is_directory path with Sys_error _ -> false
+
+let quarantine_dir_under_trash (config : Coord.config) ~path ~op =
+  let trash_dir = Filename.concat (Coord_utils.masc_dir config) "_trash" in
+  Fs_compat.mkdir_p trash_dir;
+  let stamp =
+    let t = Time_compat.now () in
+    let ms = int_of_float (t *. 1000.) mod 1000 in
+    let tm = Unix.gmtime t in
+    Printf.sprintf "%04d%02d%02dT%02d%02d%02dZ-%03d"
+      (tm.Unix.tm_year + 1900) (tm.Unix.tm_mon + 1) tm.Unix.tm_mday
+      tm.Unix.tm_hour tm.Unix.tm_min tm.Unix.tm_sec ms
+  in
+  let dest =
+    Filename.concat trash_dir
+      (* NDT-OK: quarantine filenames only need per-process uniqueness for
+         external filesystem recovery; planning state remains ledger-driven. *)
+      (Printf.sprintf "current_task.%s.%d" stamp (Unix.getpid ()))
+  in
+  try
+    Sys.rename path dest;
+    Log.Keeper.warn
+      "planning_eio.%s: current_task path was a directory; quarantined to %s"
+      op dest;
+    Ok dest
+  with
+  | Sys_error msg ->
+    Log.Keeper.warn
+      "planning_eio.%s: failed to quarantine directory at %s: %s"
+      op path msg;
+    Error msg
+
+let remove_empty_current_task_dir ~path ~op =
+  try
+    match Sys.readdir path with
+    | [||] ->
+      (try
+         Unix.rmdir path;
+         true
+       with
+       | Unix.Unix_error _ as e ->
+         Log.Keeper.warn
+           "planning_eio.%s: rmdir %s failed: %s"
+           op path (Printexc.to_string e);
+         false)
+    | _ ->
+      Log.Keeper.warn
+        "planning_eio.%s: %s is a non-empty directory; leaving it in place"
+        op path;
+      false
+  with
+  | Sys_error msg ->
+    Log.Keeper.warn
+      "planning_eio.%s: failed to inspect directory at %s: %s"
+      op path msg;
+    false
+
 (** Get current task_id for session *)
 let get_current_task (config : Coord.config) : string option =
   let path = current_task_file config in
-  if Sys.file_exists path then
-    Some (String.trim (read_file_content path))
-  else
+  if not (Sys.file_exists path) then None
+  else if is_directory_path path then begin
+    Log.Keeper.warn
+      "planning_eio.get_current_task: %s is a directory; treating as cleared"
+      path;
     None
+  end
+  else
+    try Some (String.trim (read_file_content path)) with
+    | Sys_error msg when is_directory_path path ->
+      Log.Keeper.warn
+        "planning_eio.get_current_task: %s became a directory during read: %s"
+        path msg;
+      None
 
 (** Set current task_id for session *)
-let set_current_task (config : Coord.config) ~task_id : unit =
+let set_current_task (config : Coord.config) ~task_id : (unit, string) result =
   let path = current_task_file config in
-  ensure_dir (Filename.dirname path);
-  write_file_content path task_id
+  Fs_compat.mkdir_p (Filename.dirname path);
+  let write_current_task () =
+    try
+      write_file_content path task_id;
+      Ok ()
+    with
+    | Sys_error msg when is_directory_path path ->
+      Log.Keeper.warn
+        "planning_eio.set_current_task: %s became a directory during write: %s"
+        path msg;
+      Error
+        (Printf.sprintf
+           "current_task became a directory during write at %s: %s"
+           path msg)
+  in
+  if is_directory_path path then
+    match quarantine_dir_under_trash config ~path ~op:"set_current_task" with
+    | Ok _ -> write_current_task ()
+    | Error msg ->
+      if remove_empty_current_task_dir ~path ~op:"set_current_task" then
+        write_current_task ()
+      else begin
+        Log.Keeper.warn
+          "planning_eio.set_current_task: leaving directory in place after \
+           quarantine failure: %s"
+          msg;
+        Error
+          (Printf.sprintf
+             "failed to quarantine existing current_task directory at %s: %s"
+             path msg)
+      end
+  else write_current_task ()
 
 (** Clear current task *)
 let clear_current_task (config : Coord.config) : unit =
   let path = current_task_file config in
-  if Sys.file_exists path then
-    Sys.remove path
+  if not (Sys.file_exists path) then ()
+  else if is_directory_path path then
+    ignore
+      (remove_empty_current_task_dir ~path ~op:"clear_current_task" : bool)
+  else
+    try Sys.remove path with
+    | Sys_error msg when is_directory_path path ->
+      Log.Keeper.warn
+        "planning_eio.clear_current_task: %s became a directory during remove: %s"
+        path msg
 
 (** Resolve task_id - use provided or fall back to current *)
 let resolve_task_id (config : Coord.config) ~task_id : (string, string) result =

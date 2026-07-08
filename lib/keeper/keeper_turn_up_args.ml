@@ -14,14 +14,11 @@ type parsed_args = {
   short_goal_opt : string option;
   mid_goal_opt : string option;
   long_goal_opt : string option;
-  policy_voice_enabled_opt : bool option;
+  cascade_name_opt : string option;
   allowed_paths_opt : string list option;
   autoboot_enabled_opt : bool option;
   sandbox_profile_opt : sandbox_profile option;
   network_mode_opt : network_mode option;
-  voice_enabled_opt : bool option;
-  voice_channel_opt : string option;
-  voice_agent_id_opt : string option;
   mention_targets_in : string list;
   active_goal_ids_opt : string list option;
   max_context_override_opt : int option;
@@ -73,12 +70,17 @@ let parse_present_tool_name_list_opt args key =
       let rec collect acc index = function
         | [] -> Ok (Some (normalize_tool_name_list (List.rev acc)))
         | `String value :: rest -> collect (value :: acc) (index + 1) rest
-        | _ :: _ ->
-            Error (Printf.sprintf "%s[%d] must be a string" key index)
+        | bad :: _ ->
+            Error
+              (Printf.sprintf "%s[%d] must be a string (received %s)" key
+                 index (Json_util.kind_name bad))
       in
       collect [] 0 items
   | Some `Null -> Error (Printf.sprintf "%s must not be null" key)
-  | Some _ -> Error (Printf.sprintf "%s must be an array of strings" key)
+  | Some other ->
+      Error
+        (Printf.sprintf "%s must be an array of strings (received %s)" key
+           (Json_util.kind_name other))
 
 let parse_present_string_list_opt args key =
   match json_assoc_member_opt key args with
@@ -87,12 +89,17 @@ let parse_present_string_list_opt args key =
       let rec collect acc index = function
         | [] -> Ok (Some (normalize_name_list (List.rev acc)))
         | `String value :: rest -> collect (value :: acc) (index + 1) rest
-        | _ :: _ ->
-            Error (Printf.sprintf "%s[%d] must be a string" key index)
+        | bad :: _ ->
+            Error
+              (Printf.sprintf "%s[%d] must be a string (received %s)" key
+                 index (Json_util.kind_name bad))
       in
       collect [] 0 items
   | Some `Null -> Error (Printf.sprintf "%s must not be null" key)
-  | Some _ -> Error (Printf.sprintf "%s must be an array of strings" key)
+  | Some other ->
+      Error
+        (Printf.sprintf "%s must be an array of strings (received %s)" key
+           (Json_util.kind_name other))
 
 let parse_enum_string_opt args key of_string ~allowed_values =
   match json_assoc_member_opt key args with
@@ -105,10 +112,41 @@ let parse_enum_string_opt args key of_string ~allowed_values =
             (Printf.sprintf "invalid %s '%s' (allowed: %s)"
                key raw allowed_values))
   | Some `Null -> Error (Printf.sprintf "%s must not be null" key)
-  | Some _ -> Error (Printf.sprintf "%s must be a string" key)
+  | Some other ->
+      Error
+        (Printf.sprintf "%s must be a string (received %s)" key
+           (Json_util.kind_name other))
+
+let parse_cascade_name_opt args =
+  match get_string_opt args "cascade_name" with
+  | None -> Ok None
+  | Some raw ->
+      let normalized =
+        Keeper_cascade_profile.normalize_declared_name raw |> String.trim
+      in
+      if normalized = "" then Error "cascade_name must not be empty"
+      else
+        let assignable = Keeper_cascade_profile.keeper_catalog_names () in
+        if List.mem normalized assignable then Ok (Some normalized)
+        else
+          let catalog = Keeper_cascade_profile.catalog_names () in
+          if List.mem normalized catalog then
+            Error
+              (Printf.sprintf
+                 "cascade_name '%s' is system-only (keeper_assignable=false); \
+                  choose a keeper-assignable cascade"
+                 raw)
+          else
+            match
+              Cascade_runtime.models_of_cascade_name_result
+                (Cascade_name.of_string_exn normalized)
+            with
+            | Ok _ -> Ok (Some normalized)
+            | Error detail ->
+                Error (Printf.sprintf "invalid cascade_name '%s': %s" raw detail)
 
 let resolve_tool_name_list ~preferred ~fallback =
-  first_some preferred fallback
+  Dashboard_utils.first_some preferred fallback
   |> Option.value ~default:[]
   |> normalize_tool_name_list
 
@@ -142,7 +180,10 @@ let parse_tool_access_input (args : Yojson.Safe.t) :
               | Ok access -> Ok (Some access)
               | Error msg -> Error msg))
       | Some `Null -> Ok None
-      | Some _ -> Error "tool_access must be an object"
+      | Some other ->
+          Error
+            (Printf.sprintf "tool_access must be an object (received %s)"
+               (Json_util.kind_name other))
       | None -> Ok None
     in
     match tool_access_opt with
@@ -152,13 +193,13 @@ let parse_tool_access_input (args : Yojson.Safe.t) :
 let parse (ctx : _ context) (args : Yojson.Safe.t) : (parsed_args, tool_result) result =
   let name = get_string args "name" "" in
   if not (validate_name name) then
-    Error (false, "invalid keeper name (allowed: [A-Za-z0-9._-])")
+    Error (tool_result_error "invalid keeper name (allowed: [A-Za-z0-9._-])")
   else
-    match reject_legacy_model_args ~tool_name:"masc_keeper_up" args with
-    | Error e -> Error (false, e)
+    match Keeper_meta_contract.reject_legacy_model_args ~tool_name:"masc_keeper_up" args with
+    | Error e -> Error (tool_result_error e)
     | Ok () ->
     match reject_removed_keeper_input_keys ~tool_name:"masc_keeper_up" args with
-    | Error e -> Error (false, e)
+    | Error e -> Error (tool_result_error e)
     | Ok () ->
     let compaction_profile_opt_res =
       parse_compaction_profile_opt args "compaction_profile"
@@ -183,7 +224,7 @@ let parse (ctx : _ context) (args : Yojson.Safe.t) : (parsed_args, tool_result) 
     | _, _, Error e, _, _, _
     | _, _, _, Error e, _, _
     | _, _, _, _, Error e, _
-    | _, _, _, _, _, Error e -> Error (false, e)
+    | _, _, _, _, _, Error e -> Error (tool_result_error e)
     | Ok compaction_profile_opt,
       Ok (tool_access_opt, tool_preset_opt, tool_also_allow_opt),
       Ok allowed_paths_opt,
@@ -194,11 +235,8 @@ let parse (ctx : _ context) (args : Yojson.Safe.t) : (parsed_args, tool_result) 
     let short_goal_opt = parse_goal_horizon_opt args "short_goal" in
     let mid_goal_opt = parse_goal_horizon_opt args "mid_goal" in
     let long_goal_opt = parse_goal_horizon_opt args "long_goal" in
-    let policy_voice_enabled_opt = get_bool_opt args "policy_voice_enabled" in
+    let cascade_name_opt_res = parse_cascade_name_opt args in
     let autoboot_enabled_opt = get_bool_opt args "autoboot_enabled" in
-    let voice_enabled_opt = get_bool_opt args "voice_enabled" in
-    let voice_channel_opt = get_string_opt args "voice_channel" in
-    let voice_agent_id_opt = get_string_opt args "voice_agent_id" in
     let mention_targets_in = get_string_list args "mention_targets" in
     let max_context_override_opt =
       let min_keeper_context = Keeper_config.min_keeper_context_tokens in
@@ -250,9 +288,9 @@ let parse (ctx : _ context) (args : Yojson.Safe.t) : (parsed_args, tool_result) 
     let will_opt = parse_self_model_opt args "will" in
     let needs_opt = parse_self_model_opt args "needs" in
     let desires_opt = parse_self_model_opt args "desires" in
-    match tool_denylist_opt_res with
-    | Error msg -> Error (false, msg)
-    | Ok tool_denylist_opt ->
+    match tool_denylist_opt_res, cascade_name_opt_res with
+    | Error msg, _ | _, Error msg -> Error (tool_result_error msg)
+    | Ok tool_denylist_opt, Ok cascade_name_opt ->
     Ok {
       name;
       compaction_profile_opt;
@@ -260,15 +298,12 @@ let parse (ctx : _ context) (args : Yojson.Safe.t) : (parsed_args, tool_result) 
       short_goal_opt;
       mid_goal_opt;
       long_goal_opt;
-      policy_voice_enabled_opt;
+      cascade_name_opt;
       allowed_paths_opt;
       active_goal_ids_opt;
       autoboot_enabled_opt;
       sandbox_profile_opt;
       network_mode_opt;
-      voice_enabled_opt;
-      voice_channel_opt;
-      voice_agent_id_opt;
       mention_targets_in;
       max_context_override_opt;
       proactive_enabled_opt;
@@ -303,11 +338,11 @@ let resolve_mention_targets ~mention_targets_in ~fallback_targets ~name =
   raw |> List.filter (fun s -> String.trim s <> "") |> dedupe_keep_order
 
 let resolve_sandbox_profile ~preferred ~fallback =
-  first_some preferred fallback
+  Dashboard_utils.first_some preferred fallback
   |> Option.value ~default:default_sandbox_profile
 
 let resolve_network_mode ~sandbox_profile ~preferred ~fallback =
-  first_some preferred fallback
+  Dashboard_utils.first_some preferred fallback
   |> Option.value ~default:(default_network_mode_for_profile sandbox_profile)
 
 
@@ -365,29 +400,12 @@ let sandbox_allowed_path_within_private_root
 let validate_sandbox_settings
     ~(config : Coord.config)
     ~keeper_name
-    ~github_identity
+    ~repo_cli_identity
     ~sandbox_profile
     ~network_mode
     ~allowed_paths =
   if allowed_paths = [ "*" ] then
     Error "allowed_paths=[\"*\"] is not supported; enumerate explicit paths instead"
-  else if Env_config_keeper.KeeperSandbox.hard_mode ()
-          && sandbox_profile <> Docker then
-    Error
-      "MASC_KEEPER_SANDBOX_HARD_MODE requires sandbox_profile=docker"
-  else if Env_config_keeper.KeeperSandbox.hard_mode ()
-          && network_mode <> Network_none then
-    Error
-      "MASC_KEEPER_SANDBOX_HARD_MODE requires network_mode=none; git/gh egress is brokered by structured tools"
-  else if Env_config_keeper.KeeperSandbox.hard_mode ()
-          && github_identity = None
-          && not (Keeper_gh_env.root_gh_config_dir_exists config) then
-    Error
-      "MASC_KEEPER_SANDBOX_HARD_MODE requires an effective GitHub identity: configure github_identity in the keeper profile or install the root bundle at $base_path/.masc/github-identities/root/gh"
-  else if Env_config_keeper.KeeperSandbox.hard_mode ()
-          && Env_config_keeper.KeeperSandbox.relax_fs () then
-    Error
-      "MASC_KEEPER_SANDBOX_HARD_MODE requires MASC_KEEPER_SANDBOX_RELAX_FS=false"
   else
   match sandbox_profile with
   | Local -> (

@@ -9,8 +9,8 @@
     tool calls close it immediately and observers auto-close it after
     [cooling_reset_sec].
 
-    Error classes are coarse categories (path_not_found, cwd_not_directory,
-    path_not_in_allowed_paths/path_outside_sandbox) — not exact error strings. This prevents
+    Error classes are coarse categories (path-not-found, cwd-not-directory,
+    typed path rejection, shell exit, other) — not exact error strings. This prevents
     near-miss variants from resetting the counter.
 
     Spec navigation (OCaml -> TLA+) — plan §19 anchor pattern applied
@@ -22,7 +22,8 @@
       count         -> [mutable consecutive_count : int]
       currentClass  -> [mutable consecutive_class : error_class]
       tripped       -> [record_failure] return value
-      ErrorClasses  -> [type error_class] (this file, ~line 17)
+      ErrorClasses  -> [type error_class] (this file; the name is the
+                       stable anchor — see iter 64 N-2.a, line numbers drift)
 
     This block is the reverse-direction citation so code search for
     "KeeperCircuitBreaker" lands in this module.
@@ -43,62 +44,13 @@
 (* Error classification                                             *)
 (* ================================================================ *)
 
-type error_class =
-  | Path_not_found
-  | Path_not_allowed
-  | Cwd_not_directory
-  | Shell_exit_nonzero
-  | Other
+(** Error classification and breaker state types extracted to
+    [Keeper_failure_circuit_breaker_types].  Core logic below. *)
 
-let classify_error (error_msg : string) : error_class =
-  if String.length error_msg = 0 then Other
-  else
-    let contains sub = String_util.contains_substring error_msg sub in
-    if contains "path_not_found" then Path_not_found
-    else if contains "path_not_in_allowed" || contains "path_outside_sandbox" then Path_not_allowed
-    else if contains "cwd_not_directory" then Cwd_not_directory
-    else if contains "No such file or directory" then Path_not_found
-    else if contains "exit" && contains "code" then Shell_exit_nonzero
-    else Other
-
-let error_class_to_string = function
-  | Path_not_found -> "path_not_found"
-  | Path_not_allowed -> "path_not_allowed"
-  | Cwd_not_directory -> "cwd_not_directory"
-  | Shell_exit_nonzero -> "shell_exit_nonzero"
-  | Other -> "other"
-
-(* ================================================================ *)
-(* Per-keeper state                                                  *)
-(* ================================================================ *)
-
-(** A single failure signature captured for diagnostics.
-    [fingerprint] is a single-line, size-bounded slice of the raw
-    [error_msg] — enough for an operator to recognise the failure mode
-    without dumping full payloads into logs. *)
-type failure_signature = {
-  ts : float;
-  cls : error_class;
-  fingerprint : string;
-}
-
-(** Bounded ring-buffer capacity for [recent_failures]. Matches
-    [threshold] so a trip log can always name the three failures that
-    caused it. Not exposed — an operator-visible knob would imply a
-    policy change, which is out of scope for LT-16-KCB diagnostics. *)
-let recent_failures_capacity = 3
-
-type breaker_state = {
-  mutable consecutive_class : error_class;
-  mutable consecutive_count : int;
-  mutable total_tripped : int;
-  mutable last_tripped_at : float option;
-  (* Newest-first; length bounded by [recent_failures_capacity].
-     Retained across trips so "cooling" inspection still has context. *)
-  mutable recent_failures : failure_signature list;
-}
+include Keeper_failure_circuit_breaker_types
 
 let states : (string, breaker_state) Hashtbl.t = Hashtbl.create 16
+let fleet_recent_failures : failure_signature list ref = ref []
 
 (** Collapse an error message into a fingerprint suitable for log lines
     and JSON payloads. Strips newlines/tabs, collapses whitespace runs,
@@ -133,7 +85,7 @@ let fingerprint_of_error ?(max_len = 120) (error_msg : string) : string =
   if !i < len then s ^ "…" else s
 
 (** Mutex protecting [states] and every per-keeper [breaker_state].
-    Every production path goes through [Keeper_exec_tools.apply_circuit_breaker]
+    Every production path goes through [Agent_tool_dispatch_runtime.apply_circuit_breaker]
     which runs on whichever keeper fiber handled the tool call — multiple
     keepers execute tools concurrently, so [Hashtbl.find_opt] + conditional
     [Hashtbl.replace] in [get_or_create] is a textbook TOCTOU, and the
@@ -148,6 +100,11 @@ let with_states_ro f = Eio_guard.with_mutex_ro states_mu f
 let threshold = 3
 
 let cooling_reset_sec = 60.0
+
+let rec take n = function
+  | _ when n <= 0 -> []
+  | [] -> []
+  | x :: xs -> x :: take (n - 1) xs
 
 (* Caller must hold [states_mu]. *)
 let get_or_create_locked keeper_name =
@@ -164,12 +121,13 @@ let get_or_create_locked keeper_name =
    the list never exceeds [recent_failures_capacity]. *)
 let push_recent_failure_locked (s : breaker_state)
     (sig_ : failure_signature) : unit =
-  let rec take n = function
-    | _ when n <= 0 -> []
-    | [] -> []
-    | x :: xs -> x :: take (n - 1) xs
-  in
   s.recent_failures <- take recent_failures_capacity (sig_ :: s.recent_failures)
+
+(* Caller must hold [states_mu]. The fleet ring lets a keeper learn from
+   another keeper's just-observed workflow rejection before repeating it. *)
+let push_fleet_recent_failure_locked (sig_ : failure_signature) : unit =
+  fleet_recent_failures :=
+    take recent_failures_capacity (sig_ :: !fleet_recent_failures)
 
 let signature_to_string (sig_ : failure_signature) : string =
   Printf.sprintf "%s:%s"
@@ -205,6 +163,20 @@ let record_success ~keeper_name =
     s.consecutive_count <- 0;
     s.last_tripped_at <- None)
 
+let record_observed_failure ~keeper_name ~(error_msg : string) =
+  let cls = classify_error error_msg in
+  let sig_ =
+    {
+      ts = Time_compat.now ();
+      cls;
+      fingerprint = fingerprint_of_error error_msg;
+    }
+  in
+  with_states_rw (fun () ->
+    let s = get_or_create_locked keeper_name in
+    push_recent_failure_locked s sig_;
+    push_fleet_recent_failure_locked sig_)
+
 let rec record_failure ~keeper_name ~(error_msg : string) : string option =
   let cls = classify_error error_msg in
   let sig_ = {
@@ -215,6 +187,7 @@ let rec record_failure ~keeper_name ~(error_msg : string) : string option =
   with_states_rw (fun () ->
     let s = get_or_create_locked keeper_name in
     push_recent_failure_locked s sig_;
+    push_fleet_recent_failure_locked sig_;
     if cls = s.consecutive_class then
       s.consecutive_count <- s.consecutive_count + 1
     else begin
@@ -229,7 +202,7 @@ let rec record_failure ~keeper_name ~(error_msg : string) : string option =
       let tripped = s.total_tripped in
       let recent = s.recent_failures in
       Prometheus.inc_counter
-        Prometheus.metric_keeper_circuit_breaker_trips
+        Keeper_metrics.(to_string CircuitBreakerTrips)
         ~labels:[("keeper", keeper_name); ("failure_type", error_class_to_string cls)]
         ();
       Log.Keeper.warn
@@ -251,7 +224,7 @@ and corrective_hint cls keeper_name =
     | Path_not_found ->
       Printf.sprintf
         "- The file you are looking for does NOT exist. Do NOT guess paths.\n\
-         - Run `keeper_shell op=ls` on your playground root first to see what actually exists.\n\
+         - Use Execute executable='ls' argv=['.'] on your playground root first to see what actually exists, or use a visible file-listing tool if one is present.\n\
          - Your playground: .masc/playground/%s/\n\
          - Your repos: .masc/playground/%s/repos/ (clone a repo first if empty)\n\
          - NEVER fabricate file paths like lib/ocaml/... — check with ls first."
@@ -264,7 +237,7 @@ and corrective_hint cls keeper_name =
          - Run `keeper_context_status` to see your allowed paths."
         keeper_name
     | Cwd_not_directory ->
-      "- The cwd you specified is not a directory. Use `keeper_shell op=ls` to find valid directories.\n\
+      "- The cwd you specified is not a directory. Use Execute executable='ls' argv=['.'] to find valid directories, or use a visible file-listing tool if one is present.\n\
        - Leave the cwd parameter empty to use your default playground root."
     | Shell_exit_nonzero ->
       "- Your shell command is failing repeatedly. Check the command syntax.\n\
@@ -349,6 +322,31 @@ let recent_failures_of ~keeper_name : failure_signature list =
     match Hashtbl.find_opt states keeper_name with
     | None -> []
     | Some s -> s.recent_failures)
+
+let recent_failures_for_prompt ~keeper_name : failure_signature list =
+  let signature_key (sig_ : failure_signature) =
+    error_class_to_string sig_.cls ^ "\000" ^ sig_.fingerprint
+  in
+  let dedupe_newest_first sigs =
+    let seen = Hashtbl.create 8 in
+    List.filter
+      (fun sig_ ->
+         let key = signature_key sig_ in
+         if Hashtbl.mem seen key
+         then false
+         else (
+           Hashtbl.add seen key ();
+           true))
+      sigs
+  in
+  with_states_ro (fun () ->
+    let own =
+      match Hashtbl.find_opt states keeper_name with
+      | None -> []
+      | Some s -> s.recent_failures
+    in
+    own @ !fleet_recent_failures |> dedupe_newest_first
+    |> take (recent_failures_capacity * 2))
 
 (* ================================================================ *)
 (* Observable display state (LT-16-KCB Phase 1)                     *)

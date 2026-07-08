@@ -55,6 +55,7 @@
 
 open Alcotest
 module SM = Masc_mcp.Keeper_state_machine
+module SM_json = Masc_mcp.Keeper_state_machine_json
 
 (* ── OCaml-side change-set computation ─────────────────────── *)
 
@@ -102,13 +103,13 @@ let ocaml_changed_fields (ev : SM.event) : string list =
   let after_t = SM.update_conditions base_t ev in
   let d_f =
     json_field_diff
-      (SM.conditions_to_json base_f)
-      (SM.conditions_to_json after_f)
+      (SM_json.conditions_to_json base_f)
+      (SM_json.conditions_to_json after_f)
   in
   let d_t =
     json_field_diff
-      (SM.conditions_to_json base_t)
-      (SM.conditions_to_json after_t)
+      (SM_json.conditions_to_json base_t)
+      (SM_json.conditions_to_json after_t)
   in
   List.sort_uniq String.compare (d_f @ d_t)
 
@@ -238,7 +239,7 @@ let load_spec_actions () =
     TLA+-only variables (e.g. [restart_count], owned by the supervisor
     layer rather than the FSM) are filtered out as out-of-scope. *)
 let conditions_field_names () : string list =
-  match SM.conditions_to_json SM.default_conditions with
+  match SM_json.conditions_to_json SM.default_conditions with
   | `Assoc fs -> List.map fst fs |> List.sort String.compare
   | _ ->
       Alcotest.fail "conditions_to_json did not return a JSON object"
@@ -275,8 +276,10 @@ let canonical_events : (string * SM.event) list =
             };
         } );
     ("CompactionStarted", SM.Compaction_started);
-    ( "CompactionCompleted",
+    ( "CompactionCompletedWithSavings",
       SM.Compaction_completed { before_tokens = 100_000; after_tokens = 50_000 } );
+    ( "CompactionCompletedNoSavings",
+      SM.Compaction_completed { before_tokens = 50_000; after_tokens = 50_000 } );
     ("CompactionFailed", SM.Compaction_failed { reason = "test" });
     ("HandoffStarted", SM.Handoff_started);
     ( "HandoffCompleted",
@@ -288,7 +291,7 @@ let canonical_events : (string * SM.event) list =
     ("OperatorStop", SM.Operator_stop { remove_meta = false });
     ("DrainCompleteEv", SM.Drain_complete);
     ("FiberStarted", SM.Fiber_started);
-    ("FiberTerminated", SM.Fiber_terminated { outcome = "test" });
+    ("FiberTerminated", SM.Fiber_terminated { outcome = "test"; provider_id = None; http_status = None });
     ("SupervisorRestartAttempt", SM.Supervisor_restart_attempt { attempt = 1 });
     ("RestartBudgetExhausted", SM.Restart_budget_exhausted);
     ("GuardrailStop", SM.Guardrail_stop { reason = "test" });

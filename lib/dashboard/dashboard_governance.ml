@@ -1,8 +1,7 @@
 (** Dashboard Governance — live judge status surface (case tracking retired). *)
 
-let option_to_yojson = Json_util.option_to_yojson
 
-let string_option_json = option_to_yojson (fun value -> `String value)
+let string_option_json = Json_util.option_to_yojson (fun value -> `String value)
 
 let timestamp_option_json value unix_value =
   match value, unix_value with
@@ -20,15 +19,15 @@ let judge_json_of_runtime (runtime : Dashboard_governance_judge.runtime_snapshot
       ("cached_judgments_visible", `Bool runtime.cached_judgments_visible);
       ("generated_at", timestamp_option_json runtime.generated_at runtime.generated_at_unix);
       ("expires_at", timestamp_option_json runtime.expires_at runtime.expires_at_unix);
-      ("model_used", string_option_json runtime.model_used);
+      ("model_used", `Null);
       ("keeper_name", `String runtime.keeper_name);
       ("last_error", string_option_json runtime.last_error);
       ("compute_in_flight", `Int runtime.compute_in_flight);
       ( "last_compute_duration_sec",
-        option_to_yojson (fun value -> `Float value)
+        Json_util.option_to_yojson (fun value -> `Float value)
           runtime.last_compute_duration_sec );
       ( "last_compute_timeout_sec",
-        option_to_yojson (fun value -> `Float value)
+        Json_util.option_to_yojson (fun value -> `Float value)
           runtime.last_compute_timeout_sec );
       ( "last_compute_outcome",
         string_option_json runtime.last_compute_outcome );

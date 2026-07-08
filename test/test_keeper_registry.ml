@@ -2,13 +2,21 @@ open Alcotest
 
 module R = Masc_mcp.Keeper_registry
 module Keeper_types = Masc_mcp.Keeper_types
+module Keepalive = Masc_mcp.Keeper_keepalive
 module KSM = Masc_mcp.Keeper_state_machine
+module Sup = Masc_mcp.Keeper_supervisor
 module Audit = Masc_mcp.Keeper_transition_audit
+module Hooks = Masc_mcp.Keeper_lifecycle_hooks
 module Meas = Masc_mcp.Keeper_measurement
 module Pages = Masc_mcp.Server_routes_http_pages
 module Json = Yojson.Safe.Util
+module FD = Masc_mcp.Keeper_fd_pressure
+module Disk = Masc_mcp.Keeper_disk_pressure
 
 let bp = "/tmp/test"
+
+let healthy_fd_snapshot =
+  FD.{ open_files = 100; max_files = 10_000; max_files_per_process = None }
 
 let with_env name value f =
   let old = Sys.getenv_opt name in
@@ -19,6 +27,17 @@ let with_env name value f =
       | Some v -> Unix.putenv name v
       | None -> Unix.putenv name "")
     f
+
+let with_bootstrap_max_active_keepers max_keepers f =
+  Fun.protect
+    ~finally:Masc_mcp.Keeper_runtime_resolved.reset_for_tests
+    (fun () ->
+       with_env
+         "MASC_KEEPER_BOOTSTRAP_MAX_ACTIVE_KEEPERS"
+         (string_of_int max_keepers)
+         (fun () ->
+            Masc_mcp.Keeper_runtime_resolved.reset_for_tests ();
+            f ()))
 
 let rec rm_rf path =
   if Sys.file_exists path then
@@ -47,9 +66,336 @@ let make_meta name =
   | Ok meta -> meta
   | Error err -> Alcotest.fail ("make_meta failed: " ^ err)
 
-let make_stimulus ?(urgency = Masc_mcp.Keeper_event_queue.Normal)
+let make_stimulus ?(urgency = Keeper_event_queue.Normal)
     ?(arrived_at = 0.0) post_id payload =
-  Masc_mcp.Keeper_event_queue.{ post_id; urgency; arrived_at; payload }
+  Keeper_event_queue.{ post_id; urgency; arrived_at; payload }
+
+let test_fd_pressure_text_classifier () =
+  check bool "detects EMFILE text" true
+    (FD.is_fd_exhaustion_text
+       "Unix_error (Too many open files in system, \"openat\", path)");
+  check bool "ignores provider timeout" false
+    (FD.is_fd_exhaustion_text "provider stream idle timeout")
+
+let test_fd_pressure_structured_classifier () =
+  check bool "detects structured EMFILE" true
+    (FD.is_fd_exhaustion_exn (Unix.Unix_error (Unix.EMFILE, "open", "/tmp/x")));
+  check bool "detects structured ENFILE" true
+    (FD.is_fd_exhaustion_exn (Unix.Unix_error (Unix.ENFILE, "open", "/tmp/x")));
+  check bool "ignores structured timeout" false
+    (FD.is_fd_exhaustion_exn (Unix.Unix_error (Unix.ETIMEDOUT, "connect", "api")))
+
+let test_fd_pressure_nofile_cap () =
+  FD.reset_for_tests ();
+  check int "low process nofile degrades 24-keeper boot" 1
+    (FD.cap_active_keepers_for_nofile ~soft_limit:(Some 256) 24);
+  check int "safe process nofile leaves 24-keeper boot alone" 24
+    (FD.cap_active_keepers_for_nofile ~soft_limit:(Some 4096) 24);
+  check int "low process nofile also caps unlimited boot config" 1
+    (FD.cap_active_keepers_for_nofile ~soft_limit:(Some 256) 0)
+
+let test_fd_pressure_proactive_admission () =
+  FD.reset_for_tests ();
+  check bool "admits projected fleet within nofile budget" true
+    (FD.admit_start
+       ~soft_limit:(Some 512)
+       ~open_fds:(Some 16)
+       ~system_fds:(Some healthy_fd_snapshot)
+       ~active_keepers:2
+       ~starting_keepers:1
+       ());
+  check bool "blocks projected fleet before nofile exhaustion" false
+    (FD.admit_start
+       ~soft_limit:(Some 512)
+       ~open_fds:(Some 460)
+       ~system_fds:(Some healthy_fd_snapshot)
+       ~active_keepers:2
+       ~starting_keepers:1
+       ());
+  check bool "blocks turns when already over projected active keeper budget" false
+    (FD.admit_turn
+       ~soft_limit:(Some 512)
+       ~open_fds:(Some 16)
+       ~system_fds:(Some healthy_fd_snapshot)
+       ~active_keepers:8
+       ())
+
+let test_fd_pressure_probe_unknown_admission () =
+  FD.reset_for_tests ();
+  let check_block_kind label expected decision =
+    check bool (label ^ " blocks admission") false (FD.admitted decision);
+    check string (label ^ " reason") expected
+      (match decision with
+       | FD.Block block -> FD.admission_block_kind block
+       | FD.Admit -> "admit")
+  in
+  let soft_unknown =
+    FD.admission_decision
+      ~soft_limit:None
+      ~open_fds:(Some 64)
+      ~system_fds:(Some healthy_fd_snapshot)
+      ~active_keepers:2
+      ~starting_keepers:1
+      ()
+  in
+  check_block_kind
+    "soft limit probe unknown"
+    "process_nofile_soft_limit_probe_unknown"
+    soft_unknown;
+  let open_fds_unknown =
+    FD.admission_decision
+      ~soft_limit:(Some 245_760)
+      ~open_fds:None
+      ~system_fds:(Some healthy_fd_snapshot)
+      ~active_keepers:2
+      ~starting_keepers:1
+      ()
+  in
+  check_block_kind
+    "open fd probe unknown"
+    "process_open_fds_probe_unknown"
+    open_fds_unknown;
+  let system_unknown =
+    FD.admission_decision
+      ~soft_limit:(Some 245_760)
+      ~open_fds:(Some 64)
+      ~system_fds:None
+      ~active_keepers:2
+      ~starting_keepers:1
+      ()
+  in
+  check bool "system fd probe unknown stays advisory" true (FD.admitted system_unknown);
+  let runtime =
+    FD.runtime_state_json
+      ~soft_limit:(Some 245_760)
+      ~open_fds:(Some 64)
+      ~system_fds:None
+      ~active_keepers:2
+      ~starting_keepers:1
+      ~requested_keepers:24
+      ()
+  in
+  check bool "runtime exposes system probe unsupported" false
+    (Json.member "system_fd_probe_supported" runtime |> Json.to_bool);
+  check bool "runtime does not block on system probe unknown" false
+    (Json.member "admission_blocked" runtime |> Json.to_bool)
+
+let test_fd_pressure_system_admission () =
+  FD.reset_for_tests ();
+  Fun.protect
+    ~finally:FD.reset_for_tests
+    (fun () ->
+      with_env "MASC_KEEPER_SYSTEM_FD_HEADROOM" "256" (fun () ->
+        let healthy =
+          FD.{ open_files = 100; max_files = 10_000; max_files_per_process = None }
+        in
+        let pressured =
+          FD.{ open_files = 9_500; max_files = 10_000; max_files_per_process = None }
+        in
+        check bool "admits when system file table has headroom" true
+          (FD.admit_start
+             ~soft_limit:(Some 245_760)
+             ~open_fds:(Some 64)
+             ~system_fds:(Some healthy)
+             ~active_keepers:2
+             ~starting_keepers:1
+             ());
+        let decision =
+          FD.admission_decision
+            ~soft_limit:(Some 245_760)
+            ~open_fds:(Some 64)
+            ~system_fds:(Some pressured)
+            ~active_keepers:2
+            ~starting_keepers:1
+            ()
+        in
+        check bool "blocks before host-wide ENFILE" false (FD.admitted decision);
+        check string "system block kind" "system_fd_budget_exhausted"
+          (match decision with
+           | FD.Block block -> FD.admission_block_kind block
+           | FD.Admit -> "admit");
+        let json =
+          FD.runtime_state_json
+            ~soft_limit:(Some 245_760)
+            ~open_fds:(Some 64)
+            ~system_fds:(Some pressured)
+            ~active_keepers:2
+            ~starting_keepers:1
+            ~requested_keepers:24
+            ()
+        in
+        check string "runtime reason" "system_fd_budget_exhausted"
+          (Json.member "reason" json |> Json.to_string);
+        check int "system open files exposed" 9_500
+          (Json.member "system_open_files" json |> Json.to_int);
+        check int "system file table remaining exposed" 500
+          (Json.member "system_fd_remaining" json |> Json.to_int)))
+
+let test_fd_pressure_host_hotspot_admission () =
+  FD.reset_for_tests ();
+  Fun.protect
+    ~finally:FD.reset_for_tests
+    (fun () ->
+      with_env "MASC_KEEPER_SYSTEM_FD_HEADROOM" "0" (fun () ->
+        let hotspot =
+          FD.
+            { open_files = 9_200
+            ; max_files = 1_000_000
+            ; max_files_per_process = Some 10_000
+            }
+        in
+        let default_decision =
+          FD.admission_decision
+            ~soft_limit:(Some 245_760)
+            ~open_fds:(Some 64)
+            ~system_fds:(Some hotspot)
+            ~active_keepers:2
+            ~starting_keepers:1
+            ()
+        in
+        check bool "default host hotspot signal is advisory" true
+          (FD.admitted default_decision);
+        let default_json =
+          FD.runtime_state_json
+            ~soft_limit:(Some 245_760)
+            ~open_fds:(Some 64)
+            ~system_fds:(Some hotspot)
+            ~active_keepers:2
+            ~starting_keepers:1
+            ~requested_keepers:24
+            ()
+        in
+        check string "default runtime still ok" "ok"
+          (Json.member "status" default_json |> Json.to_string);
+        check int "default hotspot headroom disabled" 0
+          (Json.member "host_fd_hotspot_headroom" default_json |> Json.to_int);
+        check bool "default hotspot blocking disabled" false
+          (Json.member "host_fd_hotspot_blocking_enabled" default_json |> Json.to_bool);
+        with_env "MASC_KEEPER_HOST_FD_HOTSPOT_HEADROOM" "1024" (fun () ->
+        let decision =
+          FD.admission_decision
+            ~soft_limit:(Some 245_760)
+            ~open_fds:(Some 64)
+            ~system_fds:(Some hotspot)
+            ~active_keepers:2
+            ~starting_keepers:1
+            ()
+        in
+        check bool "blocks before host process fd hotspot" false (FD.admitted decision);
+        check string "host hotspot block kind" "host_fd_hotspot_budget_exhausted"
+          (match decision with
+           | FD.Block block -> FD.admission_block_kind block
+           | FD.Admit -> "admit");
+        let json =
+          FD.runtime_state_json
+            ~soft_limit:(Some 245_760)
+            ~open_fds:(Some 64)
+            ~system_fds:(Some hotspot)
+            ~active_keepers:2
+            ~starting_keepers:1
+            ~requested_keepers:24
+            ()
+        in
+        check string "runtime reason" "host_fd_hotspot_budget_exhausted"
+          (Json.member "reason" json |> Json.to_string);
+        check int "per-process limit exposed" 10_000
+          (Json.member "system_max_files_per_process" json |> Json.to_int);
+        check int "hotspot remaining exposed" 800
+          (Json.member "host_fd_hotspot_remaining" json |> Json.to_int);
+        check int "hotspot headroom exposed" 1024
+          (Json.member "host_fd_hotspot_headroom" json |> Json.to_int);
+        check bool "hotspot blocking enabled" true
+          (Json.member "host_fd_hotspot_blocking_enabled" json |> Json.to_bool))))
+
+let test_fd_pressure_degraded_projection () =
+  FD.reset_for_tests ();
+  Fun.protect
+    ~finally:FD.reset_for_tests
+    (fun () ->
+      FD.note ~site:"test" ~detail:"Too many open files in system" ();
+      check bool "pressure active" true (FD.active ());
+      let projection = `Assoc (FD.projection_fields ()) in
+      check bool "projection degraded" true
+        (Json.member "degraded" projection |> Json.to_bool);
+      check string "projection reason" "fd_pressure"
+        (Json.member "degraded_reason" projection |> Json.to_string);
+      let trust = FD.degraded_trust_json () in
+      check string "degraded disposition" "Degraded"
+        (Json.member "disposition" trust |> Json.to_string);
+      check bool "needs attention" true
+        (Json.member "needs_attention" trust |> Json.to_bool);
+      check string "next human action" "restore_fd_headroom"
+        (Json.member "next_human_action" trust |> Json.to_string))
+
+let gib n = n * 1024 * 1024 * 1024
+
+let disk_snapshot ?(total_bytes = gib 100) ?(available_bytes = gib 40) () =
+  let used_bytes = max 0 (total_bytes - available_bytes) in
+  Disk.Snapshot
+    { path = "/tmp"
+    ; filesystem = "/dev/test"
+    ; total_bytes
+    ; used_bytes
+    ; available_bytes
+    ; capacity_percent =
+        (if total_bytes <= 0
+         then 0.0
+         else float_of_int used_bytes /. float_of_int total_bytes *. 100.0)
+    ; available_percent =
+        (if total_bytes <= 0
+         then 0.0
+         else float_of_int available_bytes /. float_of_int total_bytes *. 100.0)
+    ; mounted_on = "/"
+    }
+
+let disk_admitted = function
+  | Disk.Admit -> true
+  | Disk.Block _ -> false
+
+let test_disk_pressure_classifiers () =
+  check bool "detects ENOSPC text" true
+    (Disk.is_disk_exhaustion_text
+       "Unix_error (No space left on device, \"write\", path)");
+  check bool "detects structured ENOSPC" true
+    (Disk.is_disk_exhaustion_exn (Unix.Unix_error (Unix.ENOSPC, "write", "/tmp/x")));
+  check bool "ignores provider timeout" false
+    (Disk.is_disk_exhaustion_text "provider stream idle timeout")
+
+let test_disk_pressure_proactive_admission () =
+  Disk.reset_for_tests ();
+  Fun.protect
+    ~finally:Disk.reset_for_tests
+    (fun () ->
+      with_env "MASC_KEEPER_DISK_MIN_FREE_BYTES" (string_of_int (gib 10)) (fun () ->
+          with_env "MASC_KEEPER_DISK_MIN_FREE_PERCENT" "5.0" (fun () ->
+              check bool "admits filesystem with disk headroom" true
+                (Disk.admission_decision_of_snapshot (disk_snapshot ()) |> disk_admitted);
+              check bool "admits large filesystem above capped percent floor" true
+                (Disk.admission_decision_of_snapshot
+                   (disk_snapshot ~total_bytes:(gib 4096) ~available_bytes:(gib 52) ())
+                 |> disk_admitted);
+              check bool "blocks large filesystem below capped percent floor" false
+                (Disk.admission_decision_of_snapshot
+                   (disk_snapshot ~total_bytes:(gib 4096) ~available_bytes:(gib 30) ())
+                 |> disk_admitted);
+              check bool "blocks filesystem below disk floor" false
+                (Disk.admission_decision_of_snapshot
+                   (disk_snapshot ~available_bytes:(gib 1) ())
+                 |> disk_admitted);
+              let probe_error =
+                Disk.admission_decision_of_snapshot (Disk.Probe_error "df -Pk failed")
+              in
+              check bool "blocks when disk probe fails" false
+                (disk_admitted probe_error);
+              check string "disk probe failure tag" "disk_probe_error"
+                (match probe_error with
+                 | Disk.Block block ->
+                   Json.member "tag" (Disk.admission_block_to_json block)
+                   |> Json.to_string
+                 | Disk.Admit -> "admit");
+              Disk.note ~site:"test" ~detail:"No space left on device" ();
+              check bool "cooldown blocks after ENOSPC" false
+                (Disk.admission_decision_of_snapshot (disk_snapshot ()) |> disk_admitted))))
 
 let test_bonsai_keepers_summary_uses_scoped_registry () =
   let base_path = temp_base_path "bonsai-summary" in
@@ -166,7 +512,12 @@ let test_register_offline_and_start () =
 
 let test_register_restarting_and_start () =
   R.clear ();
-  let entry = R.register_restarting ~base_path:bp "k1-restart" (make_meta "k1-restart") in
+  let entry =
+    match R.register_restarting ~base_path:bp "k1-restart" (make_meta "k1-restart") with
+    | Ok e -> e
+    | Error (R.Budget_already_exhausted _) ->
+      fail "register_restarting should succeed on a fresh keeper (no prior entry)"
+  in
   check string "restarting phase" "restarting" (KSM.phase_to_string entry.phase);
   check bool "not running yet" false (R.is_running ~base_path:bp "k1-restart");
   ignore (R.dispatch_event ~base_path:bp "k1-restart" KSM.Fiber_started);
@@ -181,7 +532,12 @@ let test_register_restarting_and_start () =
 let test_prepare_fiber_launch_resets_stale_runtime_latches () =
   R.clear ();
   let name = "k1-stale-stop" in
-  let entry = R.register_restarting ~base_path:bp name (make_meta name) in
+  let entry =
+    match R.register_restarting ~base_path:bp name (make_meta name) with
+    | Ok e -> e
+    | Error (R.Budget_already_exhausted _) ->
+      fail "register_restarting should succeed on a fresh keeper (no prior entry)"
+  in
   Atomic.set entry.fiber_stop true;
   Atomic.set entry.fiber_wakeup true;
   Atomic.set entry.waiting_for_inference true;
@@ -200,6 +556,32 @@ let test_prepare_fiber_launch_resets_stale_runtime_latches () =
       check string "running after prepare launch" "running"
         (KSM.phase_to_string updated.phase);
       check bool "fsm stop_requested reset" false updated.conditions.stop_requested
+
+(* R-A-6.a — register_restarting must refuse to revive a keeper whose
+   restart_budget_remaining=false (TLA+ §S3 BudgetNeverRevives). *)
+let test_register_restarting_refuses_exhausted_budget () =
+  R.clear ();
+  let name = "k-budget-exhausted" in
+  (* Phase 1: register fresh keeper (budget=true initially) and dispatch
+     Restart_budget_exhausted to clear the flag in-place. *)
+  let _ = R.register ~base_path:bp name (make_meta name) in
+  (* Clear the budget directly via Restart_budget_exhausted — bypasses
+     the production path (supervisor's mark_dead emits this event after
+     observing restart_count >= max_restarts), so the test focuses on
+     register_restarting's guard rather than the supervisor wiring. *)
+  (match
+     R.dispatch_event ~base_path:bp name KSM.Restart_budget_exhausted
+   with
+   | Ok _ -> ()
+   | Error err -> fail (KSM.transition_error_to_string err));
+  (* Phase 2: attempt to revive — must be refused by R-A-6.a guard. *)
+  match R.register_restarting ~base_path:bp name (make_meta name) with
+  | Ok _ ->
+    fail
+      "register_restarting must refuse when prior entry has \
+       restart_budget_remaining=false (BudgetNeverRevives violation)"
+  | Error (R.Budget_already_exhausted r) ->
+    check string "refusal carries keeper name" name r.name
 
 let test_dispatch_event_with_audit_preserves_snapshot () =
   R.clear ();
@@ -303,7 +685,7 @@ let test_mark_turn_finished_records_completed_turn_outcome_once () =
   ignore (R.register ~base_path:bp keeper_name (make_meta keeper_name));
   R.mark_turn_started ~base_path:bp keeper_name;
   R.set_turn_decision_stage
-    ~base_path:bp keeper_name R.Decision_tool_policy_selected;
+    ~base_path:bp keeper_name R.Decision_active_tool_policy_selected;
   R.mark_turn_gate_rejected_by_name keeper_name;
   R.mark_turn_finished ~base_path:bp keeper_name;
   R.mark_turn_finished ~base_path:bp keeper_name;
@@ -386,6 +768,26 @@ let test_unregister () =
   R.unregister ~base_path:bp "k2";
   check bool "gone after" true (Option.is_none (R.get ~base_path:bp "k2"))
 
+(* Regression: unregister must signal the watchdog/heartbeat fibers
+   forked alongside the entry to exit, otherwise they keep polling
+   the now-absent entry and either spam
+   "registry entry NOT FOUND" warnings or rely on the paused latch
+   to self-stop (242+ events observed in prod, 2026-05-17). *)
+let test_unregister_signals_fiber_stop () =
+  R.clear ();
+  let _registered = R.register ~base_path:bp "k-fiber-stop" (make_meta "k-fiber-stop") in
+  let entry =
+    match R.get ~base_path:bp "k-fiber-stop" with
+    | Some e -> e
+    | None -> fail "expected entry to exist after register"
+  in
+  check bool "fiber_stop initially false"   false (Atomic.get entry.fiber_stop);
+  check bool "fiber_wakeup initially false" false (Atomic.get entry.fiber_wakeup);
+  R.unregister ~base_path:bp "k-fiber-stop";
+  check bool "fiber_stop set after unregister"   true (Atomic.get entry.fiber_stop);
+  check bool "fiber_wakeup set after unregister" true (Atomic.get entry.fiber_wakeup);
+  check bool "entry gone from registry" true (Option.is_none (R.get ~base_path:bp "k-fiber-stop"))
+
 let test_all () =
   R.clear ();
   let _e1 = R.register ~base_path:bp "a" (make_meta "a") in
@@ -457,23 +859,47 @@ let test_dispatch_event_emits_lifecycle_transition_metric_only_on_phase_change (
   in
   let changed_before =
     Masc_mcp.Prometheus.metric_value_or_zero
-      Masc_mcp.Prometheus.metric_keeper_lifecycle_transitions
+      Masc_mcp.Keeper_metrics.(to_string LifecycleTransitions)
       ~labels:changed_labels ()
   in
   ignore (R.register ~base_path:bp keeper_name (make_meta keeper_name));
   ignore (R.dispatch_event ~base_path:bp keeper_name KSM.Fiber_started);
   check (float 0.001) "no same-phase metric emitted" 0.0
     (Masc_mcp.Prometheus.metric_value_or_zero
-       Masc_mcp.Prometheus.metric_keeper_lifecycle_transitions
+       Masc_mcp.Keeper_metrics.(to_string LifecycleTransitions)
        ~labels:unchanged_labels ());
   ignore (R.dispatch_event ~base_path:bp keeper_name KSM.Operator_pause);
   let changed_after =
     Masc_mcp.Prometheus.metric_value_or_zero
-      Masc_mcp.Prometheus.metric_keeper_lifecycle_transitions
+      Masc_mcp.Keeper_metrics.(to_string LifecycleTransitions)
       ~labels:changed_labels ()
   in
   check (float 0.001) "phase-change transition metric incremented"
     (changed_before +. 1.0) changed_after
+
+let test_dispatch_event_runs_phase_transition_hook () =
+  R.clear ();
+  Hooks.reset_for_testing ();
+  let keeper_name = "k4-lifecycle-hook" in
+  let seen = ref [] in
+  Fun.protect
+    ~finally:Hooks.reset_for_testing
+    (fun () ->
+      Hooks.register (fun ~keeper_id event ->
+          match event with
+          | Hooks.Phase_transition { from_phase; to_phase } ->
+            seen := (keeper_id, from_phase, to_phase) :: !seen
+          | Hooks.Tombstone_reaped -> ());
+      ignore (R.register ~base_path:bp keeper_name (make_meta keeper_name));
+      ignore (R.dispatch_event ~base_path:bp keeper_name KSM.Fiber_started);
+      check int "same-phase event does not run hook" 0 (List.length !seen);
+      ignore (R.dispatch_event ~base_path:bp keeper_name KSM.Operator_pause);
+      match !seen with
+      | [ (seen_keeper, from_phase, to_phase) ] ->
+        check string "keeper" keeper_name seen_keeper;
+        check string "from" "running" (KSM.phase_to_string from_phase);
+        check string "to" "paused" (KSM.phase_to_string to_phase)
+      | _ -> fail "expected exactly one phase transition hook event")
 
 let test_dispatch_event_observes_phase_sse_broadcast_failure () =
   R.clear ();
@@ -481,7 +907,7 @@ let test_dispatch_event_observes_phase_sse_broadcast_failure () =
   let labels = [("keeper", keeper_name); ("site", "phase_changed")] in
   let before =
     Masc_mcp.Prometheus.metric_value_or_zero
-      Masc_mcp.Prometheus.metric_keeper_sse_broadcast_failures
+      Masc_mcp.Keeper_metrics.(to_string SseBroadcastFailures)
       ~labels ()
   in
   ignore (R.register ~base_path:bp keeper_name (make_meta keeper_name));
@@ -499,7 +925,7 @@ let test_dispatch_event_observes_phase_sse_broadcast_failure () =
       | Ok _ -> ());
   let after =
     Masc_mcp.Prometheus.metric_value_or_zero
-      Masc_mcp.Prometheus.metric_keeper_sse_broadcast_failures
+      Masc_mcp.Keeper_metrics.(to_string SseBroadcastFailures)
       ~labels ()
   in
   check (float 0.001) "phase SSE failure metric incremented"
@@ -514,7 +940,7 @@ let test_extended_states () =
   R.clear ();
   let _entry = R.register ~base_path:bp "k4x" (make_meta "k4x") in
   ignore (R.dispatch_event ~base_path:bp "k4x"
-    (KSM.Fiber_terminated { outcome = "test" }));
+    (KSM.Fiber_terminated { outcome = "test"; provider_id = None; http_status = None }));
   (match R.get ~base_path:bp "k4x" with
    | None -> fail "expected k4x"
    | Some e -> check string "crashed string" "crashed" (KSM.phase_to_string e.phase));
@@ -628,7 +1054,7 @@ let test_record_error () =
   let _entry = R.register ~base_path:bp "k6" (make_meta "k6") in
   check bool "no error initially" true
     (Option.is_none (Option.bind (R.get ~base_path:bp "k6") (fun e -> e.last_error)));
-  R.record_error ~base_path:bp "k6" "something broke";
+  Masc_mcp.Keeper_registry_error_recording.record ~base_path:bp "k6" "something broke";
   match R.get ~base_path:bp "k6" with
   | None -> fail "expected k6"
   | Some e ->
@@ -637,7 +1063,7 @@ let test_record_error () =
 let test_clear_error () =
   R.clear ();
   let _entry = R.register ~base_path:bp "k6-clear" (make_meta "k6-clear") in
-  R.record_error ~base_path:bp "k6-clear" "stale error";
+  Masc_mcp.Keeper_registry_error_recording.record ~base_path:bp "k6-clear" "stale error";
   R.clear_error ~base_path:bp "k6-clear";
   match R.get ~base_path:bp "k6-clear" with
   | None -> fail "expected k6-clear"
@@ -654,7 +1080,7 @@ let test_noop_on_missing () =
   R.update_meta ~base_path:bp "ghost" (make_meta "ghost");
   ignore (R.dispatch_event ~base_path:bp "ghost" KSM.Operator_pause);
   R.record_restart ~base_path:bp "ghost";
-  R.record_error ~base_path:bp "ghost" "err";
+  Masc_mcp.Keeper_registry_error_recording.record ~base_path:bp "ghost" "err";
   R.clear_error ~base_path:bp "ghost";
   R.record_crash ~base_path:bp "ghost" 0.0 "crash";
   R.set_grpc_close ~base_path:bp "ghost" None;
@@ -679,32 +1105,32 @@ let test_dequeue_event_consumes_fifo () =
   ignore (R.register ~base_path:bp keeper_name (make_meta keeper_name));
   let s1 = make_stimulus "post-1" "first" in
   let s2 =
-    make_stimulus ~urgency:Masc_mcp.Keeper_event_queue.Immediate "post-2"
+    make_stimulus ~urgency:Keeper_event_queue.Immediate "post-2"
       "second"
   in
-  R.enqueue_event ~base_path:bp keeper_name s1;
-  R.enqueue_event ~base_path:bp keeper_name s2;
+  Masc_mcp.Keeper_registry_event_queue.enqueue ~base_path:bp keeper_name s1;
+  Masc_mcp.Keeper_registry_event_queue.enqueue ~base_path:bp keeper_name s2;
   check int "queued before dequeue" 2
-    (Masc_mcp.Keeper_event_queue.length
-       (R.event_queue_snapshot ~base_path:bp keeper_name));
-  (match R.dequeue_event ~base_path:bp keeper_name with
+    (Keeper_event_queue.length
+       (Masc_mcp.Keeper_registry_event_queue.snapshot ~base_path:bp keeper_name));
+  (match Masc_mcp.Keeper_registry_event_queue.dequeue ~base_path:bp keeper_name with
    | Some stim ->
        check string "first post id" "post-1" stim.post_id;
        check string "first payload" "first" stim.payload
    | None -> fail "expected first stimulus");
   check int "one queued after first dequeue" 1
-    (Masc_mcp.Keeper_event_queue.length
-       (R.event_queue_snapshot ~base_path:bp keeper_name));
-  (match R.dequeue_event ~base_path:bp keeper_name with
+    (Keeper_event_queue.length
+       (Masc_mcp.Keeper_registry_event_queue.snapshot ~base_path:bp keeper_name));
+  (match Masc_mcp.Keeper_registry_event_queue.dequeue ~base_path:bp keeper_name with
    | Some stim ->
        check string "second post id" "post-2" stim.post_id;
        check string "second payload" "second" stim.payload
    | None -> fail "expected second stimulus");
   check bool "empty after drain" true
-    (Masc_mcp.Keeper_event_queue.is_empty
-       (R.event_queue_snapshot ~base_path:bp keeper_name));
+    (Keeper_event_queue.is_empty
+       (Masc_mcp.Keeper_registry_event_queue.snapshot ~base_path:bp keeper_name));
   check bool "dequeue empty returns None" true
-    (Option.is_none (R.dequeue_event ~base_path:bp keeper_name))
+    (Option.is_none (Masc_mcp.Keeper_registry_event_queue.dequeue ~base_path:bp keeper_name))
 
 let test_dequeue_event_respects_base_path_and_missing_keeper () =
   R.clear ();
@@ -712,14 +1138,48 @@ let test_dequeue_event_respects_base_path_and_missing_keeper () =
   let other_bp = "/tmp/test-dequeue-scope-other" in
   ignore (R.register ~base_path:bp name (make_meta name));
   ignore (R.register ~base_path:other_bp name (make_meta name));
-  R.enqueue_event ~base_path:bp name (make_stimulus "scoped" "payload");
+  Masc_mcp.Keeper_registry_event_queue.enqueue ~base_path:bp name (make_stimulus "scoped" "payload");
   check bool "missing keeper returns None" true
-    (Option.is_none (R.dequeue_event ~base_path:bp "missing-dequeue"));
+    (Option.is_none (Masc_mcp.Keeper_registry_event_queue.dequeue ~base_path:bp "missing-dequeue"));
   check bool "other base path stays empty" true
-    (Option.is_none (R.dequeue_event ~base_path:other_bp name));
-  match R.dequeue_event ~base_path:bp name with
+    (Option.is_none (Masc_mcp.Keeper_registry_event_queue.dequeue ~base_path:other_bp name));
+  match Masc_mcp.Keeper_registry_event_queue.dequeue ~base_path:bp name with
   | Some stim -> check string "scoped payload" "payload" stim.payload
   | None -> fail "expected scoped stimulus"
+
+let test_wakeup_hint_separate_from_event_payload () =
+  R.clear ();
+  let name = "wakeup-event-contract" in
+  let entry = R.register ~base_path:bp name (make_meta name) in
+  let queued_payload =
+    make_stimulus ~urgency:Keeper_event_queue.Immediate "queued-post" "queued-payload"
+  in
+  let later_payload = make_stimulus "later-post" "later-payload" in
+  check bool "initial wakeup false" false (Atomic.get entry.fiber_wakeup);
+  check int "initial queue empty" 0
+    (Masc_mcp.Keeper_registry_event_queue.snapshot ~base_path:bp name |> Keeper_event_queue.length);
+  R.wakeup ~base_path:bp name;
+  check bool "wakeup sets hint flag" true (Atomic.get entry.fiber_wakeup);
+  check int "wakeup does not synthesize payload" 0
+    (Masc_mcp.Keeper_registry_event_queue.snapshot ~base_path:bp name |> Keeper_event_queue.length);
+  check bool "wakeup-only dequeue has no payload" true
+    (Option.is_none (Masc_mcp.Keeper_registry_event_queue.dequeue ~base_path:bp name));
+  Masc_mcp.Keeper_registry_event_queue.enqueue ~base_path:bp name queued_payload;
+  check bool "enqueue does not clear wakeup hint" true (Atomic.get entry.fiber_wakeup);
+  Atomic.set entry.fiber_wakeup false;
+  check int "queued payload survives wakeup reset" 1
+    (Masc_mcp.Keeper_registry_event_queue.snapshot ~base_path:bp name |> Keeper_event_queue.length);
+  (match Masc_mcp.Keeper_registry_event_queue.dequeue ~base_path:bp name with
+   | Some stim ->
+       check string "queued post preserved" "queued-post" stim.post_id;
+       check string "queued payload preserved" "queued-payload" stim.payload
+   | None -> fail "expected queued payload");
+  check bool "dequeue does not set wakeup hint" false (Atomic.get entry.fiber_wakeup);
+  Masc_mcp.Keeper_registry_event_queue.enqueue ~base_path:bp name later_payload;
+  check bool "enqueue alone does not wake keeper" false (Atomic.get entry.fiber_wakeup);
+  (match Masc_mcp.Keeper_registry_event_queue.dequeue ~base_path:bp name with
+   | Some stim -> check string "later payload preserved" "later-payload" stim.payload
+   | None -> fail "expected later payload")
 
 (* ── New fields: grpc_close, crash_log, wakeup, fiber_health ── *)
 
@@ -825,7 +1285,7 @@ let test_fiber_health_crashed_state_without_done_signal () =
   R.clear ();
   let _entry = R.register ~base_path:bp "fh3-state" (make_meta "fh3-state") in
   ignore (R.dispatch_event ~base_path:bp "fh3-state"
-    (KSM.Fiber_terminated { outcome = "test" }));
+    (KSM.Fiber_terminated { outcome = "test"; provider_id = None; http_status = None }));
   match R.fiber_health_of ~base_path:bp "fh3-state" with
   | Keeper_types.Fiber_zombie -> ()
   | _ -> fail "expected Fiber_zombie for explicit crashed state"
@@ -849,7 +1309,101 @@ let test_shared_refs () =
 
 let test_spawn_slots () =
   R.clear ();
-  check bool "slots available" true (R.spawn_slots_available ())
+  check bool "slots available" true
+    (R.For_testing.spawn_slots_available ~fd_admitted:true ());
+  check string "disk admission denial returned" "disk_admission_blocked"
+    (match R.For_testing.spawn_slots_decision ~fd_admitted:true ~disk_admitted:false () with
+     | Ok () -> "ok"
+     | Error reason -> R.spawn_slot_denial_reason_to_label reason)
+
+let test_spawn_slot_denial_reason_labels () =
+  check string "fd pressure label" "fd_pressure_active"
+    (R.spawn_slot_denial_reason_to_label R.Fd_pressure_active);
+  check string "disk pressure label" "disk_pressure_active"
+    (R.spawn_slot_denial_reason_to_label R.Disk_pressure_active);
+  check string "fd admission label" "fd_admission_blocked"
+    (R.spawn_slot_denial_reason_to_label R.Fd_admission_blocked);
+  check string "disk admission label" "disk_admission_blocked"
+    (R.spawn_slot_denial_reason_to_label R.Disk_admission_blocked);
+  check string "max active label" "max_active_keepers"
+    (R.spawn_slot_denial_reason_to_label
+       (R.Max_active_keepers { running_count = 4; max_keepers = 4 }));
+  check string "max active detail"
+    "spawn slot denied: max active keepers reached (running_count=4 max_keepers=4)"
+    (R.spawn_slot_denial_reason_to_detail
+       (R.Max_active_keepers { running_count = 4; max_keepers = 4 }))
+
+let test_record_spawn_slot_denied_emits_metric () =
+  let keeper_name = "spawn-slot-denied-counter-test" in
+  let labels =
+    [
+      ("keeper", keeper_name);
+      ("surface", "unit_test");
+      ("reason", "max_active_keepers");
+    ]
+  in
+  let metric = Masc_mcp.Keeper_metrics.(to_string SpawnSlotDenied) in
+  let before = Masc_mcp.Prometheus.metric_value_or_zero metric ~labels () in
+  R.record_spawn_slot_denied
+    ~keeper_name
+    ~surface:"unit_test"
+    (R.Max_active_keepers { running_count = 4; max_keepers = 4 });
+  let after = Masc_mcp.Prometheus.metric_value_or_zero metric ~labels () in
+  check (float 0.001) "spawn denial metric incremented" (before +. 1.0) after
+
+let make_eio_keeper_context env sw base_path =
+  let config = Masc_mcp.Coord.default_config base_path in
+  { Keeper_types.config
+  ; agent_name = "operator"
+  ; sw
+  ; clock = Eio.Stdenv.clock env
+  ; proc_mgr = Some (Eio.Stdenv.process_mgr env)
+  ; net = Some (Eio.Stdenv.net env)
+  }
+
+let seed_running_keeper ~base_path name =
+  ignore (R.register ~base_path name (make_meta name))
+
+let assert_spawn_denial_did_not_register ~base_path ~denied_name =
+  check bool "denied keeper not registered" false
+    (R.is_registered ~base_path denied_name);
+  check bool "denied keeper not running" false
+    (R.is_running ~base_path denied_name);
+  check int "running count unchanged" 1 (R.count_running ~base_path ());
+  check int "registry contains only seed keeper" 1
+    (List.length (R.all ~base_path ()))
+
+let test_start_keepalive_admission_denial_does_not_register_or_fork () =
+  Eio_main.run @@ fun env ->
+  Eio.Switch.run @@ fun sw ->
+  let base_path = temp_base_path "start-keepalive-denied" in
+  Eio.Switch.on_release sw (fun () ->
+    R.clear ();
+    rm_rf base_path);
+  R.clear ();
+  with_bootstrap_max_active_keepers 1 @@ fun () ->
+  seed_running_keeper ~base_path "slot-holder";
+  check int "seed running count" 1 (R.count_running ~base_path ());
+  let ctx = make_eio_keeper_context env sw base_path in
+  let denied_name = "start-denied" in
+  Keepalive.start_keepalive ctx (make_meta denied_name);
+  assert_spawn_denial_did_not_register ~base_path ~denied_name
+
+let test_supervisor_admission_denial_does_not_register_or_fork () =
+  Eio_main.run @@ fun env ->
+  Eio.Switch.run @@ fun sw ->
+  let base_path = temp_base_path "supervisor-keepalive-denied" in
+  Eio.Switch.on_release sw (fun () ->
+    R.clear ();
+    rm_rf base_path);
+  R.clear ();
+  with_bootstrap_max_active_keepers 1 @@ fun () ->
+  seed_running_keeper ~base_path "slot-holder";
+  check int "seed running count" 1 (R.count_running ~base_path ());
+  let ctx = make_eio_keeper_context env sw base_path in
+  let denied_name = "supervisor-denied" in
+  Sup.supervise_keepalive ~proactive_warmup_sec:0 ctx (make_meta denied_name);
+  assert_spawn_denial_did_not_register ~base_path ~denied_name
 
 (* ── Board tracking tests ─────────────────────────────── *)
 
@@ -889,21 +1443,176 @@ let test_cleanup_tracking () =
   let allowed = R.board_wakeup_allowed ~base_path:bp "ct1" ~post_id:"x" ~debounce_sec:60.0 in
   check bool "wakeup allowed after cleanup" true allowed
 
+(* P0-2 (2026-05-07): orphan-drop counter wiring through update_entry.
+
+   Validation strategy: call a public update_entry caller
+   ([R.set_last_agent_count]) against a [name] that was never registered.
+   Each call hits the [None] branch and bumps the orphan-drop metric.
+   At drop #5 (= [orphan_drop_threshold]) the threshold-breached
+   counter increments exactly once. The 6th drop within the window
+   does NOT bump it again (edge-trigger). After a successful update on
+   the same name (post-register), the per-name state is cleared.
+
+   We deliberately do not assert specific counter totals across
+   registry tests because the metric is process-wide; instead, we
+   pin deltas inside this single test using a unique [name]. *)
+let test_update_entry_orphan_drop_emits_metrics () =
+  R.clear ();
+  let name = "orphan-drop-counter-test" in
+  let labels = [ "name", name ] in
+  let dropped_before =
+    Masc_mcp.Prometheus.metric_value_or_zero
+      Masc_mcp.Keeper_metrics.(to_string RegistryUpdateDropped)
+      ~labels ()
+  in
+  let breached_before =
+    Masc_mcp.Prometheus.metric_value_or_zero
+      Masc_mcp.Keeper_metrics.(to_string RegistryOrphanThresholdBreached)
+      ~labels ()
+  in
+  (* 5 drops on a never-registered name: each bumps _dropped, the 5th
+     bumps _orphan_threshold_breached exactly once. *)
+  for _ = 1 to 5 do
+    R.set_last_agent_count ~base_path:bp name 0
+  done;
+  let dropped_after_5 =
+    Masc_mcp.Prometheus.metric_value_or_zero
+      Masc_mcp.Keeper_metrics.(to_string RegistryUpdateDropped)
+      ~labels ()
+  in
+  let breached_after_5 =
+    Masc_mcp.Prometheus.metric_value_or_zero
+      Masc_mcp.Keeper_metrics.(to_string RegistryOrphanThresholdBreached)
+      ~labels ()
+  in
+  check (float 0.001) "dropped counter +=5"
+    (dropped_before +. 5.0) dropped_after_5;
+  check (float 0.001) "threshold breached exactly once at drop #5"
+    (breached_before +. 1.0) breached_after_5;
+  (* 6th drop in same window: only _dropped bumps, breach edge-trigger
+     does not re-fire. *)
+  R.set_last_agent_count ~base_path:bp name 0;
+  let dropped_after_6 =
+    Masc_mcp.Prometheus.metric_value_or_zero
+      Masc_mcp.Keeper_metrics.(to_string RegistryUpdateDropped)
+      ~labels ()
+  in
+  let breached_after_6 =
+    Masc_mcp.Prometheus.metric_value_or_zero
+      Masc_mcp.Keeper_metrics.(to_string RegistryOrphanThresholdBreached)
+      ~labels ()
+  in
+  check (float 0.001) "dropped counter +=6"
+    (dropped_before +. 6.0) dropped_after_6;
+  check (float 0.001) "threshold breach is edge-triggered (still +1)"
+    (breached_before +. 1.0) breached_after_6;
+  (* Once the keeper is registered and update succeeds, per-name state
+     is cleared. Subsequent re-deregistration would start a fresh
+     window, but we don't simulate that here — the cleared-on-success
+     contract is enough to prove orphan resolution detected. *)
+  ignore (R.register ~base_path:bp name (make_meta name));
+  R.set_last_agent_count ~base_path:bp name 7;
+  check int "successful update applies"
+    7 (R.get_last_agent_count ~base_path:bp name)
+
+let test_meta_write_sync_updates_registered_only () =
+  R.clear ();
+  let base_path =
+    Filename.concat
+      (Filename.get_temp_dir_name ())
+      (Printf.sprintf
+         "masc-test-meta-write-sync-%d-%06x"
+         (Unix.getpid ())
+         (Random.bits ()))
+  in
+  if Sys.file_exists base_path then rm_rf base_path;
+  Unix.mkdir base_path 0o755;
+  Fun.protect
+    ~finally:(fun () ->
+      R.clear ();
+      rm_rf base_path)
+    (fun () ->
+      let config = Masc_mcp.Coord.default_config base_path in
+      ignore (Masc_mcp.Coord.init config ~agent_name:(Some "registry-test"));
+      let dormant_name = "meta-sync-dormant" in
+      let labels = [ "name", dormant_name ] in
+      let dropped_before =
+        Masc_mcp.Prometheus.metric_value_or_zero
+          Masc_mcp.Keeper_metrics.(to_string RegistryUpdateDropped)
+          ~labels ()
+      in
+      (match Keeper_types.write_meta ~force:true config (make_meta dormant_name) with
+       | Ok () -> ()
+       | Error err -> fail ("write_meta dormant failed: " ^ err));
+      let dropped_after =
+        Masc_mcp.Prometheus.metric_value_or_zero
+          Masc_mcp.Keeper_metrics.(to_string RegistryUpdateDropped)
+          ~labels ()
+      in
+      check (float 0.001)
+        "durable meta write for dormant keeper does not count as orphan registry drop"
+        dropped_before
+        dropped_after;
+      let live_name = "meta-sync-live" in
+      let live_meta = make_meta live_name in
+      ignore (R.register ~base_path live_name live_meta);
+      let updated_meta = { live_meta with goal = "updated from disk write" } in
+      (match Keeper_types.write_meta ~force:true config updated_meta with
+       | Ok () -> ()
+       | Error err -> fail ("write_meta live failed: " ^ err));
+      match R.get ~base_path live_name with
+      | Some entry ->
+        check string "registered keeper meta synced"
+          "updated from disk write"
+          entry.meta.goal
+      | None -> fail "expected registered keeper entry")
+
+let test_missing_turn_observation_updates_are_silent () =
+  R.clear ();
+  let name = "missing-turn-observation-test" in
+  let labels = [ "name", name ] in
+  let dropped_before =
+    Masc_mcp.Prometheus.metric_value_or_zero
+      Masc_mcp.Keeper_metrics.(to_string RegistryUpdateDropped)
+      ~labels ()
+  in
+  R.mark_turn_started ~base_path:bp name;
+  R.mark_sdk_turn_started ~base_path:bp name;
+  R.mark_turn_measurement ~base_path:bp name;
+  R.set_turn_decision_stage
+    ~base_path:bp
+    name
+    R.Decision_active_tool_policy_selected;
+  R.set_turn_cascade_state ~base_path:bp name (R.Packed R.Cascade_selecting);
+  R.set_turn_phase ~base_path:bp name (R.Packed R.Turn_executing);
+  R.set_turn_selected_model ~base_path:bp name (Some "runtime");
+  R.prepare_turn_retry_after_compaction ~base_path:bp name;
+  R.mark_turn_finished ~base_path:bp name;
+  let dropped_after =
+    Masc_mcp.Prometheus.metric_value_or_zero
+      Masc_mcp.Keeper_metrics.(to_string RegistryUpdateDropped)
+      ~labels ()
+  in
+  check
+    (float 0.001)
+    "missing turn-observation writes are documented no-ops, not orphan drops"
+    dropped_before
+    dropped_after
+;;
+
 let test_find_by_agent_name () =
   R.clear ();
   let _entry = R.register ~base_path:bp "fn1" (make_meta "fn1") in
   let _entry2 = R.register ~base_path:bp "fn2" (make_meta "fn2") in
-  (match R.find_by_agent_name "agent-fn2" with
+  (match Masc_mcp.Keeper_registry_lookup.find_by_agent_name "agent-fn2" with
    | Some e -> check string "found by agent_name" "fn2" e.name
    | None -> fail "expected fn2 via agent_name");
   check bool "not found returns None" true
-    (Option.is_none (R.find_by_agent_name "agent-nonexistent"))
-
-(* ── resolve_config tests ────────────────────────────────── *)
+    (Option.is_none (Masc_mcp.Keeper_registry_lookup.find_by_agent_name "agent-nonexistent"))
 
 module Coord_setup = Coord_utils_backend_setup
 
-(** Minimal in-memory config for testing resolve_config.
+(** Minimal in-memory config for registry tests that need Coord config shape.
     Only base_path matters; backend is a throwaway Memory instance. *)
 let make_test_config base_path : Coord_setup.config =
   let backend_config : Backend_types.config = {
@@ -921,33 +1630,6 @@ let make_test_config base_path : Coord_setup.config =
     backend = Coord_setup.Memory (Backend.Memory.create ());
   }
 
-let test_resolve_config_scoped_hit () =
-  R.clear ();
-  let _entry = R.register ~base_path:bp "rc1" (make_meta "rc1") in
-  let config = make_test_config bp in
-  let resolved = R.resolve_config config "rc1" in
-  check string "scoped hit keeps base_path" bp resolved.base_path
-
-let test_resolve_config_cross_base_path () =
-  R.clear ();
-  let bp2 = "/tmp/other" in
-  let _entry = R.register ~base_path:bp2 "rc2" (make_meta "rc2") in
-  let config = make_test_config bp in
-  let resolved = R.resolve_config config "rc2" in
-  check string "cross-base_path keeps original scope" bp resolved.base_path
-
-let test_resolve_config_not_found () =
-  R.clear ();
-  let config = make_test_config bp in
-  let resolved = R.resolve_config config "nonexistent" in
-  check string "unknown keeper keeps original" bp resolved.base_path
-
-let test_resolve_config_empty_name () =
-  R.clear ();
-  let config = make_test_config bp in
-  let resolved = R.resolve_config config "" in
-  check string "empty name keeps original" bp resolved.base_path
-
 (* ── Directive processing tests ─────────────────────────── *)
 
 module KK = Masc_mcp.Keeper_keepalive
@@ -962,11 +1644,22 @@ let test_directive_pause () =
 
 let test_directive_resume () =
   R.clear ();
+  Masc_mcp.Keeper_turn_livelock.reset_for_tests ();
   let _entry = R.register ~base_path:bp "dr1" (make_meta "dr1") in
+  ignore
+    (Masc_mcp.Keeper_turn_livelock.guard_and_record_turn_start
+       ~keeper:"dr1"
+       ~turn_id:7
+       ~max_attempts:3
+       ~stuck_after_sec:1800.0
+       ());
   KK.process_directive ~agent_name:"agent-dr1" "pause";
   KK.process_directive ~agent_name:"agent-dr1" "resume";
   match R.get ~base_path:bp "dr1" with
-  | Some e -> check bool "resumed after directive" false e.meta.paused
+  | Some e ->
+    check bool "resumed after directive" false e.meta.paused;
+    check bool "resume clears livelock attempt state" true
+      (Option.is_none (Masc_mcp.Keeper_turn_livelock.current_state ~keeper:"dr1"))
   | None -> fail "expected dr1"
 
 let test_directive_keeper_name_alias () =
@@ -980,6 +1673,18 @@ let test_directive_keeper_name_alias () =
   match R.get ~base_path:bp "dra1" with
   | Some e -> check bool "resumed via keeper name alias" false e.meta.paused
   | None -> fail "expected dra1"
+
+let test_directive_canonical_agent_alias () =
+  R.clear ();
+  let _entry = R.register ~base_path:bp "dra2" (make_meta "dra2") in
+  KK.process_directive ~agent_name:"keeper-dra2-agent" "pause";
+  (match R.get ~base_path:bp "dra2" with
+   | Some e -> check bool "paused via canonical keeper agent alias" true e.meta.paused
+   | None -> fail "expected dra2");
+  KK.process_directive ~agent_name:"keeper-dra2-agent" "resume";
+  match R.get ~base_path:bp "dra2" with
+  | Some e -> check bool "resumed via canonical keeper agent alias" false e.meta.paused
+  | None -> fail "expected dra2"
 
 let test_directive_claim () =
   R.clear ();
@@ -1127,6 +1832,7 @@ let test_board_signal_wakeup_ignores_unmatched_posts_without_opt_in () =
             title = post.title;
             content = post.content;
             hearth = post.hearth;
+            updated_at = Some post.updated_at;
           }
         in
         KK.wakeup_relevant_keeper_for_board_signal ~config signal;
@@ -1172,18 +1878,75 @@ let test_board_signal_wakeup_only_wakes_opted_in_scope_keeper () =
             title = post.title;
             content = post.content;
             hearth = post.hearth;
+            updated_at = Some post.updated_at;
           }
         in
         KK.wakeup_relevant_keeper_for_board_signal ~config signal;
         check bool "opted-in keeper woken" true (Atomic.get entry_a.fiber_wakeup);
         check int "opted-in keeper queued board stimulus" 1
-          (R.event_queue_snapshot ~base_path:base_dir "opted-in"
-           |> Masc_mcp.Keeper_event_queue.length);
+          (Masc_mcp.Keeper_registry_event_queue.snapshot ~base_path:base_dir "opted-in"
+           |> Keeper_event_queue.length);
         check bool "defaulted keeper stays asleep" false
           (Atomic.get entry_b.fiber_wakeup);
         check int "defaulted keeper has no stimulus" 0
-          (R.event_queue_snapshot ~base_path:base_dir "defaulted"
-           |> Masc_mcp.Keeper_event_queue.length)))
+          (Masc_mcp.Keeper_registry_event_queue.snapshot ~base_path:base_dir "defaulted"
+           |> Keeper_event_queue.length)))
+
+let test_board_signal_explicit_mention_resumes_paused_keeper () =
+  R.clear ();
+  let base_dir = temp_base_path "board-wakeup-paused-explicit" in
+  Fun.protect
+    ~finally:(fun () ->
+      Masc_mcp.Board.reset_global_for_test ();
+      Masc_mcp.Board_dispatch.reset_for_test ();
+      rm_rf base_dir)
+    (fun () ->
+      with_env "MASC_BASE_PATH" base_dir (fun () ->
+        Masc_mcp.Board.reset_global_for_test ();
+        Masc_mcp.Board_dispatch.reset_for_test ();
+        Masc_mcp.Board_dispatch.init_jsonl ();
+        let config = make_test_config base_dir in
+        let paused = { (make_meta "sleepy") with paused = true } in
+        (match Keeper_types.write_meta ~force:true config paused with
+         | Ok () -> ()
+         | Error err -> fail ("write_meta failed: " ^ err));
+        let entry = R.register ~base_path:base_dir "sleepy" paused in
+        ignore (R.dispatch_event ~base_path:base_dir "sleepy" KSM.Operator_pause);
+        let post =
+          match
+            Masc_mcp.Board_dispatch.create_post ~author:"alice"
+              ~title:"Owner call"
+              ~content:"Can @sleepy take this P1?"
+              ~post_kind:Masc_mcp.Board.Human_post ()
+          with
+          | Ok post -> post
+          | Error err -> fail (Masc_mcp.Board.show_board_error err)
+        in
+        let signal : Masc_mcp.Board_dispatch.keeper_board_signal =
+          {
+            kind = Masc_mcp.Board_dispatch.Board_post_created;
+            post_id = Masc_mcp.Board.Post_id.to_string post.id;
+            author = "alice";
+            title = post.title;
+            content = post.content;
+            hearth = post.hearth;
+            updated_at = Some post.updated_at;
+          }
+        in
+        KK.wakeup_relevant_keeper_for_board_signal ~config signal;
+        check bool "paused keeper woken" true (Atomic.get entry.fiber_wakeup);
+        check int "paused keeper queued board stimulus" 1
+          (Masc_mcp.Keeper_registry_event_queue.snapshot ~base_path:base_dir "sleepy"
+           |> Keeper_event_queue.length);
+        (match Keeper_types.read_meta config "sleepy" with
+         | Ok (Some persisted) ->
+           check bool "paused meta resumed" false persisted.paused
+         | Ok None -> fail "expected persisted meta"
+         | Error err -> fail ("read_meta failed: " ^ err));
+        (match R.get ~base_path:base_dir "sleepy" with
+         | Some resumed ->
+           check bool "registry meta resumed" false resumed.meta.paused
+         | None -> fail "expected registry entry")))
 
 let test_board_signal_wakeup_keeps_thread_reply_after_self_comment () =
   R.clear ();
@@ -1239,19 +2002,20 @@ let test_board_signal_wakeup_keeps_thread_reply_after_self_comment () =
             title = post.title;
             content = "There is a new question for you.";
             hearth = post.hearth;
+            updated_at = Some post.updated_at;
           }
         in
         KK.wakeup_relevant_keeper_for_board_signal ~config signal;
         check bool "participant keeper woken" true
           (Atomic.get entry_a.fiber_wakeup);
         check int "participant keeper queued board stimulus" 1
-          (R.event_queue_snapshot ~base_path:base_dir "participant"
-           |> Masc_mcp.Keeper_event_queue.length);
+          (Masc_mcp.Keeper_registry_event_queue.snapshot ~base_path:base_dir "participant"
+           |> Keeper_event_queue.length);
         check bool "bystander keeper stays asleep" false
           (Atomic.get entry_b.fiber_wakeup);
         check int "bystander keeper has no stimulus" 0
-          (R.event_queue_snapshot ~base_path:base_dir "bystander"
-           |> Masc_mcp.Keeper_event_queue.length)))
+          (Masc_mcp.Keeper_registry_event_queue.snapshot ~base_path:base_dir "bystander"
+           |> Keeper_event_queue.length)))
 
 let test_effective_keepalive_meta_prefers_registry_when_disk_unchanged () =
   R.clear ();
@@ -1278,6 +2042,353 @@ let test_effective_keepalive_meta_prefers_registry_when_disk_unchanged () =
     chosen.continuity_summary;
   check int "turn count comes from registry" 9
     chosen.runtime.usage.total_turns
+
+(* ── RFC-0045: SDK turn boundary alignment ─────────────────── *)
+
+let drive_turn_to_finalizing keeper_name =
+  R.mark_turn_started ~base_path:bp keeper_name;
+  R.set_turn_decision_stage
+    ~base_path:bp keeper_name R.Decision_active_tool_policy_selected;
+  R.set_turn_cascade_state ~base_path:bp keeper_name (R.Packed R.Cascade_selecting);
+  R.set_turn_cascade_state ~base_path:bp keeper_name (R.Packed R.Cascade_trying);
+  R.set_turn_cascade_state ~base_path:bp keeper_name (R.Packed R.Cascade_done)
+
+let test_mark_sdk_turn_started_resets_after_finalizing () =
+  R.clear ();
+  let keeper_name = "k-rfc-0045-reset" in
+  ignore (R.register ~base_path:bp keeper_name (make_meta keeper_name));
+  drive_turn_to_finalizing keeper_name;
+  R.mark_sdk_turn_started ~base_path:bp keeper_name;
+  match R.get ~base_path:bp keeper_name with
+  | None -> fail "entry missing after mark_sdk_turn_started"
+  | Some entry ->
+    (match entry.R.current_turn_observation with
+     | None -> fail "observation cleared by mark_sdk_turn_started"
+     | Some obs ->
+       check bool "turn_phase reset to Turn_prompting" true
+         (obs.R.turn_phase = R.Packed R.Turn_prompting);
+       check bool "cascade_state reset to Cascade_idle" true
+         (obs.R.cascade_state = R.Packed R.Cascade_idle);
+       check bool "decision_stage reset to Decision_undecided" true
+         (obs.R.decision_stage = R.Packed R.Decision_undecided))
+
+let test_mark_sdk_turn_started_preserves_keeper_scope () =
+  R.clear ();
+  let keeper_name = "k-rfc-0045-preserve" in
+  ignore (R.register ~base_path:bp keeper_name (make_meta keeper_name));
+  drive_turn_to_finalizing keeper_name;
+  let started_at_before, turn_id_before =
+    match R.get ~base_path:bp keeper_name with
+    | Some { current_turn_observation = Some obs; _ } ->
+      (obs.R.started_at, obs.R.turn_id)
+    | _ -> fail "obs missing before SDK boundary"
+  in
+  R.mark_sdk_turn_started ~base_path:bp keeper_name;
+  match R.get ~base_path:bp keeper_name with
+  | Some { current_turn_observation = Some obs; _ } ->
+    check int "turn_id preserved across SDK boundary"
+      turn_id_before obs.R.turn_id;
+    check (float 1e-6) "started_at preserved" started_at_before obs.R.started_at
+  | _ -> fail "obs missing after SDK boundary"
+
+let test_turn_progress_starts_at_turn_boundary () =
+  R.clear ();
+  let keeper_name = "k-progress-start" in
+  ignore (R.register ~base_path:bp keeper_name (make_meta keeper_name));
+  R.mark_turn_started ~base_path:bp keeper_name;
+  match R.get ~base_path:bp keeper_name with
+  | Some { current_turn_observation = Some obs; _ } ->
+    check (float 1e-6) "progress starts at started_at"
+      obs.R.started_at obs.R.last_progress_at;
+    check (option string) "progress kind"
+      (Some "turn_started")
+      obs.R.last_progress_kind
+  | _ -> fail "obs missing after mark_turn_started"
+
+let test_record_turn_progress_updates_live_observation () =
+  R.clear ();
+  let keeper_name = "k-progress-record" in
+  ignore (R.register ~base_path:bp keeper_name (make_meta keeper_name));
+  R.mark_turn_started ~base_path:bp keeper_name;
+  let before =
+    match R.get ~base_path:bp keeper_name with
+    | Some { current_turn_observation = Some obs; _ } -> obs.R.last_progress_at
+    | _ -> fail "obs missing before progress"
+  in
+  R.record_turn_progress ~base_path:bp keeper_name ~event_kind:"sse_text_delta";
+  match R.get ~base_path:bp keeper_name with
+  | Some { current_turn_observation = Some obs; _ } ->
+    check bool "progress timestamp advances or stays equal" true
+      (obs.R.last_progress_at >= before);
+    check (option string) "progress kind updated"
+      (Some "sse_text_delta")
+      obs.R.last_progress_kind
+  | _ -> fail "obs missing after progress"
+
+let test_sse_ping_does_not_refresh_progress_observation () =
+  R.clear ();
+  let keeper_name = "k-progress-ping-ignored" in
+  ignore (R.register ~base_path:bp keeper_name (make_meta keeper_name));
+  R.mark_turn_started ~base_path:bp keeper_name;
+  let before_at, before_kind =
+    match R.get ~base_path:bp keeper_name with
+    | Some { current_turn_observation = Some obs; _ } ->
+      obs.R.last_progress_at, obs.R.last_progress_kind
+    | _ -> fail "obs missing before ping"
+  in
+  let ping_kind =
+    Masc_mcp.Keeper_agent_run.For_testing.sse_event_progress_kind
+      Agent_sdk.Types.Ping
+  in
+  check (option string) "ping has no progress kind" None ping_kind;
+  Option.iter
+    (fun event_kind ->
+       R.record_turn_progress ~base_path:bp keeper_name ~event_kind)
+    ping_kind;
+  (match R.get ~base_path:bp keeper_name with
+   | Some { current_turn_observation = Some obs; _ } ->
+     check (float 1e-6) "ping leaves progress timestamp unchanged"
+       before_at obs.R.last_progress_at;
+     check (option string) "ping leaves progress kind unchanged"
+       before_kind obs.R.last_progress_kind
+   | _ -> fail "obs missing after ping");
+  let text_kind =
+    Masc_mcp.Keeper_agent_run.For_testing.sse_event_progress_kind
+      (Agent_sdk.Types.ContentBlockDelta
+         { index = 0; delta = Agent_sdk.Types.TextDelta "token" })
+  in
+  (match text_kind with
+   | Some event_kind ->
+     R.record_turn_progress ~base_path:bp keeper_name ~event_kind
+   | None -> fail "text delta should classify as progress");
+  match R.get ~base_path:bp keeper_name with
+  | Some { current_turn_observation = Some obs; _ } ->
+    check (option string) "text delta updates progress kind"
+      (Some "sse_text_delta")
+      obs.R.last_progress_kind
+  | _ -> fail "obs missing after text delta"
+
+let test_registry_progress_wrapper_survives_liveness_off () =
+  with_env "MASC_CASCADE_ATTEMPT_LIVENESS" "off" @@ fun () ->
+  Masc_mcp.Cascade_attempt_liveness_config.reset_cache_for_test ();
+  Fun.protect
+    ~finally:Masc_mcp.Cascade_attempt_liveness_config.reset_cache_for_test
+  @@ fun () ->
+  check string "liveness mode" "off"
+    (Masc_mcp.Cascade_attempt_liveness_config.mode_label
+       (Masc_mcp.Cascade_attempt_liveness_config.current_mode ()));
+  let stamped = ref [] in
+  let on_event =
+    Masc_mcp.Keeper_agent_run.For_testing.registry_progress_on_event
+      ~record_turn_progress:(fun event_kind ->
+        stamped := event_kind :: !stamped)
+      None
+  in
+  on_event Agent_sdk.Types.Ping;
+  check (list string) "ping still ignored" [] (List.rev !stamped);
+  on_event
+    (Agent_sdk.Types.ContentBlockDelta
+       { index = 0; delta = Agent_sdk.Types.TextDelta "token" });
+  check (list string) "text delta stamps progress"
+    [ "sse_text_delta" ]
+    (List.rev !stamped)
+
+let test_mark_sdk_turn_started_no_op_without_obs () =
+  R.clear ();
+  let keeper_name = "k-rfc-0045-no-obs" in
+  ignore (R.register ~base_path:bp keeper_name (make_meta keeper_name));
+  (* No mark_turn_started has been called yet. *)
+  R.mark_sdk_turn_started ~base_path:bp keeper_name;
+  match R.get ~base_path:bp keeper_name with
+  | Some { current_turn_observation = None; _ } -> ()
+  | Some { current_turn_observation = Some _; _ } ->
+    fail "mark_sdk_turn_started installed observation without keeper-turn"
+  | None -> fail "entry missing"
+
+let test_mark_turn_cascade_exhausted_materializes_pre_disclosure_path () =
+  R.clear ();
+  let keeper_name = "k-cascade-exhausted-pre-disclosure" in
+  ignore (R.register ~base_path:bp keeper_name (make_meta keeper_name));
+  R.mark_turn_started ~base_path:bp keeper_name;
+  R.mark_turn_cascade_exhausted ~base_path:bp keeper_name;
+  match R.get ~base_path:bp keeper_name with
+  | Some { current_turn_observation = Some obs; _ } ->
+    check bool "cascade_state lands on Cascade_exhausted" true
+      (obs.R.cascade_state = R.Packed R.Cascade_exhausted);
+    check bool "turn_phase lands on Turn_exhausted" true
+      (obs.R.turn_phase = R.Packed R.Turn_exhausted);
+    check bool "decision_stage records tool policy boundary" true
+      (obs.R.decision_stage = R.Packed R.Decision_tool_policy_selected)
+  | Some { current_turn_observation = None; _ } ->
+    fail "mark_turn_cascade_exhausted cleared observation"
+  | None -> fail "entry missing"
+
+let test_mark_turn_cascade_done_materializes_pre_disclosure_path () =
+  R.clear ();
+  let keeper_name = "k-cascade-done-pre-disclosure" in
+  ignore (R.register ~base_path:bp keeper_name (make_meta keeper_name));
+  R.mark_turn_started ~base_path:bp keeper_name;
+  R.mark_turn_cascade_done ~base_path:bp keeper_name;
+  match R.get ~base_path:bp keeper_name with
+  | Some { current_turn_observation = Some obs; _ } ->
+    check bool "cascade_state lands on Cascade_done" true
+      (obs.R.cascade_state = R.Packed R.Cascade_done);
+    check bool "turn_phase lands on Turn_finalizing" true
+      (obs.R.turn_phase = R.Packed R.Turn_finalizing);
+    check bool "decision_stage records tool policy boundary" true
+      (obs.R.decision_stage = R.Packed R.Decision_tool_policy_selected)
+  | Some { current_turn_observation = None; _ } ->
+    fail "mark_turn_cascade_done cleared observation"
+  | None -> fail "entry missing"
+
+let test_mark_turn_cascade_done_no_op_without_obs () =
+  R.clear ();
+  let keeper_name = "k-cascade-done-no-obs" in
+  ignore (R.register ~base_path:bp keeper_name (make_meta keeper_name));
+  R.mark_turn_cascade_done ~base_path:bp keeper_name;
+  match R.get ~base_path:bp keeper_name with
+  | Some { current_turn_observation = None; _ } -> ()
+  | Some { current_turn_observation = Some _; _ } ->
+    fail "mark_turn_cascade_done installed observation without keeper-turn"
+  | None -> fail "entry missing"
+
+let test_mark_turn_cascade_done_no_op_after_exhausted () =
+  R.clear ();
+  let keeper_name = "k-cascade-done-after-exhausted" in
+  ignore (R.register ~base_path:bp keeper_name (make_meta keeper_name));
+  R.mark_turn_started ~base_path:bp keeper_name;
+  R.mark_turn_cascade_exhausted ~base_path:bp keeper_name;
+  R.mark_turn_cascade_done ~base_path:bp keeper_name;
+  match R.get ~base_path:bp keeper_name with
+  | Some { current_turn_observation = Some obs; _ } ->
+    check bool "cascade_state remains Cascade_exhausted" true
+      (obs.R.cascade_state = R.Packed R.Cascade_exhausted);
+    check bool "turn_phase remains Turn_exhausted" true
+      (obs.R.turn_phase = R.Packed R.Turn_exhausted)
+  | Some { current_turn_observation = None; _ } ->
+    fail "mark_turn_cascade_done cleared observation"
+  | None -> fail "entry missing"
+
+let test_mark_turn_provider_attempt_started_lands_on_executing () =
+  R.clear ();
+  let keeper_name = "k-provider-attempt-started" in
+  ignore (R.register ~base_path:bp keeper_name (make_meta keeper_name));
+  R.mark_turn_started ~base_path:bp keeper_name;
+  R.mark_turn_provider_attempt_started ~base_path:bp keeper_name;
+  match R.get ~base_path:bp keeper_name with
+  | Some { current_turn_observation = Some obs; _ } ->
+    check bool "cascade_state lands on Cascade_trying" true
+      (obs.R.cascade_state = R.Packed R.Cascade_trying);
+    check bool "turn_phase lands on Turn_executing" true
+      (obs.R.turn_phase = R.Packed R.Turn_executing);
+    check bool "decision_stage records tool policy boundary" true
+      (obs.R.decision_stage = R.Packed R.Decision_tool_policy_selected)
+  | Some { current_turn_observation = None; _ } ->
+    fail "mark_turn_provider_attempt_started cleared observation"
+  | None -> fail "entry missing"
+
+let test_mark_turn_provider_attempt_started_no_op_without_obs () =
+  R.clear ();
+  let keeper_name = "k-provider-attempt-no-obs" in
+  ignore (R.register ~base_path:bp keeper_name (make_meta keeper_name));
+  R.mark_turn_provider_attempt_started ~base_path:bp keeper_name;
+  match R.get ~base_path:bp keeper_name with
+  | Some { current_turn_observation = None; _ } -> ()
+  | Some { current_turn_observation = Some _; _ } ->
+    fail "mark_turn_provider_attempt_started installed observation without keeper-turn"
+  | None -> fail "entry missing"
+
+let test_mark_turn_provider_attempt_started_is_idempotent () =
+  R.clear ();
+  let keeper_name = "k-provider-attempt-idempotent" in
+  ignore (R.register ~base_path:bp keeper_name (make_meta keeper_name));
+  R.mark_turn_started ~base_path:bp keeper_name;
+  R.mark_turn_provider_attempt_started ~base_path:bp keeper_name;
+  R.mark_turn_provider_attempt_started ~base_path:bp keeper_name;
+  match R.get ~base_path:bp keeper_name with
+  | Some { current_turn_observation = Some obs; _ } ->
+    check bool "cascade_state remains Cascade_trying" true
+      (obs.R.cascade_state = R.Packed R.Cascade_trying);
+    check bool "turn_phase remains Turn_executing" true
+      (obs.R.turn_phase = R.Packed R.Turn_executing)
+  | Some { current_turn_observation = None; _ } ->
+    fail "mark_turn_provider_attempt_started cleared observation"
+  | None -> fail "entry missing"
+
+let test_mark_turn_provider_attempt_started_no_op_after_done () =
+  R.clear ();
+  let keeper_name = "k-provider-attempt-done" in
+  ignore (R.register ~base_path:bp keeper_name (make_meta keeper_name));
+  R.mark_turn_started ~base_path:bp keeper_name;
+  R.set_turn_cascade_state
+    ~base_path:bp
+    keeper_name
+    (R.Packed R.Cascade_selecting);
+  R.set_turn_cascade_state
+    ~base_path:bp
+    keeper_name
+    (R.Packed R.Cascade_trying);
+  R.set_turn_cascade_state ~base_path:bp keeper_name (R.Packed R.Cascade_done);
+  R.mark_turn_provider_attempt_started ~base_path:bp keeper_name;
+  match R.get ~base_path:bp keeper_name with
+  | Some { current_turn_observation = Some obs; _ } ->
+    check bool "cascade_state remains Cascade_done" true
+      (obs.R.cascade_state = R.Packed R.Cascade_done);
+    check bool "decision_stage remains unchanged" true
+      (obs.R.decision_stage = R.Packed R.Decision_undecided)
+  | Some { current_turn_observation = None; _ } ->
+    fail "mark_turn_provider_attempt_started cleared observation"
+  | None -> fail "entry missing"
+
+(* The production [Assert_failure] at keeper_registry.ml:775 was triggered
+   when the SDK fired [before_turn_params] for a second time inside one
+   keeper-turn.  This test reproduces the same shape: two
+   [set_turn_cascade_state(Cascade_selecting)] calls separated by a
+   [Cascade_done] terminal, with [mark_sdk_turn_started] used as the
+   boundary.  Without the RFC-0045 boundary call this test would crash
+   on the second [set_turn_cascade_state]. *)
+let test_two_sdk_turn_boundaries_no_assert () =
+  R.clear ();
+  let keeper_name = "k-rfc-0045-two-boundaries" in
+  ignore (R.register ~base_path:bp keeper_name (make_meta keeper_name));
+  drive_turn_to_finalizing keeper_name;
+  (* Second SDK turn arrives via before_turn_params hook. *)
+  R.mark_sdk_turn_started ~base_path:bp keeper_name;
+  R.set_turn_decision_stage
+    ~base_path:bp keeper_name R.Decision_active_tool_policy_selected;
+  R.set_turn_cascade_state ~base_path:bp keeper_name (R.Packed R.Cascade_selecting);
+  match R.get ~base_path:bp keeper_name with
+  | Some { current_turn_observation = Some obs; _ } ->
+    check bool "second SDK turn lands in Cascade_selecting / Turn_routing" true
+      (obs.R.cascade_state = R.Packed R.Cascade_selecting
+       && obs.R.turn_phase = R.Packed R.Turn_routing)
+  | _ -> fail "obs missing after second SDK boundary"
+
+let fsm_guard_count () =
+  Masc_mcp.Prometheus.metric_value_or_zero
+    Masc_mcp.Prometheus.metric_fsm_guard_violation
+    ~labels:[ ("action", "turn_phase_transition"); ("stage", "guard") ]
+    ()
+
+let test_set_turn_phase_rejection_bumps_guard_metric () =
+  R.clear ();
+  let keeper_name = "k-turn-phase-guard-metric" in
+  ignore (R.register ~base_path:bp keeper_name (make_meta keeper_name));
+  R.mark_turn_started ~base_path:bp keeper_name;
+  let before = fsm_guard_count () in
+  let raised =
+    try
+      R.set_turn_phase ~base_path:bp keeper_name R.(Packed Turn_compacting);
+      false
+    with
+    | R.Turn_phase_transition_violation { where; _ } ->
+      String.equal where "set_turn_phase"
+  in
+  let after = fsm_guard_count () in
+  check bool
+    "forbidden set_turn_phase raises Turn_phase_transition_violation from the setter"
+    true raised;
+  check (float 0.0001) "guard metric increments" (before +. 1.0) after
 
 let test_effective_keepalive_meta_prefers_disk_when_present () =
   R.clear ();
@@ -1316,16 +2427,82 @@ let test_effective_keepalive_meta_prefers_disk_when_present () =
   check int "turn count comes from disk" 11
     chosen.runtime.usage.total_turns
 
+let test_boot_already_live_running () =
+  R.clear ();
+  let meta = make_meta "boot-live-running" in
+  ignore (R.register ~base_path:bp "boot-live-running" meta);
+  ignore (R.dispatch_event ~base_path:bp "boot-live-running" KSM.Fiber_started);
+  check bool "Running keeper is_boot_already_live" true
+    (R.is_boot_already_live ~base_path:bp "boot-live-running")
+
+let test_boot_already_live_paused () =
+  R.clear ();
+  let meta = make_meta "boot-live-paused" in
+  ignore (R.register ~base_path:bp "boot-live-paused" meta);
+  ignore (R.dispatch_event ~base_path:bp "boot-live-paused" KSM.Fiber_started);
+  ignore (R.dispatch_event ~base_path:bp "boot-live-paused" KSM.Operator_pause);
+  check bool "Paused keeper is_boot_already_live" true
+    (R.is_boot_already_live ~base_path:bp "boot-live-paused")
+
+let test_boot_not_already_live_failing () =
+  R.clear ();
+  let meta = make_meta "boot-live-failing" in
+  ignore (R.register ~base_path:bp "boot-live-failing" meta);
+  ignore (R.dispatch_event ~base_path:bp "boot-live-failing" KSM.Fiber_started);
+  ignore
+    (R.dispatch_event ~base_path:bp "boot-live-failing"
+       (KSM.Heartbeat_failed { consecutive = 1; max_allowed = 3 }));
+  check bool "Failing keeper is NOT boot_already_live" false
+    (R.is_boot_already_live ~base_path:bp "boot-live-failing")
+
+let test_boot_not_already_live_offline () =
+  R.clear ();
+  let meta = make_meta "boot-live-offline" in
+  ignore (R.register_offline ~base_path:bp "boot-live-offline" meta);
+  check bool "Offline keeper is NOT boot_already_live" false
+    (R.is_boot_already_live ~base_path:bp "boot-live-offline")
+
+let test_boot_not_already_live_stop_requested () =
+  R.clear ();
+  let meta = make_meta "boot-live-stopped" in
+  ignore (R.register ~base_path:bp "boot-live-stopped" meta);
+  ignore (R.dispatch_event ~base_path:bp "boot-live-stopped" KSM.Fiber_started);
+  ignore (R.dispatch_event ~base_path:bp "boot-live-stopped" KSM.Stop_requested);
+  check bool "Running keeper with stop_requested is NOT boot_already_live" false
+    (R.is_boot_already_live ~base_path:bp "boot-live-stopped")
+
 let () =
   run "Keeper_registry"
     [
       ( "basic",
         [
+          test_case "fd pressure text classifier" `Quick
+            test_fd_pressure_text_classifier;
+          test_case "fd pressure structured classifier" `Quick
+            test_fd_pressure_structured_classifier;
+          test_case "fd pressure nofile boot cap" `Quick
+            test_fd_pressure_nofile_cap;
+          test_case "fd pressure proactive admission" `Quick
+            test_fd_pressure_proactive_admission;
+          test_case "fd pressure probe unknown admission" `Quick
+            test_fd_pressure_probe_unknown_admission;
+          test_case "fd pressure system admission" `Quick
+            test_fd_pressure_system_admission;
+          test_case "fd pressure host hotspot admission" `Quick
+            test_fd_pressure_host_hotspot_admission;
+          test_case "fd pressure degraded projection" `Quick
+            test_fd_pressure_degraded_projection;
+          test_case "disk pressure classifiers" `Quick
+            test_disk_pressure_classifiers;
+          test_case "disk pressure proactive admission" `Quick
+            test_disk_pressure_proactive_admission;
           eio_test "bonsai summary uses scoped registry"
             test_bonsai_keepers_summary_uses_scoped_registry;
           eio_test "register and get" test_register_and_get;
           eio_test "register offline and start" test_register_offline_and_start;
           eio_test "register restarting and start" test_register_restarting_and_start;
+          eio_test "R-A-6.a register_restarting refuses exhausted budget"
+            test_register_restarting_refuses_exhausted_budget;
           eio_test "prepare fiber launch resets stale latches"
             test_prepare_fiber_launch_resets_stale_runtime_latches;
           eio_test "dispatch event with audit preserves snapshot"
@@ -1339,6 +2516,7 @@ let () =
           eio_test "completed turns replay from default store"
             test_completed_turns_replay_from_default_store;
           eio_test "unregister" test_unregister;
+          eio_test "unregister signals fiber stop" test_unregister_signals_fiber_stop;
           eio_test "all" test_all;
           eio_test "update meta" test_update_meta;
           eio_test "set state" test_set_state;
@@ -1346,6 +2524,8 @@ let () =
             test_dispatch_event_emits_phase_sse;
           eio_test "dispatch event emits lifecycle metric only on phase change"
             test_dispatch_event_emits_lifecycle_transition_metric_only_on_phase_change;
+          eio_test "dispatch event runs phase transition hook"
+            test_dispatch_event_runs_phase_transition_hook;
           eio_test "dispatch event observes phase SSE broadcast failure"
             test_dispatch_event_observes_phase_sse_broadcast_failure;
           eio_test "extended states" test_extended_states;
@@ -1366,6 +2546,8 @@ let () =
             test_dequeue_event_consumes_fifo;
           eio_test "dequeue event respects base path and missing keeper"
             test_dequeue_event_respects_base_path_and_missing_keeper;
+          eio_test "wakeup hint separate from event payload"
+            test_wakeup_hint_separate_from_event_payload;
         ] );
       ( "extended",
         [
@@ -1383,6 +2565,18 @@ let () =
           eio_test "fiber_health dead state" test_fiber_health_dead_state;
           eio_test "shared refs" test_shared_refs;
           eio_test "spawn slots" test_spawn_slots;
+          eio_test "spawn slot denial reason labels"
+            test_spawn_slot_denial_reason_labels;
+          eio_test "spawn slot denial emits metric"
+            test_record_spawn_slot_denied_emits_metric;
+          test_case
+            "start_keepalive admission denial does not register or fork"
+            `Quick
+            test_start_keepalive_admission_denial_does_not_register_or_fork;
+          test_case
+            "supervisor admission denial does not register or fork"
+            `Quick
+            test_supervisor_admission_denial_does_not_register_or_fork;
         ] );
       ( "board_tracking",
         [
@@ -1396,18 +2590,22 @@ let () =
         [
           eio_test "find_by_agent_name" test_find_by_agent_name;
         ] );
-      ( "resolve_config",
+      ( "orphan_observability",
         [
-          eio_test "scoped hit" test_resolve_config_scoped_hit;
-          eio_test "cross base_path" test_resolve_config_cross_base_path;
-          eio_test "not found" test_resolve_config_not_found;
-          eio_test "empty name" test_resolve_config_empty_name;
+          eio_test "update_entry orphan drops emit metrics + edge breach"
+            test_update_entry_orphan_drop_emits_metrics;
+          eio_test "meta write sync skips dormant registry drops"
+            test_meta_write_sync_updates_registered_only;
+          eio_test "missing turn observation updates are silent"
+            test_missing_turn_observation_updates_are_silent;
         ] );
       ( "directives",
         [
           eio_test "pause directive" test_directive_pause;
           eio_test "resume directive" test_directive_resume;
           eio_test "keeper-name directive alias" test_directive_keeper_name_alias;
+          eio_test "canonical keeper-agent directive alias"
+            test_directive_canonical_agent_alias;
           eio_test "claim directive" test_directive_claim;
           eio_test "pause directive persists meta" test_directive_pause_persists_meta;
           eio_test "claim directive persists meta" test_directive_claim_persists_meta;
@@ -1423,11 +2621,58 @@ let () =
             test_board_signal_wakeup_ignores_unmatched_posts_without_opt_in;
           eio_test "board wakeup only wakes opted-in scope keeper"
             test_board_signal_wakeup_only_wakes_opted_in_scope_keeper;
+          eio_test "board explicit mention resumes paused keeper"
+            test_board_signal_explicit_mention_resumes_paused_keeper;
           eio_test "board wakeup keeps thread reply after self comment"
             test_board_signal_wakeup_keeps_thread_reply_after_self_comment;
           eio_test "effective keepalive meta prefers registry when disk unchanged"
             test_effective_keepalive_meta_prefers_registry_when_disk_unchanged;
           eio_test "effective keepalive meta prefers disk when present"
             test_effective_keepalive_meta_prefers_disk_when_present;
+        ] );
+      ( "rfc_0045_sdk_turn_boundary",
+        [
+          eio_test "mark_sdk_turn_started resets in-turn FSM after Turn_finalizing"
+            test_mark_sdk_turn_started_resets_after_finalizing;
+          eio_test "mark_sdk_turn_started preserves keeper-turn-scoped data"
+            test_mark_sdk_turn_started_preserves_keeper_scope;
+          eio_test "turn progress starts at turn boundary"
+            test_turn_progress_starts_at_turn_boundary;
+          eio_test "record_turn_progress updates live observation"
+            test_record_turn_progress_updates_live_observation;
+          eio_test "SSE ping does not refresh progress observation"
+            test_sse_ping_does_not_refresh_progress_observation;
+          eio_test "registry progress wrapper survives liveness off"
+            test_registry_progress_wrapper_survives_liveness_off;
+          eio_test "mark_sdk_turn_started no-op without observation"
+            test_mark_sdk_turn_started_no_op_without_obs;
+          eio_test "mark_turn_cascade_exhausted materializes pre-disclosure path"
+            test_mark_turn_cascade_exhausted_materializes_pre_disclosure_path;
+          eio_test "mark_turn_cascade_done materializes pre-disclosure path"
+            test_mark_turn_cascade_done_materializes_pre_disclosure_path;
+          eio_test "mark_turn_cascade_done no-op without observation"
+            test_mark_turn_cascade_done_no_op_without_obs;
+          eio_test "mark_turn_cascade_done no-op after exhausted"
+            test_mark_turn_cascade_done_no_op_after_exhausted;
+          eio_test "mark_turn_provider_attempt_started lands on executing"
+            test_mark_turn_provider_attempt_started_lands_on_executing;
+          eio_test "mark_turn_provider_attempt_started no-op without observation"
+            test_mark_turn_provider_attempt_started_no_op_without_obs;
+          eio_test "mark_turn_provider_attempt_started is idempotent"
+            test_mark_turn_provider_attempt_started_is_idempotent;
+          eio_test "mark_turn_provider_attempt_started no-op after done"
+            test_mark_turn_provider_attempt_started_no_op_after_done;
+          eio_test "two SDK-turn boundaries inside one keeper-turn"
+            test_two_sdk_turn_boundaries_no_assert;
+          eio_test "set_turn_phase rejection bumps guard metric"
+            test_set_turn_phase_rejection_bumps_guard_metric;
+        ] );
+      ( "issue_17218_boot_idempotency",
+        [
+          test_case "boot_already_live for Running" `Quick test_boot_already_live_running;
+          test_case "boot_already_live for Paused" `Quick test_boot_already_live_paused;
+          test_case "boot NOT already_live for Failing" `Quick test_boot_not_already_live_failing;
+          test_case "boot NOT already_live for Offline" `Quick test_boot_not_already_live_offline;
+          test_case "boot NOT already_live when stop_requested" `Quick test_boot_not_already_live_stop_requested;
         ] );
     ]

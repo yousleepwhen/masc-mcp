@@ -38,6 +38,7 @@ type state = {
   mutable last_compute_timeout_sec : float option;
   mutable last_compute_outcome : string option;
   mutable last_compute_reason : string option;
+  mutable next_compute_after_unix : float option;
   mutable last_disk_load_unix : float option;
   mutable judgments : (string, Yojson.Safe.t) Hashtbl.t;
 }
@@ -96,14 +97,14 @@ let governance_model_source_to_string = function
   | Unknown_sentinel -> "unknown_sentinel"
 
 let resolve_governance_model_used ~raw_model ~canonical_model_id =
-  if String.trim raw_model <> "" then raw_model, Response_model
+  if String.trim raw_model <> "" then "runtime", Response_model
   else
     match canonical_model_id with
     | Some id ->
         let trimmed = String.trim id in
-        if trimmed <> "" then trimmed, Telemetry_resolved
-        else "unknown_provider", Unknown_sentinel
-    | None -> "unknown_provider", Unknown_sentinel
+        if trimmed <> "" then "runtime", Telemetry_resolved
+        else "runtime", Unknown_sentinel
+    | None -> "runtime", Unknown_sentinel
 
 let governance_dir base_path =
   Filename.concat
@@ -137,19 +138,17 @@ let get_judgments_store base_path : Dated_jsonl.t =
 let with_lock (st : state) f =
   Eio.Mutex.use_rw ~protect:true st.mutex f
 
-let ensure_dir path =
-  Fs_compat.mkdir_p path
-
-let iso_of_unix = Dashboard_utils.iso_of_unix
-let parse_iso_opt = Dashboard_utils.parse_iso_opt
 
 let now_iso () = Masc_domain.now_iso ()
-let option_to_yojson = Json_util.option_to_yojson
 
 let interval_sec () = Env_config.Dashboard_config.governance_judge_interval_sec
 
 let cache_ttl_sec () =
   float_of_int (max (interval_sec () * 4) 600)
+
+let timeout_failure_backoff_sec () =
+  let interval = float_of_int (interval_sec ()) in
+  Float.min 300.0 (Float.max 60.0 (interval *. 5.0))
 
 let empty_judgment_reload_cooldown_sec = 30.0
 
@@ -164,22 +163,20 @@ let status_stale_visible = "stale_visible"
 let status_offline = "offline"
 let status_backoff = "backoff"
 
-let contains_substring haystack needle =
-  String_util.contains_substring haystack needle
 
 let degraded_reason_of_error message =
   let lower = String.lowercase_ascii message in
   if
-    contains_substring lower "unparseable"
-    || contains_substring lower "structurally invalid"
-    || contains_substring lower "invalid json"
-    || contains_substring lower "guardrail_state"
+    String_util.contains_substring lower "unparseable"
+    || String_util.contains_substring lower "structurally invalid"
+    || String_util.contains_substring lower "invalid json"
+    || String_util.contains_substring lower "guardrail_state"
   then
     "judge_output_invalid"
   else if
-    contains_substring lower "timeout"
-    || contains_substring lower "timed out"
-    || contains_substring lower "deadline"
+    String_util.contains_substring lower "timeout"
+    || String_util.contains_substring lower "timed out"
+    || String_util.contains_substring lower "deadline"
   then
     "timeout"
   else
@@ -223,7 +220,8 @@ let mark_fresh_cache_served (st : state) =
   if st.runtime_status <> status_stale_visible then begin
     st.runtime_status <- status_online;
     st.degraded_reason <- None;
-    st.last_error <- None
+    st.last_error <- None;
+    st.next_compute_after_unix <- None
   end
 
 let mark_refresh_failure ~now_ts (st : state) ~message =
@@ -232,11 +230,25 @@ let mark_refresh_failure ~now_ts (st : state) ~message =
      or timing-out judge should degrade to stale-but-visible rather than
      immediately flipping the dashboard offline. *)
   let cache_fresh = cached_judgments_still_fresh ~now_ts st in
+  let degraded_reason = degraded_reason_of_error message in
   st.judge_online <- cache_fresh;
   st.runtime_status <-
     (if cache_fresh then status_stale_visible else status_offline);
-  st.degraded_reason <- Some (degraded_reason_of_error message);
-  st.last_error <- Some message
+  st.degraded_reason <- Some degraded_reason;
+  st.last_error <- Some message;
+  st.next_compute_after_unix <-
+    (if String.equal degraded_reason "timeout"
+     then Some (now_ts +. timeout_failure_backoff_sec ())
+     else None)
+
+let timeout_backoff_remaining_sec ~now_ts (st : state) =
+  match st.next_compute_after_unix with
+  | Some next when next > now_ts -> Some (next -. now_ts)
+  | Some _ ->
+    st.next_compute_after_unix <- None;
+    None
+  | None ->
+    None
 
 let get_state base_path =
   with_outer_rw (fun () ->
@@ -262,6 +274,7 @@ let get_state base_path =
             last_compute_timeout_sec = None;
             last_compute_outcome = None;
             last_compute_reason = None;
+            next_compute_after_unix = None;
             last_disk_load_unix = None;
           judgments = Hashtbl.create 32;
         }
@@ -277,7 +290,7 @@ let judgment_key json =
   key_of kind id
 
 let judgment_generated_at json =
-  json |> member "generated_at" |> to_string_option |> parse_iso_opt
+  json |> member "generated_at" |> to_string_option |> Dashboard_utils.parse_iso_opt
   |> Option.value ~default:0.0
 
 let normalize_disk_recommended_action judgment =
@@ -295,7 +308,7 @@ let normalize_disk_recommended_action judgment =
           (List.map
              (fun (key, value) ->
                if String.equal key "resolved_tool" then
-                 ("resolved_tool", option_to_yojson (fun item -> `String item) canonical_tool)
+                 ("resolved_tool", Json_util.option_to_yojson (fun item -> `String item) canonical_tool)
                else
                  (key, value))
              action_fields)
@@ -427,7 +440,7 @@ let runtime_status_at ~now_ts base_path =
         generated_at_unix = st.generated_at_unix;
         expires_at = st.expires_at;
         expires_at_unix = st.expires_at_unix;
-        model_used = st.model_used;
+        model_used = None;
         keeper_name;
         last_error = st.last_error;
         compute_in_flight = st.compute_in_flight;
@@ -459,11 +472,11 @@ let normalize_allowed_tool_name value =
 let allowed_tool tool =
   List.mem (normalize_allowed_tool_name tool)
     [
-      "masc_governance_status";
-      "masc_execution_orders";
-      "masc_execute_dry_run";
-      "masc_execute";
+      (* RFC-0182: masc_execute / masc_execute_dry_run removed (dead). *)
+      "masc_operator_action";
       "masc_operator_confirm";
+      "masc_operator_snapshot";
+      "masc_surface_audit";
     ]
 
 let parse_recommended_action json =
@@ -483,7 +496,7 @@ let parse_recommended_action json =
         (`Assoc
           [
             ("action_kind", action_json |> member "action_kind");
-            ("resolved_tool", option_to_yojson (fun value -> `String value) resolved_tool);
+            ("resolved_tool", Json_util.option_to_yojson (fun value -> `String value) resolved_tool);
             ("target_type", action_json |> member "target_type");
             ("target_id", action_json |> member "target_id");
             ( "reason",
@@ -547,7 +560,7 @@ let parse_required_guardrail_state json =
   | `Null -> Error "missing guardrail_state"
   | _ -> Error "invalid guardrail_state: expected object"
 
-let parse_item_judgment ~generated_at ~expires_at ~model_used json =
+let parse_item_judgment ~generated_at ~expires_at ~model_used:_ json =
   let target_kind =
     json |> member "kind" |> to_string_option |> Option.value ~default:""
     |> String.lowercase_ascii
@@ -588,12 +601,12 @@ let parse_item_judgment ~generated_at ~expires_at ~model_used json =
                    ("confidence", `Float confidence);
                    ("generated_at", `String generated_at);
                    ("expires_at", `String expires_at);
-                   ("model_used", `String model_used);
+                   ("model_used", `Null);
                    ("keeper_name", `String keeper_name);
                    ( "evidence_refs",
                      `List (List.map (fun item -> `String item) evidence_refs) );
                    ( "recommended_action",
-                     option_to_yojson (fun value -> value) recommended_action );
+                     Json_util.option_to_yojson (fun value -> value) recommended_action );
                    ("guardrail_state", guardrail_state);
                  ]))
 
@@ -638,7 +651,7 @@ let prompt_for_facts facts_json =
 
 let compute_judgments
     ~(masc_tools : Masc_domain.tool_schema list)
-    ~(dispatch : name:string -> args:Yojson.Safe.t -> Tool_result.t)
+    ~(dispatch : name:string -> args:Yojson.Safe.t -> Tool_result.result)
     ~build_facts =
   let cascade_name =
     Keeper_cascade_profile.cascade_name_for_use
@@ -648,41 +661,30 @@ let compute_judgments
     (* build_facts() is moved inside the bridge so a deadlock in
        get_agents_status is bounded by the resolved timeout rather
        than hanging the daemon fiber indefinitely (#8319).
-       #9629: caller migrated from legacy run_safe to run_with_caller
-       so this judge resolves its budget through Env_config_oas_bridge
+       #9629: caller uses run_with_caller so this judge resolves its
+       budget through Env_config_oas_bridge
        and surfaces in the per-caller Prometheus counter. *)
     Masc_oas_bridge.run_with_caller
       ~caller:Env_config_oas_bridge.Governance_judge (fun () ->
       let factual_json = build_facts () in
       let prompt = prompt_for_facts factual_json in
-      Oas_worker.run_named_with_masc_tools ~cascade_name
+      Keeper_turn_driver_wrappers.run_named_with_masc_tools ~cascade_name
         ~goal:prompt ~masc_tools ~dispatch ~max_turns:3
+        ~accept:Keeper_tool_response.response_has_text_or_tool_progress
         ~approval:Approval_callbacks.auto_approve
         ()
     )
   with
   | Error err -> Error (Agent_sdk.Error.to_string err)
   | Ok result -> (
-      let response = result.Oas_worker.response in
+      let response = result.Cascade_runner.response in
       try
-        let raw_text = Oas_response.text_of_response response in
+        let raw_text = Agent_sdk_response.text_of_response response in
         let generated_at = now_iso () in
-        let expires_at = iso_of_unix (Unix.gettimeofday () +. cache_ttl_sec ()) in
-        (* #9880 facet 4: 17% of yesterday's judgment records had
-           [model_used = ""] because OAS transports occasionally
-           return [response.model = ""] (Kimi/Codex CLI silent
-           failure path; CompletionContractViolation
-           retry-exhausted synthetic responses).  An empty
-           [model_used] field destroys attribution downstream
-           (cost rollups, per-model latency p50/p99, daily
-           judgments-by-model breakdown).
-
-           Same shape as keeper-side fix #10083: layered
-           fallback (raw → telemetry canonical_model_id → named
-           sentinel) plus a counter so the operator can see WHICH
-           transport leaked.  Sentinel matches the keeper-side
-           string [unknown_provider] so dashboards can
-           union-aggregate empty-model events across both callers. *)
+        let expires_at = Dashboard_utils.iso_of_unix (Unix.gettimeofday () +. cache_ttl_sec ()) in
+        (* #9880: keep the internal fallback/counter for empty OAS model
+           metadata, but do not project concrete model names into MASC-owned
+           dashboard or judgment JSON. *)
         let canonical_model_id =
           match response.telemetry with
           | Some { canonical_model_id = Some id; _ } -> Some id
@@ -702,8 +704,8 @@ let compute_judgments
                 ~labels:[ ("source", source) ]
                 ();
               Log.Governance.warn
-                "compute_judgments: response.model empty → fallback=%s resolved=%s (#9880)"
-                source resolved_model;
+                "compute_judgments: response.model empty -> fallback=%s (#9880)"
+                source;
         end;
         match
           parse_governance_response ~raw_text ~generated_at ~expires_at
@@ -743,7 +745,7 @@ let should_backoff ~sw ~net =
   in
   try
     let capacity =
-      Cascade_config.local_capacity_for_selections ~sw ~net
+      Cascade_runtime.local_capacity_for_selections ~sw ~net
         [ cascade_name ]
     in
     capacity.all_discovered && capacity.endpoints_found > 0
@@ -787,7 +789,7 @@ let mark_compute_finish (st : state) ~started_at ~outcome ~reason
   Prometheus.observe_histogram governance_compute_duration_metric
     ~labels duration_sec;
   Log.Governance.info
-    "refresh_once: compute_judgments telemetry outcome=%s reason=%s duration=%.3fs timeout_budget=%s in_flight_after=%d"
+    "refresh_once: compute_judgments telemetry outcome=%s reason=%s duration=%.3fs compute_timeout=%s in_flight_after=%d"
     outcome reason duration_sec
     (match timeout_sec with
      | Some value -> Printf.sprintf "%.1fs" value
@@ -797,7 +799,7 @@ let mark_compute_finish (st : state) ~started_at ~outcome ~reason
 
 let refresh_once ~sw ~net
     ~(masc_tools : Masc_domain.tool_schema list)
-    ~(dispatch : name:string -> args:Yojson.Safe.t -> Tool_result.t)
+    ~(dispatch : name:string -> args:Yojson.Safe.t -> Tool_result.result)
     ~base_path ~build_facts =
   let st = get_state base_path in
   (* Cycle-start log so an operator can confirm the daemon fiber is alive.
@@ -816,7 +818,21 @@ let refresh_once ~sw ~net
   in
   if served_from_cache then
     Log.Governance.routine "refresh_once: fresh cached result; skipping compute"
-  else if should_backoff ~sw ~net then begin
+  else (
+    let timeout_backoff_remaining =
+      let now_ts = Unix.gettimeofday () in
+      with_lock st (fun () ->
+          st.refreshing <- false;
+          timeout_backoff_remaining_sec ~now_ts st)
+    in
+    match timeout_backoff_remaining with
+    | Some remaining_sec ->
+      Log.Governance.routine
+        "refresh_once: timeout backoff active; skipping compute for %.0fs"
+        remaining_sec
+    | None ->
+      if should_backoff ~sw ~net
+      then begin
     let was_online =
       with_lock st (fun () ->
           let was_online = st.judge_online in
@@ -830,15 +846,15 @@ let refresh_once ~sw ~net
     if was_online then
       Log.Governance.info "backoff: local slots saturated, skipping cycle"
     else
-      Log.Governance.routine "backoff: local slots saturated (first cycle)"
-  end
-  else begin
+        Log.Governance.routine "backoff: local slots saturated (first cycle)"
+      end
+      else begin
     with_lock st (fun () ->
         st.refreshing <- true;
         st.runtime_status <- status_refreshing;
         st.degraded_reason <- None);
     let started_at = Unix.gettimeofday () in
-    let timeout_budget =
+    let compute_timeout_sec =
       Some
         (Env_config_oas_bridge.timeout_sec
            ~caller:Env_config_oas_bridge.Governance_judge ())
@@ -849,7 +865,7 @@ let refresh_once ~sw ~net
       | Eio.Cancel.Cancelled _ as exn ->
           ignore
             (mark_compute_finish st ~started_at ~outcome:"error"
-               ~reason:"cancelled" ~timeout_sec:timeout_budget);
+               ~reason:"cancelled" ~timeout_sec:compute_timeout_sec);
           raise exn
       | exn ->
           Error
@@ -860,15 +876,15 @@ let refresh_once ~sw ~net
     | Ok (model_used, generated_at, expires_at, judgments) ->
         ignore
           (mark_compute_finish st ~started_at ~outcome:"ok" ~reason:"ok"
-             ~timeout_sec:timeout_budget);
+             ~timeout_sec:compute_timeout_sec);
         if judgments = [] then
           Log.Governance.routine
-            "refresh_once: ok model=%s judgments=%d"
-            model_used 0
+            "refresh_once: ok runtime=redacted judgments=%d"
+            0
         else
           Log.Governance.info
-            "refresh_once: ok model=%s judgments=%d"
-            model_used (List.length judgments);
+            "refresh_once: ok runtime=redacted judgments=%d"
+            (List.length judgments);
         append_judgments base_path judgments;
         with_lock st (fun () ->
             st.refreshing <- false;
@@ -881,6 +897,7 @@ let refresh_once ~sw ~net
             st.expires_at_unix <- Some (Masc_domain.parse_iso8601 expires_at);
             st.model_used <- Some model_used;
             st.last_error <- None;
+            st.next_compute_after_unix <- None;
             st.last_disk_load_unix <- Some (Unix.gettimeofday ());
             List.iter
               (fun json -> Hashtbl.replace st.judgments (judgment_key json) json)
@@ -890,14 +907,14 @@ let refresh_once ~sw ~net
         let timeout_sec =
           match timeout_sec_of_error message with
           | Some value -> Some value
-          | None -> timeout_budget
+          | None -> compute_timeout_sec
         in
         let duration_sec, in_flight =
           mark_compute_finish st ~started_at ~outcome:"error" ~reason
             ~timeout_sec
         in
         Log.Governance.warn
-          "refresh_once: compute_judgments failed: %s (duration=%.3fs timeout_budget=%s in_flight=%d)"
+          "refresh_once: compute_judgments failed: %s (duration=%.3fs compute_timeout=%s in_flight=%d)"
           message duration_sec
           (match timeout_sec with
            | Some value -> Printf.sprintf "%.1fs" value
@@ -905,15 +922,15 @@ let refresh_once ~sw ~net
           in_flight;
         with_lock st (fun () ->
             mark_refresh_failure ~now_ts:(Unix.gettimeofday ()) st ~message)
-  end
+      end)
 
 let start ~sw ~clock ~net ~base_path
     ~(masc_tools : Masc_domain.tool_schema list)
-    ~(dispatch : name:string -> args:Yojson.Safe.t -> Tool_result.t)
+    ~(dispatch : name:string -> args:Yojson.Safe.t -> Tool_result.result)
     ~build_facts () =
   (* Ensure governance directories exist before first read/write *)
-  ensure_dir (governance_dir base_path);
-  ensure_dir (Filename.concat (governance_dir base_path) "judgments");
+  Fs_compat.mkdir_p (governance_dir base_path);
+  Fs_compat.mkdir_p (Filename.concat (governance_dir base_path) "judgments");
   let st = get_state base_path in
   let should_start =
     with_lock st (fun () ->

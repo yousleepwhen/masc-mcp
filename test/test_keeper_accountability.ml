@@ -48,25 +48,14 @@ let make_test_meta ?(name = "keeper-sangsu") ?(agent_name = "keeper-sangsu-agent
   | Error e -> failwith (Printf.sprintf "make_test_meta failed: %s" e)
 
 let make_ctx_work () =
-  Keeper_exec_context.create ~system_prompt:"test" ~max_tokens:4000
+  Keeper_context_runtime.create ~system_prompt:"test" ~max_tokens:4000
 
 let with_room ?(agent_name = "keeper-sangsu-agent") f =
   Eio_main.run @@ fun env ->
   Fs_compat.set_fs (Eio.Stdenv.fs env);
   let dir = temp_dir () in
-  let saved_pg = Sys.getenv_opt "MASC_POSTGRES_URL" in
-  let saved_sb = Sys.getenv_opt "SB_PG_URL" in
-  Unix.putenv "MASC_POSTGRES_URL" "";
-  Unix.putenv "SB_PG_URL" "";
   Fun.protect
-    ~finally:(fun () ->
-      (match saved_pg with
-       | Some value -> Unix.putenv "MASC_POSTGRES_URL" value
-       | None -> Unix.putenv "MASC_POSTGRES_URL" "");
-      (match saved_sb with
-       | Some value -> Unix.putenv "SB_PG_URL" value
-       | None -> Unix.putenv "SB_PG_URL" "");
-      cleanup_dir dir)
+    ~finally:(fun () -> cleanup_dir dir)
     (fun () ->
       let config = Coord.default_config dir in
       ignore (Coord.init config ~agent_name:(Some agent_name));
@@ -136,7 +125,7 @@ let read_accountability_events base_dir =
   gather root
 
 let append_decision_log_event config keeper_name json =
-  let path = Keeper_types.keeper_decision_log_path config keeper_name in
+  let path = Keeper_types_support.keeper_decision_log_path config keeper_name in
   Fs_compat.mkdir_p (Filename.dirname path);
   append_jsonl path json
 
@@ -516,7 +505,7 @@ let test_claim_tool_exposes_routing_warning_for_high_risk_keeper () =
            ]);
       ignore (Coord.add_task config ~title:"Task to claim" ~priority:1 ~description:"desc");
       let result =
-        Keeper_exec_tools.execute_keeper_tool_call
+        Agent_tool_dispatch_runtime.execute_keeper_tool_call
           ~config ~meta ~ctx_work:(make_ctx_work ()) ~exec_cache:None
           ~name:"keeper_task_claim" ~input:(`Assoc []) ()
         |> Yojson.Safe.from_string
@@ -524,45 +513,6 @@ let test_claim_tool_exposes_routing_warning_for_high_risk_keeper () =
       check string "warning present"
         "Accountability risk is high for this keeper. Prefer manual review or lower-risk routing when equivalent."
         (string_member "routing_warning" result))
-
-let test_preflight_exposes_routing_hint_for_high_risk_keeper () =
-  with_room (fun config ->
-      let meta = make_test_meta () in
-      let created_at =
-        iso_of_unix (Unix.gettimeofday () -. (25.0 *. 3600.0))
-      in
-      append_accountability_event config.base_path ~created_at
-        (`Assoc
-           [
-             ("event_type", `String "claim_created");
-             ("claim_id", `String "acct-high-risk-preflight");
-             ("agent_name", `String "keeper-sangsu-agent");
-             ("keeper_name", `String "keeper-sangsu");
-             ("kind", `String "completion_claim");
-             ("subject", `String "Prior claim");
-             ("surface", `String "keeper_turn");
-             ("created_at", `String created_at);
-             ("evidence_refs", `List []);
-             ("synthetic", `Bool false);
-           ]);
-      let result =
-        Keeper_exec_tools.execute_keeper_tool_call
-          ~config ~meta ~ctx_work:(make_ctx_work ()) ~exec_cache:None
-          ~name:"keeper_preflight_check" ~input:(`Assoc []) ()
-        |> Yojson.Safe.from_string
-      in
-      check bool "accountability risk present" true
-        (Yojson.Safe.Util.(result |> member "accountability_risk" |> to_bool));
-      check string "risk band exposed" "high" (string_member "risk_band" result);
-      check string "routing hint exposed" "manual_review_recommended"
-        (string_member "routing_hint" result);
-      let repo_readiness =
-        Yojson.Safe.Util.(result |> member "repo_readiness")
-      in
-      check string "repo readiness state exposed" "missing_clone"
-        (Yojson.Safe.Util.(repo_readiness |> member "state" |> to_string));
-      check bool "repo readiness blocks code start without clone" false
-        (Yojson.Safe.Util.(repo_readiness |> member "ok" |> to_bool)))
 
 let test_synthetic_claims_do_not_dilute_unsupported_rate () =
   (* Regression: synthetic completion claims (created by task_transition "done")
@@ -798,7 +748,7 @@ let test_attr_gate_invariants () =
 
 let () =
   let base_path = Masc_test_deps.find_project_root () in
-  ignore (Result.get_ok (Keeper_exec_tools.init_policy_config ~base_path));
+  ignore (Result.get_ok (Agent_tool_dispatch_runtime.init_policy_config ~base_path));
   Alcotest.run "Keeper_accountability"
     [
       ( "accountability",
@@ -825,8 +775,6 @@ let () =
             test_unmapped_alias_exposes_no_history_source;
           test_case "claim tool exposes routing warning for high risk keeper"
             `Quick test_claim_tool_exposes_routing_warning_for_high_risk_keeper;
-          test_case "preflight exposes routing hint for high risk keeper"
-            `Quick test_preflight_exposes_routing_hint_for_high_risk_keeper;
           test_case "synthetic claims do not dilute unsupported rate" `Quick
             test_synthetic_claims_do_not_dilute_unsupported_rate;
           test_case "summary lookup reads window once" `Quick

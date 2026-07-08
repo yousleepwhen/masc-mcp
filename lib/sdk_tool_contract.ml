@@ -9,7 +9,6 @@ type sdk_tool_binding = {
   description : string;
   input_schema : Yojson.Safe.t;
   arg_bindings : (string * arg_source) list;
-  discovery_hidden : bool;
 }
 
 let assoc_field name value = (name, value)
@@ -29,22 +28,6 @@ let task_item_schema =
 let sdk_bindings : sdk_tool_binding list =
   [
     {
-      sdk_name = "masc_list_tasks";
-      canonical_operation = "masc_tasks";
-      description = "List all tasks in the MASC room with status, assignee, and priority. Use after joining a room to find available work or check what others are doing.";
-      input_schema = object_schema [];
-      arg_bindings = [];
-      discovery_hidden = false;
-    };
-    {
-      sdk_name = "masc_room_status";
-      canonical_operation = "masc_status";
-      description = "Get the current MASC room status including agents and tasks.";
-      input_schema = object_schema [];
-      arg_bindings = [];
-      discovery_hidden = false;
-    };
-    {
       sdk_name = "masc_add_task";
       canonical_operation = "masc_add_task";
       description = "Create a single new task in the MASC room backlog. Use when you identify work that any agent can pick up. Returns a task-XXX ID for tracking.";
@@ -59,7 +42,6 @@ let sdk_bindings : sdk_tool_binding list =
           ("title", Input_field "title");
           ("description", Input_field "description");
         ];
-      discovery_hidden = false;
     };
     {
       sdk_name = "masc_batch_add_tasks";
@@ -79,22 +61,6 @@ let sdk_bindings : sdk_tool_binding list =
                 ] );
           ];
       arg_bindings = [ ("tasks", Input_field "tasks") ];
-      discovery_hidden = false;
-    };
-    {
-      sdk_name = "masc_claim_task";
-      canonical_operation = "masc_transition";
-      description = "Claim a specific task by task_id, locking it to your agent. Use when you want a particular task rather than the next available one.";
-      input_schema =
-        object_schema ~required:[ "task_id" ]
-          [ assoc_field "task_id" (string_prop "The task ID to claim") ];
-      arg_bindings =
-        [
-          ("action", Static (json_string "claim"));
-          ("agent_name", Agent_name);
-          ("task_id", Input_field "task_id");
-        ];
-      discovery_hidden = true;
     };
     {
       sdk_name = "masc_claim_next";
@@ -102,76 +68,6 @@ let sdk_bindings : sdk_tool_binding list =
       description = "Claim the next available task automatically by priority order. Use when you are ready to work and any pending task is acceptable.";
       input_schema = object_schema [];
       arg_bindings = [ ("agent_name", Agent_name) ];
-      discovery_hidden = false;
-    };
-    {
-      sdk_name = "masc_set_current_task";
-      canonical_operation = "masc_plan_set_task";
-      description =
-        "Bind the claimed task as current_task when your claim path did not do it automatically.";
-      input_schema =
-        object_schema ~required:[ "task_id" ]
-          [
-            assoc_field "task_id"
-              (string_prop
-                 "The claimed task ID to bind as the current planning task");
-          ];
-      arg_bindings = [ ("task_id", Input_field "task_id") ];
-      discovery_hidden = true;
-    };
-    {
-      sdk_name = "masc_complete_task";
-      canonical_operation = "masc_transition";
-      description = "Mark a task as done after finishing the work and verification. Use when implementation is complete to release the task from your assignment.";
-      input_schema =
-        object_schema ~required:[ "task_id" ]
-          [
-            assoc_field "task_id"
-              (string_prop "The task ID to mark as completed");
-          ];
-      arg_bindings =
-        [
-          ("action", Static (json_string "done"));
-          ("agent_name", Agent_name);
-          ("task_id", Input_field "task_id");
-        ];
-      discovery_hidden = true;
-    };
-    {
-      sdk_name = "masc_release_task";
-      canonical_operation = "masc_transition";
-      description =
-        "Release a claimed task back to pending for another worker.";
-      input_schema =
-        object_schema ~required:[ "task_id" ]
-          [ assoc_field "task_id" (string_prop "The task ID to release") ];
-      arg_bindings =
-        [
-          ("action", Static (json_string "release"));
-          ("agent_name", Agent_name);
-          ("task_id", Input_field "task_id");
-        ];
-      discovery_hidden = false;
-    };
-    {
-      sdk_name = "masc_cancel_task";
-      canonical_operation = "masc_transition";
-      description =
-        "Cancel a task permanently when it should not be retried.";
-      input_schema =
-        object_schema ~required:[ "task_id" ]
-          [
-            assoc_field "task_id" (string_prop "The task ID to cancel");
-            assoc_field "reason" (string_prop "Optional cancellation reason");
-          ];
-      arg_bindings =
-        [
-          ("action", Static (json_string "cancel"));
-          ("agent_name", Agent_name);
-          ("task_id", Input_field "task_id");
-          ("reason", Input_field "reason");
-        ];
-      discovery_hidden = false;
     };
     {
       sdk_name = "masc_broadcast";
@@ -187,7 +83,6 @@ let sdk_bindings : sdk_tool_binding list =
           ("agent_name", Agent_name);
           ("message", Input_field "message");
         ];
-      discovery_hidden = false;
     };
     { sdk_name = "masc_heartbeat";
       canonical_operation = "masc_heartbeat";
@@ -195,7 +90,6 @@ let sdk_bindings : sdk_tool_binding list =
         "Send an immediate heartbeat so this agent stays fresh in MASC visibility.";
       input_schema = object_schema [];
       arg_bindings = [ ("agent_name", Agent_name) ];
-      discovery_hidden = false;
     };
   ]
 
@@ -222,6 +116,7 @@ let core_remote_operation_names =
   dedupe_strings
     (List.map (fun binding -> binding.canonical_operation) sdk_bindings
     @ [
+        "masc_status";
         "masc_join";
         "masc_leave";
         "masc_who";
@@ -237,20 +132,6 @@ let core_remote_operation_names =
         "masc_operator_digest";
         "masc_operator_action";
         "masc_operator_confirm";
-        "masc_operation_start";
-        "masc_operation_status";
-        "masc_dispatch_plan";
-        "masc_dispatch_tick";
-        "masc_policy_approve";
-        "masc_policy_freeze_unit";
-        "masc_policy_kill_switch";
-        "masc_observe_operations";
-        "masc_observe_capacity";
-        "masc_observe_traces";
-        "decision_create";
-        "decision_finalize";
-        "decision_status";
-        "masc_execution_orders";
       ])
 
 let find_property properties key =
@@ -319,7 +200,10 @@ let rec validate_json_value ?label schema value =
                         | Error _ as error -> error))
               in
               validate_props properties)
-      | _ -> Error (Printf.sprintf "%s must be a JSON object" label))
+      | other ->
+          Error
+            (Printf.sprintf "%s must be a JSON object (received %s)" label
+               (Json_util.kind_name other)))
   | "array" -> (
       match value with
       | `List items ->
@@ -338,23 +222,38 @@ let rec validate_json_value ?label schema value =
                       | Error _ as error -> error)
                 in
                 validate_items items)
-      | _ -> Error (Printf.sprintf "%s must be a JSON array" label))
+      | other ->
+          Error
+            (Printf.sprintf "%s must be a JSON array (received %s)" label
+               (Json_util.kind_name other)))
   | "string" -> (
       match value with
       | `String _ -> Ok ()
-      | _ -> Error (Printf.sprintf "%s must be a string" label))
+      | other ->
+          Error
+            (Printf.sprintf "%s must be a string (received %s)" label
+               (Json_util.kind_name other)))
   | "integer" -> (
       match value with
       | `Int _ -> Ok ()
-      | _ -> Error (Printf.sprintf "%s must be an integer" label))
+      | other ->
+          Error
+            (Printf.sprintf "%s must be an integer (received %s)" label
+               (Json_util.kind_name other)))
   | "number" -> (
       match value with
       | `Int _ | `Float _ -> Ok ()
-      | _ -> Error (Printf.sprintf "%s must be a number" label))
+      | other ->
+          Error
+            (Printf.sprintf "%s must be a number (received %s)" label
+               (Json_util.kind_name other)))
   | "boolean" -> (
       match value with
       | `Bool _ -> Ok ()
-      | _ -> Error (Printf.sprintf "%s must be a boolean" label))
+      | other ->
+          Error
+            (Printf.sprintf "%s must be a boolean (received %s)" label
+               (Json_util.kind_name other)))
   | _ -> Ok ()
 
 let validate_input_json schema json =
@@ -373,20 +272,6 @@ let param_type_of_schema_opt schema : Agent_sdk.Types.param_type option =
   | "object" -> Some Agent_sdk.Types.Object
   | _ -> None
 
-(* Back-compat wrapper: warns once per unknown JSON Schema type and falls
-   back to [String] (the legacy permissive default mirrored by the
-   upstream Agent_sdk.Mcp.json_schema_type_to_param_type). The warn
-   converts the silent #8605-family fallback into an observable signal
-   without changing the tool-registration result. *)
-let param_type_of_schema schema =
-  match param_type_of_schema_opt schema with
-  | Some t -> t
-  | None ->
-      Log.Misc.warn
-        "param_type_of_schema: unknown JSON Schema type %S -> String (drift; see #8832)"
-        (schema_type schema);
-      Agent_sdk.Types.String
-
 let tool_params_of_input_schema schema =
   let required = required_names schema in
   property_map schema
@@ -399,7 +284,14 @@ let tool_params_of_input_schema schema =
            {
              name;
              description;
-             param_type = param_type_of_schema property_schema;
+             param_type =
+               (match param_type_of_schema_opt property_schema with
+               | Some t -> t
+               | None ->
+                   Log.Misc.warn
+                     "tool_params_of_input_schema: unknown JSON Schema type %S -> String (drift; see #8832)"
+                     (schema_type property_schema);
+                   Agent_sdk.Types.String);
              required = List.mem name required;
            }
          in
@@ -425,7 +317,10 @@ let build_operation_arguments ~agent_name binding json =
                     | None -> build acc rest))
           in
           build [] binding.arg_bindings
-      | _ -> Error "input must be a JSON object")
+      | other ->
+          Error
+            (Printf.sprintf "input must be a JSON object (received %s)"
+               (Json_util.kind_name other)))
 
 let resolve_requested_tool_call ~agent_name ~requested_name ~arguments =
   match sdk_binding_by_name requested_name with
@@ -475,4 +370,4 @@ let sdk_tool_schemas : Masc_domain.tool_schema list =
         description = binding.description;
         input_schema = binding.input_schema;
       })
-    (List.filter (fun binding -> not binding.discovery_hidden) sdk_bindings)
+    sdk_bindings

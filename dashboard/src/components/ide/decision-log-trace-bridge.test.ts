@@ -13,8 +13,10 @@ function dec(
   ts_unix: number | null,
   event_type = 'turn',
   outcome: string | null = 'ok',
+  context: DecisionLogProducerInput['context'] = undefined,
+  extra: Partial<DecisionLogProducerInput> = {},
 ): DecisionLogProducerInput {
-  return { keeper_name, ts_unix, event_type, outcome }
+  return { keeper_name, ts_unix, event_type, outcome, context, ...extra }
 }
 
 beforeEach(() => {
@@ -123,6 +125,56 @@ describe('bridgeDecisionsToTrace — RFC-0028 PR-δ decision-log producer', () =
     if (event.source === 'decision-log') {
       expect(event.decisionId).toBe('decision:scholar:1715000000:tool_use')
       expect(event.semanticOutcome).toBe('error_retryable')
+    }
+  })
+
+  it('maps optional IDE route context into the trace event', () => {
+    bridgeDecisionsToTrace(
+      [dec('scholar', 1_715_000_000, 'tool_use', 'error_retryable', {
+        file_path: 'runtime.ts',
+        line: 9,
+        goal_id: 'goal-decision',
+        task_id: 'task-decision',
+        board_post_id: 'post-decision',
+        comment_id: 'comment-decision',
+        pr_id: '15035',
+        git_ref: 'refs/heads/decision-route',
+        log_id: 'decision-turn-9',
+        session_id: 'sess-decision',
+        operation_id: 'op-decision',
+        worker_run_id: 'worker-decision',
+      })],
+      new Set(),
+    )
+    const event = keeperTraceState.value.events[0]!
+    expect(event).toMatchObject({
+      filePath: 'runtime.ts',
+      line: 9,
+      goalId: 'goal-decision',
+      taskId: 'task-decision',
+      boardPostId: 'post-decision',
+      commentId: 'comment-decision',
+      prId: '15035',
+      gitRef: 'refs/heads/decision-route',
+      logId: 'decision-turn-9',
+      sessionId: 'sess-decision',
+      operationId: 'op-decision',
+      workerRunId: 'worker-decision',
+    })
+  })
+
+  it('preserves decision choice and reason for line-level trace labels', () => {
+    bridgeDecisionsToTrace(
+      [dec('scholar', 1_715_000_000, 'tool_use', 'ok', undefined, {
+        choice: 'use_shell',
+        reason: 'verify touched test target',
+      })],
+      new Set(),
+    )
+    const event = keeperTraceState.value.events[0]!
+    if (event.source === 'decision-log') {
+      expect(event.decisionChoice).toBe('use_shell')
+      expect(event.decisionReason).toBe('verify touched test target')
     }
   })
 

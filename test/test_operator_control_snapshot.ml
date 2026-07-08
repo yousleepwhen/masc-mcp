@@ -168,7 +168,7 @@ let test_max_turns_override_source_accepts_raised_ceiling () =
   Alcotest.(check string) "missing override comes from env" "env"
     (Operator_control_snapshot.max_turns_override_source None)
 
-let test_compute_context_ratio_uses_resolved_cli_context_budget () =
+let test_compute_context_ratio_does_not_infer_provider_budget () =
   let base =
     match
       Masc_test_deps.meta_of_json_fixture
@@ -177,7 +177,7 @@ let test_compute_context_ratio_uses_resolved_cli_context_budget () =
             ("name", `String "ctx-ratio-demo");
             ("agent_name", `String "keeper-ctx-ratio-demo-agent");
             ("trace_id", `String "trace-ctx-ratio-demo");
-            ("cascade_name", `String "big_three");
+            ("cascade_name", `String "primary");
           ])
     with
     | Ok meta -> meta
@@ -186,26 +186,22 @@ let test_compute_context_ratio_uses_resolved_cli_context_budget () =
   let meta =
     {
       base with
-      models = [ "codex_cli:auto" ];
+      models = [ "cli_tool_a:auto" ];
       runtime =
         {
           base.runtime with
           usage =
             {
               base.runtime.usage with
-              last_model_used = "codex";
+              last_model_used = "agent_code";
               last_input_tokens = 2_106_223;
             };
         };
     }
   in
-  let ratio =
-    match Operator_control_snapshot.compute_context_ratio meta with
-    | Some value -> value
-    | None -> Alcotest.fail "expected context ratio"
-  in
-  Alcotest.(check (float 0.0001)) "codex bare provider uses 1.05M context"
-    (2106223.0 /. 1050000.0) ratio
+  Alcotest.(check (option (float 0.0001)))
+    "model/provider label does not imply context budget" None
+    (Operator_control_snapshot.compute_context_ratio meta)
 
 let test_snapshot_prefers_metrics_context_truth_over_usage_counters () =
   Eio_main.run @@ fun env ->
@@ -251,14 +247,14 @@ let test_snapshot_prefers_metrics_context_truth_over_usage_counters () =
       let updated_meta =
         {
           meta with
-          models = [ "codex_cli:auto" ];
+          models = [ "cli_tool_a:auto" ];
           runtime =
             {
               meta.runtime with
               usage =
                 {
                   meta.runtime.usage with
-                  last_model_used = "codex";
+                  last_model_used = "agent_code";
                   last_input_tokens = 6_637_033;
                   last_total_tokens = 6_670_646;
                 };
@@ -268,7 +264,7 @@ let test_snapshot_prefers_metrics_context_truth_over_usage_counters () =
       (match Keeper_types.write_meta config updated_meta with
       | Ok () -> ()
       | Error err -> Alcotest.fail err);
-      let metrics_store = Keeper_types.keeper_metrics_store config keeper_name in
+      let metrics_store = Keeper_types_support.keeper_metrics_store config keeper_name in
       Dated_jsonl.append metrics_store
         (`Assoc
           [
@@ -319,9 +315,7 @@ let test_snapshot_prefers_metrics_context_truth_over_usage_counters () =
         | None -> Alcotest.fail "expected keeper_context_status metrics snapshot"
       in
       let usage_ratio =
-        match Operator_control_snapshot.compute_context_ratio updated_meta with
-        | Some value -> value
-        | None -> Alcotest.fail "expected usage fallback ratio"
+        Operator_control_snapshot.compute_context_ratio updated_meta
       in
       let snapshot_ratio =
         Yojson.Safe.Util.(keeper |> member "context_ratio" |> to_float)
@@ -340,8 +334,8 @@ let test_snapshot_prefers_metrics_context_truth_over_usage_counters () =
         metrics_max snapshot_max;
       Alcotest.(check string) "metrics source retained" "keeper_context_status"
         Yojson.Safe.Util.(keeper |> member "context_source" |> to_string);
-      Alcotest.(check bool) "metrics ratio differs from usage fallback" true
-        (Float.abs (snapshot_ratio -. usage_ratio) > 0.000001);
+      Alcotest.(check (option (float 0.000001)))
+        "usage fallback does not infer provider context" None usage_ratio;
       Alcotest.(check bool) "metrics tokens differ from usage fallback" true
         (snapshot_tokens <> updated_meta.runtime.usage.last_input_tokens);
       Alcotest.(check bool) "nested context payload omitted" true
@@ -361,49 +355,36 @@ let test_lightweight_snapshot_surfaces_paused_keeper_runtime_trust () =
       cleanup_dir base_dir)
     (fun () ->
       let config = Coord.default_config base_dir in
+      (* See: this fixture only needs an initialized room for digest reads. *)
       ignore (Coord.init config ~agent_name:(Some "operator"));
-      let keeper_ctx : _ Tool_keeper.context =
-        {
-          config;
-          agent_name = "operator";
-          sw;
-          clock = Eio.Stdenv.clock env;
-          proc_mgr = Some (Eio.Stdenv.process_mgr env);
-          net = None;
-        }
-      in
-      let ok, _ =
-        dispatch_keeper_exn keeper_ctx ~name:"masc_keeper_up"
-          ~args:
+      let meta =
+        match
+          Masc_test_deps.meta_of_json_fixture
             (`Assoc
               [
                 ("name", `String keeper_name);
+                ("agent_name", `String (Keeper_identity.keeper_agent_name keeper_name));
+                ("trace_id", `String "trace-paused-runtime-trust");
                 ("goal", `String "Expose paused keeper failure in summary");
-                ("proactive_enabled", `Bool false);
-                ("autoboot_enabled", `Bool false);
+                ("short_goal", `String "Expose paused keeper failure in summary");
+                ("cascade_name", `String "tier-group.primary");
               ])
-      in
-      Alcotest.(check bool) "keeper up ok" true ok;
-      Keeper_keepalive.stop_keepalive keeper_name;
-      let meta =
-        match Keeper_types.read_meta config keeper_name with
-        | Ok (Some meta) -> meta
-        | Ok None -> Alcotest.fail "expected keeper meta"
-        | Error err -> Alcotest.fail err
-      in
-      let meta =
-        {
-          meta with
-          paused = true;
-          runtime =
-            {
-              meta.runtime with
-              last_blocker =
-                "Completion contract [require_tool_use] violated: actionable keeper signal was present, but the model called no keeper tools";
-              last_blocker_class =
-                Some Keeper_types.Completion_contract_violation;
-            };
-        }
+        with
+        | Ok meta ->
+          {
+            meta with
+            paused = true;
+            runtime =
+              {
+                meta.runtime with
+                last_blocker =
+                  Some
+                    (Keeper_types.blocker_info_of_class
+                       ~detail:"Completion contract [require_tool_use] violated: actionable keeper signal was present, but the model called no keeper tools"
+                       Keeper_types.Completion_contract_violation);
+              };
+          }
+        | Error err -> Alcotest.fail ("keeper meta fixture failed: " ^ err)
       in
       (match Keeper_types.write_meta config meta with
       | Ok () -> ()
@@ -430,8 +411,8 @@ let test_lightweight_snapshot_surfaces_paused_keeper_runtime_trust () =
               `Assoc
                 [
                   ("tool_requirement", `String "required");
-                  ("required_tools", `List [ `String "keeper_bash" ]);
-                  ("missing_required_tools", `List [ `String "keeper_bash" ]);
+                  ("required_tools", `List [ `String "tool_execute" ]);
+                  ("missing_required_tools", `List [ `String "tool_execute" ]);
                   ("visible_tool_count", `Int 8);
                 ] );
             ( "sandbox",
@@ -444,8 +425,8 @@ let test_lightweight_snapshot_surfaces_paused_keeper_runtime_trust () =
             ( "cascade",
               `Assoc
                 [
-                  ("name", `String "big_three");
-                  ("selected_model", `String "kimi-for-coding");
+                  ("name", `String "primary");
+                  ("selected_model", `String "model-c-coding");
                   ("outcome", `String "completed");
                 ] );
             ("error", `Assoc [ ("kind", `String "contract") ]);
@@ -471,15 +452,141 @@ let test_lightweight_snapshot_surfaces_paused_keeper_runtime_trust () =
       Alcotest.(check bool) "attention surfaced" true
         (keeper |> member "needs_attention" |> to_bool);
       let trust = keeper |> member "runtime_trust" in
-      Alcotest.(check string) "trust disposition pauses" "Pause"
+      Alcotest.(check string) "trust disposition blocks" "Blocked"
         (trust |> member "disposition" |> to_string);
       Alcotest.(check string) "operator reason preserved"
         "tool_required_unsatisfied"
         (trust |> member "operator_disposition_reason" |> to_string);
       Alcotest.(check string) "terminal code preserved"
-        "required_tool_use_unsatisfied"
+        "completion_contract_violation:require_tool_use"
         (trust |> member "latest_terminal_reason" |> member "code"
-       |> to_string))
+       |> to_string);
+      Operator_control.invalidate_snapshot_cache ();
+      let full_snapshot =
+        Operator_control.snapshot_json ~view:"summary" ~include_messages:false
+          ~include_keepers:true ~include_summary_fields:false
+          ~lightweight_summary:false
+          (operator_ctx env sw config "operator")
+      in
+      let full_keeper =
+        full_snapshot |> member "keepers" |> member "items" |> to_list
+        |> List.find_opt (fun row -> row |> member "name" |> to_string = keeper_name)
+        |> Option.value ~default:`Null
+      in
+      Alcotest.(check bool) "full keeper present" true (full_keeper <> `Null);
+      Alcotest.(check string) "full paused status" "paused"
+        (full_keeper |> member "status" |> to_string);
+      Alcotest.(check bool) "full paused flag" true
+        (full_keeper |> member "paused" |> to_bool);
+      Alcotest.(check string) "full pause state" "paused"
+        (full_keeper |> member "pause_state" |> to_string);
+      Alcotest.(check string) "full paused pipeline" "paused"
+        (full_keeper |> member "pipeline_stage" |> to_string))
+
+let test_digest_room_includes_keeper_runtime_attention () =
+  Eio_main.run @@ fun env ->
+  ensure_fs env;
+  Eio.Switch.run @@ fun sw ->
+  let base_dir = temp_dir () in
+  let keeper_name = "digest-runtime-attention" in
+  Fun.protect
+    ~finally:(fun () ->
+      Keeper_keepalive.stop_keepalive keeper_name;
+      Keeper_registry.clear ();
+      Keeper_runtime.reset_test_state base_dir;
+      cleanup_dir base_dir)
+    (fun () ->
+      let config = Coord.default_config base_dir in
+      ignore (Coord.init config ~agent_name:(Some "operator")); (* See: fixture init. *)
+      let keeper_ctx : _ Tool_keeper.context =
+        {
+          config;
+          agent_name = "operator";
+          sw;
+          clock = Eio.Stdenv.clock env;
+          proc_mgr = Some (Eio.Stdenv.process_mgr env);
+          net = None;
+        }
+      in
+      let ok, _ =
+        dispatch_keeper_exn keeper_ctx ~name:"masc_keeper_up"
+          ~args:
+            (`Assoc
+              [
+                ("name", `String keeper_name);
+                ("goal", `String "Expose keeper attention in digest");
+                ("proactive_enabled", `Bool false);
+                ("autoboot_enabled", `Bool false);
+              ])
+      in
+      Alcotest.(check bool) "keeper up ok" true ok;
+      Keeper_keepalive.stop_keepalive keeper_name;
+      let meta =
+        match Keeper_types.read_meta config keeper_name with
+        | Ok (Some meta) -> meta
+        | Ok None -> Alcotest.fail "expected keeper meta"
+        | Error err -> Alcotest.fail err
+      in
+      let meta =
+        {
+          meta with
+          paused = true;
+          runtime =
+            {
+              meta.runtime with
+              last_blocker =
+                Some
+                  (Keeper_types.blocker_info_of_class
+                     ~detail:"Completion contract requires a keeper tool call"
+                     Keeper_types.Completion_contract_violation);
+            };
+        }
+      in
+      (match Keeper_types.write_meta config meta with
+      | Ok () -> ()
+      | Error err -> Alcotest.fail err);
+      let digest =
+        match
+          Operator_control.digest_json ~actor:"dashboard"
+            (operator_ctx env sw config "dashboard")
+        with
+        | Ok json -> json
+        | Error err -> Alcotest.fail err
+      in
+      let open Yojson.Safe.Util in
+      let target_id_is_keeper item =
+        match item |> member "target_id" with
+        | `String value -> String.equal value keeper_name
+        | _ -> false
+      in
+      let keeper_attention =
+        digest |> member "attention_items" |> to_list
+        |> List.find_opt target_id_is_keeper
+        |> Option.value ~default:`Null
+      in
+      Alcotest.(check bool) "keeper attention present" true
+        (keeper_attention <> `Null);
+      Alcotest.(check string) "keeper attention target type" "keeper"
+        (keeper_attention |> member "target_type" |> to_string);
+      Alcotest.(check string) "keeper attention kind" "keeper_paused"
+        (keeper_attention |> member "kind" |> to_string);
+      Alcotest.(check string) "keeper attention severity" "bad"
+        (keeper_attention |> member "severity" |> to_string);
+      Alcotest.(check string) "keeper attention blocker class"
+        "completion_contract_violation"
+        (keeper_attention |> member "evidence" |> member "runtime_blocker"
+         |> member "runtime_blocker_class" |> to_string);
+      let keeper_probe =
+        digest |> member "recommended_actions" |> to_list
+        |> List.find_opt (fun row ->
+          target_id_is_keeper row
+          && String.equal "keeper_probe" (row |> member "action_type" |> to_string))
+        |> Option.value ~default:`Null
+      in
+      Alcotest.(check bool) "keeper probe recommendation present" true
+        (keeper_probe <> `Null);
+      Alcotest.(check bool) "recommendation summary is non-empty" true
+        (digest |> member "recommendation_summary" |> member "count" |> to_int > 0))
 
 let test_lightweight_snapshot_preserves_receipt_latest_causal_event () =
   Eio_main.run @@ fun env ->
@@ -543,8 +650,8 @@ let test_lightweight_snapshot_preserves_receipt_latest_causal_event () =
             ( "cascade",
               `Assoc
                 [
-                  ("name", `String "big_three");
-                  ("selected_model", `String "kimi-for-coding");
+                  ("name", `String "primary");
+                  ("selected_model", `String "model-c-coding");
                   ("outcome", `String "completed");
                 ] );
             ("ended_at", `String (Masc_domain.now_iso ()));
@@ -646,7 +753,7 @@ let test_snapshot_pending_confirm_summary_tracks_actor_scope () =
               [
                 ("actor", `String actor);
                 ("action_type", `String "namespace_pause");
-                ("target_type", `String "namespace");
+                ("target_type", `String "root");
               ])
         with
         | Ok _ -> ()
@@ -677,19 +784,12 @@ let test_snapshot_pending_confirm_summary_tracks_actor_scope () =
            (fun row ->
              Yojson.Safe.Util.(row |> member "action_type" |> to_string) = "namespace_pause")
            confirm_required_actions);
-      Alcotest.(check bool) "root github identity login prepare listed" true
+      let retired_identity_login_prepare = "repo_cli_identity_" ^ "login_prepare" in
+      Alcotest.(check bool) "root repo CLI identity login prepare removed" false
         (List.exists
            (fun row ->
-             Yojson.Safe.Util.(
-               row |> member "action_type" |> to_string)
-             = "github_identity_login_prepare")
-           confirm_required_actions);
-      Alcotest.(check bool) "keeper github identity login prepare listed" true
-        (List.exists
-           (fun row ->
-             Yojson.Safe.Util.(
-               row |> member "action_type" |> to_string)
-             = "keeper_github_identity_login_prepare")
+             Yojson.Safe.Util.(row |> member "action_type" |> to_string)
+             = retired_identity_login_prepare)
            confirm_required_actions);
       Alcotest.(check bool) "keeper recover listed" true
         (List.exists
@@ -807,7 +907,7 @@ let test_snapshot_lightweight_summary_keeps_tool_audit () =
       in
       Alcotest.(check bool) "keeper up ok" true ok;
       Keeper_keepalive.stop_keepalive keeper_name;
-      let metrics_store = Keeper_types.keeper_metrics_store config keeper_name in
+      let metrics_store = Keeper_types_support.keeper_metrics_store config keeper_name in
       let metrics_dir = Dated_jsonl.base_dir metrics_store in
       cleanup_dir metrics_dir;
       Fs_compat.mkdir_p metrics_dir;
@@ -918,7 +1018,7 @@ let test_snapshot_lightweight_summary_keeps_recent_tools_distinct_from_latest ()
       in
       Alcotest.(check bool) "keeper up ok" true ok;
       Keeper_keepalive.stop_keepalive keeper_name;
-      let decision_path = Keeper_types.keeper_decision_log_path config keeper_name in
+      let decision_path = Keeper_types_support.keeper_decision_log_path config keeper_name in
       Fs_compat.append_jsonl decision_path
         (`Assoc
           [
@@ -1016,7 +1116,13 @@ let test_snapshot_waiters_share_inflight_result () =
       Eio.Mutex.use_rw ~protect:true Operator_control_snapshot._snapshot_mu
         (fun () ->
           Hashtbl.replace Operator_control_snapshot._snapshot_table cache_key
-            (Operator_control_snapshot.Computing { cond }));
+            (Operator_control_snapshot.Computing
+               {
+                 cond;
+                 stale = None;
+                 started_at = Time_compat.now ();
+                 stuck_warned = ref false;
+               }));
       let waiter_a, resolve_waiter_a = Eio.Promise.create () in
       let waiter_b, resolve_waiter_b = Eio.Promise.create () in
       Eio.Fiber.fork ~sw (fun () ->
@@ -1058,6 +1164,63 @@ let test_snapshot_waiters_share_inflight_result () =
       in
       Alcotest.(check bool) "healthy inflight slot not evicted" true cached_retained)
 
+let test_snapshot_waiter_returns_stale_inflight_result () =
+  Eio_main.run @@ fun env ->
+  ensure_fs env;
+  Eio.Switch.run @@ fun sw ->
+  let base_dir = temp_dir () in
+  Fun.protect
+    ~finally:(fun () -> cleanup_dir base_dir)
+    (fun () ->
+      let config = Coord.default_config base_dir in
+      ignore (Coord.init config ~agent_name:(Some "owner"));
+      ignore (Coord.join config ~agent_name:"owner" ~capabilities:[] ());
+      Operator_control.invalidate_snapshot_cache ();
+      let ctx = operator_ctx env sw config "owner" in
+      ignore (Operator_control.snapshot_json ctx);
+      let cache_key =
+        Eio.Mutex.use_rw ~protect:true Operator_control_snapshot._snapshot_mu
+          (fun () ->
+            match
+              Hashtbl.to_seq_keys Operator_control_snapshot._snapshot_table
+              |> List.of_seq
+            with
+            | key :: _ -> key
+            | [] -> Alcotest.fail "expected primed snapshot cache key")
+      in
+      let cond = Eio.Condition.create () in
+      let stale =
+        `Assoc
+          [
+            ("trace_id", `String "stale-trace");
+            ("status", `String "stale");
+          ]
+      in
+      Eio.Mutex.use_rw ~protect:true Operator_control_snapshot._snapshot_mu
+        (fun () ->
+          Hashtbl.replace Operator_control_snapshot._snapshot_table cache_key
+            (Operator_control_snapshot.Computing
+               {
+                 cond;
+                 stale = Some stale;
+                 started_at = Time_compat.now () -. 120.0;
+                 stuck_warned = ref false;
+               }));
+      let returned = Operator_control.snapshot_json ctx in
+      Alcotest.(check string) "waiter got stale trace" "stale-trace"
+        Yojson.Safe.Util.(returned |> member "trace_id" |> to_string);
+      let still_computing =
+        Eio.Mutex.use_rw ~protect:true Operator_control_snapshot._snapshot_mu
+          (fun () ->
+            match
+              Hashtbl.find_opt Operator_control_snapshot._snapshot_table cache_key
+            with
+            | Some (Operator_control_snapshot.Computing _) -> true
+            | _ -> false)
+      in
+      Alcotest.(check bool) "stale waiter does not replace owner" true
+        still_computing)
+
 (* test_orchestra_room_core_shape removed (CP purge: Command_plane_orchestra deleted) *)
 
 let test_digest_room_exposes_pending_confirm_attention () =
@@ -1077,7 +1240,7 @@ let test_digest_room_exposes_pending_confirm_attention () =
             [
               ("actor", `String "operator");
                ("action_type", `String "namespace_pause");
-               ("target_type", `String "namespace");
+               ("target_type", `String "root");
             ])
       in
       (match action_json with Ok _ -> () | Error err -> Alcotest.fail err);
@@ -1129,8 +1292,8 @@ let test_digest_room_includes_tool_host_failure_attention () =
       ignore (Coord.join config ~agent_name:"owner" ~capabilities:[] ());
       Dashboard_tool_host_events.record ~fs:() config
         {
-          Dashboard_tool_host_events.agent_name = "codex";
-          client_name = "codex";
+          Dashboard_tool_host_events.agent_name = "agent_code";
+          client_name = "agent_code";
           tool_name = "masc_keeper_msg";
           transport = "mcp_http";
           phase = Some "tools/call";

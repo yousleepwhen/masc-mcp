@@ -106,6 +106,35 @@ let test_keeper_signal_hook_cancellation_propagates () =
    with Eio.Cancel.Cancelled _ -> raised := true);
   Alcotest.(check bool) "cancellation propagated" true !raised
 
+let test_dedup_hit_does_not_emit_post_created_fanout () =
+  let keeper_signals = ref 0 in
+  let sse_post_created = ref 0 in
+  Board_dispatch.set_keeper_board_signal_hook (fun _ -> incr keeper_signals);
+  Board_dispatch.set_board_sse_hook (function
+    | Board_dispatch.Post_created _ -> incr sse_post_created
+    | _ -> ());
+  let create () =
+    Board_dispatch.create_post ~author:"dedup-agent"
+      ~content:"same post body from one keeper turn"
+      ~post_kind:Board.Automation_post ~hearth:"keepers" ~thread_id:"turn-15650" ()
+  in
+  let first =
+    match create () with
+    | Ok post -> post
+    | Error e -> Alcotest.fail (Board.show_board_error e)
+  in
+  let second =
+    match create () with
+    | Ok post -> post
+    | Error e -> Alcotest.fail (Board.show_board_error e)
+  in
+  Alcotest.(check string)
+    "dedup returns existing post"
+    (Board.Post_id.to_string first.id)
+    (Board.Post_id.to_string second.id);
+  Alcotest.(check int) "keeper signal emitted once" 1 !keeper_signals;
+  Alcotest.(check int) "SSE post_created emitted once" 1 !sse_post_created
+
 let test_structured_post_roundtrip () =
   let meta = `Assoc [("source", `String "keeper_autonomy")] in
   match Board_dispatch.create_post ~author:"sangsu"
@@ -354,6 +383,44 @@ let test_add_and_get_comments () =
       | Error e -> Alcotest.fail (Board.show_board_error e)
       | Ok comments ->
           Alcotest.(check bool) "has comment" true (List.length comments >= 1)
+
+let test_comment_persists_post_reply_count () =
+  let post =
+    match
+      Board_dispatch.create_post ~author:"automation-author"
+        ~content:"automation post for reply_count persistence"
+        ~post_kind:Board.Automation_post ()
+    with
+    | Error e -> Alcotest.fail (Board.show_board_error e)
+    | Ok post -> post
+  in
+  let post_id = Board.Post_id.to_string post.id in
+  (match
+     Board_dispatch.add_comment ~post_id ~author:"automation-commenter"
+       ~content:"automation/direct comment reply" ()
+   with
+   | Error e -> Alcotest.fail (Board.show_board_error e)
+   | Ok _ -> ());
+  let persisted_reply_count =
+    Board.persist_path ()
+    |> Fs_compat.load_jsonl
+    |> List.find_map (fun json ->
+      match Safe_ops.json_string_opt "id" json with
+      | Some id when String.equal id post_id ->
+        Some (Safe_ops.json_int ~default:(-1) "reply_count" json)
+      | _ -> None)
+  in
+  Alcotest.(check (option int))
+    "post snapshot reply_count updated with comment append"
+    (Some 1)
+    persisted_reply_count;
+  Board.reset_global_for_test ();
+  Board_dispatch.reset_for_test ();
+  Board_dispatch.init_jsonl ();
+  match Board_dispatch.get_post ~post_id with
+  | Error e -> Alcotest.fail (Board.show_board_error e)
+  | Ok fetched ->
+    Alcotest.(check int) "reply_count survives restart" 1 fetched.reply_count
 
 let test_get_post_and_comments_atomic () =
   match
@@ -927,6 +994,34 @@ let test_sub_board_delete () =
             | Ok _ -> Alcotest.fail "expected not found after delete"
             | Error e -> Alcotest.fail (Board.show_board_error e))))
 
+let sub_board_slugs_from_disk () =
+  let path = Board.sub_boards_path () in
+  if not (Fs_compat.file_exists path) then []
+  else
+    Fs_compat.load_jsonl path
+    |> List.filter_map (fun json ->
+           match Yojson.Safe.Util.member "slug" json with
+           | `String slug -> Some slug
+           | _ -> None)
+
+let test_sub_board_create_delete_persisted_snapshot () =
+  let created =
+    Board_dispatch.create_sub_board ~slug:"persisted-team" ~name:"Persisted"
+      ~description:"" ~owner:"agent-1" ()
+  in
+  let id =
+    match created with
+    | Error e -> Alcotest.fail (Board.show_board_error e)
+    | Ok sb -> Board.Sub_board_id.to_string sb.Board.id
+  in
+  Alcotest.(check bool) "created slug persisted" true
+    (List.exists (String.equal "persisted-team") (sub_board_slugs_from_disk ()));
+  (match Board_dispatch.delete_sub_board ~sub_board_id:id with
+   | Error e -> Alcotest.fail (Board.show_board_error e)
+   | Ok () -> ());
+  Alcotest.(check bool) "deleted slug removed from persisted snapshot" false
+    (List.exists (String.equal "persisted-team") (sub_board_slugs_from_disk ()))
+
 let test_sub_board_access_default_open () =
   (match Board_dispatch.create_sub_board ~slug:"open-board" ~name:"Open"
            ~description:"" ~owner:"agent-1" () with
@@ -990,6 +1085,147 @@ let test_sub_board_owner_only_post_policy () =
    | Error e -> Alcotest.fail (Board.show_board_error e)
    | Ok _ -> ())
 
+(* Issue #16024 / task-314: PR #13490 enforced sub-board policy for
+   [create_post] but the matching gate in [add_comment] was missing,
+   so a non-member could comment on a Members_only sub-board through
+   any post that already lived in that sub-board.  These tests pin the
+   contract: comment policy mirrors post policy on the parent post's
+   hearth. *)
+
+let post_in_sub_board ~author ~slug ~content =
+  match
+    Board_dispatch.create_post ~author ~content
+      ~post_kind:Board.Human_post ~hearth:slug ()
+  with
+  | Error e -> Alcotest.fail (Board.show_board_error e)
+  | Ok post -> Board.Post_id.to_string post.id
+
+let test_sub_board_members_only_comment_policy () =
+  ignore
+    (Board_dispatch.create_sub_board ~slug:"comment-policy-team"
+       ~name:"CommentPolicy" ~description:"" ~owner:"agent-owner"
+       ~members:["agent-member"] ~access:Board.Members_only ());
+  let post_id =
+    post_in_sub_board ~author:"agent-owner"
+      ~slug:"comment-policy-team" ~content:"seed post"
+  in
+  (match
+     Board_dispatch.add_comment ~post_id ~author:"agent-outsider"
+       ~content:"outsider reply" ()
+   with
+   | Error (Board.Validation_error _) -> ()
+   | Error e ->
+     Alcotest.fail ("unexpected error: " ^ Board.show_board_error e)
+   | Ok _ ->
+     Alcotest.fail
+       "expected members-only sub-board to reject outsider comment");
+  (match
+     Board_dispatch.add_comment ~post_id ~author:"agent-member"
+       ~content:"member reply" ()
+   with
+   | Error e -> Alcotest.fail (Board.show_board_error e)
+   | Ok _ -> ());
+  (match
+     Board_dispatch.add_comment ~post_id ~author:"agent-owner"
+       ~content:"owner reply" ()
+   with
+   | Error e -> Alcotest.fail (Board.show_board_error e)
+   | Ok _ -> ())
+
+let test_sub_board_owner_only_comment_policy () =
+  ignore
+    (Board_dispatch.create_sub_board ~slug:"comment-owner-space"
+       ~name:"CommentOwner" ~description:"" ~owner:"agent-owner"
+       ~members:["agent-member"] ~access:Board.Owner_only ());
+  let post_id =
+    post_in_sub_board ~author:"agent-owner"
+      ~slug:"comment-owner-space" ~content:"seed"
+  in
+  (match
+     Board_dispatch.add_comment ~post_id ~author:"agent-member"
+       ~content:"member reply" ()
+   with
+   | Error (Board.Validation_error _) -> ()
+   | Error e ->
+     Alcotest.fail ("unexpected error: " ^ Board.show_board_error e)
+   | Ok _ ->
+     Alcotest.fail
+       "expected owner-only sub-board to reject member comment");
+  (match
+     Board_dispatch.add_comment ~post_id ~author:"agent-owner"
+       ~content:"owner reply" ()
+   with
+   | Error e -> Alcotest.fail (Board.show_board_error e)
+   | Ok _ -> ())
+
+let test_sub_board_open_comment_policy_allows_anyone () =
+  ignore
+    (Board_dispatch.create_sub_board ~slug:"comment-open"
+       ~name:"CommentOpen" ~description:"" ~owner:"agent-owner"
+       ~access:Board.Open ());
+  let post_id =
+    post_in_sub_board ~author:"agent-owner"
+      ~slug:"comment-open" ~content:"seed"
+  in
+  (match
+     Board_dispatch.add_comment ~post_id ~author:"agent-random"
+       ~content:"random reply" ()
+   with
+   | Error e -> Alcotest.fail (Board.show_board_error e)
+   | Ok _ -> ())
+
+let test_sub_board_update () =
+  let id =
+    match Board_dispatch.create_sub_board ~slug:"update-target" ~name:"Before"
+             ~description:"old desc" ~owner:"agent-owner" ~access:Board.Open () with
+    | Error e -> Alcotest.fail (Board.show_board_error e)
+    | Ok sb -> Board.Sub_board_id.to_string sb.Board.id
+  in
+  (match Board_dispatch.update_sub_board ~sub_board_id:id ~name:"After"
+           ~description:"new desc" ~access:Board.Members_only ~members:["agent-a"] () with
+   | Error e -> Alcotest.fail (Board.show_board_error e)
+   | Ok sb ->
+       Alcotest.(check string) "updated name" "After" sb.Board.name;
+       Alcotest.(check string) "updated description" "new desc" sb.description;
+       Alcotest.(check bool) "updated access" true (sb.access = Board.Members_only);
+       let members = List.map Board.Agent_id.to_string sb.members in
+       Alcotest.(check (list string)) "updated members include owner" ["agent-owner"; "agent-a"] members);
+  (* lookup still works after update *)
+  (match Board_dispatch.get_sub_board ~sub_board_id:id with
+   | Error e -> Alcotest.fail (Board.show_board_error e)
+   | Ok sb ->
+       Alcotest.(check string) "persisted name" "After" sb.Board.name)
+
+let test_sub_board_delete_clears_orphan_hearth () =
+  let sb_id =
+    match Board_dispatch.create_sub_board ~slug:"orphan-hearth" ~name:"Orphan"
+             ~description:"" ~owner:"agent-owner" () with
+    | Error e -> Alcotest.fail (Board.show_board_error e)
+    | Ok sb -> Board.Sub_board_id.to_string sb.Board.id
+  in
+  let post_result =
+    Board_dispatch.create_post ~author:"agent-owner" ~content:"post in orphan"
+      ~title:"Orphan post" ~hearth:"orphan-hearth" ~post_kind:Board.Human_post ()
+  in
+  let post_id =
+    match post_result with
+    | Error e -> Alcotest.fail (Board.show_board_error e)
+    | Ok post -> Board.Post_id.to_string post.id
+  in
+  (match Board_dispatch.get_post ~post_id with
+   | Error e -> Alcotest.fail (Board.show_board_error e)
+   | Ok post ->
+       Alcotest.(check (option string)) "post has hearth before delete"
+         (Some "orphan-hearth") post.Board.hearth);
+  (match Board_dispatch.delete_sub_board ~sub_board_id:sb_id with
+   | Error e -> Alcotest.fail (Board.show_board_error e)
+   | Ok () -> ());
+  (match Board_dispatch.get_post ~post_id with
+   | Error e -> Alcotest.fail (Board.show_board_error e)
+   | Ok post ->
+       Alcotest.(check (option string)) "post hearth cleared after sub-board delete"
+         None post.Board.hearth)
+
 let test_sub_board_post_count_projection () =
   ignore
     (Board_dispatch.create_sub_board ~slug:"counted" ~name:"Counted"
@@ -1028,6 +1264,8 @@ let () =
         (with_eio test_keeper_signal_hook_failure_does_not_abort_create_post);
       Alcotest.test_case "keeper hook cancellation propagates" `Quick
         (with_eio test_keeper_signal_hook_cancellation_propagates);
+      Alcotest.test_case "dedup hit does not fan out post_created" `Quick
+        (with_eio test_dedup_hit_does_not_emit_post_created_fanout);
       Alcotest.test_case "structured roundtrip" `Quick (with_eio test_structured_post_roundtrip);
       Alcotest.test_case "SSE post_created includes post_kind" `Quick
         (with_eio test_board_sse_post_created_includes_post_kind);
@@ -1045,6 +1283,8 @@ let () =
     ];
     "comments", [
       Alcotest.test_case "add and get" `Quick (with_eio test_add_and_get_comments);
+      Alcotest.test_case "comment persists post reply_count" `Quick
+        (with_eio test_comment_persists_post_reply_count);
       Alcotest.test_case "get_post_and_comments atomic" `Quick
         (with_eio test_get_post_and_comments_atomic);
       Alcotest.test_case "get_post_and_comments missing post" `Quick
@@ -1099,10 +1339,17 @@ let () =
       Alcotest.test_case "list" `Quick (with_eio test_sub_board_list);
       Alcotest.test_case "slug conflict" `Quick (with_eio test_sub_board_slug_conflict);
       Alcotest.test_case "delete" `Quick (with_eio test_sub_board_delete);
+      Alcotest.test_case "persisted create/delete snapshot" `Quick
+        (with_eio test_sub_board_create_delete_persisted_snapshot);
       Alcotest.test_case "default access open" `Quick (with_eio test_sub_board_access_default_open);
       Alcotest.test_case "members include owner" `Quick (with_eio test_sub_board_members_include_owner);
       Alcotest.test_case "members-only post policy" `Quick (with_eio test_sub_board_members_only_post_policy);
       Alcotest.test_case "owner-only post policy" `Quick (with_eio test_sub_board_owner_only_post_policy);
+      Alcotest.test_case "members-only comment policy" `Quick (with_eio test_sub_board_members_only_comment_policy);
+      Alcotest.test_case "owner-only comment policy" `Quick (with_eio test_sub_board_owner_only_comment_policy);
+      Alcotest.test_case "open sub-board allows non-member comment" `Quick (with_eio test_sub_board_open_comment_policy_allows_anyone);
       Alcotest.test_case "derived post count" `Quick (with_eio test_sub_board_post_count_projection);
+      Alcotest.test_case "update" `Quick (with_eio test_sub_board_update);
+      Alcotest.test_case "delete clears orphan hearth" `Quick (with_eio test_sub_board_delete_clears_orphan_hearth);
     ];
   ]

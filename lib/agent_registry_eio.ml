@@ -35,7 +35,7 @@ module Random = Stdlib.Random
     @since 0.5.0
 *)
 
-module SMap = Map.Make(String)
+module SMap = Set_util.StringMap
 
 (** {1 Actor State} *)
 
@@ -69,10 +69,6 @@ let with_state_ro f =
 let max_session_cache_entries = 1024
 
 (** {1 Initialization} *)
-
-(** Initialize (or re-initialize) the actor state.
-    Idempotent when called more than once – the existing state is kept. *)
-let init () = ()  (* state is created eagerly at module load time *)
 
 (** Reset registry for testing.
     Replaces all state with a fresh empty record. *)

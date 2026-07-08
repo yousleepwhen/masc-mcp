@@ -1,14 +1,19 @@
 import { html } from 'htm/preact'
 import { navigate, route } from '../router'
-import { AgentsUnified } from './agents-unified'
-import { Autoresearch } from './autoresearch'
 import { FilterChips } from './common/filter-chips'
 import { KeeperDecisionsStream } from './keeper-decisions-stream'
 import { KeeperCognitionInspector } from './keeper-cognition-inspector'
 import { KeeperTokenStats } from './keeper-token-stats'
-import { MemorySubsystems, type MemorySubsystemsFocus } from './memory-subsystems'
+import { MemorySubsystems } from './memory-subsystems'
+import { RouteLink } from './common/route-link'
 
-type CognitionView = 'overview' | 'keeper' | 'token-stats' | 'decisions' | 'memory' | 'episodes' | 'autoresearch'
+type CognitionView =
+  | 'overview'
+  | 'keeper'
+  | 'token-stats'
+  | 'decisions'
+  | 'memory'
+  | 'episodes'
 
 const COGNITION_VIEWS: CognitionView[] = [
   'overview',
@@ -17,7 +22,6 @@ const COGNITION_VIEWS: CognitionView[] = [
   'decisions',
   'memory',
   'episodes',
-  'autoresearch',
 ]
 
 const VIEW_CHIPS: Array<{ key: CognitionView; label: string; title?: string }> = [
@@ -27,7 +31,6 @@ const VIEW_CHIPS: Array<{ key: CognitionView; label: string; title?: string }> =
   { key: 'decisions', label: 'Decisions' },
   { key: 'memory', label: 'Memory' },
   { key: 'episodes', label: 'Episodes' },
-  { key: 'autoresearch', label: 'Autoresearch' },
 ]
 
 function currentView(): CognitionView {
@@ -49,14 +52,66 @@ function updateViewParam(view: CognitionView): void {
   navigate('monitoring', next)
 }
 
-function currentMemoryFocus(view: CognitionView): MemorySubsystemsFocus {
-  if (view === 'episodes') return 'episodes'
-  return route.value.params.focus === 'entries' ? 'entries' : 'overview'
+const OVERVIEW_LINKS: Array<{
+  label: string
+  detail: string
+  params: Record<string, string>
+}> = [
+  {
+    label: 'Keeper',
+    detail: 'BDI, goals, and cognition focus',
+    params: { section: 'cognition', view: 'keeper' },
+  },
+  {
+    label: 'Token Stats',
+    detail: 'Keeper token budget and spend',
+    params: { section: 'cognition', view: 'token-stats' },
+  },
+  {
+    label: 'Decisions',
+    detail: 'Decision stream and rationale',
+    params: { section: 'cognition', view: 'decisions' },
+  },
+  {
+    label: 'Memory',
+    detail: 'Memory subsystem entries',
+    params: { section: 'cognition', view: 'memory' },
+  },
+  {
+    label: 'Episodes',
+    detail: 'Episode-focused memory view',
+    params: { section: 'cognition', view: 'episodes' },
+  },
+]
+
+function CognitionOverview() {
+  return html`
+    <section class="grid gap-3 md:grid-cols-2" aria-label="Cognition overview">
+      ${OVERVIEW_LINKS.map(item => html`
+        <${RouteLink}
+          key=${item.label}
+          tab="monitoring"
+          params=${item.params}
+          class="min-w-0 rounded-[var(--r-1)] border border-card-border/70 bg-[var(--color-bg-surface)] p-3 transition-colors hover:border-[var(--color-border-strong)] hover:bg-[var(--color-bg-elevated)]"
+        >
+          <div class="text-sm font-semibold text-text-strong">${item.label}</div>
+          <div class="mt-1 text-xs text-text-muted">${item.detail}</div>
+        <//>
+      `)}
+      <${RouteLink}
+        tab="monitoring"
+        params=${{ section: 'agents' }}
+        class="min-w-0 rounded-[var(--r-1)] border border-[var(--color-border-default)] bg-[var(--color-bg-page)] p-3 transition-colors hover:border-[var(--color-border-strong)] hover:bg-[var(--color-bg-elevated)] md:col-span-2"
+      >
+        <div class="text-sm font-semibold text-text-strong">Keeper Fleet</div>
+        <div class="mt-1 text-xs text-text-muted">Roster, keepers, cognition entry points, and FSM views live in one fleet surface.</div>
+      <//>
+    </section>
+  `
 }
 
 export function CognitionPlane() {
   const view = currentView()
-  const memoryFocus = currentMemoryFocus(view)
 
   return html`
     <div class="flex flex-col gap-5">
@@ -74,17 +129,12 @@ export function CognitionPlane() {
         <${KeeperTokenStats} />
       ` : view === 'decisions' ? html`
         <${KeeperDecisionsStream} />
-      ` : view === 'memory' || view === 'episodes' ? html`
-        <${MemorySubsystems} focus=${memoryFocus} />
-      ` : view === 'autoresearch' ? html`
-        <${Autoresearch} />
+      ` : view === 'memory' ? html`
+        <${MemorySubsystems} focus=${route.value.params.focus} />
+      ` : view === 'episodes' ? html`
+        <${MemorySubsystems} focus="episodes" />
       ` : html`
-        <div class="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
-          <${KeeperTokenStats} />
-          <${Autoresearch} />
-        </div>
-        <${AgentsUnified} />
-        <${MemorySubsystems} />
+        <${CognitionOverview} />
       `}
     </div>
   `

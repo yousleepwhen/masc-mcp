@@ -2,17 +2,19 @@
 import { describe, expect, it } from "vitest"
 import {
   buildCredentialCreateRequest,
+  githubLoginCommand,
+  sanitizeOptionalString,
+} from "../api/credentials"
+import {
   coerceCredentialType,
   credentialStateBadgeClass,
   credentialStateLabel,
   credentialTypeBadgeClass,
   credentialTypeLabel,
-  githubLoginCommand,
-  isRecord,
   normalizeCredentialsResponse,
   parseCredentialState,
-  sanitizeOptionalString,
 } from "./credential-settings"
+import { isRecord } from "../lib/type-guards"
 
 describe("coerceCredentialType", () => {
   it("returns github for unknown", () => {

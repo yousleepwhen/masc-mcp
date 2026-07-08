@@ -2,7 +2,6 @@ open Masc_domain
 open Coord_utils_backend_setup
 open Coord_utils_paths_backend
 
-let contains_substring = String_util.contains_substring
 
 let validate_agent_name name =
   match Validation.Agent_id.validate name with
@@ -31,9 +30,9 @@ let validate_room_id room_id =
   if room_id = "" then Error "Coord id cannot be empty"
   else if String.length room_id > 128 then Error "Coord id too long (max 128 chars)"
   else if room_id = "." || room_id = ".." then Error "Coord id cannot be '.' or '..'"
-  else if contains_substring room_id "/" || contains_substring room_id "\\" then
+  else if String_util.contains_substring room_id "/" || String_util.contains_substring room_id "\\" then
     Error "Coord id cannot contain path separators"
-  else if contains_substring room_id ".." then
+  else if String_util.contains_substring room_id ".." then
     Error "Coord id cannot contain traversal segments"
   else if not (Re.execp room_id_allowed_re room_id) then
     Error "Coord id may only contain letters, digits, dot, underscore, and hyphen"
@@ -43,7 +42,7 @@ let validate_file_path path =
   (* Delegate to Validation module for consistent security checks *)
   (* Additional length check for file paths *)
   if String.length path > 500 then Error "File path too long (max 500 chars)"
-  else if contains_substring path "<" || contains_substring path ">" then
+  else if String_util.contains_substring path "<" || String_util.contains_substring path ">" then
     Error "Invalid characters in path (security)"
   else Validation.Safe_path.validate_relative path
 
@@ -102,7 +101,7 @@ let validate_task_id_r id : (string, masc_error) result =
 let validate_file_path_r path : (string, masc_error) result =
   (* Delegate to Validation module, convert error type *)
   if String.length path > 500 then Error (System (System_error.InvalidFilePath "too long (max 500 chars)"))
-  else if contains_substring path "<" || contains_substring path ">" then
+  else if String_util.contains_substring path "<" || String_util.contains_substring path ">" then
     Error (System (System_error.InvalidFilePath "invalid characters (security)"))
   else match Validation.Safe_path.validate_relative path with
   | Ok _ -> Ok path
@@ -112,9 +111,27 @@ let validate_file_path_r path : (string, masc_error) result =
 (* Ensure initialized                           *)
 (* ============================================ *)
 
+(* Typed sentinel for the not-initialized case.
+
+   Before: [ensure_initialized] raised [Invalid_argument "MASC not
+   initialized. Use masc_init first."], and four downstream catch
+   sites recovered the case via [Printexc.to_string +
+   contains_casefold ... "masc not initialized"]. That was the
+   RFC-0088 §"String/Substring 분류기" anti-pattern in cross-module
+   form — a prose string round-tripped through the exception slot
+   to carry semantic information.
+
+   Registering a printer keeps existing telemetry/log paths that
+   format the exception via [Printexc.to_string] unchanged. *)
+exception Not_initialized
+
+let () =
+  Printexc.register_printer (function
+    | Not_initialized -> Some "MASC not initialized. Use masc_init first."
+    | _ -> None)
+
 let ensure_initialized config =
-  if not (is_initialized config) then
-    invalid_arg "MASC not initialized. Use masc_init first."
+  if not (is_initialized config) then raise Not_initialized
 
 let ensure_initialized_r config : (unit, masc_error) result =
   if is_initialized config then Ok ()
@@ -147,6 +164,27 @@ let read_json_local path =
 
 let read_json_local_result path =
   Safe_ops.read_json_file_safe path
+
+type read_json_error =
+  | Json_read_exn of exn
+  | Json_read_error of string
+
+let parse_json_content_result ~context content =
+  let trimmed = String.trim content in
+  if trimmed = "" then Ok (`Assoc [])
+  else Safe_ops.parse_json_safe ~context trimmed
+
+let read_json_local_result_exn path =
+  try
+    if not (Sys.file_exists path) then
+      Error (Json_read_error (Printf.sprintf "File not found: %s" path))
+    else
+      Fs_compat.load_file path
+      |> parse_json_content_result ~context:path
+      |> Result.map_error (fun msg -> Json_read_error msg)
+  with
+  | Eio.Cancel.Cancelled _ as e -> raise e
+  | exn -> Error (Json_read_exn exn)
 
 let json_to_pretty_utf8 json =
   json |> Safe_ops.sanitize_json_utf8 |> Yojson.Safe.pretty_to_string
@@ -239,11 +277,6 @@ let read_json config path =
   | None -> read_json_local path
 
 let read_json_result config path =
-  let parse_backend_json ~context content =
-    let trimmed = String.trim content in
-    if trimmed = "" then Ok (`Assoc [])
-    else Safe_ops.parse_json_safe ~context trimmed
-  in
   match key_of_path config path with
   | Some key -> begin
       match config.backend with
@@ -251,7 +284,7 @@ let read_json_result config path =
       | Memory _ | FileSystem _ ->
       match backend_get config ~key with
       | Ok (Some content) ->
-          parse_backend_json ~context:"read_json_result" content
+          parse_json_content_result ~context:"read_json_result" content
       | Ok None -> Ok (`Assoc [])
       | Error e ->
           Error
@@ -398,21 +431,79 @@ let read_json_opt config path =
 let agent_json_needs_repair = function
   | `Assoc fields -> (
       match List.assoc_opt "last_seen" fields with
-      | Some (`Int _ | `Float _) -> true
-      | _ -> false)
+      | Some (`String _) -> false
+      | Some (`Int _ | `Float _ | `Null) | None -> true
+      | Some _ -> false)
   | _ -> false
 
-let read_agent_with_repair config path =
-  let json = read_json config path in
-  match Masc_domain.agent_of_yojson json with
-  | Ok agent as ok ->
+let is_fd_pressure_exn exn =
+  match System_error_class.classify_exn exn with
+  | System_error_class.Fd_exhaustion -> true
+  | System_error_class.Disk_exhaustion
+  | System_error_class.Permission_denied
+  | System_error_class.Connection_refused
+  | System_error_class.Timeout
+  | System_error_class.Other _ -> false
+;;
+
+type read_agent_error =
+  | Agent_fd_pressure of exn
+  | Agent_read_error of string
+
+let read_agent_json_from_backend config key =
+  match backend_get config ~key with
+  | Ok (Some content) ->
+    parse_json_content_result ~context:"read_agent_with_repair" content
+    |> Result.map_error (fun msg -> Json_read_error msg)
+  | Ok None -> Ok (`Assoc [])
+  | Error e ->
+    Error
+      (Json_read_error
+         (Printf.sprintf
+            "[read_agent_with_repair] backend_get failed for %s: %s"
+            key
+            (Backend_types.show_error e)))
+
+let read_agent_json_result config path =
+  match key_of_path config path with
+  | Some key ->
+    (match config.backend with
+     | FileSystem _ ->
+       (match
+          (try Ok (Sys.file_exists path) with
+           | Eio.Cancel.Cancelled _ as e -> raise e
+           | exn -> Error (Json_read_exn exn))
+        with
+        | Ok true -> read_json_local_result_exn path
+        | Ok false -> read_agent_json_from_backend config key
+        | Error _ as err -> err)
+     | Memory _ -> read_agent_json_from_backend config key)
+  | None -> read_json_local_result_exn path
+
+let read_agent_with_repair_result config path =
+  match read_agent_json_result config path with
+  | Error (Json_read_exn exn) when is_fd_pressure_exn exn ->
+    Error (Agent_fd_pressure exn)
+  | Error (Json_read_exn exn) -> Error (Agent_read_error (Printexc.to_string exn))
+  | Error (Json_read_error msg) -> Error (Agent_read_error msg)
+  | Ok json ->
+    (match Masc_domain.agent_of_yojson json with
+     | Ok agent ->
       if agent_json_needs_repair json then (
         Log.Coord.warn
           "agent state repair: repaired agent JSON and rewrote canonical state for %s"
           path;
         write_json config path (Masc_domain.agent_to_yojson agent));
-      ok
-  | Error _ as error -> error
+      Ok agent
+     | Error msg -> Error (Agent_read_error msg))
+
+let read_agent_with_repair config path =
+  match read_agent_with_repair_result config path with
+  | Ok agent -> Ok agent
+  | Error (Agent_fd_pressure exn) ->
+    let detail = Printexc.to_string exn in
+    Error ("fd_pressure_io: " ^ detail)
+  | Error (Agent_read_error msg) -> Error msg
 
 (* ============================================ *)
 (* File locking                                 *)
@@ -458,7 +549,7 @@ let with_distributed_lock ?clock config _path key f =
     else
       match backend_acquire_lock config ~key ~ttl_seconds ~owner with
       | Ok true -> true
-      | _ ->
+      | Ok false | Error _ ->
           sleep_lock_retry ?clock (backoff_with_jitter delay);
           acquire (attempts - 1) (Float.min 0.5 (delay *. 2.0))
   in
@@ -495,7 +586,7 @@ let with_distributed_lock_r ?clock config path key f : ('a, masc_error) result =
     else
       match backend_acquire_lock config ~key ~ttl_seconds ~owner with
       | Ok true -> true
-      | _ ->
+      | Ok false | Error _ ->
           sleep_lock_retry ?clock (backoff_with_jitter delay);
           acquire (attempts - 1) (Float.min 0.5 (delay *. 2.0))
   in
@@ -514,13 +605,15 @@ let with_distributed_lock_r ?clock config path key f : ('a, masc_error) result =
             Log.Coord.warn "lock release failed for %s: %s" key msg)
       (fun () -> Ok (f ()))
   else begin
-    (* #9645: see [with_distributed_lock] above. *)
+    (* #9645: see [with_distributed_lock] above.
+       #18472 follow-up: surface as typed [LockContention] instead of
+       [IoError msg], so callers dispatch on the variant instead of
+       substring-matching "transient contention" (RFC-0088
+       "String/Substring 분류기" anti-pattern removal). *)
     (Atomic.get Coord_hooks.distributed_lock_acquire_failed_fn)
       ~key ~attempts:50;
-    Error
-      (System (System_error.IoError
-         (Printf.sprintf "Failed to acquire distributed lock for %s"
-            path)))
+    ignore path;
+    Error (System (System_error.LockContention { key; attempts = 50 }))
   end
 
 let with_file_lock_impl ?clock config path f =

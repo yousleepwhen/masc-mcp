@@ -25,7 +25,7 @@ let exec_gate_raw_source argv =
 let run_argv_line argv =
   let output =
     Masc_exec.Exec_gate.run_argv
-      ~actor:"system/notify"
+      ~actor:(Masc_exec.Agent_id.of_string "system/notify")
       ~raw_source:(exec_gate_raw_source argv)
       ~summary:"notify argv"
       ~timeout_sec:(Env_config_exec_timeout.timeout_sec ~caller:Alerting ())
@@ -44,7 +44,7 @@ let run_argv_ignore argv =
   (try
      let status, _output =
        Masc_exec.Exec_gate.run_argv_with_status
-         ~actor:"system/notify"
+         ~actor:(Masc_exec.Agent_id.of_string "system/notify")
          ~raw_source:(exec_gate_raw_source argv)
          ~summary:"notify argv"
          ~timeout_sec:(Env_config_exec_timeout.timeout_sec ~caller:Alerting ())
@@ -90,6 +90,11 @@ let focus_on_osascript () =
   | Some value -> is_truthy value
   | None -> false
 
+let shell_execute_clicks_enabled () =
+  match getenv_nonempty "MASC_NOTIFY_ALLOW_SHELL_EXECUTE" with
+  | Some value -> is_truthy value
+  | None -> false
+
 let render_focus_template template payload =
   let replace token value acc =
     String_util.replace_substring ~needle:token ~by:value acc
@@ -126,9 +131,12 @@ let escape_shell s =
 
 (** Build click focus command from env config *)
 let build_focus_command payload =
-  match getenv_nonempty "MASC_NOTIFY_FOCUS_CMD" with
-  | Some template -> Some (render_focus_template template payload)
-  | None ->
+  if not (shell_execute_clicks_enabled ()) then
+    None
+  else
+    match getenv_nonempty "MASC_NOTIFY_FOCUS_CMD" with
+    | Some template -> Some (render_focus_template template payload)
+    | None ->
       let focus_app = getenv_nonempty "MASC_NOTIFY_FOCUS_APP" in
       let tmux_session = getenv_nonempty "MASC_TMUX_SESSION" in
       if focus_app = None && tmux_session = None then
@@ -178,17 +186,12 @@ let escape_applescript s =
   Buffer.contents buf
 
 (** Agent emoji mapping for visual distinction.
-    Agent names come from spawn_key in Provider_adapter.direct_adapters.
-    Use {!register_agent_emoji} at startup to add provider-specific entries
-    without modifying this file. *)
+    The table starts with only ["system"]; operator code registers
+    per-agent emoji via {!register_agent_emoji} during init. The
+    server holds no closed roster of MCP client names. *)
 let agent_emoji_table : (string, string) Hashtbl.t =
   let t = Hashtbl.create 8 in
-  List.iter (fun (k, v) -> Hashtbl.replace t k v)
-    [ ("claude", "🟣");
-      ("gemini", "🔵");
-      ("codex",  "🟢");
-      ("llama",  "🦙");
-      ("system", "⚙️") ];
+  Hashtbl.replace t "system" "⚙️";
   t
 
 (** Register an agent-name → emoji mapping at startup.
@@ -212,9 +215,10 @@ let send_via_terminal_notifier ~title ~subtitle ~message ~sound ~focus_cmd =
      "-message"; message;
      "-group"; "masc"]
     |> fun base -> if sound then base @ ["-sound"; "default"] else base
-    |> fun base -> match focus_cmd with
-      | Some cmd -> base @ ["-execute"; cmd]
-      | None -> base
+    |> fun base ->
+    match focus_cmd with
+    | Some cmd when shell_execute_clicks_enabled () -> base @ ["-execute"; cmd]
+    | Some _ | None -> base
   in
   run_argv_ignore argv
 

@@ -4,157 +4,8 @@
     and root-level wrappers such as [Env_config_introspect] can reuse the same
     category definitions, masking rules, and source attribution logic. *)
 
-let mask_sensitive value =
-  if String.length value <= 4 then "***"
-  else
-    let visible = min 4 (String.length value) in
-    String.sub value 0 visible ^ "***"
-
-let is_sensitive_name name =
-  let lower = String.lowercase_ascii name in
-  List.exists
-    (fun pat ->
-      let rec contains_at i =
-        if i + String.length pat > String.length lower then false
-        else if String.sub lower i (String.length pat) = pat then true
-        else contains_at (i + 1)
-      in
-      contains_at 0)
-    [ "token"; "password"; "secret"; "key"; "credential";
-      "neo4j_url"; "supabase" ]
-
-type entry = {
-  env_name : string;
-  description : string;
-  default_display : string;
-  sensitive : bool;
-}
-
-type source_provenance = {
-  kind : string;
-  detail : string;
-  derived_from : string list;
-  env_name : string;
-  raw_source : string;
-  raw_env_present : bool;
-  raw_env_blank : bool;
-  default_display : string;
-  sensitive : bool;
-  value_redacted : bool;
-}
-
-let entry ?(sensitive = false) ~default env_name description =
-  let sensitive = sensitive || is_sensitive_name env_name in
-  { env_name; description; default_display = default; sensitive }
-
-let default_provenance (e : entry) =
-  match e.default_display with
-  | "(derived)" ->
-      {
-        kind = "derived";
-        detail = "computed by runtime config helpers from related settings";
-        derived_from = [];
-        env_name = e.env_name;
-        raw_source = "derived_runtime";
-        raw_env_present = false;
-        raw_env_blank = false;
-        default_display = e.default_display;
-        sensitive = e.sensitive;
-        value_redacted = false;
-      }
-  | "(cwd)" ->
-      {
-        kind = "runtime";
-        detail = "resolved from the process working directory or base path";
-        derived_from = [];
-        env_name = e.env_name;
-        raw_source = "runtime";
-        raw_env_present = false;
-        raw_env_blank = false;
-        default_display = e.default_display;
-        sensitive = e.sensitive;
-        value_redacted = false;
-      }
-  | _ ->
-      {
-        kind = "default";
-        detail = "compiled default value";
-        derived_from = [];
-        env_name = e.env_name;
-        raw_source = "compiled_default";
-        raw_env_present = false;
-        raw_env_blank = false;
-        default_display = e.default_display;
-        sensitive = e.sensitive;
-        value_redacted = false;
-      }
-
-let source_provenance (e : entry) ~raw_env raw =
-  let raw_env_present = Option.is_some raw_env in
-  let raw_env_blank =
-    match raw_env with
-    | Some value -> String.trim value = ""
-    | None -> false
-  in
-  match raw with
-  | Some _ ->
-      {
-        kind = "env";
-        detail = "environment variable " ^ e.env_name;
-        derived_from = [];
-        env_name = e.env_name;
-        raw_source = "environment";
-        raw_env_present;
-        raw_env_blank;
-        default_display = e.default_display;
-        sensitive = e.sensitive;
-        value_redacted = e.sensitive;
-      }
-  | None ->
-      let provenance = default_provenance e in
-      { provenance with raw_env_present; raw_env_blank }
-
-let provenance_to_json p =
-  `Assoc
-    ([
-       ("kind", `String p.kind);
-       ("detail", `String p.detail);
-       ("env", `String p.env_name);
-       ("raw_source", `String p.raw_source);
-       ("raw_env_present", `Bool p.raw_env_present);
-       ("raw_env_blank", `Bool p.raw_env_blank);
-       ("default", `String p.default_display);
-       ("sensitive", `Bool p.sensitive);
-       ("value_redacted", `Bool p.value_redacted);
-     ]
-    @
-    if p.derived_from = [] then []
-    else [ ("derived_from", `List (List.map (fun v -> `String v) p.derived_from)) ])
-
-let read_entry (e : entry) =
-  let raw_env = Sys.getenv_opt e.env_name in
-  let raw = Env_config_core.trim_opt raw_env in
-  let provenance = source_provenance e ~raw_env raw in
-  let display_value =
-    match raw with
-    | None -> None
-    | Some v when e.sensitive -> Some (mask_sensitive v)
-    | Some v -> Some v
-  in
-  `Assoc
-    [
-      ("env", `String e.env_name);
-      ("description", `String e.description);
-      ("value", Json_util.string_opt_to_json display_value);
-      ("default", `String e.default_display);
-      ("source", `String provenance.kind);
-      ("source_detail", `String provenance.detail);
-      ("provenance", provenance_to_json provenance);
-      ("sensitive", `Bool e.sensitive);
-    ]
-
-let category name entries =
-  (name, `List (List.map read_entry entries))
+let entry = Env_config_snapshot_core.entry
+let category = Env_config_snapshot_core.category
 
 let server_entries =
   [
@@ -177,8 +28,6 @@ let auth_entries =
       "Admin authentication token";
     entry ~default:"false" "MASC_ALLOW_ANONYMOUS_MUTATIONS"
       "Allow anonymous mutations (local dev only)";
-    entry ~default:"true" Env_config_core.tool_auth_strict_env_key
-      "Require auth for all tool calls";
     entry ~default:"false" "MASC_HTTP_AUTH_STRICT"
       "Require auth for HTTP endpoints";
     entry ~default:"production" Env_config_core.governance_level_env_key
@@ -189,7 +38,7 @@ let runtime_entries =
   [
     entry ~default:"(none)" "MASC_CDAL_ENABLED"
       "Contract-driven agent loop proof capture (feature flag)";
-    entry ~default:"true" "MASC_DISPATCH_V2" "Enable V2 dispatch engine";
+    (* RFC-0084 host-config-cleanup-J — MASC_DISPATCH_V2 removed. *)
     entry ~default:"(auto)" Env_config_core.log_level_env_key "Log level override";
     entry ~default:"debug" Env_config_core.log_routine_level_env_key
       "Routine telemetry log level override (debug|info|warn|error|off)";
@@ -201,6 +50,12 @@ let runtime_entries =
       "Release LLM slot during tool execution (feature flag)";
     entry ~default:"true" Env_config_core.telemetry_enabled_env_key
       "Enable telemetry collection";
+    entry ~default:"30" "MASC_TELEMETRY_RETENTION_DAYS"
+      "Telemetry JSONL day-file retention days. Positive values override; \
+       non-positive disables retention.";
+    entry ~default:"52428800" "MASC_TELEMETRY_MAX_BYTES"
+      "Telemetry JSONL byte cap. Positive values override; non-positive \
+       disables byte-cap pruning.";
   ]
 
 let rate_limiting_entries =
@@ -307,27 +162,13 @@ let keeper_execution_entries =
       "Max messages before compaction";
     entry ~default:"4000" "MASC_KEEPER_COMPACT_MAX_TOKENS"
       "Max tokens before compaction (0=disabled)";
-    entry ~default:"0.10" "MASC_KEEPER_COST_GATE_USD"
-      "Legacy keeper cost gate (unused by unified turn cost guard)";
     entry ~default:"0" "MASC_KEEPER_TOOL_COST_MAX_USD"
       "Unified turn accumulated cost ceiling (USD, 0=disabled)";
     entry ~default:"0.4" "MASC_KEEPER_UNIFIED_TEMP" "Unified turn temperature";
     entry ~default:"131072" "MASC_KEEPER_UNIFIED_MAX_TOKENS"
       "Unified turn max output tokens";
-    entry ~default:"20" "MASC_KEEPER_UNIFIED_MAX_TURNS"
-      "Unified turn max tool loops";
-    entry ~default:"3" "MASC_KEEPER_MAX_TOOL_ROUNDS"
-      "Max tool loop rounds per turn";
     entry ~default:"4000" "MASC_KEEPER_AUTONOMOUS_MAX_TOKENS"
       "Autonomous execution max tokens";
-    entry ~default:"0.55" "MASC_KEEPER_PROACTIVE_TEMP_LOW"
-      "Proactive temperature (low urgency)";
-    entry ~default:"0.75" "MASC_KEEPER_PROACTIVE_TEMP_MID"
-      "Proactive temperature (mid urgency)";
-    entry ~default:"0.9" "MASC_KEEPER_PROACTIVE_TEMP_HIGH"
-      "Proactive temperature (high urgency)";
-    entry ~default:"0.72" "MASC_KEEPER_PROACTIVE_SIMILARITY"
-      "Proactive similarity threshold";
   ]
 
 let keeper_guardrail_entries =
@@ -417,14 +258,12 @@ let dashboard_entries =
       "Duration after which a signal is stale (seconds, 20 min)";
     entry ~default:"8" "MASC_DASHBOARD_TRANSPORT_HEALTH_TIMEOUT_S"
       "Transport health timeout";
-    entry ~default:"15.0" "MASC_NAMESPACE_TRUTH_COLD_TIMEOUT_S"
-      "Namespace-truth fiber base timeout on cold start (seconds, 1-120)";
-    entry ~default:"4.0" "MASC_NAMESPACE_TRUTH_COLD_SAFETY_MARGIN_S"
-      "Extra margin added to shell fiber timeout on cold start (seconds, 0-60)";
-    entry ~default:"12.0" "MASC_NAMESPACE_TRUTH_SHELL_FIBER_TIMEOUT_S"
-      "Namespace-truth shell fiber timeout after warm-up (seconds, 1-120)";
-    entry ~default:"8.0" "MASC_NAMESPACE_TRUTH_WARM_TIMEOUT_S"
-      "Namespace-truth fiber base timeout after warm-up (seconds, 1-120)";
+    (* RFC-0138 Phase 3 Step 4 — MASC_NAMESPACE_TRUTH_*_TIMEOUT_S env
+       knobs retired.  After Step 3 (#16738) wired /project-snapshot
+       through Dashboard_snapshot, the fallback path that consumed
+       those tunables runs at most once per process lifetime; values
+       are now module constants in
+       [Server_dashboard_http_namespace_truth]. *)
   ]
 
 (* --- New categories for the 229 missing env vars --- *)
@@ -453,72 +292,18 @@ let cancellation_entries =
 
 let channel_gate_entries =
   [
-    entry ~default:"(none)" "MASC_CHANNEL_GATE_DEDUP_MAX_ENTRIES"
-      "Dedup table max entries (clamped 100-100000)";
     entry ~default:"(none)" "MASC_CHANNEL_GATE_DEDUP_TTL_SEC"
       "Dedup TTL (seconds, clamped 10-3600)";
     entry ~default:"(none)" "MASC_CHANNEL_GATE_MAX_CONTENT_LENGTH"
       "Max content length (clamped 100-16000)";
-    entry ~default:"(none)" "MASC_CHANNEL_GATE_SLOW_MS"
-      "Slow threshold in ms (clamped 250-120000)";
     entry ~default:"30" "MASC_DISCORD_STATUS_STALE_SEC"
       "Discord status stale threshold (seconds)";
     entry ~default:"30" "MASC_IMESSAGE_STATUS_STALE_SEC"
       "iMessage status stale threshold (seconds)";
   ]
 
-let circuit_breaker_entries =
-  [
-    entry ~default:"(none)" "MASC_CIRCUIT_COOLDOWN"
-      "Cooldown before half-open retry (seconds)";
-    entry ~default:"(none)" "MASC_CIRCUIT_FAILURE_WINDOW_SEC"
-      "Failure counting window (seconds)";
-    entry ~default:"(none)" "MASC_CIRCUIT_THRESHOLD"
-      "Failure threshold before circuit opens";
-  ]
-
-let cli_entries =
-  [
-    entry ~default:"auto" "MASC_CLI_AGENT"
-      "CLI default agent name";
-  ]
-
 let compaction_entries =
   [
-    entry ~default:"0.95" "MASC_COMPACT_ANCHOR_BOOST"
-      "Anchor boost for important messages in compaction";
-    entry ~default:"0.3" "MASC_COMPACT_DROP_THRESHOLD"
-      "Drop importance threshold for compaction";
-    entry ~default:"0.70" "MASC_COMPACT_DYN_FOCUSED_RATIO"
-      "Dynamic compaction ratio for focused sessions";
-    entry ~default:"0.80" "MASC_COMPACT_DYN_MULTI_AGENT_RATIO"
-      "Dynamic compaction ratio for multi-agent sessions";
-    entry ~default:"5" "MASC_COMPACT_KEEP_RECENT"
-      "Number of recent messages to always keep in compaction";
-    entry ~default:"(none)" "MASC_COMPACT_LARGE_CLOUD_FLOOR"
-      "Large cloud context floor for compaction (tokens)";
-    entry ~default:"0.4" "MASC_COMPACT_ROLE_ASSISTANT"
-      "Compaction importance score for assistant role";
-    entry ~default:"1.0" "MASC_COMPACT_ROLE_SYSTEM"
-      "Compaction importance score for system role";
-    entry ~default:"0.7" "MASC_COMPACT_ROLE_TOOL"
-      "Compaction importance score for tool role";
-    entry ~default:"0.6" "MASC_COMPACT_ROLE_USER"
-      "Compaction importance score for user role";
-    entry ~default:"(none)" "MASC_COMPACT_SMALL_LOCAL_FLOOR"
-      "Small local context floor for compaction (tokens)";
-    entry ~default:"0.5" "MASC_COMPACT_TOOL_ABSENT"
-      "Compaction score when tool output absent";
-    entry ~default:"0.8" "MASC_COMPACT_TOOL_PRESENT"
-      "Compaction score when tool output present";
-    entry ~default:"1500" "MASC_COMPACT_TOOL_PRUNE_LIMIT"
-      "Tool output prune character limit";
-    entry ~default:"0.50" "MASC_COMPACT_W_RECENCY"
-      "Weight for recency in compaction scoring";
-    entry ~default:"0.35" "MASC_COMPACT_W_ROLE"
-      "Weight for role in compaction scoring";
-    entry ~default:"0.15" "MASC_COMPACT_W_TOOL"
-      "Weight for tool in compaction scoring";
     entry ~default:"0.95" "MASC_CONTEXT_RATIO_HARD_CAP"
       "Absolute ceiling for compaction ratio_gate (clamped 0.80-0.99)";
   ]
@@ -529,8 +314,6 @@ let decision_entries =
       "Decision audit ring buffer capacity";
     entry ~default:"0" "MASC_DECISION_LAYER_LEVEL"
       "Decision layer level (0=off, 1=audit, 2+=extended)";
-    entry ~default:"3600.0" "MASC_DECISION_TTL_SEC"
-      "Default TTL for pending decisions (seconds, 1 hour)";
   ]
 
 let docker_playground_entries =
@@ -538,13 +321,11 @@ let docker_playground_entries =
     entry ~default:"keeper-playground" "MASC_KEEPER_DOCKER_CONTAINER"
       "Docker container name for keeper playground";
     entry ~default:"(none)" "MASC_KEEPER_DOCKER_PLAYGROUND"
-      "Route keeper_bash through Docker container (feature flag)";
+      "Route Execute through Docker container (feature flag)";
   ]
 
 let keeper_sandbox_entries =
   [
-    entry ~default:"false" "MASC_KEEPER_SANDBOX_HARD_MODE"
-      "Strict Docker keeper mode: rootless/userns required, network=none, brokered git/gh only";
     entry
       ~default:
         "ubuntu:24.04@sha256:cdb5fd928fced577cfecf12c8966e830fcdf42ee481fb0b91904eeddc2fe5eff"
@@ -594,14 +375,6 @@ let economy_entries =
       "Reward for completing a task";
     entry ~default:"0.5" "MASC_ECONOMY_REWARD_UPVOTE"
       "Reward for receiving an upvote";
-  ]
-
-let file_lock_entries =
-  [
-    entry ~default:"(none)" "MASC_FILE_LOCK_MAX_ENTRIES"
-      "Maximum concurrent lock entries (clamped 64-4096)";
-    entry ~default:"(none)" "MASC_FILE_LOCK_STALE_SEC"
-      "Stale lock entry timeout (seconds, clamped 60-7200)";
   ]
 
 let internal_timer_entries =
@@ -668,12 +441,6 @@ let keeper_alert_entries =
       "Slack webhook URL for alerts (empty=disabled)";
   ]
 
-let keeper_board_entries =
-  [
-    entry ~default:"(none)" "MASC_KEEPER_BOARD_LIST_CACHE_TTL_S"
-      "Keeper board list cache TTL (seconds, floor 0)";
-  ]
-
 let keeper_bootstrap_entries =
   [
     entry ~default:"10000" "MASC_KEEPER_BOOTSTRAP_MAX_ACTIVE_KEEPERS"
@@ -688,9 +455,9 @@ let keeper_cascade_entries =
   [
     entry ~default:"(none)" "MASC_KEEPER_CASCADE_PROVIDER_ALLOWLIST"
       "Comma-separated provider allowlist for cascade (None=unfiltered)";
-    entry ~default:"observe" "MASC_CASCADE_ATTEMPT_LIVENESS"
+    entry ~default:"enforce" "MASC_CASCADE_ATTEMPT_LIVENESS"
       "Cascade attempt-liveness gate mode (off|observe|enforce). RFC-0022 \
-       PR-2 §2 Phase A default observe — counters emit but no kill.";
+       Explicit values must be canonical; invalid values raise a config error.";
   ]
 
 let keeper_grpc_entries =
@@ -726,7 +493,7 @@ let keeper_keepalive_entries =
     entry ~default:"30" "MASC_KEEPER_OAS_MAX_TURNS_PER_CALL"
       "Max turns per single OAS Agent.run call (clamped 1-100)";
     entry ~default:"(none)" "MASC_KEEPER_OAS_TIMEOUT_SEC"
-      "Per-call timeout for OAS Agent.run (adaptive when unset; clamped 30-turn_timeout)";
+      "Legacy optional override for OAS call timeout. When set, clamped to [30, turn_timeout_sec].";
     entry ~default:"2.0" "MASC_KEEPER_SLEEP_CHUNK_SEC"
       "Interruptible sleep chunk size (seconds, clamped 0.1-10)";
     entry ~default:"(none)" "MASC_KEEPER_SMART_HEARTBEAT"
@@ -735,8 +502,8 @@ let keeper_keepalive_entries =
       "Max dispatch attempts for the same keeper turn id before livelock guard blocks";
     entry ~default:"1800.0" "MASC_KEEPER_TURN_LIVELOCK_STUCK_AFTER_SEC"
       "Max seconds a keeper turn id may stay active before livelock guard blocks";
-    entry ~default:"3600.0" "MASC_KEEPER_TURN_TIMEOUT_SEC"
-      "Wall-clock timeout for a single unified turn (clamped 60-7200 seconds)";
+    entry ~default:"600.0" "MASC_KEEPER_TURN_TIMEOUT_SEC"
+      "Wall-clock timeout for a single unified turn (clamped 60-900 seconds)";
     entry ~default:"(none)" "MASC_KEEPER_WORK_AS_HEARTBEAT"
       "Successful room heartbeat after turn counts as presence proof (feature flag)";
   ]
@@ -847,8 +614,6 @@ let operator_entries =
       "Coord TTL for operator judge cleanup (clamped >=15 seconds)";
     entry ~default:"300" "MASC_OPERATOR_JUDGE_SESSION_TTL_SEC"
       "Session TTL for operator judge cleanup (clamped >=30 seconds)";
-    entry ~default:"(none)" "MASC_OPERATOR_JUDGE_TIMEOUT_SEC"
-      "Background operator judge timeout (falls back to inference timeout)";
   ]
 
 let orchestrator_entries =
@@ -867,8 +632,6 @@ let orchestrator_entries =
 
 let path_entries =
   [
-    entry ~default:"false" "MASC_ALLOW_REPO_CONFIG_FALLBACK"
-      "Allow repo config fallback resolution";
     entry ~default:"(none)" "MASC_ASSETS_DIR"
       "Assets directory override; None when unset";
     entry ~default:"(none)" "MASC_BASE_PATH_INPUT"
@@ -991,14 +754,10 @@ let test_entries =
 
 let timeout_entries =
   [
-    entry ~default:"300" "MASC_A2A_DELEGATION_TIMEOUT_SEC"
-      "A2A task delegation timeout (seconds)";
     entry ~default:"100" "MASC_EVENT_BUFFER_SIZE"
       "A2A event buffer size per subscription";
     entry ~default:"30.0" "MASC_SSE_KEEPALIVE_SEC"
       "SSE keepalive interval (seconds, floor 1)";
-    entry ~default:"15.0" "MASC_TIMEOUT_GCLOUD_AUTH_SEC"
-      "gcloud auth token fetch timeout (seconds)";
   ]
 
 let tool_entries =
@@ -1007,8 +766,6 @@ let tool_entries =
       "Include hidden/developer tools in tool list (feature flag)";
     entry ~default:"512" "MASC_LIST_PAGE_SIZE"
       "Tool list page size (clamped 10-1024)";
-    entry ~default:"(none)" "MASC_MAX_WRITE_SIZE_BYTES"
-      "Maximum write size in bytes (1MB)";
     entry ~default:"(none)" "MASC_PLACEHOLDER_TOOLS_ENABLED"
       "Enable placeholder tool exposure";
     entry ~default:"(none)" "MASC_PUBLIC_TOOLS_EXTRA"
@@ -1080,10 +837,10 @@ let all_categories () =
     category "transport" transport_entries;
     category "storage" (storage_entries @ cache_entries @ memory_entries @ board_entries);
     category "runtime"
-      (runtime_entries @ cli_entries @ relay_entries @ task_entries
+      (runtime_entries @ relay_entries @ task_entries
        @ message_gc_entries @ pulse_entries @ internal_timer_entries
        @ timeout_entries @ sse_entries @ telemetry_entries
-       @ circuit_breaker_entries @ tool_entries);
+       @ tool_entries);
     category "rate_limiting" rate_limiting_entries;
     category "inference"
       (inference_entries @ model_routing_entries @ oas_sse_entries
@@ -1091,7 +848,7 @@ let all_categories () =
     category "keeper"
       (keeper_entries @ keeper_alert_entries @ keeper_bootstrap_entries
        @ keeper_keepalive_entries @ keeper_metrics_entries
-       @ keeper_board_entries @ docker_playground_entries
+       @ docker_playground_entries
        @ keeper_sandbox_entries);
     category "keeper_execution"
       (keeper_execution_entries @ compaction_entries @ decision_entries
@@ -1106,7 +863,7 @@ let all_categories () =
       (operator_entries @ orchestrator_entries @ smart_heartbeat_entries);
     category "channel" channel_gate_entries;
     category "process"
-      (shutdown_entries @ spawn_entries @ file_lock_entries
+      (shutdown_entries @ spawn_entries
        @ cancellation_entries @ zombie_cleanup_entries @ lock_entries
        @ procedural_memory_entries);
     category "worker" (worker_entries @ worker_runtime_entries);

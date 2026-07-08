@@ -5,45 +5,35 @@ module Types = Masc_domain
 open Masc_mcp
 
 let all_keeper : Tool_name.Keeper.t list =
-  [ Bash; Bash_kill; Bash_output; Board_cleanup; Board_comment; Board_comment_vote
-  ; Board_curation_read; Board_curation_submit; Board_delete
+  [ Execute; Board_comment; Board_comment_vote
+  ; Board_curation_read; Board_curation_submit
   ; Board_get; Board_list; Board_post; Board_search; Board_stats; Board_vote
-  ; Broadcast; Code_read; Context_status; Discovery; Fs_edit; Fs_read
+  ; Broadcast; Context_status; Fs_edit; Fs_read
   ; Handoff; Library_read; Library_search; Memory_search
-  ; Pr_create; Pr_list; Pr_review_comment; Pr_review_read; Pr_review_reply
-  ; Pr_status
-  ; Preflight_check; Shell; Stay_silent
+  ; Search_files; Stay_silent
   ; Task_claim; Task_create; Task_done; Task_submit_for_verification
   ; Task_force_done; Task_force_release
   ; Tasks_audit; Tasks_list; Time_now; Tool_search; Tools_list
   ; Voice_agent; Voice_listen; Voice_session_end; Voice_session_start
-  ; Voice_sessions; Voice_speak; Write ]
+  ; Voice_sessions; Voice_speak ]
 
 let all_masc : Tool_name.Masc.t list =
   [ Add_task; Agent_fitness; Agent_update; Agent_card; Agents
-  ; Autoresearch_cycle; Autoresearch_inject; Autoresearch_start
-  ; Autoresearch_record_finding; Autoresearch_search_findings
-  ; Autoresearch_status; Autoresearch_stop
   ; Batch_add_tasks; Board_cleanup; Board_comment; Board_comment_vote
   ; Board_curation_read; Board_curation_submit
   ; Board_delete; Board_get; Board_hearths; Board_list; Board_post
   ; Board_profile; Board_search
-  ; Board_stats; Board_vote; Broadcast; Cancel_task; Check; Claim_next
-  ; Claim_task; Cleanup_zombies; Coordination_fsm_snapshot; Code_delete
-  ; Code_edit; Code_git; Code_read
-  ; Code_search; Code_shell; Code_symbols; Code_write; Complete_task
-  ; Dashboard; Deliver; Dispatch_plan
-  ; Heartbeat; Join; Leave; List_tasks; Messages; Note_add
-  ; Operation_pause; Operation_start; Operation_status; Operation_stop
+  ; Board_stats; Board_vote; Broadcast; Check; Claim_next
+  ; Cleanup_zombies; Dashboard; Deliver
+  ; Heartbeat; Join; Leave; Messages; Note_add
   ; Operator_action; Operator_confirm; Operator_digest; Operator_snapshot
   ; Plan_clear_task; Plan_get; Plan_get_task; Plan_init; Plan_set_task
-  ; Plan_update; Register_capabilities; Release_task; Reset; Coord_status
-  ; Set_current_task; Status; Task_history; Tasks; Tool_grant; Tool_help
+  ; Plan_update; Reset
+  ; Status; Task_history; Tasks; Tool_grant; Tool_help
   ; Tool_list; Tool_revoke; Transition; Update_priority; Web_search; Who
-  ; Workflow_guide; Worktree_create; Worktree_list; Worktree_remove
   ; Approval_pending; Approval_get; Config; Gc; Get_metrics; Mcp_session
-  ; Pause; Resume; Spawn; Start; Tool_admin_snapshot; Tool_admin_update
-  ; Tool_stats; Webrtc_answer; Webrtc_offer ]
+  ; Pause; Resume; Start; Tool_admin_snapshot; Tool_admin_update
+  ; Tool_stats ]
 
 let all_masc_keeper : Tool_name.Masc_keeper.t list =
   [ Clear; Compact; Create_from_persona; Down; List; Msg; Persona_audit; Repair
@@ -90,13 +80,20 @@ let test_roundtrip_toplevel () =
 
 (* ── Prefix invariants ─────────────────────────────────────── *)
 
+(* Keeper variants that intentionally use a non-keeper_ prefix.
+   These are shared-surface tools whose canonical string id starts
+   with "tool_" rather than "keeper_" (see PR #18520, #18779). *)
+let keeper_shared_surface_prefixes =
+  [ "tool_execute"; "tool_edit_file"; "tool_read_file"; "tool_search_files" ]
+
 let test_keeper_prefix () =
   List.iter (fun k ->
     let s = Tool_name.Keeper.to_string k in
-    Alcotest.(check bool)
-      (Printf.sprintf "%s starts with keeper_" s)
-      true
-      (String.length s > 7 && String.sub s 0 7 = "keeper_")
+    if not (List.mem s keeper_shared_surface_prefixes) then
+      Alcotest.(check bool)
+        (Printf.sprintf "%s starts with keeper_" s)
+        true
+        (String.length s > 7 && String.sub s 0 7 = "keeper_")
   ) all_keeper
 
 let test_masc_prefix () =
@@ -149,8 +146,8 @@ let test_keeper_board_write_helpers () =
          (Printf.sprintf "%s is board" (to_string tool))
          true
          (is_board tool))
-    [ Board_cleanup; Board_comment; Board_comment_vote; Board_curation_read
-    ; Board_curation_submit; Board_delete; Board_get; Board_list; Board_post
+    [ Board_comment; Board_comment_vote; Board_curation_read
+    ; Board_curation_submit; Board_get; Board_list; Board_post
     ; Board_search; Board_stats; Board_vote ];
   List.iter
     (fun tool ->
@@ -158,7 +155,7 @@ let test_keeper_board_write_helpers () =
          (Printf.sprintf "%s is not board" (to_string tool))
          false
          (is_board tool))
-    [ Broadcast; Task_done; Write ];
+    [ Broadcast; Task_done ];
   Alcotest.(check (list string)) "canonical board write names"
     [ "keeper_board_post"; "keeper_board_comment"; "keeper_board_vote"; "keeper_board_curation_submit" ]
     board_write_tool_names;
@@ -175,7 +172,7 @@ let test_keeper_board_write_helpers () =
          (Printf.sprintf "%s is not board write" (to_string tool))
          false
          (is_board_write tool))
-    [ Board_list; Board_get; Board_curation_read; Board_comment_vote; Task_done; Write ];
+    [ Board_list; Board_get; Board_curation_read; Board_comment_vote; Task_done ];
   Alcotest.(check (option string)) "post action kind"
     (Some "post") (board_write_action_kind Board_post);
   Alcotest.(check (option string)) "comment action kind"
@@ -190,16 +187,16 @@ let test_keeper_board_write_helpers () =
 let test_keeper_board_write_facade_uses_typed_contract () =
   Alcotest.(check (list string)) "exec context names mirror Tool_name"
     Tool_name.Keeper.board_write_tool_names
-    Keeper_exec_context.keeper_board_write_tool_names;
+    Keeper_context_runtime.keeper_board_write_tool_names;
   Alcotest.(check bool) "comment is board write" true
-    (Keeper_exec_context.keeper_write_done [ "keeper_board_comment" ]);
+    (Keeper_context_runtime.keeper_write_done [ "keeper_board_comment" ]);
   Alcotest.(check bool) "comment vote is not board write" false
-    (Keeper_exec_context.keeper_write_done [ "keeper_board_comment_vote" ]);
+    (Keeper_context_runtime.keeper_write_done [ "keeper_board_comment_vote" ]);
   Alcotest.(check string) "post has stable priority" "post"
-    (Keeper_exec_context.keeper_action_kind_of_tool_names
+    (Keeper_context_runtime.keeper_action_kind_of_tool_names
        [ "keeper_board_vote"; "keeper_board_post" ]);
   Alcotest.(check string) "non-board action kind is none" "none"
-    (Keeper_exec_context.keeper_action_kind_of_tool_names
+    (Keeper_context_runtime.keeper_action_kind_of_tool_names
        [ "keeper_board_comment_vote"; "unknown" ])
 
 let test_board_predicate_facade_uses_typed_contract () =
@@ -232,8 +229,9 @@ let test_is_keeper () =
 (* ── Coverage: all shard tool schemas must parse ───────────── *)
 
 let test_shard_tools_parse () =
-  let shard_names = [ "base"; "board"; "filesystem"; "shell"; "voice";
-                      "coding"; "pr"; "autoresearch"; "library" ] in
+  let shard_names =
+    [ "base"; "board"; "filesystem"; "search_files"; "voice"; "pr"; "library" ]
+  in
   let tool_names =
     List.concat_map (fun sn ->
       match Tool_shard.get_shard sn with

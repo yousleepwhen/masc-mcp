@@ -34,6 +34,9 @@ type stress_kind =
   | Turn_failure of turn_failure
   | Fallback_approval
   | Timeout
+  | Provider_timeout
+  | Capacity_pressure
+  | Turn_liveness
   | Parse_degraded
   | Task_released
 
@@ -77,6 +80,12 @@ let stress_kind_to_json = function
     `Assoc [("type", `String "fallback_approval")]
   | Timeout ->
     `Assoc [("type", `String "timeout")]
+  | Provider_timeout ->
+    `Assoc [("type", `String "provider_timeout")]
+  | Capacity_pressure ->
+    `Assoc [("type", `String "capacity_pressure")]
+  | Turn_liveness ->
+    `Assoc [("type", `String "turn_liveness")]
   | Parse_degraded ->
     `Assoc [("type", `String "parse_degraded")]
   | Task_released ->
@@ -238,8 +247,21 @@ let board_rows_json ?(agents = []) events =
            String.compare la ra
        | _ -> 0)
 
+let dashboard_source = "agent_stress"
+let dashboard_surface = "/api/v1/dashboard/stress"
+
+let dashboard_retention_json =
+  `Assoc
+    [ ("scope", `String "jsonl_tail")
+    ; ("durable_store", `String ".masc/agent_stress.jsonl")
+    ]
+
 let dashboard_feed_json ~limit ?(agents = []) events =
   `Assoc [
+    ("generated_at_iso", `String (Masc_domain.now_iso ()));
+    ("dashboard_surface", `String dashboard_surface);
+    ("source", `String dashboard_source);
+    ("retention", dashboard_retention_json);
     ("limit", `Int limit);
     ("count", `Int (List.length events));
     ("events", `List events);
@@ -258,11 +280,15 @@ let buffer_cap = 64
 
 let ensure_dir path =
   let dir = Filename.dirname path in
+  (* See heuristic_metrics.ensure_dir — same RFC-0088 "String 분류기"
+     removal: typed [Unix.Unix_error EEXIST] instead of substring match
+     on the libc error message. *)
   if not (Sys.file_exists dir) then
-    try Sys.mkdir dir 0o755 with
-    | Sys_error msg when String_util.contains_substring msg "exists" -> ()
-    | Sys_error msg ->
-      Log.warn ~ctx:"agent_stress" "cannot mkdir %s: %s" dir msg
+    try Unix.mkdir dir 0o755 with
+    | Unix.Unix_error (Unix.EEXIST, _, _) -> ()
+    | Unix.Unix_error (err, _, _) ->
+      Log.warn ~ctx:"agent_stress" "cannot mkdir %s: %s" dir
+        (Unix.error_message err)
 
 let do_flush () =
   match !store_path_ref with

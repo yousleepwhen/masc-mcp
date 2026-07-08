@@ -52,7 +52,6 @@ val string_of_channel : channel -> string
 val generate_uuid : agent_name:string -> string
 val generate_session_key : unit -> string
 val from_mcp_params : Yojson.Safe.t -> t
-val from_agent_name : string -> t
 val anonymous : unit -> t
 
 (** {1 Identity Registry} *)
@@ -95,17 +94,12 @@ type archetype =
 val archetype_to_string : archetype -> string
 
 (** Strict parse: returns [None] when the wire string is not one of the
-    canonical archetype labels (with aliases). Prefer this over
-    [archetype_of_string] for new code so drift is visible. Issue #8691. *)
+    canonical archetype labels (with aliases), so drift is visible at the
+    caller boundary. Issue #8691. *)
 val archetype_of_string_opt : string -> archetype option
-
-(** Back-compat parse: returns [Generalist] on unknown strings and
-    logs a warning so the typo is operator-visible. Issue #8691. *)
-val archetype_of_string : string -> archetype
 
 val archetype_emoji : archetype -> string
 
-val get_archetype : t -> archetype
 val set_archetype : t -> archetype -> t
 
 val archetype_weight : archetype -> string -> float

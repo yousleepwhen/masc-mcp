@@ -69,10 +69,71 @@ val record_semaphore_wait_observation :
   unit ->
   unit
 
-val oas_timeout_budget_observation_reasons : string list
+type cascade_backpressure_decision =
+  | Cascade_admitted
+  | Cascade_backpressured of {
+      cascade_name : string;
+      reason : string;
+    }
 
-val record_oas_timeout_budget_observation :
+type heartbeat_event_intake = {
+  pending_board_events : Keeper_world_observation.pending_board_event list;
+  consumed_stimulus_count : int;
+}
+
+val heartbeat_event_intake :
+  ctx:'a context ->
+  meta_after_triage:keeper_meta ->
+  pending_board_events:Keeper_world_observation.pending_board_event list ->
+  heartbeat_event_intake
+
+type keepalive_scheduling_decision = {
+  turn_decision : Keeper_world_observation.keeper_cycle_decision;
+  requested_should_run_turn : bool;
+  cascade_backpressure : cascade_backpressure_decision;
+  should_run_turn : bool;
+  verdict_reasons : string list;
+  admission_reasons : string list;
+  channel : string;
+}
+
+val decide_keepalive_scheduling :
+  ?cascade_resilience_of_name:(string -> Keeper_cascade_resilience.cascade_resilience) ->
+  ?cascade_status_of_name:
+    (cascade_name:string -> Keeper_health_probe.health_status) ->
+  stop:bool Atomic.t ->
+  meta:keeper_meta ->
+  Keeper_world_observation.world_observation ->
+  keepalive_scheduling_decision
+
+val cascade_backpressure_decision :
+  cascade_resilience:Keeper_cascade_resilience.cascade_resilience option ->
+  should_run_turn:bool ->
+  cascade_name:string ->
+  cascade_status:Keeper_health_probe.health_status ->
+  cascade_backpressure_decision
+
+val cascade_backpressure_observation_reasons : reason:string -> string list
+
+val record_cascade_backpressure_observation :
+  base_path:string -> keeper_name:string -> reason:string -> unit
+
+val semaphore_wait_timeout_blocker_class :
+  Keeper_turn_slot.semaphore_wait_timeout -> blocker_class
+
+val semaphore_wait_timeout_diagnostics :
+  cascade_name:string -> Keeper_turn_slot.semaphore_wait_timeout -> string * string
+
+val provider_timeout_observation_reasons : string list
+
+val record_provider_timeout_observation :
   base_path:string -> keeper_name:string -> unit
+
+val provider_timeout_policy_decision :
+  strikes:int -> Agent_sdk.Error.sdk_error -> Keeper_failure_policy.decision option
+(** Return the policy decision for a structured provider-timeout error.
+    This heartbeat-loop path is reached after the keeper turn returned, so
+    timeout evidence is not liveness loss by itself. *)
 
 val persist_message_cursor_updates :
   config:Coord.config -> keeper_meta -> (string * int) list -> keeper_meta
@@ -104,13 +165,13 @@ val dispatch_recurring_keepalive :
   now_ts:float ->
   int
 
-(** Pure: whether a [Heartbeat_smart] decision should allow the keepalive
+(** Pure: whether a [Keeper_heartbeat_smart] decision should allow the keepalive
     cycle (presence/snapshot/board/turn/recurring) to run.
 
     Contract: [Skip_busy] -> [true] (cycle continues).
     [Skip_idle] -> [false] (keeper idle, back off).
     [Emit] -> [true]. *)
-val smart_heartbeat_cycle_continues : Heartbeat_smart.decision -> bool
+val smart_heartbeat_cycle_continues : Keeper_heartbeat_smart.decision -> bool
 
 (** Pure: post-sleep refinement of [smart_heartbeat_cycle_continues] that
     closes the [MissedWakeup] gap in [KeeperHeartbeat.tla].
@@ -129,7 +190,17 @@ val smart_heartbeat_cycle_continues : Heartbeat_smart.decision -> bool
     [Emit]; for [Skip_idle], promotes to [true] iff the sleep ended
     with [Woken] (not [Timeout] / [Stopped]). *)
 val cycle_continues_after_wake :
-  Heartbeat_smart.decision -> Keeper_keepalive_signal.sleep_outcome -> bool
+  Keeper_heartbeat_smart.decision -> Keeper_keepalive_signal.sleep_outcome -> bool
+
+val visible_consumer_count : unit -> int
+
+val visibility_gate_decision :
+  visible_consumers:int ->
+  has_pending_signal:bool ->
+  now:float ->
+  last_heartbeat_cycle_ts:float ->
+  Keeper_heartbeat_smart.decision ->
+  Keeper_heartbeat_smart.decision
 
 val run_smart_heartbeat_gate :
   config:Coord.config ->
@@ -138,7 +209,7 @@ val run_smart_heartbeat_gate :
   wakeup:bool Atomic.t ->
   meta_current:keeper_meta ->
   smart_hb_enabled:(unit -> bool) ->
-  smart_hb_config:Heartbeat_smart.config ->
+  smart_hb_config:Keeper_heartbeat_smart.config ->
   last_successful_heartbeat_ts:float ref ->
   last_heartbeat_cycle_ts:float ref ->
   bool

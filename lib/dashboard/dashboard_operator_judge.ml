@@ -34,6 +34,37 @@ let with_outer_rw f = Eio_guard.with_mutex outer_mu f
 let with_lock st f =
   Eio.Mutex.use_rw ~protect:true st.mutex f
 
+let member_action_type = "action_type"
+let member_severity = "severity"
+let member_reason = "reason"
+let member_suggested_payload = "suggested_payload"
+let member_summary = "summary"
+let member_confidence = "confidence"
+let member_recommended_action = "recommended_action"
+let member_disagreement_with_truth = "disagreement_with_truth"
+let key_action_type = "action_type"
+let key_target_type = "target_type"
+let key_target_id = "target_id"
+let key_actor = "actor"
+let key_severity = "severity"
+let key_reason = "reason"
+let key_payload = "payload"
+let key_suggested_payload = "suggested_payload"
+let key_preview = "preview"
+let key_provenance = "provenance"
+let key_authoritative = "authoritative"
+let key_confirm_required = "confirm_required"
+let key_raw = "raw"
+let keeper_name_operator_judge = "operator-judge"
+let backoff_status_slots_saturated = "Backoff: local slots saturated"
+let severity_warn = "warn"
+let provenance_judgment = "judgment"
+let judge_label_operator = "Operator"
+let model_used_runtime = "runtime"
+let prompt_dashboard_operator_judge = "dashboard.operator_judge"
+let field_facts_json = "facts_json"
+
+
 let get_state base_path =
   with_outer_rw (fun () ->
     match Hashtbl.find_opt states base_path with
@@ -62,12 +93,6 @@ let room_ttl_sec () = Env_config.Operator.room_ttl_sec
 
 let session_ttl_sec () = Env_config.Operator.session_ttl_sec
 
-let iso_of_unix unix_ts =
-  let tm = Unix.gmtime unix_ts in
-  Printf.sprintf "%04d-%02d-%02dT%02d:%02d:%02dZ"
-    (tm.Unix.tm_year + 1900) (tm.Unix.tm_mon + 1) tm.Unix.tm_mday tm.Unix.tm_hour
-    tm.Unix.tm_min tm.Unix.tm_sec
-
 let runtime_status base_path =
   let st = get_state base_path in
   with_lock st (fun () ->
@@ -77,7 +102,7 @@ let runtime_status base_path =
         refreshing = st.refreshing;
         generated_at = st.generated_at;
         expires_at = st.expires_at;
-        model_used = st.model_used;
+        model_used = None;
         keeper_name;
         last_error = st.last_error;
       })
@@ -103,69 +128,69 @@ let build_recommended_action ~actor ~target_type ~target_id json =
   match json with
   | `Assoc _ ->
       let action_type =
-        json |> member "action_type" |> to_string_option |> Option.map String.trim
+        json |> member member_action_type |> to_string_option |> Option.map String.trim
       in
       (match action_type with
       | Some action_type when action_type <> "" && allowed_action_type action_type ->
           let severity =
-            json |> member "severity" |> to_string_option
-            |> Option.value ~default:"warn"
+            json |> member member_severity |> to_string_option
+            |> Option.value ~default:severity_warn
           in
           let reason =
             normalize_text
-              (json |> member "reason" |> to_string_option |> Option.value ~default:"")
+              (json |> member member_reason |> to_string_option |> Option.value ~default:"")
           in
           let suggested_payload =
-            match json |> member "suggested_payload" with
+            match json |> member member_suggested_payload with
             | `Assoc _ as value -> value
             | _ -> `Assoc []
           in
           let preview =
             `Assoc
               [
-                ("actor", `String actor);
-                ("action_type", `String action_type);
-                ("target_type", `String target_type);
-                ("target_id", Option.fold ~none:`Null ~some:(fun v -> `String v) target_id);
-                ("payload", suggested_payload);
+                (key_actor, `String actor);
+                (key_action_type, `String action_type);
+                (key_target_type, `String target_type);
+                (key_target_id, Option.fold ~none:`Null ~some:(fun v -> `String v) target_id);
+                (key_payload, suggested_payload);
               ]
           in
           Some
             (`Assoc
               [
-                ("action_type", `String action_type);
-                ("target_type", `String target_type);
-                ("target_id", Option.fold ~none:`Null ~some:(fun v -> `String v) target_id);
-                ("severity", `String severity);
-                ("reason", `String reason);
-                ("confirm_required", `Bool (confirm_required action_type));
-                ("suggested_payload", suggested_payload);
-                ("preview", preview);
-                ("provenance", `String "judgment");
-                ("authoritative", `Bool true);
+                (key_action_type, `String action_type);
+                (key_target_type, `String target_type);
+                (key_target_id, Option.fold ~none:`Null ~some:(fun v -> `String v) target_id);
+                (key_severity, `String severity);
+                (key_reason, `String reason);
+                (key_confirm_required, `Bool (confirm_required action_type));
+                (key_suggested_payload, suggested_payload);
+                (key_preview, preview);
+                (key_provenance, `String provenance_judgment);
+                (key_authoritative, `Bool true);
               ])
       | _ -> None)
   | _ -> None
 
 let prompt_for_facts facts_json =
   match
-    Prompt_registry.render_prompt_template "dashboard.operator_judge"
-      [ ("facts_json", Yojson.Safe.to_string facts_json) ]
+    Prompt_registry.render_prompt_template prompt_dashboard_operator_judge
+      [ (field_facts_json, Yojson.Safe.to_string facts_json) ]
   with
   | Ok value -> value
-  | Error _ -> Prompt_registry.get_prompt "dashboard.operator_judge"
+  | Error _ -> Prompt_registry.get_prompt prompt_dashboard_operator_judge
 
-let parse_room_judgment ~config ~generated_at ~generated_at_unix ~model_used json =
+let parse_room_judgment ~config ~generated_at ~generated_at_unix ~model_used:_ json =
   match json with
   | `Assoc _ ->
       let summary =
         normalize_text
-          (json |> member "summary" |> to_string_option |> Option.value ~default:"")
+          (json |> member member_summary |> to_string_option |> Option.value ~default:"")
       in
       if summary = "" then None
       else
         let confidence =
-          match json |> member "confidence" with
+          match json |> member member_confidence with
           | `Float value -> value
           | `Int value -> float_of_int value
           | _ -> 0.0
@@ -176,22 +201,22 @@ let parse_room_judgment ~config ~generated_at ~generated_at_unix ~model_used jso
         Some
           (Operator_judgment.record config ~surface:"command.namespace"
              ~target_type:Operator_judgment.Coord ~target_id:None ~summary
-             ~confidence ?model_name:(Some model_used)
+             ~confidence ?model_name:None
              ?recommended_action:
                (build_recommended_action ~actor:keeper_name ~target_type:"root"
-                  ~target_id:None (json |> member "recommended_action"))
+                  ~target_id:None (json |> member member_recommended_action))
              ~evidence_refs:(parse_string_list json "evidence_refs")
              ~disagreement_with_truth:
-               (json |> member "disagreement_with_truth" |> to_bool_option
+               (json |> member member_disagreement_with_truth |> to_bool_option
                |> Option.value ~default:false)
              ~generated_at ~generated_at_unix
-             ~fresh_until:(iso_of_unix fresh_until_unix)
+             ~fresh_until:(Dashboard_utils.iso_of_unix fresh_until_unix)
              ~fresh_until_unix ~keeper_name ())
   | _ -> None
 
 let compute_judgments
     ~(masc_tools : Masc_domain.tool_schema list)
-    ~(dispatch : name:string -> args:Yojson.Safe.t -> Tool_result.t)
+    ~(dispatch : name:string -> args:Yojson.Safe.t -> Tool_result.result)
     ~facts_json =
   let prompt = prompt_for_facts facts_json in
   let cascade_name =
@@ -199,36 +224,38 @@ let compute_judgments
       Keeper_cascade_profile.Operator_judge
   in
   match
-    (* #9629: caller migrated from legacy run_safe (which fell back to
-       the global 30s inference timeout) to run_with_caller so this
-       judge inherits Operator_judge's 300s default and surfaces in the
-       per-caller Prometheus counter. *)
+    (* #9629: caller uses run_with_caller so this judge inherits
+       Operator_judge's 300s default and surfaces in the per-caller
+       Prometheus counter. *)
     Masc_oas_bridge.run_with_caller
       ~caller:Env_config_oas_bridge.Operator_judge (fun () ->
-      Oas_worker.run_named_with_masc_tools ~cascade_name
+      Keeper_turn_driver_wrappers.run_named_with_masc_tools ~cascade_name
         ~goal:prompt ~masc_tools ~dispatch ~max_turns:3
+        ~accept:Keeper_tool_response.response_has_text_or_tool_progress
         ~approval:Approval_callbacks.auto_approve
         ()
     )
   with
   | Error err -> Error (Agent_sdk.Error.to_string err)
   | Ok result -> (
-      let response = result.Oas_worker.response in
+      let response = result.Cascade_runner.response in
       try
         (* See dashboard_governance_judge.ml for rationale: LLMs frequently
            wrap JSON in ```json … ``` markdown fences. Lenient_json strips
            fences and applies other deterministic recovery transforms. *)
-        let raw_text = Oas_response.text_of_response response in
+        let raw_text = Agent_sdk_response.text_of_response response in
         match Llm_provider.Lenient_json.parse raw_text with
-        | `Assoc [("raw", `String raw)] ->
+        | `Assoc [(key_raw, `String raw)] ->
             (* #9774: include a preview so the failure diagnostic doesn't
                require enabling raw provider logging. *)
             let msg =
-              Judge_diagnostics.record_lenient_fallback ~judge_label:"Operator" raw
+              Judge_diagnostics.record_lenient_fallback ~judge_label:judge_label_operator raw
             in
             Log.Governance.warn "%s" msg;
             Error msg
-        | parsed -> Ok (response.model, parsed)
+        | parsed ->
+            let _ = response.model in
+            Ok (model_used_runtime, parsed)
       with
       | Yojson.Json_error msg ->
           Error (Printf.sprintf "Operator judge returned invalid JSON: %s" msg)
@@ -242,7 +269,7 @@ let should_backoff ~sw ~net =
   in
   try
     let capacity =
-      Cascade_config.local_capacity_for_selections ~sw ~net
+      Cascade_runtime.local_capacity_for_selections ~sw ~net
         [ cascade_name ]
     in
     capacity.all_discovered && capacity.endpoints_found > 0
@@ -255,7 +282,7 @@ let should_backoff ~sw ~net =
 
 let refresh_once ~sw ~net
     ~(masc_tools : Masc_domain.tool_schema list)
-    ~(dispatch : name:string -> args:Yojson.Safe.t -> Tool_result.t)
+    ~(dispatch : name:string -> args:Yojson.Safe.t -> Tool_result.result)
     ~(config : Coord.config) ~build_facts =
   let st = get_state config.base_path in
   if should_backoff ~sw ~net then
@@ -279,9 +306,9 @@ let refresh_once ~sw ~net
             st.last_error <- Some message)
     | Ok (model_used, result_json) ->
         let generated_at_unix = Unix.gettimeofday () in
-        let generated_at = iso_of_unix generated_at_unix in
+        let generated_at = Dashboard_utils.iso_of_unix generated_at_unix in
         let expires_at =
-          iso_of_unix (generated_at_unix +. float_of_int (room_ttl_sec ()))
+          Dashboard_utils.iso_of_unix (generated_at_unix +. float_of_int (room_ttl_sec ()))
         in
         let room_judgment =
           parse_room_judgment ~config ~generated_at ~generated_at_unix
@@ -299,7 +326,7 @@ let refresh_once ~sw ~net
 
 let start ~sw ~clock ~net ~(config : Coord.config)
     ~(masc_tools : Masc_domain.tool_schema list)
-    ~(dispatch : name:string -> args:Yojson.Safe.t -> Tool_result.t)
+    ~(dispatch : name:string -> args:Yojson.Safe.t -> Tool_result.result)
     ~build_facts () =
   let st = get_state config.base_path in
   let should_start =

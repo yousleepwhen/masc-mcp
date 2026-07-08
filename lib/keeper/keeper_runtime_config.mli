@@ -11,9 +11,6 @@
       2. TOML value from [<resolved config root>/keeper_runtime.toml]
       3. Hardcoded default in [Env_config_keeper.KeeperKeepalive].
 
-    Legacy env names that are still honored at runtime also count as
-    process env overrides for their canonical TOML key.
-
     The TOML loader runs at server startup, before any module that reads
     these env vars initializes. It stores boot defaults in a process-local
     override table so existing config readers can resolve TOML-backed values
@@ -26,7 +23,7 @@
     record any overrides in the process-local boot override store.
 
     The resolved config root honors [MASC_CONFIG_DIR] when set; otherwise it
-    follows the standard base-path/home fallback chain.
+    uses [<base_path>/.masc/config].
 
     Process-level env vars set by the caller take precedence — the TOML
     value is only applied when the env var is unset. This preserves the
@@ -36,6 +33,15 @@
     excluding those preempted by existing env vars), or [Error msg] on
     parse failure.  Missing file is not an error: returns [Ok 0]. *)
 val load_and_apply : base_path:string -> (int, string) result
+
+(** Read the raw TOML value for [env_name] from the shadow registry.
+    Returns [None] when the key was absent from [keeper_runtime.toml]
+    or the file did not exist.
+
+    This is the TOML intent *independent* of any env override — it lets
+    operator surfaces warn when an env var silently differs from the
+    operator's TOML configuration (issue #17192). *)
+val toml_value_opt : string -> string option
 
 (** Pure resolution: parse TOML and determine which env vars would be
     overridden, without mutating the process-local boot override store.

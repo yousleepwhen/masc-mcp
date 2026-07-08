@@ -1,22 +1,30 @@
-import { currentDashboardActor, get, post, withRetries, defaultBoardVoter } from './core'
+import { currentDashboardActor, get, post, del, put, withRetries, defaultBoardVoter } from './core'
 import { isRecord, asNullableString, asString, asNumber, asInt, asStringList } from '../components/common/normalize'
+import { asKeeperApprovalRiskLevel } from '../lib/governance-risk-level'
+import { normalizePendingConfirmation } from '../pending-confirm'
 import { timeBoardRequest } from '../board-metrics'
 import type {
   BoardActorIdentity, BoardPost, BoardComment, BoardReactionSummary,
   BoardReactionTargetType, BoardReactionToggleResult, BoardSortMode,
-  BoardVoteDirection, BoardModerationStatus,
+  BoardVoteDirection, BoardModerationStatus, BoardContributorQuality,
   BoardCurationSnapshot, BoardKarmaLedger, BoardKarmaLedgerEvent, BoardKarmaTotal,
   GovernanceContextRef,
   GovernanceDecisionItem, GovernanceExecutedRoute,
   GovernanceGuardrailState, GovernanceJudgeSummary, GovernanceJudgment,
   KeeperApprovalQueueItem,
-  GovernanceResolvedAction, GovernanceTimelineEvent, PendingConfirmation,
+  GovernanceResolvedAction, GovernanceTimelineEvent,
   SubBoard, SubBoardAccess,
 } from '../types'
 
 export interface BoardHearth {
   name: string
   count: number
+}
+
+export interface BoardFlair {
+  name: string
+  emoji: string
+  label: string
 }
 
 function toIsoTimestamp(value: unknown): string | null {
@@ -38,28 +46,15 @@ export function asNullableIsoTimestamp(value: unknown): string | null {
   return null
 }
 
-export function normalizePendingConfirmation(raw: unknown): PendingConfirmation | null {
-  if (!isRecord(raw)) return null
-  const confirmToken = asString(raw.confirm_token ?? raw.token, '').trim()
-  if (!confirmToken) return null
-  return {
-    confirm_token: confirmToken,
-    actor: asNullableString(raw.actor) ?? undefined,
-    action_type: asNullableString(raw.action_type) ?? undefined,
-    target_type: asNullableString(raw.target_type) ?? undefined,
-    target_id: asNullableString(raw.target_id),
-    delegated_tool: asNullableString(raw.delegated_tool) ?? undefined,
-    created_at: asNullableIsoTimestamp(raw.created_at) ?? undefined,
-    preview: raw.preview,
-  }
-}
+// normalizePendingConfirmation re-exported from pending-confirm.ts (SSOT)
+export { normalizePendingConfirmation }
 
 export function normalizeKeeperApprovalQueueItem(raw: unknown): KeeperApprovalQueueItem | null {
   if (!isRecord(raw)) return null
   const id = asString(raw.id, '').trim()
   const keeperName = asString(raw.keeper_name, '').trim()
   const toolName = asString(raw.tool_name, '').trim()
-  const riskLevel = asString(raw.risk_level, '').trim()
+  const riskLevel = asKeeperApprovalRiskLevel(raw.risk_level)
   if (!id || !keeperName || !toolName || !riskLevel) return null
   const runtimeContract = isRecord(raw.runtime_contract)
     ? {
@@ -91,7 +86,7 @@ export function normalizeKeeperApprovalQueueItem(raw: unknown): KeeperApprovalQu
     goal_id: asNullableString(raw.goal_id),
     goal_ids: asStringList(raw.goal_ids),
     runtime_contract: runtimeContract,
-    selected_model: asNullableString(raw.selected_model),
+    selected_model: null,
     disposition: asNullableString(raw.disposition),
     disposition_reason: asNullableString(raw.disposition_reason),
     rule_match: ruleMatch,
@@ -171,7 +166,7 @@ export function normalizeGovernanceJudgment(raw: unknown): GovernanceJudgment | 
     confidence: typeof raw.confidence === 'number' ? raw.confidence : null,
     generated_at: asNullableIsoTimestamp(raw.generated_at),
     expires_at: asNullableIsoTimestamp(raw.expires_at),
-    model_used: asNullableString(raw.model_used),
+    model_used: null,
     keeper_name: asNullableString(raw.keeper_name),
     evidence_refs: asStringList(raw.evidence_refs),
     recommended_action: normalizeGovernanceResolvedAction(raw.recommended_action),
@@ -245,7 +240,7 @@ export function normalizeGovernanceJudgeSummary(raw: unknown): GovernanceJudgeSu
       : undefined,
     generated_at: asNullableIsoTimestamp(raw.generated_at),
     expires_at: asNullableIsoTimestamp(raw.expires_at),
-    model_used: asNullableString(raw.model_used),
+    model_used: null,
     keeper_name: asNullableString(raw.keeper_name),
     last_error: asNullableString(raw.last_error),
   }
@@ -353,6 +348,24 @@ function normalizeBoardModerationStatus(raw: unknown): BoardModerationStatus {
   }
 }
 
+function normalizeBoardContributorQuality(raw: unknown): BoardContributorQuality | null {
+  if (!isRecord(raw)) return null
+  const score = asNumber(raw.score)
+  if (score === undefined) return null
+  return {
+    score,
+    band: asString(raw.band, '').trim() || undefined,
+    source: asString(raw.source, '').trim() || undefined,
+    completion_rate: asNumber(raw.completion_rate),
+    response_rate: asNumber(raw.response_rate),
+    board_posts: asNumber(raw.board_posts),
+    board_comments: asNumber(raw.board_comments),
+    accountability_score: asNumber(raw.accountability_score),
+    autonomy_level: asString(raw.autonomy_level, '').trim() || undefined,
+    thompson_confidence: asNumber(raw.thompson_confidence),
+  }
+}
+
 function normalizeBoardPost(raw: unknown): BoardPost | null {
   if (!isRecord(raw)) return null
   const id = asString(raw.id, '').trim()
@@ -387,9 +400,7 @@ function normalizeBoardPost(raw: unknown): BoardPost | null {
     || (raw.updated_at !== undefined ? toIsoTimestamp(raw.updated_at) : createdAt)
   const titleRaw = asString(raw.title, '').trim()
   const title = sanitizeBoardTitle(titleRaw, body)
-  const tags = Array.isArray(raw.tags)
-    ? raw.tags.filter((item): item is string => typeof item === 'string' && item.trim() !== '')
-    : []
+  const tags = asStringList(raw.tags)
   const reactions = Array.isArray(raw.reactions)
     ? raw.reactions
         .map(normalizeBoardReactionSummary)
@@ -433,6 +444,7 @@ function normalizeBoardPost(raw: unknown): BoardPost | null {
     hearth_count: asNumber(raw.hearth_count, 0),
     report_count: Math.max(0, Math.trunc(asNumber(raw.report_count, 0))),
     moderation_status: normalizeBoardModerationStatus(raw.moderation_status),
+    contributor_quality: normalizeBoardContributorQuality(raw.contributor_quality),
     ...(reactions !== undefined ? { reactions } : {}),
   }
 }
@@ -486,6 +498,19 @@ function normalizeBoardHearth(raw: unknown): BoardHearth | null {
   return {
     name,
     count: asNumber(raw.count, 0),
+  }
+}
+
+function normalizeBoardFlair(raw: unknown): BoardFlair | null {
+  if (!isRecord(raw)) return null
+  const name = asString(raw.name, '').trim()
+  if (!name) return null
+  const emoji = asString(raw.emoji, '').trim()
+  const label = asString(raw.label, '').trim()
+  return {
+    name,
+    emoji,
+    label: label || name,
   }
 }
 
@@ -696,6 +721,15 @@ export async function fetchBoardHearths(): Promise<BoardHearth[]> {
   })
 }
 
+export async function fetchBoardFlairs(): Promise<BoardFlair[]> {
+  return withRetries('fetchBoardFlairs', async () => {
+    const raw = await get<{ flairs?: unknown[] }>('/api/v1/board/flairs')
+    return Array.isArray(raw.flairs)
+      ? raw.flairs.map(normalizeBoardFlair).filter((row): row is BoardFlair => row !== null)
+      : []
+  })
+}
+
 export async function fetchBoardCuration(): Promise<BoardCurationSnapshot | null> {
   return withRetries('fetchBoardCuration', async () => {
     const raw = await get<{ snapshot?: unknown }>('/api/v1/board/curation')
@@ -882,4 +916,23 @@ export function createSubBoard(
   const normalizedMembers = members.map(member => member.trim()).filter(Boolean)
   if (normalizedMembers.length > 0) body.members = normalizedMembers
   return post('/api/v1/board/sub-boards', body)
+}
+
+export function deleteSubBoard(subBoardId: string): Promise<unknown> {
+  return del(`/api/v1/board/sub-boards/${encodeURIComponent(subBoardId)}`)
+}
+
+export function updateSubBoard(
+  subBoardId: string,
+  updates: { name?: string; description?: string; access?: SubBoardAccess; members?: string[] },
+): Promise<unknown> {
+  const body: Record<string, string | string[]> = {}
+  if (updates.name !== undefined) body.name = updates.name
+  if (updates.description !== undefined) body.description = updates.description
+  if (updates.access !== undefined) body.access = updates.access
+  if (updates.members !== undefined) {
+    const normalizedMembers = updates.members.map(m => m.trim()).filter(Boolean)
+    if (normalizedMembers.length > 0) body.members = normalizedMembers
+  }
+  return put(`/api/v1/board/sub-boards/${encodeURIComponent(subBoardId)}`, body)
 }

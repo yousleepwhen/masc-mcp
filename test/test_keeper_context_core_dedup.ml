@@ -3,9 +3,9 @@
     Pins the contract for three changes shipped together in this PR:
 
     1. [message_to_json] no longer emits the flat ["content"] field;
-       [content_blocks] is the single source of truth.
-    2. [text_of_history_jsonl_json] reads [content_blocks] first and falls
-       back to legacy ["content"] for old history.jsonl lines.
+       [content_blocks] is the write-side source of truth.
+    2. Readers consume [content_blocks] as the sole supported history /
+       checkpoint content shape.
     3. [tool_result_text_of_block] caps json-only results at the existing
        [default_max_checkpoint_tool_result_chars] threshold instead of
        inlining the full [Yojson.Safe.to_string] output. *)
@@ -36,19 +36,7 @@ let test_message_to_json_omits_flat_content () =
         (List.mem_assoc "content_blocks" fields)
   | _ -> Alcotest.fail "expected `Assoc"
 
-(* --- message_of_json: legacy checkpoints still load --- *)
-
-let test_message_of_json_legacy_content_only () =
-  (* Pre-PR checkpoints had ONLY a flat content field. They must still
-     load — text becomes a single Text block. *)
-  let legacy : Yojson.Safe.t =
-    `Assoc [ ("role", `String "user"); ("content", `String "legacy hi") ]
-  in
-  let msg = C.message_of_json legacy in
-  Alcotest.(check int) "single block" 1 (List.length msg.content);
-  match msg.content with
-  | [ T.Text s ] -> Alcotest.(check string) "text" "legacy hi" s
-  | _ -> Alcotest.fail "expected one Text block"
+(* --- message_of_json: canonical content_blocks only --- *)
 
 let test_message_of_json_new_content_blocks_only () =
   (* New checkpoints have only content_blocks — must load as before. *)
@@ -67,30 +55,28 @@ let test_message_of_json_new_content_blocks_only () =
   | [ T.Text s ] -> Alcotest.(check string) "text" "world" s
   | _ -> Alcotest.fail "expected one Text block"
 
-let test_message_of_json_legacy_content_array () =
-  (* OAS/OpenAI-style legacy checkpoints may store structured blocks under
-     content instead of content_blocks. This must not raise Type_error. *)
-  let source : T.message =
-    {
-      T.role = T.Assistant;
-      content = [ T.Text "array payload" ];
-      name = None;
-      tool_call_id = None;
-      metadata = [];
-    }
+let test_message_of_json_rejects_unknown_role () =
+  let json : Yojson.Safe.t =
+    `Assoc [ ("role", `String "operator"); ("content_blocks", `List []) ]
   in
-  let content_blocks =
-    match C.message_to_json source with
-    | `Assoc fields -> List.assoc "content_blocks" fields
-    | _ -> Alcotest.fail "expected object"
+  Alcotest.check_raises
+    "unknown role rejected"
+    (Invalid_argument "keeper_context_core: unknown role \"operator\"")
+    (fun () -> C.message_of_json json |> ignore)
+
+let test_message_of_json_rejects_flat_content () =
+  let json : Yojson.Safe.t =
+    `Assoc
+      [
+        ("role", `String "tool");
+        ("content", `String "legacy tool output");
+        ("tool_call_id", `String "call_old");
+      ]
   in
-  let legacy : Yojson.Safe.t =
-    `Assoc [ ("role", `String "assistant"); ("content", content_blocks) ]
-  in
-  let parsed = C.message_of_json legacy in
-  match parsed.content with
-  | [ T.Text s ] -> Alcotest.(check string) "text" "array payload" s
-  | _ -> Alcotest.fail "expected one Text block"
+  Alcotest.check_raises
+    "flat content rejected"
+    (Invalid_argument "keeper_context_core: missing or invalid content_blocks")
+    (fun () -> C.message_of_json json |> ignore)
 
 (* --- text_of_history_jsonl_json --- *)
 
@@ -107,38 +93,6 @@ let test_history_jsonl_text_uses_blocks_first () =
   in
   let text = C.text_of_history_jsonl_json new_format in
   Alcotest.(check string) "text from blocks" "structured payload" text
-
-let test_history_jsonl_text_legacy_fallback () =
-  let legacy : Yojson.Safe.t =
-    `Assoc
-      [
-        ("role", `String "user");
-        ("content", `String "legacy payload");
-      ]
-  in
-  let text = C.text_of_history_jsonl_json legacy in
-  Alcotest.(check string) "fallback to flat content" "legacy payload" text
-
-let test_history_jsonl_text_legacy_content_array () =
-  let source : T.message =
-    {
-      T.role = T.User;
-      content = [ T.Text "array history payload" ];
-      name = None;
-      tool_call_id = None;
-      metadata = [];
-    }
-  in
-  let content_blocks =
-    match C.message_to_json source with
-    | `Assoc fields -> List.assoc "content_blocks" fields
-    | _ -> Alcotest.fail "expected object"
-  in
-  let legacy : Yojson.Safe.t =
-    `Assoc [ ("role", `String "user"); ("content", content_blocks) ]
-  in
-  let text = C.text_of_history_jsonl_json legacy in
-  Alcotest.(check string) "text from array content" "array history payload" text
 
 let test_history_jsonl_text_empty_when_neither () =
   let empty : Yojson.Safe.t = `Assoc [ ("role", `String "user") ] in
@@ -225,14 +179,14 @@ let () =
           Alcotest.test_case "omits flat content" `Quick
             test_message_to_json_omits_flat_content;
         ] );
-      ( "message_of_json backward compat",
+      ( "message_of_json",
         [
-          Alcotest.test_case "legacy content-only loads" `Quick
-            test_message_of_json_legacy_content_only;
           Alcotest.test_case "new content_blocks-only loads" `Quick
             test_message_of_json_new_content_blocks_only;
-          Alcotest.test_case "legacy content array loads" `Quick
-            test_message_of_json_legacy_content_array;
+          Alcotest.test_case "unknown role rejected" `Quick
+            test_message_of_json_rejects_unknown_role;
+          Alcotest.test_case "flat legacy content rejected" `Quick
+            test_message_of_json_rejects_flat_content;
           Alcotest.test_case "round-trip text preserved" `Quick
             test_roundtrip_text_preserved;
         ] );
@@ -240,10 +194,6 @@ let () =
         [
           Alcotest.test_case "blocks first" `Quick
             test_history_jsonl_text_uses_blocks_first;
-          Alcotest.test_case "legacy fallback" `Quick
-            test_history_jsonl_text_legacy_fallback;
-          Alcotest.test_case "legacy content array fallback" `Quick
-            test_history_jsonl_text_legacy_content_array;
           Alcotest.test_case "empty when neither" `Quick
             test_history_jsonl_text_empty_when_neither;
         ] );

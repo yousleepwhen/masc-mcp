@@ -33,24 +33,60 @@ let cleanup_dir dir =
   in
   try rm dir with _ -> ()
 
+let with_env key value f =
+  let prior = Sys.getenv_opt key in
+  Unix.putenv key value;
+  let restore () =
+    match prior with
+    | Some old -> Unix.putenv key old
+    | None -> Unix.putenv key ""
+  in
+  match f () with
+  | result ->
+      restore ();
+      result
+  | exception exn ->
+      restore ();
+      raise exn
+
+let with_temp_dir f =
+  let dir = temp_dir () in
+  match f dir with
+  | result ->
+      cleanup_dir dir;
+      result
+  | exception exn ->
+      cleanup_dir dir;
+      raise exn
+
+let telemetry_dir base_dir =
+  Filename.concat (Filename.concat base_dir ".masc") "telemetry"
+
+let write_dated_file dir month day lines =
+  let month_dir = Filename.concat dir month in
+  Fs_compat.mkdir_p month_dir;
+  Fs_compat.append_file
+    (Filename.concat month_dir (day ^ ".jsonl"))
+    (String.concat "\n" lines ^ "\n")
+
 (* ============================================================
    event Type Tests
    ============================================================ *)
 
 let test_event_agent_joined () =
   let e = Telemetry_eio.Agent_joined {
-    agent_id = "claude-001";
+    agent_id = "agent_llm_a-001";
     capabilities = ["code"; "review"];
   } in
   match e with
   | Telemetry_eio.Agent_joined r ->
-      check string "agent_id" "claude-001" r.agent_id;
+      check string "agent_id" "agent_llm_a-001" r.agent_id;
       check int "capabilities" 2 (List.length r.capabilities)
   | _ -> fail "expected Agent_joined"
 
 let test_event_agent_left () =
   let e = Telemetry_eio.Agent_left {
-    agent_id = "claude-001";
+    agent_id = "agent_llm_a-001";
     reason = "session ended";
   } in
   match e with
@@ -61,7 +97,7 @@ let test_event_agent_left () =
 let test_event_task_started () =
   let e = Telemetry_eio.Task_started {
     task_id = "task-001";
-    agent_id = "claude-001";
+    agent_id = "agent_llm_a-001";
   } in
   match e with
   | Telemetry_eio.Task_started r ->
@@ -82,14 +118,14 @@ let test_event_task_completed () =
 
 let test_event_handoff_triggered () =
   let e = Telemetry_eio.Handoff_triggered {
-    from_agent = "claude-001";
-    to_agent = "codex-001";
+    from_agent = "agent_llm_a-001";
+    to_agent = "agent_code-001";
     reason = "context limit";
   } in
   match e with
   | Telemetry_eio.Handoff_triggered r ->
-      check string "from_agent" "claude-001" r.from_agent;
-      check string "to_agent" "codex-001" r.to_agent
+      check string "from_agent" "agent_llm_a-001" r.from_agent;
+      check string "to_agent" "agent_code-001" r.to_agent
   | _ -> fail "expected Handoff_triggered"
 
 let test_event_error_occurred () =
@@ -109,7 +145,7 @@ let test_event_tool_called () =
     tool_name = "masc_status";
     success = true;
     duration_ms = 100;
-    agent_id = Some "claude-001";
+    agent_id = Some "agent_llm_a-001";
     source = Some "external_mcp";
     session_id = Some "mcp-session-1";
     operation_id = Some "op-1";
@@ -118,6 +154,7 @@ let test_event_tool_called () =
     error_message = Some "timed out after 30s";
     exit_code = None;
     stderr_excerpt = None;
+    failure_class = None;
   } in
   match e with
   | Telemetry_eio.Tool_called r ->
@@ -151,7 +188,7 @@ let check_one_tool_called_record label json ~operation_id ~worker_run_id =
   | [ record ] -> (
       match record.event with
       | Telemetry_eio.Tool_called r ->
-          check string (label ^ " tool_name") "keeper_bash" r.tool_name;
+          check string (label ^ " tool_name") "tool_execute" r.tool_name;
           check bool (label ^ " success") false r.success;
           check int (label ^ " duration_ms") 658 r.duration_ms;
           check (option string) (label ^ " agent_id")
@@ -177,7 +214,7 @@ let test_parse_event_records_tool_called_null_options () =
               `String "Tool_called";
               `Assoc
                 [
-                  ("tool_name", `String "keeper_bash");
+                  ("tool_name", `String "tool_execute");
                   ("success", `Bool false);
                   ("duration_ms", `Int 658);
                   ("agent_id", `String "keeper-masc-improver-agent");
@@ -203,7 +240,7 @@ let test_parse_event_records_tool_called_missing_options () =
               `String "Tool_called";
               `Assoc
                 [
-                  ("tool_name", `String "keeper_bash");
+                  ("tool_name", `String "tool_execute");
                   ("success", `Bool false);
                   ("duration_ms", `Int 658);
                   ("agent_id", `String "keeper-masc-improver-agent");
@@ -535,7 +572,7 @@ let test_summarize_tool_usage_reads_date_split_store_without_fs () =
   Fs_compat.set_fs (Eio.Stdenv.fs env);
       let config = Coord.default_config base_dir in
       Telemetry_eio.track_tool_called config ~tool_name:"masc_status"
-        ~success:true ~duration_ms:42 ~agent_id:"codex" ();
+        ~success:true ~duration_ms:42 ~agent_id:"agent_code" ();
       let summary = Telemetry_eio.summarize_tool_usage config in
       check int "total calls" 1 summary.total_calls;
       let stats =
@@ -545,6 +582,48 @@ let test_summarize_tool_usage_reads_date_split_store_without_fs () =
       in
       check int "usage count" 1 stats.count;
       check bool "telemetry available" true summary.telemetry_available)
+
+let test_track_applies_default_retention_days () =
+  with_env "MASC_TELEMETRY_RETENTION_DAYS" "" (fun () ->
+    with_env "MASC_TELEMETRY_MAX_BYTES" "0" (fun () ->
+      with_temp_dir (fun base_dir ->
+        Eio_main.run @@ fun env ->
+        Fs_compat.set_fs (Eio.Stdenv.fs env);
+        let config = Coord.default_config base_dir in
+        let telemetry_dir = telemetry_dir base_dir in
+        let old_file =
+          Filename.concat (Filename.concat telemetry_dir "2020-01") "01.jsonl"
+        in
+        write_dated_file telemetry_dir "2020-01" "01" [ {|{"old":true}|} ];
+        Telemetry_eio.track_agent_joined config ~agent_id:"retention-test" ();
+        check bool "old telemetry file pruned by default retention" false
+          (Sys.file_exists old_file))))
+
+let test_track_applies_telemetry_max_bytes () =
+  with_env "MASC_TELEMETRY_RETENTION_DAYS" "0" (fun () ->
+    with_env "MASC_TELEMETRY_MAX_BYTES" "120" (fun () ->
+      with_temp_dir (fun base_dir ->
+        Eio_main.run @@ fun env ->
+        Fs_compat.set_fs (Eio.Stdenv.fs env);
+        let config = Coord.default_config base_dir in
+        let telemetry_dir = telemetry_dir base_dir in
+        let old_file_1 =
+          Filename.concat (Filename.concat telemetry_dir "2020-01") "01.jsonl"
+        in
+        let old_file_2 =
+          Filename.concat (Filename.concat telemetry_dir "2020-01") "02.jsonl"
+        in
+        write_dated_file telemetry_dir "2020-01" "01"
+          [ Printf.sprintf {|{"payload":"%s"}|} (String.make 80 'a') ];
+        write_dated_file telemetry_dir "2020-01" "02"
+          [ Printf.sprintf {|{"payload":"%s"}|} (String.make 80 'b') ];
+        Telemetry_eio.track_agent_joined config ~agent_id:"max-bytes-test" ();
+        check bool "old telemetry file 1 pruned by max bytes" false
+          (Sys.file_exists old_file_1);
+        check bool "old telemetry file 2 pruned by max bytes" false
+          (Sys.file_exists old_file_2);
+        check int "current row remains readable" 1
+          (List.length (Telemetry_eio.read_all_events config)))))
 
 (* ============================================================
    Test Runners
@@ -619,5 +698,9 @@ let () =
     "store_reads", [
       test_case "summarize_tool_usage reads date-split store" `Quick
         test_summarize_tool_usage_reads_date_split_store_without_fs;
+      test_case "track applies default retention days" `Quick
+        test_track_applies_default_retention_days;
+      test_case "track applies telemetry max bytes" `Quick
+        test_track_applies_telemetry_max_bytes;
     ];
   ]

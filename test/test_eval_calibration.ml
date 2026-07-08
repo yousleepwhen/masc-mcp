@@ -34,7 +34,7 @@ let make_req ?(title = "Fix auth bug") ?(desc = "Fix the login issue")
     ?(notes = "Implemented JWT refresh token rotation") ?(agent = "dreamer") ()
   : AR.review_request =
   { task_title = title; task_description = desc;
-    completion_notes = notes; agent_name = agent }
+    completion_notes = notes; agent_name = agent; task_id = "test-task-eval" }
 
 let make_result ?(verdict = AR.Approve) ?(cascade = "verifier")
     ?gen_cascade ?(gate = AR.Structured_tool) ?fallback_reason () : AR.review_result =
@@ -308,7 +308,7 @@ let test_calibration_stats_cross_model_mix () =
     make_result ~cascade:"verifier" ~gen_cascade:"verifier" () in
   let cross_a =
     make_result ~cascade:"verifier"
-      ~gen_cascade:Masc_mcp.Keeper_config.default_cascade_name () in
+      ~gen_cascade:(Masc_mcp.Keeper_config.default_cascade_name ()) () in
   let cross_b =
     make_result ~cascade:"cross_verifier" ~gen_cascade:"local_only" () in
   let no_generator = make_result ~cascade:"verifier" () in
@@ -342,7 +342,7 @@ let test_to_harness_verdict_approve () =
     task_id = "t1"; task_title = "Fix login";
     agent_name = "dreamer"; verdict = AR.Approve;
     gate = AR.Structured_tool; evaluator_cascade = "glm5";
-    generator_cascade = Some "claude"; fallback_reason = None;
+    generator_cascade = Some "agent_llm_a"; fallback_reason = None;
     timestamp = 0.0;
   } in
   let hv = Cal.to_harness_verdict record in

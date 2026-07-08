@@ -9,13 +9,20 @@ open Tool_args
 open Keeper_types
 open Keeper_memory
 open Keeper_alerting
-open Keeper_exec_tools
+open Agent_tool_dispatch_runtime
 open Keeper_execution
-open Keeper_exec_status
-open Keeper_exec_status_metrics
+open Keeper_status_runtime
+open Keeper_status_metrics
 open Keeper_status_bridge
 
 type tool_result = Keeper_types.tool_result
+
+let read_tail_lines_or_empty ~site path ~max_bytes ~max_lines =
+  match read_file_tail_lines_result path ~max_bytes ~max_lines with
+  | Ok lines -> lines
+  | Error exn_class ->
+      record_memory_recall_read_error ~site path exn_class;
+      []
 
 (* ── Response cache ──────────────────────────────────── *)
 
@@ -26,6 +33,19 @@ type cache_entry = {
 }
 
 let _cache : (string, cache_entry) Hashtbl.t = Hashtbl.create 8
+
+type docker_preflight_status_cache_entry = {
+  key : string;
+  observed_at : float;
+  value : Yojson.Safe.t option;
+}
+
+let docker_preflight_status_cache :
+    docker_preflight_status_cache_entry option ref =
+  ref None
+
+let docker_preflight_status_cache_mu = Eio.Mutex.create ()
+let docker_preflight_status_cache_ttl_sec = 60.0
 
 (** Mutex protecting [_cache].  [handle_keeper_status] runs from an MCP
     tool-dispatch fiber, one per concurrent [masc_keeper_status]
@@ -53,16 +73,52 @@ let invalidate_status_cache_for name =
 
 let invalidate_status_cache_all () =
   Eio_guard.with_mutex cache_mu (fun () ->
-    Hashtbl.clear _cache)
+    Hashtbl.clear _cache);
+  Eio_guard.with_mutex docker_preflight_status_cache_mu (fun () ->
+    docker_preflight_status_cache := None)
 
 let status_cache_key ~base_path ~name = base_path ^ ":" ^ name
 
 let normalize_status_name = String.trim
 
-let effective_status_name (ctx : _ context) args =
+let docker_preflight_status_cache_key ~timeout_sec =
+  String.concat "|"
+    [
+      string_of_bool (Env_config_sandbox.Preflight.enabled ());
+      Env_config_sandbox.Runtime.docker_image ();
+      Env_config_sandbox.Hardening.seccomp_profile ();
+      string_of_bool (Env_config_sandbox.Hardening.require_rootless ());
+      string_of_bool (Env_config_sandbox.Hardening.require_userns ());
+      string_of_bool
+        (Env_config_sandbox.Runtime.git_dispatch ());
+      Printf.sprintf "%.3f" timeout_sec;
+    ]
+
+let cached_docker_preflight_status_json ~timeout_sec =
+  if not (Env_config_sandbox.Preflight.enabled ()) then
+    None
+  else
+    let key = docker_preflight_status_cache_key ~timeout_sec in
+    Eio_guard.with_mutex docker_preflight_status_cache_mu (fun () ->
+      let now = Time_compat.now () in
+      match !docker_preflight_status_cache with
+      | Some entry
+        when String.equal entry.key key
+             && now -. entry.observed_at < docker_preflight_status_cache_ttl_sec ->
+          entry.value
+      | _ ->
+          let value = Keeper_sandbox_control.preflight_status_json ~timeout_sec in
+          docker_preflight_status_cache := Some { key; observed_at = now; value };
+          value)
+
+(* RFC-0182 §3.1 — ctx-free body for keeper_dispatch_ref path. *)
+let effective_status_name_config ~(agent_name : string) args =
   match normalize_status_name (get_string args "name" "") with
-  | "" -> normalize_status_name ctx.agent_name
+  | "" -> normalize_status_name agent_name
   | value -> value
+
+let effective_status_name (ctx : _ context) args =
+  effective_status_name_config ~agent_name:ctx.agent_name args
 
 type tail_order =
   | Oldest_first
@@ -93,22 +149,24 @@ let apply_tail_order order items =
   | Oldest_first -> items
   | Newest_first -> List.rev items
 
-let resolve_status_target (ctx : _ context) args =
-  let requested_name = effective_status_name ctx args in
+(* RFC-0182 §3.1 — ctx-free body for keeper_dispatch_ref path. *)
+let resolve_status_target_config ~(config : Coord.config) ~(agent_name : string) args =
+  let requested_name = effective_status_name_config ~agent_name args in
   if not (validate_name requested_name) then
-    Error "invalid keeper name"
+    Error
+      (Printf.sprintf
+         "invalid keeper name %S (must be non-empty and match \
+          [A-Za-z0-9._-]+; see Keeper_config.validate_name)"
+         requested_name)
   else
-    match read_meta_resolved ctx.config requested_name with
-    | Error e -> Error ("" ^ e)
+    match read_meta_resolved config requested_name with
+    | Error e -> Error e
     | Ok (Some (resolved_name, meta)) -> Ok (resolved_name, meta)
     | Ok None ->
-        (match keeper_name_from_agent_name requested_name with
-         | Some stripped_name ->
-             Error
-               (Printf.sprintf
-                  "keeper not found: %s (also tried %s)"
-                  requested_name stripped_name)
-         | None -> Error (Printf.sprintf "keeper not found: %s" requested_name))
+        Error (Printf.sprintf "keeper not found: %s" requested_name)
+
+let resolve_status_target (ctx : _ context) args =
+  resolve_status_target_config ~config:ctx.config ~agent_name:ctx.agent_name args
 
 (** Hash the status-affecting args so different parameter combos
     get separate cache entries (e.g. fast=true vs fast=false). *)
@@ -128,360 +186,20 @@ let hash_status_args _config resolved_name args =
   ] in
   Digest.string (String.concat "|" parts) |> Digest.to_hex
 
-let nonempty_trimmed raw =
-  let trimmed = String.trim raw in
-  if trimmed = "" then None else Some trimmed
+let nonempty_trimmed = Keeper_status_detail_observability.nonempty_trimmed
+let json_string_opt_member = Keeper_status_detail_observability.json_string_opt_member
+let latest_metrics_json = Keeper_status_detail_observability.latest_metrics_json
+let model_observability_json = Keeper_status_detail_observability.model_observability_json
 
-let json_string_list_member json key =
-  match Yojson.Safe.Util.member key json with
-  | `List items ->
-      items
-      |> List.filter_map Yojson.Safe.Util.to_string_option
-      |> List.filter_map nonempty_trimmed
-  | _ -> []
-
-let assoc_string_opt key fields =
-  match List.assoc_opt key fields with
-  | Some (`String value) -> nonempty_trimmed value
-  | _ -> None
-
-let assoc_int_opt key fields =
-  match List.assoc_opt key fields with
-  | Some (`Int value) -> Some value
-  | Some (`Intlit value) -> int_of_string_opt value
-  | _ -> None
-
-let assoc_bool_opt key fields =
-  match List.assoc_opt key fields with
-  | Some (`Bool value) -> Some value
-  | _ -> None
-
-let json_string_opt_member json key =
-  match json with
-  | `Assoc _ ->
-    (match Yojson.Safe.Util.member key json with
-     | `String value -> nonempty_trimmed value
-     | _ -> None)
-  | _ -> None
-
-let latest_metrics_json ~metrics_store ~metrics_path ~tail_bytes =
-  let lines =
-    let dated = Dated_jsonl.read_recent_lines metrics_store 8 in
-    if dated <> [] then dated
-    else read_file_tail_lines metrics_path ~max_bytes:tail_bytes ~max_lines:8
-  in
-  let parsed, _ =
-    Fs_compat.parse_jsonl_lines ~source:"keeper_metrics_latest" lines
-  in
-  match
-    List.rev parsed
-    |> List.find_opt (fun json ->
-           match Yojson.Safe.Util.member "cascade" json with
-           | `Assoc _ -> true
-           | _ -> false)
-  with
-  | Some json -> Some json
-  | None -> (
-      match List.rev parsed with
-      | json :: _ -> Some json
-      | [] -> None)
-
-let provider_scope_of_model_label model_label =
-  match
-    Option.bind (Option.bind model_label nonempty_trimmed) (fun label ->
-        match String.index_opt label ':' with
-        | Some idx when idx > 0 ->
-            Some
-              (String.sub label 0 idx |> String.trim
-             |> String.lowercase_ascii)
-        | _ -> None)
-  with
-  | Some ("llama" | "ollama") -> "local"
-  | Some _ -> "non_local"
-  | None -> "unknown"
-
-let single_string_or_none values =
-  match List.sort_uniq String.compare values with
-  | [ value ] -> Some value
-  | _ -> None
-
-let single_int_or_none values =
-  match List.sort_uniq compare values with
-  | [ value ] -> Some value
-  | _ -> None
-
-let lightweight_runtime_contract_json ~selected_model ~runtime_blocker_class =
-  let provider_scope = provider_scope_of_model_label selected_model in
-  let proof_note =
-    "Lightweight status only. Use masc_runtime_verify for proof."
-  in
-  if provider_scope <> "local" then
-    `Assoc
-      [
-        ("source", `String "none");
-        ("verified", `Bool false);
-        ("provider_scope", `String provider_scope);
-        ("provider_reachable", `Null);
-        ("healthy_runtime_count", `Null);
-        ("actual_model_id", `Null);
-        ("actual_slots", `Null);
-        ("actual_ctx", `Null);
-        ("chat_completion_compatible", `Null);
-        ("runtime_blocker", Json_util.string_opt_to_json runtime_blocker_class);
-        ( "note",
-          `String
-            (if provider_scope = "non_local" then
-               "Selected model is not a local llama/ollama runtime. "
-               ^ proof_note
-             else
-               "Selected model is unknown. " ^ proof_note) );
-      ]
-  else
-    let endpoints_opt =
-      try Some (Discovery_cache.get_cached_or_refresh ())
-      with
-      | Stdlib.Effect.Unhandled _ -> None
-      | _ -> None
-    in
-    let provider_reachable =
-      match endpoints_opt with
-      | Some endpoints when endpoints <> [] ->
-          Some (List.exists (fun (ep : Discovery_cache.endpoint_info) -> ep.healthy) endpoints)
-      | _ -> None
-    in
-    let healthy_runtime_count =
-      match endpoints_opt with
-      | Some endpoints ->
-          Some
-            (List.fold_left
-               (fun acc (ep : Discovery_cache.endpoint_info) ->
-                 if ep.healthy then acc + 1 else acc)
-               0 endpoints)
-      | None -> None
-    in
-    let actual_model_id =
-      match endpoints_opt with
-      | Some endpoints ->
-          endpoints
-          |> List.filter_map (fun (ep : Discovery_cache.endpoint_info) ->
-                 match ep.models with
-                 | model :: _ -> nonempty_trimmed model.id
-                 | [] -> (
-                     match ep.props with
-                     | Some props -> nonempty_trimmed props.model
-                     | None -> None))
-          |> single_string_or_none
-      | None -> None
-    in
-    let actual_slots =
-      match endpoints_opt with
-      | Some endpoints when endpoints <> [] ->
-          Some
-            (List.fold_left
-               (fun acc (ep : Discovery_cache.endpoint_info) ->
-                 let slots =
-                   match ep.slots with
-                   | Some slots when slots.total > 0 -> slots.total
-                   | _ -> (
-                       match ep.props with
-                       | Some props when props.total_slots > 0 -> props.total_slots
-                       | _ -> 0)
-                 in
-                 acc + slots)
-               0 endpoints)
-      | _ -> None
-    in
-    let actual_ctx =
-      match endpoints_opt with
-      | Some endpoints ->
-          endpoints
-          |> List.filter_map (fun (ep : Discovery_cache.endpoint_info) ->
-                 match ep.props with
-                 | Some props when props.ctx_size > 0 -> Some props.ctx_size
-                 | _ -> None)
-          |> single_int_or_none
-      | None -> None
-    in
-    `Assoc
-      [
-        ("source", `String "oas_discovery_cache");
-        ("verified", `Bool false);
-        ("provider_scope", `String "local");
-        ( "provider_reachable",
-          match provider_reachable with
-          | Some value -> `Bool value
-          | None -> `Null );
-        ( "healthy_runtime_count",
-          Json_util.int_opt_to_json healthy_runtime_count );
-        ("actual_model_id", Json_util.string_opt_to_json actual_model_id);
-        ("actual_slots", Json_util.int_opt_to_json actual_slots);
-        ("actual_ctx", Json_util.int_opt_to_json actual_ctx);
-        ("chat_completion_compatible", `Null);
-        ("runtime_blocker", Json_util.string_opt_to_json runtime_blocker_class);
-        ("note", `String proof_note);
-      ]
-
-let attempt_summary_json ~configured_labels ~resolved_candidates ~selected_model
-    latest_cascade =
-  match latest_cascade with
-  | None ->
-      `Assoc
-        [
-          ( "summary",
-            `String
-              "No recent cascade observation for current keeper config. Showing configured labels only." );
-          ("attempts_observed", `Null);
-          ("selected_index", `Null);
-          ("fallback_hops", `Null);
-          ("fallback_applied", `Bool false);
-        ]
-  | Some cascade ->
-      let attempts_observed =
-        match Yojson.Safe.Util.member "attempts" cascade with
-        | `List attempts -> List.length attempts
-        | _ -> 0
-      in
-      let selected_index =
-        match Yojson.Safe.Util.member "selected_index" cascade with
-        | `Int value -> Some value
-        | `Intlit value -> int_of_string_opt value
-        | _ -> None
-      in
-      let fallback_hops =
-        match Yojson.Safe.Util.member "fallback_hops" cascade with
-        | `Int value -> Some value
-        | `Intlit value -> int_of_string_opt value
-        | _ -> None
-      in
-      let fallback_applied =
-        match Yojson.Safe.Util.member "fallback_applied" cascade with
-        | `Bool value -> value
-        | _ -> false
-      in
-      let candidate_count =
-        let count = List.length resolved_candidates in
-        if count > 0 then count else List.length configured_labels
-      in
-      let selected_position =
-        Option.map (fun idx -> idx + 1) selected_index
-      in
-      let summary =
-        match fallback_applied, fallback_hops, selected_position, candidate_count with
-        | true, Some hops, Some pos, total when total > 0 ->
-            Printf.sprintf "%d attempt(s); fallback after %d hop(s); selected candidate %d/%d."
-              attempts_observed hops pos total
-        | false, _, Some 1, _ ->
-            Printf.sprintf "%d attempt(s); selected first healthy candidate."
-              attempts_observed
-        | false, _, Some pos, total when total > 0 ->
-            Printf.sprintf "%d attempt(s); selected candidate %d/%d without fallback."
-              attempts_observed pos total
-        | _, _, _, _ when Option.is_some selected_model ->
-            Printf.sprintf "%d attempt(s) observed; selected model reported without candidate index."
-              attempts_observed
-        | _ ->
-            "Cascade observation is present but incomplete."
-      in
-      `Assoc
-        [
-          ("summary", `String summary);
-          ("attempts_observed", `Int attempts_observed);
-          ("selected_index", Json_util.int_opt_to_json selected_index);
-          ("fallback_hops", Json_util.int_opt_to_json fallback_hops);
-          ("fallback_applied", `Bool fallback_applied);
-        ]
-
-let latest_cascade_for_current_config ~current_cascade_name ~configured_labels
-    latest_metrics =
-  let latest_cascade =
-    match latest_metrics with
-    | Some metrics -> (
-        match Yojson.Safe.Util.member "cascade" metrics with
-        | `Assoc _ as cascade -> Some cascade
-        | _ -> None)
-    | None -> None
-  in
-  match latest_cascade with
-  | None -> None
-  | Some cascade ->
-      let cascade_name_matches =
-        match json_string_opt_member cascade "cascade_name" with
-        | Some observed_name -> String.equal observed_name current_cascade_name
-        | None -> true
-      in
-      let _configured_labels = configured_labels in
-      (* Keeper meta currently surfaces resolved provider candidates, while
-         turn metrics keep the raw cascade labels that produced those
-         candidates. Matching the two verbatim drops valid recent
-         observations. Treat cascade_name as the stable identity and use
-         metrics labels only for display when a matching observation exists. *)
-      if cascade_name_matches then Some cascade
-      else None
-
-let model_observability_json ~current_cascade_name ~configured_labels ~active_model
-    ~runtime_blocker_fields latest_metrics =
-  let latest_cascade =
-    latest_cascade_for_current_config ~current_cascade_name ~configured_labels
-      latest_metrics
-  in
-  let runtime_blocker_class =
-    assoc_string_opt "runtime_blocker_class" runtime_blocker_fields
-  in
-  let cascade_name =
-    Option.value ~default:"" (nonempty_trimmed current_cascade_name)
-  in
-  let configured_labels_surface =
-    match latest_cascade with
-    | Some cascade -> (
-        match json_string_list_member cascade "configured_labels" with
-        | [] -> configured_labels
-        | observed_labels -> observed_labels)
-    | None -> configured_labels
-  in
-  let resolved_candidates =
-    match latest_cascade with
-    | Some cascade ->
-        let labels = json_string_list_member cascade "candidate_models" in
-        if labels <> [] then labels else configured_labels_surface
-    | None -> configured_labels_surface
-  in
-  let fallback_selected_model =
-    match configured_labels_surface with
-    | model :: _ -> Some model
-    | [] -> nonempty_trimmed active_model
-  in
-  let selected_model =
-    match latest_cascade with
-    | Some cascade -> (
-        match json_string_opt_member cascade "selected_model" with
-        | Some _ as model -> model
-        | None -> fallback_selected_model)
-    | None -> fallback_selected_model
-  in
-  `Assoc
-    [
-      ( "cascade_name",
-        if cascade_name = "" then `Null else `String cascade_name );
-      ( "recent_turn_observation",
-        `Bool (Option.is_some latest_cascade) );
-      ( "configured_labels",
-        string_list_to_json configured_labels_surface );
-      ("resolved_candidates", string_list_to_json resolved_candidates);
-      ("selected_model", Json_util.string_opt_to_json selected_model);
-      ( "attempt_summary",
-        attempt_summary_json ~configured_labels:configured_labels_surface
-          ~resolved_candidates ~selected_model latest_cascade );
-      ( "runtime_contract",
-        lightweight_runtime_contract_json ~selected_model
-         ~runtime_blocker_class );
-    ]
-
-let handle_keeper_status ctx args : tool_result =
-  match resolve_status_target ctx args with
-  | Error err -> (false, err)
+(* TEL-OK: status handler — telemetry surfaces via the cache layer
+   ([_cache] mutex-protected reads/writes) and Prometheus counters in
+   the downstream [Keeper_status_runtime]/[Keeper_status_bridge] calls. *)
+let handle_keeper_status_config ~(config : Coord.config) ~(agent_name : string) args : tool_result =
+  match resolve_status_target_config ~config ~agent_name args with
+  | Error err -> tool_result_error err
   | Ok (name, m) ->
-      let cache_key = status_cache_key ~base_path:ctx.config.base_path ~name in
-      let args_hash = hash_status_args ctx.config name args in
+      let cache_key = status_cache_key ~base_path:config.base_path ~name in
+      let args_hash = hash_status_args config name args in
       (* Cache hit: same updated_at + same args → return cached response.
          The read is taken under [cache_mu] so it cannot interleave with
          an eviction from [invalidate_status_cache_{for,all}]. *)
@@ -492,7 +210,7 @@ let handle_keeper_status ctx args : tool_result =
        | Some entry
          when entry.updated_at = m.updated_at
            && entry.args_hash = args_hash ->
-         (true, entry.response)
+         tool_result_ok entry.response
        | _ ->
       let tail_turns = max 0 (get_int args "tail_turns" 3) in
       let tail_messages = max 0 (get_int args "tail_messages" 5) in
@@ -511,11 +229,11 @@ let handle_keeper_status ctx args : tool_result =
       in
       let models = Keeper_model_labels.configured_model_labels_of_meta m in
       let max_context_resolution =
-        Keeper_exec_context.resolve_max_context_resolution
+        Keeper_context_runtime.resolve_max_context_resolution
           ~requested_override:m.max_context_override models
       in
       let primary_max_context = max_context_resolution.effective_budget in
-      let base_dir = session_base_dir ctx.config in
+      let base_dir = session_base_dir config in
          let ctx_opt =
            if include_context then
              let (_session, ctx_opt) =
@@ -542,14 +260,14 @@ let handle_keeper_status ctx args : tool_result =
              | Some c ->
                `Assoc [
                  ("has_checkpoint", `Bool true);
-                 ("context_ratio", `Float (Keeper_exec_context.context_ratio c));
-                 ("context_tokens", `Int (Keeper_exec_context.token_count c));
-                 ("context_max", `Int (Keeper_exec_context.max_tokens_of_context c));
-                 ("message_count", `Int (Keeper_exec_context.message_count c));
+                 ("context_ratio", `Float (Keeper_context_runtime.context_ratio c));
+                 ("context_tokens", `Int (Keeper_context_runtime.token_count c));
+                 ("context_max", `Int (Keeper_context_runtime.max_tokens_of_context c));
+                 ("message_count", `Int (Keeper_context_runtime.message_count c));
                ]
          in
-         let keepalive_running = runtime_keepalive_running ctx.config m in
-         let agent_status = parse_agent_status ctx.config ~agent_name:m.agent_name in
+         let keepalive_running = runtime_keepalive_running config m in
+         let agent_status = parse_agent_status config ~agent_name:m.agent_name in
          let now_ts = Time_compat.now () in
          let created_ts =
            Coord_resilience.Time.parse_iso8601_opt m.created_at |> Option.value ~default:0.0
@@ -566,20 +284,7 @@ let handle_keeper_status ctx args : tool_result =
            else now_ts -. m.runtime.proactive_rt.last_visible_ts
          in
          let trace_history_count = List.length m.runtime.trace_history in
-         let active_model = active_model_of_meta m in
-         let next_model_hint = next_model_hint_of_meta m in
-         let runtime_cascade_metrics =
-           match Oas_worker.cascade_metrics_json () with
-           | `List entries ->
-               entries
-               |> List.find_opt (function
-                    | `Assoc fields ->
-                        List.assoc_opt "cascade_name" fields
-                        = Some (`String m.cascade_name)
-                    | _ -> false)
-               |> Option.value ~default:`Null
-           | _ -> `Null
-         in
+         let runtime_cascade_metrics = `Null in
          let last_compaction_saved_tokens =
            max 0 (m.runtime.compaction_rt.last_before_tokens - m.runtime.compaction_rt.last_after_tokens)
          in
@@ -587,59 +292,45 @@ let handle_keeper_status ctx args : tool_result =
            compaction_policy_of_keeper m
          in
 
-         let models_resolved = `List (List.filter_map (fun label ->
-           match Cascade_config.parse_model_string label with
-           | None -> None
-           | Some cfg ->
-             let pricing = Llm_provider.Pricing.pricing_for_model cfg.model_id in
-             (* Extract provider name from cascade label prefix.
-                Keeper must not reference OAS provider_kind directly. *)
-             let provider_name =
-               match String.index_opt label ':' with
-               | Some idx when idx > 0 ->
-                 String.sub label 0 idx |> String.trim |> String.lowercase_ascii
-               | _ -> "unknown"
-             in
-             Some (`Assoc [
-               ("provider", `String provider_name);
-               ("model_id", `String cfg.model_id);
-               ("max_context", `Int (Cascade_runtime.max_context_of_label label));
-               ( "max_output_tokens",
-                 Option.fold ~none:`Null ~some:(fun tokens -> `Int tokens)
-                   cfg.max_tokens );
-               ("max_output_tokens", match cfg.max_tokens with Some n -> `Int n | None -> `Null);
-               ("api_key_env", if cfg.api_key <> "" then `String "(set)" else `Null);
-               ("cost_per_million_input", `Float pricing.input_per_million);
-               ("cost_per_million_output", `Float pricing.output_per_million);
-             ])
-         ) models) in
+         let models_resolved = `List [] in
 
-         let metrics_store = keeper_metrics_store ctx.config m.name in
-         let metrics_path = keeper_metrics_path ctx.config m.name in
-         let memory_bank_path = keeper_memory_bank_path ctx.config m.name in
-         let generation_index_path =
-           keeper_generation_index_path ctx.config m.name
+         let metrics_store = Keeper_types_support.keeper_metrics_store config m.name in
+         let metrics_path = Keeper_types_support.keeper_metrics_path config m.name in
+         let memory_bank_path =
+           Keeper_types_support.keeper_memory_bank_path config m.name
          in
-         let session_dir = keeper_session_dir ctx.config (Keeper_id.Trace_id.to_string m.runtime.trace_id) in
-         let generation_manifest_path =
-           keeper_generation_manifest_path ctx.config
+         let generation_index_path =
+           Keeper_types_support.keeper_generation_index_path config m.name
+         in
+         let session_dir =
+           Keeper_types_support.keeper_session_dir
+             config
              (Keeper_id.Trace_id.to_string m.runtime.trace_id)
          in
-         let history_path = keeper_history_path ctx.config (Keeper_id.Trace_id.to_string m.runtime.trace_id) in
+         let generation_manifest_path =
+           Keeper_types_support.keeper_generation_manifest_path config
+             (Keeper_id.Trace_id.to_string m.runtime.trace_id)
+         in
+         let history_path =
+           Keeper_types_support.keeper_history_path
+             config
+             (Keeper_id.Trace_id.to_string m.runtime.trace_id)
+         in
          let internal_history_path =
-           keeper_internal_history_path ctx.config
+           Keeper_types_support.keeper_internal_history_path config
              (Keeper_id.Trace_id.to_string m.runtime.trace_id)
          in
          let generation_lineage =
-           Keeper_generation_lineage.surface_json ctx.config m ~recent_limit:6
+           Keeper_generation_lineage.surface_json config m ~recent_limit:6
          in
 
          let metrics_tail =
            let lines =
              let dated = Dated_jsonl.read_recent_lines metrics_store tail_turns in
              if dated <> [] then dated
-             else read_file_tail_lines metrics_path
-                    ~max_bytes:tail_bytes ~max_lines:tail_turns
+             else
+               read_tail_lines_or_empty ~site:"keeper_status_detail_metrics_tail"
+                 metrics_path ~max_bytes:tail_bytes ~max_lines:tail_turns
            in
            let (parsed, _) =
              Fs_compat.parse_jsonl_lines ~source:"keeper_metrics" lines
@@ -651,8 +342,9 @@ let handle_keeper_status ctx args : tool_result =
              let n = max tail_turns 200 in
              let dated = Dated_jsonl.read_recent_lines metrics_store n in
              if dated <> [] then dated
-             else read_file_tail_lines metrics_path
-                    ~max_bytes:tail_bytes ~max_lines:n
+             else
+               read_tail_lines_or_empty ~site:"keeper_status_detail_metrics_window"
+                 metrics_path ~max_bytes:tail_bytes ~max_lines:n
            else
              []
          in
@@ -701,28 +393,45 @@ let handle_keeper_status ctx args : tool_result =
              in
              find_latest (List.rev metrics_window_lines)
          in
-         let memory_bank_summary =
+         (* RFC-0149 §3.1 — typed Result resolver.  The companion
+            [memory_bank_error_class] travels alongside the summary so
+            the dashboard detail surface can distinguish an empty
+            memory bank ([Ok summary], no recent rows) from an IO
+            fault ([Error class]) instead of collapsing both into the
+            same empty-shape record via the legacy silent fallback. *)
+         let empty_memory_bank_summary
+           : Keeper_memory_policy.keeper_memory_summary
+           =
+           { total_notes = 0
+           ; last_ts_unix = 0.0
+           ; top_kind = None
+           ; kind_counts = []
+           ; recent_notes = []
+           }
+         in
+         let memory_bank_summary, memory_bank_error_class =
            if include_memory_bank then
-             let summary =
-               read_keeper_memory_summary
-                 ctx.config
+             match
+               read_keeper_memory_summary_result
+                 config
                  ~name:m.name
                  ~max_bytes:tail_bytes
                  ~max_lines:(max (tail_turns * 10) 400)
                  ~recent_limit:8
-             in
-             {
-               summary with
-               recent_notes = apply_tail_order tail_order summary.recent_notes;
-             }
+             with
+             | Ok summary ->
+               let summary =
+                 { summary with
+                   recent_notes =
+                     apply_tail_order tail_order summary.recent_notes
+                 }
+               in
+               summary, None
+             | Error exn_class ->
+               ( empty_memory_bank_summary
+               , Some (Keeper_memory_recall_exn_class.to_label exn_class) )
            else
-             {
-               total_notes = 0;
-               last_ts_unix = 0.0;
-               top_kind = None;
-               kind_counts = [];
-               recent_notes = [];
-             }
+             empty_memory_bank_summary, None
          in
 
          let history_filter_fragments =
@@ -733,9 +442,8 @@ let handle_keeper_status ctx args : tool_result =
              (`List [], 0, 0, 0)
            else
              let lines =
-               read_file_tail_lines history_path
-                 ~max_bytes:tail_bytes
-                 ~max_lines:tail_messages
+               read_tail_lines_or_empty ~site:"keeper_status_detail_history"
+                 history_path ~max_bytes:tail_bytes ~max_lines:tail_messages
              in
              let (items_rev, raw_count, fragment_count, filtered_count) =
                List.fold_left
@@ -757,7 +465,7 @@ let handle_keeper_status ctx args : tool_result =
                      let role_lc = String.lowercase_ascii role in
                      let is_internal =
                        ignore content;
-                       Keeper_types.is_internal_history_source source
+                       Keeper_types_support.is_internal_history_source source
                      in
                      let entry_kind =
                        match source, role_lc with
@@ -820,8 +528,10 @@ let handle_keeper_status ctx args : tool_result =
              let lines =
                let dated = Dated_jsonl.read_recent_lines metrics_store n in
                if dated <> [] then dated
-               else read_file_tail_lines metrics_path
-                      ~max_bytes:tail_bytes ~max_lines:n
+               else
+                 read_tail_lines_or_empty
+                   ~site:"keeper_status_detail_compaction_history" metrics_path
+                   ~max_bytes:tail_bytes ~max_lines:n
              in
              let events_rev =
                List.fold_left
@@ -904,7 +614,7 @@ let handle_keeper_status ctx args : tool_result =
         in
         let last_autonomous = String.trim m.runtime.last_autonomous_action_at in
         let tool_audit_snapshot =
-          match latest_tool_audit_snapshot_from_files ctx.config ~keeper_name:m.name with
+          match latest_tool_audit_snapshot_from_files config ~keeper_name:m.name with
           | Some snapshot ->
               {
                 snapshot with
@@ -938,53 +648,50 @@ let handle_keeper_status ctx args : tool_result =
           |> List.filter (fun name -> not (List.mem name allowed_tools))
         in
          let sandbox_last_error =
-           match Keeper_registry.get ~base_path:ctx.config.base_path m.name with
+           match Keeper_registry.get ~base_path:config.base_path m.name with
            | Some entry -> entry.last_error
            | None -> None
          in
          let effective_sandbox_image =
            if m.sandbox_profile = Docker
-              || (m.sandbox_profile = Local
-                  && Env_config_keeper.DockerPlayground.enabled)
            then
              Some (
                match m.sandbox_image with
                | Some img when String.trim img <> "" -> img
-               | _ -> Env_config_keeper.KeeperSandbox.docker_image ()
+               | _ -> Env_config_sandbox.Runtime.docker_image ()
              )
            else None
          in
          let sandbox_preflight =
-           match
-             effective_sandbox_image,
-             Keeper_sandbox_runtime.docker_preflight ~timeout_sec:(Env_config_exec_timeout.timeout_sec ~caller:Sandbox ()) ()
-             |> Option.map Keeper_sandbox_runtime.docker_preflight_to_yojson
-           with
-           | Some _, Some preflight -> Some preflight
-           | _ -> None
+           match effective_sandbox_image with
+           | Some _ ->
+               cached_docker_preflight_status_json
+                 ~timeout_sec:(Env_config_exec_timeout.timeout_sec ~caller:Sandbox ())
+           | None -> None
          in
          let sandbox_live =
            Keeper_sandbox_control.live_status_json
              ~include_preflight:false
-             ~config:ctx.config ~meta:m ~timeout_sec:(Env_config_exec_timeout.timeout_sec ~caller:Status_detail ()) ~verbose:false ()
+             ~config:config ~meta:m ~timeout_sec:(Env_config_exec_timeout.timeout_sec ~caller:Status_detail ()) ~verbose:false ()
          in
          let runtime_blocker_fields =
-          runtime_blocker_fields_json ctx.config m
+          runtime_blocker_fields_json config m
          in
          let attention_fields =
-           attention_fields_json ctx.config m
+           attention_fields_json config m
          in
          let latest_metrics =
            latest_metrics_json ~metrics_store ~metrics_path ~tail_bytes
          in
          let model_observability =
-           model_observability_json ~current_cascade_name:m.cascade_name
-             ~configured_labels:models
-             ~active_model ~runtime_blocker_fields latest_metrics
+           model_observability_json
+             ~current_cascade_name:(cascade_name_of_meta m)
+             ~runtime_blocker_fields
+             latest_metrics
          in
          let runtime_trust =
            Keeper_runtime_trust_snapshot.snapshot_json
-             ~config:ctx.config ~meta:m
+             ~config:config ~meta:m
          in
          let attention_fields =
            attention_fields_with_runtime_trust attention_fields runtime_trust
@@ -1037,10 +744,10 @@ let handle_keeper_status ctx args : tool_result =
            ("last_compaction_ago_s", `Float last_compaction_ago_s);
            ("last_proactive_ago_s", `Float last_proactive_ago_s);
            ("last_visible_proactive_ago_s", `Float last_visible_proactive_ago_s);
-           ("active_model", `String active_model);
+           ("active_model", `Null);
            ("disposition", Json_util.string_opt_to_json disposition);
            ("disposition_reason", Json_util.string_opt_to_json disposition_reason);
-           ("next_model_hint", Json_util.string_opt_to_json next_model_hint);
+           ("next_model_hint", `Null);
            ("runtime_cascade_metrics", runtime_cascade_metrics);
            ("trace_history_count", `Int trace_history_count);
            ("handoff_count_total", `Int trace_history_count);
@@ -1073,7 +780,7 @@ let handle_keeper_status ctx args : tool_result =
            ("lifecycle", `Assoc [
              ("created_at", `String m.created_at);
              ("updated_at", `String m.updated_at);
-             ("uptime_hours", `Float (keeper_age_s /. 3600.0));
+             ("uptime_hours", `Float (keeper_age_s /. Masc_time_constants.hour));
            ]);
            ("proactive", `Assoc [
              ("enabled", `Bool m.proactive.enabled);
@@ -1156,9 +863,9 @@ let handle_keeper_status ctx args : tool_result =
                then `Null
                else `String m.runtime.last_social_transition_reason);
              ("last_blocker",
-               if String.trim m.runtime.last_blocker = ""
-               then `Null
-               else `String m.runtime.last_blocker);
+               match m.runtime.last_blocker with
+               | Some info -> Keeper_types.blocker_info_to_json info
+               | None -> `Null);
              ("last_need",
                if String.trim m.runtime.last_need = ""
                then `Null
@@ -1191,13 +898,17 @@ let handle_keeper_status ctx args : tool_result =
            ("models_resolved", models_resolved);
            ("model_observability", model_observability);
            ("runtime_trust", runtime_trust);
-           ("runtime", runtime_surface_json ctx.config m);
+           ("runtime", runtime_surface_json config m);
            ("coordination", coordination_surface_json m);
-           ("sources", source_provenance_json ctx.config m);
+           ("sources", source_provenance_json config m);
            ("context", ctx_stats);
            ("skill_route", Json_util.option_to_yojson Fun.id last_skill_route);
            ("metrics_overview", metrics_summary_to_json metrics_overview);
            ("memory_bank", memory_summary_to_json memory_bank_summary);
+           ("memory_bank_error_class",
+             match memory_bank_error_class with
+             | Some label -> `String label
+             | None -> `Null);
            ("generation_lineage", generation_lineage);
            ("metrics_tail", metrics_tail);
            ("history_tail", history_tail);
@@ -1212,27 +923,33 @@ let handle_keeper_status ctx args : tool_result =
            ("compaction_history_tail", fst compaction_history_tail);
            ("compaction_history_count", `Int (snd compaction_history_tail));
            ("storage_paths", `Assoc [
-             ("meta", `String (keeper_meta_path ctx.config m.name));
+             ("meta", `String (keeper_meta_path config m.name));
              ("metrics", `String (Dated_jsonl.base_dir metrics_store));
              ("metrics_single_file", `String metrics_path);
-             ("memory_bank", `String memory_bank_path);
-             ("generation_index", `String generation_index_path);
-             ("decisions", `String (keeper_decision_log_path ctx.config m.name));
-             ("policy", `String (keeper_policy_log_path ctx.config m.name));
-             ("feedback", `String (keeper_feedback_log_path ctx.config m.name));
-             ("dataset_export", `String (keeper_dataset_export_path ctx.config m.name));
-             ("session_dir", `String session_dir);
+           ("memory_bank", `String memory_bank_path);
+           ("generation_index", `String generation_index_path);
+           ( "decisions"
+           , `String (Keeper_types_support.keeper_decision_log_path config m.name) );
+           ( "policy"
+             , `String (Keeper_types_support.keeper_policy_log_path config m.name) );
+             ( "feedback"
+             , `String (Keeper_types_support.keeper_feedback_log_path config m.name) );
+           ( "dataset_export"
+           , `String
+               (Keeper_types_support.keeper_dataset_export_path config m.name)
+           );
+           ("session_dir", `String session_dir);
              ("generation_manifest", `String generation_manifest_path);
              ("history", `String history_path);
              ("history_internal", `String internal_history_path);
              ("evidence_dir", `String
                (Filename.concat
-                 (Common.masc_dir_from_base_path ~base_path:ctx.config.base_path)
+                 (Common.masc_dir_from_base_path ~base_path:config.base_path)
                  (Printf.sprintf "evidence/%s/%s"
                    (Coord_utils.safe_filename m.name)
                    (Coord_utils.safe_filename (Keeper_id.Trace_id.to_string m.runtime.trace_id)))));
            ]);
-           (let sandbox = Keeper_sandbox.of_meta ~config:ctx.config ~meta:m in
+           (let sandbox = Keeper_sandbox.of_meta ~config:config ~meta:m in
            let playground_abs = sandbox.host_root_abs in
            (* #10650 + B1 follow-up: keeper-LLM-facing execution_context must
               not surface host paths.  For Docker keepers the host abs path
@@ -1266,7 +983,7 @@ let handle_keeper_status ctx args : tool_result =
              ("allowed_paths", string_list_to_json m.allowed_paths);
              ("playground_repos",
                Keeper_sandbox_control.playground_repos_json
-                 ~config:ctx.config ~meta:m);
+                 ~config:config ~meta:m);
              ("pr_history",
                let pr_path = Filename.concat playground_abs
                  ".playground_pr_history.jsonl" in
@@ -1276,7 +993,7 @@ let handle_keeper_status ctx args : tool_result =
                  `List (List.take 10 (List.rev entries))
                with Sys_error _ -> `List []);
              ("active_worktrees",
-               let worktrees_dir = Filename.concat ctx.config.base_path ".worktrees" in
+               let worktrees_dir = Filename.concat config.base_path ".worktrees" in
                try
                  let entries = Sys.readdir worktrees_dir |> Array.to_list in
                  let keeper_prefix = Keeper_alerting_path.sanitize_keeper_name m.name in
@@ -1295,4 +1012,6 @@ let handle_keeper_status ctx args : tool_result =
          Eio_guard.with_mutex cache_mu (fun () ->
            Hashtbl.replace _cache cache_key
              { updated_at = m.updated_at; args_hash; response });
-         (true, response))
+         tool_result_ok response)
+(* TEL-OK: 1-line delegate to ctx-free body. *)
+let handle_keeper_status (ctx : _ context) args = handle_keeper_status_config ~config:ctx.config ~agent_name:ctx.agent_name args

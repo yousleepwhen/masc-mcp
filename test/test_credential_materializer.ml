@@ -2,13 +2,14 @@
     {!Credential_materializer.verify_state} and {!ensure}.
 
     The [Materialized] outcome requires a real [gh] subprocess + a
-    populated bundle and is exercised by the end-to-end test added in
-    PR-B Slice 3.  Here we pin the three branches that do not depend on
-    [gh] being installed:
+    populated, Docker-projectable bundle and is exercised by the
+    end-to-end test added in PR-B Slice 3.  Here we pin the branches
+    that do not depend on [gh] being installed:
 
     1. [None] / empty / missing [gh_config_dir] -> [Unmaterialized].
     2. Path exists but is a file rather than a directory -> [Stale].
-    3. [ensure] mutates only the [state] field; every other field on the
+    3. Path exists but [hosts.yml] has no [oauth_token] -> [Stale].
+    4. [ensure] mutates only the [state] field; every other field on the
        input record is preserved verbatim. *)
 
 open Repo_manager_types
@@ -86,6 +87,43 @@ let test_path_is_file_is_stale () =
              with Not_found -> false)
       | other ->
           Alcotest.failf "expected Stale, got %s"
+            (show_credential_state other))
+
+let test_keyring_backed_bundle_without_oauth_token_is_stale () =
+  with_temp_base_path (fun base ->
+      let gh_config_dir = Filename.concat base "keyring_only_gh" in
+      Unix.mkdir gh_config_dir 0o700;
+      let hosts_yml = Filename.concat gh_config_dir "hosts.yml" in
+      let oc = open_out hosts_yml in
+      output_string oc
+        "github.com:\n\
+        \    git_protocol: https\n\
+        \    users:\n\
+        \        yousleepwhen:\n\
+        \    user: yousleepwhen\n";
+      close_out oc;
+      match
+        Credential_materializer.verify_state ~gh_config_dir
+      with
+      | Stale { reason } ->
+          Alcotest.(check bool)
+            "reason mentions missing oauth_token" true
+            (try
+               ignore
+                 (Str.search_forward
+                    (Str.regexp_string "oauth_token") reason 0);
+               true
+             with Not_found -> false);
+          Alcotest.(check bool)
+            "reason points at insecure-storage rematerialization" true
+            (try
+               ignore
+                 (Str.search_forward
+                    (Str.regexp_string "--insecure-storage") reason 0);
+               true
+             with Not_found -> false)
+      | other ->
+          Alcotest.failf "expected Stale for keyring-only bundle, got %s"
             (show_credential_state other))
 
 (* --- 3. ensure mutates only state, preserves other fields --- *)
@@ -222,6 +260,48 @@ let with_env_vars vars f =
         saved)
     f
 
+let test_verify_state_rejects_graphql_auth_failure () =
+  with_temp_base_path (fun base ->
+      let bin_dir = Filename.concat base "bin" in
+      Unix.mkdir bin_dir 0o755;
+      let gh_path = Filename.concat bin_dir "gh" in
+      write_file gh_path
+        {|#!/bin/sh
+set -eu
+cmd1="${1:-}"
+cmd2="${2:-}"
+if [ "$cmd1" = "auth" ] && [ "$cmd2" = "status" ]; then
+  exit 0
+fi
+if [ "$cmd1" = "api" ] && [ "$cmd2" = "graphql" ]; then
+  exit 1
+fi
+exit 2
+|};
+      Unix.chmod gh_path 0o755;
+      let gh_config_dir = Filename.concat base "bundle-gh" in
+      Unix.mkdir gh_config_dir 0o700;
+      write_file (Filename.concat gh_config_dir "hosts.yml")
+        "github.com:\n\
+        \    user: keeper-A\n\
+        \    oauth_token: ghp_graphql_failure_canary\n\
+        \    git_protocol: https\n";
+      let path =
+        match Sys.getenv_opt "PATH" with
+        | None | Some "" -> bin_dir
+        | Some current -> bin_dir ^ ":" ^ current
+      in
+      with_env_vars [ ("PATH", path) ] (fun () ->
+          match Credential_materializer.verify_state ~gh_config_dir with
+          | Stale { reason } ->
+              Alcotest.(check bool)
+                "reason mentions graphql viewer"
+                true
+                (contains_substring reason "graphql viewer")
+          | other ->
+              Alcotest.failf "expected Stale, got %s"
+                (show_credential_state other)))
+
 let test_provision_rejects_empty_token () =
   match
     Credential_materializer.provision_via_with_token
@@ -283,6 +363,15 @@ if [ "$cmd1" = "auth" ] && [ "$cmd2" = "status" ]; then
   env | sort > "$GH_CONFIG_DIR/status.env"
   printf '%s\n' "$@" > "$GH_CONFIG_DIR/status.argv"
   if [ -s "$GH_CONFIG_DIR/hosts.yml" ]; then
+    exit 0
+  fi
+  exit 1
+fi
+if [ "$cmd1" = "api" ] && [ "$cmd2" = "graphql" ]; then
+  env | sort > "$GH_CONFIG_DIR/api.env"
+  printf '%s\n' "$@" > "$GH_CONFIG_DIR/api.argv"
+  if [ -s "$GH_CONFIG_DIR/hosts.yml" ]; then
+    printf '%s\n' 'keeper-A'
     exit 0
   fi
   exit 1
@@ -359,6 +448,8 @@ exit 2
         (read_file (Filename.concat gh_config_dir "login.env"));
       assert_clean_env "status env"
         (read_file (Filename.concat gh_config_dir "status.env"));
+      assert_clean_env "api env"
+        (read_file (Filename.concat gh_config_dir "api.env"));
       let hosts_yml =
         read_file (Filename.concat gh_config_dir "hosts.yml")
       in
@@ -538,53 +629,6 @@ let test_relabel_no_file () =
       Credential_materializer.relabel_hosts_yml
         ~gh_config_dir:dir ~identity_label:"x")
 
-let test_waitpid_status_nointr_reaps_after_signal () =
-  (* #13102 follow-up — replace fixed-sleep racing with deterministic
-     pipe synchronisation:
-
-     - Install the SIGUSR1 handler BEFORE fork so the parent's
-       reception slot is ready the moment the child is able to send;
-       the prior post-fork install left a window where a fast child
-       could trigger the default action.
-     - Use a pipe pair as a "parent has entered waitpid" handshake:
-       the parent writes 1 byte immediately before calling
-       [waitpid_status_nointr_for_test], the child blocks on read
-       until that byte arrives, then sends SIGUSR1 and exits.  This
-       removes all sleep-based timing assumptions.
-     - The child uses [Unix._exit] so it does not re-run parent
-       at_exit hooks (alcotest cleanup, PG connection teardown, …)
-       inside the forked process. *)
-  let pipe_read, pipe_write = Unix.pipe () in
-  let previous = Sys.signal Sys.sigusr1 (Sys.Signal_handle (fun _ -> ())) in
-  Fun.protect
-    ~finally:(fun () ->
-      Sys.set_signal Sys.sigusr1 previous;
-      (try Unix.close pipe_read with Unix.Unix_error _ -> ());
-      (try Unix.close pipe_write with Unix.Unix_error _ -> ()))
-    (fun () ->
-      let parent = Unix.getpid () in
-      match Unix.fork () with
-      | 0 ->
-          (try Unix.close pipe_write with Unix.Unix_error _ -> ());
-          let buf = Bytes.create 1 in
-          let _ = Unix.read pipe_read buf 0 1 in
-          (try Unix.close pipe_read with Unix.Unix_error _ -> ());
-          (try Unix.kill parent Sys.sigusr1
-           with Unix.Unix_error _ -> ());
-          Unix._exit 0
-      | pid ->
-          (try Unix.close pipe_read with Unix.Unix_error _ -> ());
-          let _ = Unix.write pipe_write (Bytes.of_string "\x01") 0 1 in
-          (try Unix.close pipe_write with Unix.Unix_error _ -> ());
-          (match Credential_materializer.waitpid_status_nointr_for_test pid with
-           | Unix.WEXITED 0 -> ()
-           | Unix.WEXITED n ->
-               Alcotest.failf "child exited with %d" n
-           | Unix.WSIGNALED n ->
-               Alcotest.failf "child signalled with %d" n
-           | Unix.WSTOPPED n ->
-               Alcotest.failf "child stopped with %d" n))
-
 let () =
   Alcotest.run "credential_materializer"
     [
@@ -596,6 +640,11 @@ let () =
             test_missing_path_is_unmaterialized;
           Alcotest.test_case "file (not dir) is Stale" `Quick
             test_path_is_file_is_stale;
+          Alcotest.test_case
+            "keyring-only hosts.yml without oauth_token is Stale" `Quick
+            test_keyring_backed_bundle_without_oauth_token_is_stale;
+          Alcotest.test_case "GraphQL auth failure is Stale" `Quick
+            test_verify_state_rejects_graphql_auth_failure;
         ] );
       ( "ensure",
         [
@@ -609,11 +658,6 @@ let () =
         [
           Alcotest.test_case "add invokes ensure and roundtrips" `Quick
             test_credential_store_add_invokes_ensure;
-        ] );
-      ( "process reaping",
-        [
-          Alcotest.test_case "waitpid retries after signal interruption"
-            `Quick test_waitpid_status_nointr_reaps_after_signal;
         ] );
       ( "provisioner",
         [

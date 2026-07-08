@@ -1,122 +1,13 @@
 open Keeper_types
-
-let json_member key = function
-  | `Assoc _ as json -> Yojson.Safe.Util.member key json
-  | _ -> `Null
-
-let json_int_opt_member key json =
-  match json_member key json with
-  | `Int n -> Some n
-  | `Intlit raw -> int_of_string_opt raw
-  | _ -> None
-
-let json_float_opt_member key json =
-  match json_member key json with
-  | `Float value -> Some value
-  | `Int value -> Some (float_of_int value)
-  | `Intlit raw -> float_of_string_opt raw
-  | _ -> None
-
-let json_string_opt_member key json =
-  match json_member key json with
-  | `String value when String.trim value <> "" -> Some value
-  | _ -> None
-
-let json_string_opt_value = function
-  | `String value when String.trim value <> "" -> Some value
-  | _ -> None
-
-let json_bool_opt_member key json =
-  match json_member key json with
-  | `Bool value -> Some value
-  | _ -> None
-
-let json_list_member key json =
-  match json_member key json with
-  | `List items -> items
-  | _ -> []
-
-let json_string_list_member key json =
-  json_list_member key json
-  |> List.filter_map (function
-       | `String value when String.trim value <> "" -> Some value
-       | _ -> None)
-
-let string_list_json values =
-  `List (List.map (fun value -> `String value) values)
-
-let assoc_bool_default key ~default fields =
-  match List.assoc_opt key fields with
-  | Some (`Bool value) -> value
-  | _ -> default
-
-let assoc_string_opt key fields =
-  match List.assoc_opt key fields with
-  | Some (`String value) when String.trim value <> "" -> Some value
-  | _ -> None
-
-let assoc_json_opt key fields =
-  match List.assoc_opt key fields with
-  | Some `Null | None -> None
-  | Some value -> Some value
-
-let iso_of_unix_seconds ts =
-  Masc_domain.iso8601_of_unix_seconds ts
-
-let take limit values =
-  values |> List.filteri (fun idx _ -> idx < limit)
-
-let goal_ids_of_json json =
-  match json_string_list_member "goal_ids" json with
-  | [] -> (
-      match json_string_opt_member "goal_id" json with
-      | Some goal_id -> [ goal_id ]
-      | None -> [])
-  | goal_ids -> goal_ids
-
-let keeper_turn_id_of_json json =
-  match json_int_opt_member "keeper_turn_id" json with
-  | Some _ as value -> value
-  | None -> (
-      match json_int_opt_member "turn_id" json with
-      | Some _ as value -> value
-      | None -> json_int_opt_member "turn" json)
-
-let timeline_event_json ?trace_id ?keeper_turn_id ?task_id ?(goal_ids = [])
-    ?next_human_action ?observed_at_unix ?(observation_only = false)
-    ~ts_unix ~kind ~title ~summary ~severity () =
-  let observed_at_unix = Option.value ~default:ts_unix observed_at_unix in
-  `Assoc
-    [
-      ("kind", `String kind);
-      ("ts", `String (iso_of_unix_seconds ts_unix));
-      ("ts_unix", `Float ts_unix);
-      ("observed_at", `String (iso_of_unix_seconds observed_at_unix));
-      ("observed_at_unix", `Float observed_at_unix);
-      ("observation_only", `Bool observation_only);
-      ("trace_id", Json_util.string_opt_to_json trace_id);
-      ("keeper_turn_id", Json_util.int_opt_to_json keeper_turn_id);
-      ("task_id", Json_util.string_opt_to_json task_id);
-      ("goal_ids", `List (List.map (fun goal_id -> `String goal_id) goal_ids));
-      ("title", `String title);
-      ("summary", `String summary);
-      ("severity", `String severity);
-      ("next_human_action", Json_util.string_opt_to_json next_human_action);
-    ]
-
-let severity_of_decision = function
-  | "run" -> "ok"
-  | "skip" -> "warn"
-  | _ -> "warn"
-
-let severity_of_tool_call success = if success then "ok" else "bad"
+open Keeper_runtime_trust_timeline
 
 let terminal_reason_from_decision json =
   match json_member "terminal_reason" json with
   | `Assoc _ as terminal_reason -> Keeper_turn_terminal.of_json terminal_reason
   | _ ->
       Option.map
-        (Keeper_turn_terminal.of_code ~source:"decision_log")
+        (fun code ->
+          Keeper_turn_terminal.of_code ~source:"decision_log" code)
         (json_string_opt_member "terminal_reason_code" json)
 
 let terminal_reason_from_receipt receipt =
@@ -137,8 +28,11 @@ let terminal_reason_from_receipt receipt =
     match operator_disposition, operator_disposition_reason, tool_contract_result with
     | Some "pause_human", Some "tool_required_unsatisfied", _
     | _, Some "tool_required_unsatisfied", _
+    | _, Some "tool_route_recoverable_failure", _
     | _, _, Some "needs_execution_progress"
     | _, _, Some "missing_required_tool_use"
+    | _, _, Some "tool_surface_mismatch"
+    | _, _, Some "no_tool_capable_provider"
     | _, _, Some "passive_only"
     | _, _, Some "violated" ->
         true
@@ -159,29 +53,45 @@ let terminal_reason_from_receipt receipt =
            "required_tool_use_unsatisfied")
   | None -> None
 
-let terminal_reason_code_of_runtime_blocker_class = function
+(* JSON-deserialization boundary: maps a runtime_blocker_class wire
+   string into a typed [Keeper_turn_disposition.t]. The previous
+   variant returned a [terminal_reason_code] wire string that the
+   caller then passed back through [Keeper_turn_terminal.of_code]
+   for a wire→typed roundtrip; emitting the typed value here removes
+   that detour and lets the consumer use [of_disposition] directly.
+   The provider-runtime classes preserve their originating blocker
+   string in the typed payload instead of collapsing to a single
+   "provider_error" literal. *)
+let disposition_of_runtime_blocker_class raw_blocker_class =
+  match raw_blocker_class with
   | "completion_contract_violation" | "tool_required_unsatisfied" ->
-      "required_tool_use_unsatisfied"
-  | "oas_timeout_budget" ->
-      "oas_timeout_budget"
-  | "turn_timeout" | "turn_timeout_after_queue_wait" | "stale_turn_timeout" ->
-      "turn_wall_clock_timeout"
+      Keeper_turn_disposition.Required_tool_use_unsatisfied
+  | "turn_timeout"
+  | "turn_timeout_after_queue_wait"
+  | "stale_turn_timeout" ->
+      Keeper_turn_disposition.Turn_wall_clock_timeout
   | "ambiguous_post_commit_timeout" | "ambiguous_post_commit_failure" ->
-      "post_commit_ambiguous"
-  | "cascade_exhausted" | "no_tool_capable_provider"
-  | "provider_runtime_error" ->
-      "provider_error"
+      Keeper_turn_disposition.Post_commit_ambiguous
+  | "sdk_input_required" ->
+      Keeper_turn_disposition.Input_required
+  | ("cascade_exhausted" | "no_tool_capable_provider"
+     | "provider_runtime_error") as cls ->
+      Keeper_turn_disposition.Provider_error
+        (Keeper_turn_terminal_code.Provider_runtime_error cls)
   | _ ->
-      "unknown_error"
+      Keeper_turn_disposition.Unknown { raw_error = "" }
 
 let terminal_reason_from_runtime_blocker_fields runtime_blocker_fields =
   match assoc_string_opt "runtime_blocker_class" runtime_blocker_fields with
   | None -> None
   | Some blocker_class ->
-      let code = terminal_reason_code_of_runtime_blocker_class blocker_class in
+      let disposition = disposition_of_runtime_blocker_class blocker_class in
       let summary = assoc_string_opt "runtime_blocker_summary" runtime_blocker_fields in
       Some
-        (Keeper_turn_terminal.of_code ~source:"runtime_blocker" ?summary code)
+        (Keeper_turn_terminal.of_disposition
+           ~source:"runtime_blocker"
+           ?summary
+           disposition)
 
 let receipt_ended_at_unix receipt =
   match json_string_opt_member "ended_at" receipt with
@@ -190,10 +100,11 @@ let receipt_ended_at_unix receipt =
       if ts > 0.0 then Some ts else None
   | None -> None
 
-(* Receipt timestamps are serialized with lower precision than runtime
-   last-turn observations, so a tiny tolerance avoids treating same-turn
-   observations as newer blockers because of formatting jitter. *)
-let runtime_blocker_receipt_timestamp_epsilon_sec = 0.001
+(* Receipt timestamps are serialized as whole-second ISO strings, while runtime
+   last-turn observations keep fractional seconds.  A same-second receipt must
+   still be allowed to explain the blocker; otherwise the runtime blocker
+   silently overrides its operator disposition. *)
+let runtime_blocker_receipt_timestamp_epsilon_sec = 1.0
 
 let runtime_blocker_supersedes_receipt ~meta ~runtime_blocker_fields
     latest_receipt =
@@ -233,187 +144,6 @@ let latest_terminal_reason_opt ~meta ~runtime_blocker_fields ~latest_decision
            latest_receipt
       then terminal_reason_from_runtime_blocker_fields runtime_blocker_fields
       else Option.bind latest_receipt terminal_reason_from_receipt
-
-let severity_of_approval_event event decision =
-  match event with
-  | "pending" -> "warn"
-  | "expired" -> "bad"
-  | "resolved" -> (
-      match decision with
-      | Some raw when String_util.contains_substring_ci raw "reject" -> "bad"
-      | _ -> "ok")
-  | "auto_approved_rule_match" | "auto_approved_always" | "rule_created" -> "ok"
-  | _ -> "warn"
-
-let severity_of_transition_type event_type =
-  if String_util.contains_substring_ci event_type "failed"
-     || String_util.contains_substring_ci event_type "exhausted"
-  then "bad"
-  else if
-    String_util.contains_substring_ci event_type "pause"
-    || String_util.contains_substring_ci event_type "stop"
-    || String_util.contains_substring_ci event_type "handoff"
-    || String_util.contains_substring_ci event_type "compaction"
-  then "warn"
-  else "ok"
-
-let tool_call_timeline_event json =
-  match json_float_opt_member "ts" json, json_string_opt_member "tool" json with
-  | Some ts_unix, Some tool_name ->
-      let success =
-        json_bool_opt_member "success" json |> Option.value ~default:true
-      in
-      let duration_ms = json_float_opt_member "duration_ms" json in
-      let summary =
-        match duration_ms with
-        | Some ms ->
-            Printf.sprintf "%s %s in %.0fms"
-              tool_name
-              (if success then "succeeded" else "failed")
-              ms
-        | None ->
-            Printf.sprintf "%s %s"
-              tool_name
-              (if success then "succeeded" else "failed")
-      in
-      Some
-        (timeline_event_json
-           ?trace_id:(json_string_opt_member "trace_id" json)
-           ?keeper_turn_id:(keeper_turn_id_of_json json)
-           ?task_id:(json_string_opt_member "task_id" json)
-           ~goal_ids:(goal_ids_of_json json)
-           ~ts_unix ~kind:"tool_call"
-           ~title:(Printf.sprintf "Tool · %s" tool_name)
-           ~summary ~severity:(severity_of_tool_call success) ())
-  | _ -> None
-
-let is_worktree_tool tool_name =
-  String.equal tool_name "masc_worktree_create"
-
-let live_pending_approval_timeline_event json =
-  match json_float_opt_member "requested_at" json with
-  | None -> None
-  | Some ts_unix ->
-      let tool_name =
-        json_string_opt_member "tool_name" json |> Option.value ~default:"tool"
-      in
-      let approval_id =
-        json_string_opt_member "id" json |> Option.value ~default:"unknown"
-      in
-      let task_id = json_string_opt_member "task_id" json in
-      let blocker_class =
-        if is_worktree_tool tool_name then "blocked_before_worktree"
-        else "approval_pending"
-      in
-      let summary =
-        Printf.sprintf
-          "approval_required · id=%s · blocker=%s · waiting for operator"
-          approval_id blocker_class
-      in
-      Some
-        (timeline_event_json
-           ?task_id
-           ~ts_unix ~kind:"approval_pending_live"
-           ~title:(Printf.sprintf "Approval Pending · %s" tool_name)
-           ~summary
-           ~severity:"warn"
-           ~observation_only:true
-           ~next_human_action:"resolve_approval"
-           ())
-
-let approval_event_timeline_event json =
-  match json_float_opt_member "ts" json, json_string_opt_member "event" json with
-  | Some ts_unix, Some event ->
-      let tool_name =
-        json_string_opt_member "tool" json |> Option.value ~default:"tool"
-      in
-      let decision = json_string_opt_member "decision" json in
-      let kind, title, summary, next_human_action =
-        match event with
-        | "pending" ->
-            ( "approval_requested",
-              Printf.sprintf "Approval · %s" tool_name,
-              "approval requested and waiting for operator decision",
-              Some "resolve_approval" )
-        | "resolved" ->
-            let decision_label =
-              Option.value ~default:"resolved" decision
-            in
-            ( "approval_resolved",
-              Printf.sprintf "Approval · %s" tool_name,
-              Printf.sprintf "approval %s" decision_label,
-              None )
-        | "expired" ->
-            let blocker_note =
-              if is_worktree_tool tool_name then
-                " · blocked_before_worktree"
-              else ""
-            in
-            let next_action =
-              if is_worktree_tool tool_name then "retry_worktree_approval"
-              else "retry_or_rerun"
-            in
-            ( "approval_expired",
-              Printf.sprintf "Approval · %s" tool_name,
-              (Option.value ~default:"approval expired" decision) ^ blocker_note,
-              Some next_action )
-        | "auto_approved_rule_match" ->
-            let matched_by =
-              json |> json_member "rule_match"
-              |> json_string_opt_member "matched_by"
-              |> Option.value ~default:"always_rule"
-            in
-            ( "approval_rule_match",
-              Printf.sprintf "Approval Rule · %s" tool_name,
-              Printf.sprintf "auto-approved by %s" matched_by,
-              None )
-        | "auto_approved_always" ->
-            ( "approval_always_flag",
-              Printf.sprintf "Approval Always · %s" tool_name,
-              "auto-approved by keeper always_approve flag",
-              None )
-        | "rule_created" ->
-            ( "approval_rule_created",
-              Printf.sprintf "Approval Rule · %s" tool_name,
-              "persistent approval rule recorded",
-              None )
-        | other ->
-            ( "approval_event",
-              Printf.sprintf "Approval · %s" tool_name,
-              other,
-              None )
-      in
-      Some
-        (timeline_event_json
-           ?keeper_turn_id:(keeper_turn_id_of_json json)
-           ?task_id:(json_string_opt_member "task_id" json)
-           ~goal_ids:(goal_ids_of_json json)
-           ?next_human_action
-           ~ts_unix ~kind ~title ~summary
-           ~severity:(severity_of_approval_event event decision) ())
-  | _ -> None
-
-let decision_timeline_event json =
-  match json_float_opt_member "wall_clock" json with
-  | None -> None
-  | Some ts_unix ->
-      let turn_verdict =
-        json_string_opt_member "turn_verdict" json
-        |> Option.value ~default:"unknown"
-      in
-      let reasons =
-        json_string_list_member "turn_reasons" json
-      in
-      let summary =
-        match reasons with
-        | [] -> Printf.sprintf "turn verdict=%s" turn_verdict
-        | _ -> String.concat "; " reasons
-      in
-      Some
-        (timeline_event_json ~ts_unix ~kind:"decision"
-           ~title:"Turn Decision"
-           ~summary
-           ~severity:(severity_of_decision turn_verdict) ())
 
 let terminal_reason_timeline_event ~latest_decision ~latest_receipt =
   let source_json, ts_unix_opt, reason_opt =
@@ -465,158 +195,6 @@ let terminal_reason_timeline_event ~latest_decision ~latest_receipt =
            ())
   | _ -> None
 
-let transition_timeline_event json =
-  match json_float_opt_member "wall_clock_at_decision" json with
-  | None -> None
-  | Some ts_unix ->
-      let operator_signal =
-        match json |> json_member "operator_signal" with
-        | `Assoc fields -> Some fields
-        | _ -> None
-      in
-      let signal_string key =
-        Option.bind operator_signal (assoc_string_opt key)
-      in
-      let signal_bool key =
-        Option.map
-          (fun fields -> assoc_bool_default key ~default:false fields)
-          operator_signal
-      in
-      let prev_phase =
-        json |> json_member "prev_phase"
-        |> json_string_opt_value
-      in
-      let new_phase =
-        json |> json_member "new_phase"
-        |> json_string_opt_value
-      in
-      let selected_event =
-        json |> json_member "selected_event"
-      in
-      let event_type =
-        (match json_string_opt_member "event_type" json with
-         | Some _ as value -> value
-         | None -> json_string_opt_member "type" selected_event)
-        |> Option.value ~default:"transition"
-      in
-      let prev_phase = Option.value ~default:"unknown" prev_phase in
-      let new_phase = Option.value ~default:"unknown" new_phase in
-      let signal_summary = signal_string "summary" in
-      let next_human_action =
-        match signal_bool "requires_operator_decision" with
-        | Some true -> signal_string "next_human_action"
-        | _ -> None
-      in
-      let summary =
-        match signal_summary with
-        | Some signal when String.trim signal <> "" ->
-            Printf.sprintf "%s -> %s via %s · %s"
-              prev_phase new_phase event_type signal
-        | _ ->
-            Printf.sprintf "%s -> %s via %s"
-              prev_phase new_phase event_type
-      in
-      let severity =
-        signal_string "severity"
-        |> Option.value ~default:(severity_of_transition_type event_type)
-      in
-      Some
-        (timeline_event_json ?next_human_action ~ts_unix ~kind:"transition"
-           ~title:(Printf.sprintf "Transition · %s" event_type)
-           ~summary ~severity ())
-
-let receipt_timeline_event receipt =
-  match json_string_opt_member "ended_at" receipt with
-  | None -> None
-  | Some ended_at ->
-      let ts_unix =
-        Masc_domain.parse_iso8601 ~default_time:0.0 ended_at
-      in
-      if ts_unix <= 0.0 then None
-      else
-        let outcome =
-          json_string_opt_member "outcome" receipt
-          |> Option.value ~default:"unknown"
-        in
-        let tool_contract_result =
-          json_string_opt_member "tool_contract_result" receipt
-          |> Option.value ~default:"unknown"
-        in
-        let cascade_outcome =
-          receipt |> json_member "cascade"
-          |> json_string_opt_member "outcome"
-          |> Option.value ~default:"not_observed"
-        in
-        let error_kind =
-          match json_member "error" receipt with
-          | `Assoc _ as error -> json_string_opt_member "kind" error
-          | _ -> None
-        in
-        let severity =
-          match error_kind with
-          | Some _ -> "bad"
-          | None ->
-              if String.equal tool_contract_result "violated" then "bad"
-              else if
-                String.equal cascade_outcome "passed_to_next_model"
-                || (receipt |> json_member "cascade"
-                    |> json_bool_opt_member "fallback_applied"
-                    |> Option.value ~default:false)
-              then "warn"
-              else "ok"
-        in
-        Some
-          (timeline_event_json
-             ?trace_id:(json_string_opt_member "trace_id" receipt)
-             ?keeper_turn_id:(json_int_opt_member "turn_count" receipt)
-             ?task_id:(json_string_opt_member "current_task_id" receipt)
-             ~goal_ids:(goal_ids_of_json receipt)
-             ~ts_unix ~kind:"execution_receipt"
-             ~title:"Execution Receipt"
-             ~summary:
-               (Printf.sprintf "%s · tool_contract=%s · cascade=%s"
-                  outcome tool_contract_result cascade_outcome)
-             ~severity ())
-
-let blocker_timeline_event ?task_id ?(goal_ids = []) ?trace_id
-    ?observed_at_unix ~ts_unix ~runtime_blocker_fields
-    ~next_human_action ?(observation_only = true) () =
-  let blocker_class = assoc_string_opt "runtime_blocker_class" runtime_blocker_fields in
-  let blocker_summary =
-    assoc_string_opt "runtime_blocker_summary" runtime_blocker_fields
-  in
-  match blocker_class, blocker_summary with
-  | None, None -> None
-  | Some blocker_class, Some summary
-    when String.trim summary <> "" ->
-      Some
-        (timeline_event_json ?trace_id ?task_id ~goal_ids ?next_human_action
-           ?observed_at_unix ~observation_only
-           ~ts_unix ~kind:"runtime_blocker"
-           ~title:"Runtime Blocker"
-           ~summary
-           ~severity:
-             (match blocker_class with
-              | "cascade_exhausted" | "completion_contract_violation" -> "bad"
-              | _ -> "warn")
-           ())
-  | None, Some summary
-    when String.trim summary <> "" ->
-      Some
-        (timeline_event_json ?trace_id ?task_id ~goal_ids ?next_human_action
-           ?observed_at_unix ~observation_only
-           ~ts_unix ~kind:"runtime_blocker"
-           ~title:"Runtime Blocker"
-           ~summary ~severity:"warn" ())
-  | Some blocker_class, None ->
-      Some
-        (timeline_event_json ?trace_id ?task_id ~goal_ids ?next_human_action
-           ?observed_at_unix ~observation_only
-           ~ts_unix ~kind:"runtime_blocker"
-           ~title:"Runtime Blocker"
-           ~summary:blocker_class ~severity:"warn" ())
-  | Some _, Some _ | None, Some _ -> None
-
 let disposition_of_snapshot ~pending_approval_count ~runtime_blocker_fields =
   let continue_gate =
     assoc_bool_default "runtime_blocker_continue_gate" ~default:false
@@ -626,8 +204,8 @@ let disposition_of_snapshot ~pending_approval_count ~runtime_blocker_fields =
   let blocker_summary =
     assoc_string_opt "runtime_blocker_summary" runtime_blocker_fields
   in
-  if pending_approval_count > 0 then ("Pause", "waiting_approval")
-  else if continue_gate then ("Pause", "waiting_human_decision")
+  if pending_approval_count > 0 then ("Blocked", "waiting_approval")
+  else if continue_gate then ("Blocked", "waiting_human_decision")
   else
     match blocker_class, blocker_summary with
     | Some "cascade_exhausted", _ -> ("Alert", "cascade_exhausted")
@@ -641,6 +219,7 @@ let disposition_of_snapshot ~pending_approval_count ~runtime_blocker_fields =
 let operator_disposition_of_display ~disposition ~disposition_reason =
   match disposition with
   | "Pass" -> ("pass", disposition_reason)
+  | "Blocked" -> ("pause_human", disposition_reason)
   | "Pause" -> ("pause_human", disposition_reason)
   | "Alert" -> ("alert_exhausted", disposition_reason)
   | _ -> ("pause_human", disposition_reason)
@@ -656,12 +235,17 @@ let display_disposition_of_operator ~operator_disposition
   | "pass" -> ("Pass", "healthy")
   | "skipped" -> ("Pass", "phase_skipped")
   | "pass_next_model" -> ("Pass", "cascade_fallback")
-  | "pause_human" -> ("Pause", reason "needs_human_attention")
-  | "fail_open_next_cascade" -> ("Pause", reason "degraded_retry")
-  | "user_cancelled" -> ("Pause", reason "cancelled")
+  | "blocked" | "blocked_runtime" -> ("Blocked", reason "runtime_blocked")
+  | "pause_human" -> ("Blocked", reason "needs_human_attention")
+  | "fail_open_next_cascade" -> ("Blocked", reason "degraded_retry")
+  | "user_cancelled" -> ("Blocked", reason "cancelled")
   | "alert_exhausted" -> ("Alert", reason "cascade_exhausted")
   | "unknown" -> ("Alert", reason "unmapped_cascade_state")
   | _ -> ("Alert", reason "unmapped_operator_disposition")
+
+let display_disposition_requires_attention = function
+  | "Blocked" | "Pause" | "Alert" -> true
+  | _ -> false
 
 let receipt_operator_disposition receipt =
   match
@@ -730,35 +314,50 @@ let disposition_fields_json ~(config : Coord.config) ~(meta : keeper_meta) :
       ("disposition_reason", `String disposition_reason);
     ]
 
+let decision_log_persistence_surface = "keeper_runtime_trust_decision_log"
+
+let report_decision_log_read_drop ~reason ~path ~detail =
+  Safe_ops.report_persistence_read_drop
+    ~on_drop:(fun () ->
+      Prometheus.inc_counter Prometheus.metric_persistence_read_drops
+        ~labels:[("surface", decision_log_persistence_surface); ("reason", reason)]
+        ())
+    ~surface:decision_log_persistence_surface
+    ~reason
+    ~path
+    ~detail
+
 let latest_decision_json ~(config : Coord.config) ~(keeper_name : string) :
     Yojson.Safe.t option =
-  let path = Keeper_types.keeper_decision_log_path config keeper_name in
+  let path = Keeper_types_support.keeper_decision_log_path config keeper_name in
   if not (Fs_compat.file_exists path) then None
   else
-    Keeper_memory.read_file_tail_lines path ~max_bytes:40000 ~max_lines:20
+    (match
+       Keeper_memory.read_file_tail_lines_result path
+         ~max_bytes:40000 ~max_lines:20
+     with
+     | Ok lines -> lines
+     | Error exn_class ->
+         Keeper_memory.record_memory_recall_read_error
+           ~site:"keeper_runtime_trust_decisions" path exn_class;
+         [])
     |> List.rev
     |> List.find_map (fun line ->
            match Yojson.Safe.from_string line with
-           | exception Yojson.Json_error _ -> None
+           | exception Yojson.Json_error detail ->
+               report_decision_log_read_drop
+                 ~reason:Safe_ops.persistence_read_drop_reason_entry_load_error
+                 ~path
+                 ~detail;
+               None
            | (`Assoc _ as json) -> Some json
-           | _ -> None)
+           | _ ->
+               report_decision_log_read_drop
+                 ~reason:Safe_ops.persistence_read_drop_reason_invalid_payload
+                 ~path
+                 ~detail:"decision log row is not a JSON object";
+               None)
 
-let latest_tool_call_json ~(keeper_name : string) =
-  Keeper_tool_call_log.read_latest ~keeper_name ()
-
-let pending_approval_json ~(keeper_name : string) =
-  match Keeper_approval_queue.list_pending_dashboard_json () with
-  | `List entries ->
-      entries
-      |> List.filter (fun json ->
-             String.equal keeper_name
-               (Safe_ops.json_string ~default:"" "keeper_name" json))
-      |> List.sort (fun left right ->
-             Float.compare
-               (Safe_ops.json_float ~default:0.0 "requested_at" right)
-               (Safe_ops.json_float ~default:0.0 "requested_at" left))
-      |> fun entries -> `List entries
-  | _ -> `List []
 
 let latest_turn_id ~(registry_entry : Keeper_registry.registry_entry option)
     ~(latest_decision : Yojson.Safe.t option)
@@ -781,39 +380,14 @@ let latest_turn_id ~(registry_entry : Keeper_registry.registry_entry option)
 let latest_receipt_json ~(config : Coord.config) ~(keeper_name : string) =
   Keeper_execution_receipt.latest_json config keeper_name
 
-let sort_timeline_events events =
-  List.sort
-    (fun left right ->
+let selected_model_of_latest_decision latest_decision =
+  Option.bind latest_decision (fun decision ->
       match
-        Bool.compare
-          (json_bool_opt_member "observation_only" left
-           |> Option.value ~default:false)
-          (json_bool_opt_member "observation_only" right
-           |> Option.value ~default:false)
+        decision |> json_member "telemetry"
+        |> json_string_opt_member "selected_model"
       with
-      | 0 ->
-          Float.compare
-            (json_float_opt_member "ts_unix" right |> Option.value ~default:0.0)
-            (json_float_opt_member "ts_unix" left |> Option.value ~default:0.0)
-      | cmp -> cmp)
-    events
-
-let latest_causal_from_timeline = function
-  | `List items -> (
-      match
-        List.find_opt
-          (fun json ->
-             not
-               (json_bool_opt_member "observation_only" json
-                |> Option.value ~default:false))
-          items
-      with
-      | Some event -> event
-      | None -> (
-          match items with
-          | event :: _ -> event
-          | [] -> `Null))
-  | _ -> `Null
+      | Some _ as value -> value
+      | None -> json_string_opt_member "selected_model" decision)
 
 let pending_first_json pending_approvals =
   match pending_approvals with
@@ -821,11 +395,7 @@ let pending_first_json pending_approvals =
       let tool_name = json_string_opt_member "tool_name" first in
       let approval_id = json_string_opt_member "id" first in
       let task_id = json_string_opt_member "task_id" first in
-      let blocker_class =
-        match tool_name with
-        | Some t when is_worktree_tool t -> Some "blocked_before_worktree"
-        | _ -> None
-      in
+      let blocker_class = None in
       `Assoc
         [
           ("id", Json_util.string_opt_to_json approval_id);
@@ -861,7 +431,8 @@ let approval_state_json ~pending_approval_count ~pending_approvals ~latest_tool_
       | Some "auto_approved_always" -> "always_flag"
       | Some "auto_approved_rule_match" -> "always_rule"
       | Some "resolved" -> "resolved"
-      | Some "expired" -> "expired"
+      | Some "expired" | Some "approval_timeout" -> "expired"
+      | Some "cancelled" -> "cancelled"
       | Some _ -> "observed"
       | None -> "idle"
   in
@@ -928,13 +499,19 @@ let execution_summary_json ~meta ~latest_receipt =
     | Some receipt -> json_string_list_member "tools_used" receipt
     | None -> []
   in
-  let required_tools, missing_required_tools =
+  let unexpected_tools =
+    match latest_receipt with
+    | Some receipt -> json_string_list_member "unexpected_tools" receipt
+    | None -> []
+  in
+  let required_tools, required_tool_candidates, missing_required_tools =
     match latest_receipt with
     | Some receipt ->
         let surface = json_member "tool_surface" receipt in
         ( json_string_list_member "required_tools" surface,
+          json_string_list_member "required_tool_candidates" surface,
           json_string_list_member "missing_required_tools" surface )
-    | None -> [], []
+    | None -> [], [], []
   in
   let cascade_json =
     match latest_receipt with
@@ -956,11 +533,6 @@ let execution_summary_json ~meta ~latest_receipt =
     | `Null -> None
     | json -> json_string_opt_member "outcome" json
   in
-  let cascade_selected_model =
-    match cascade_json with
-    | `Null -> None
-    | json -> json_string_opt_member "selected_model" json
-  in
   let mutation_guard_summary =
     match tool_contract_result with
     | Some "violated" -> "mutation_contract_violated"
@@ -974,12 +546,15 @@ let execution_summary_json ~meta ~latest_receipt =
       ("tool_contract_result", Json_util.string_opt_to_json tool_contract_result);
       ( "runtime_proof_status",
         Json_util.string_opt_to_json tool_contract_result );
-      ("required_tools", string_list_json required_tools);
-      ("missing_required_tools", string_list_json missing_required_tools);
-      ("requested_tools", string_list_json requested_tools);
-      ("tools_used", string_list_json tools_used);
+      ("required_tools", Json_util.json_string_list required_tools);
+      ("required_tool_candidates", Json_util.json_string_list required_tool_candidates);
+      ("missing_required_tools", Json_util.json_string_list missing_required_tools);
+      ("requested_tools", Json_util.json_string_list requested_tools);
+      ("tools_used", Json_util.json_string_list tools_used);
+      ("unexpected_tools", Json_util.json_string_list unexpected_tools);
       ("requested_tool_count", `Int (List.length requested_tools));
       ("tools_used_count", `Int (List.length tools_used));
+      ("unexpected_tool_count", `Int (List.length unexpected_tools));
       ( "provider_attempt_count",
         match cascade_attempt_count with
         | Some value -> `Int value
@@ -989,7 +564,7 @@ let execution_summary_json ~meta ~latest_receipt =
         | Some value -> `Bool value
         | None -> `Null );
       ( "provider_selected_model",
-        Json_util.string_opt_to_json cascade_selected_model );
+        `Null );
       ( "cascade_outcome",
         Json_util.string_opt_to_json cascade_outcome );
       ( "sandbox_summary",
@@ -1083,8 +658,7 @@ let summary_json ~(config : Coord.config) ~(meta : keeper_meta) =
   in
   let needs_attention =
     assoc_bool_default "needs_attention" ~default:false attention_fields
-    || String.equal disposition "Pause"
-    || String.equal disposition "Alert"
+    || display_disposition_requires_attention disposition
   in
   let attention_reason =
     attention_reason_or_disposition ~needs_attention ~disposition_reason
@@ -1096,6 +670,10 @@ let summary_json ~(config : Coord.config) ~(meta : keeper_meta) =
   in
   let execution_summary =
     execution_summary_json ~meta ~latest_receipt
+  in
+  let approval_state =
+    approval_state_json ~pending_approval_count ~pending_approvals:`Null
+      ~latest_tool_call ~latest_approval_audit ~latest_receipt
   in
   let latest_causal_event =
     latest_causal_event_summary ~meta ~latest_decision ~latest_receipt
@@ -1111,6 +689,7 @@ let summary_json ~(config : Coord.config) ~(meta : keeper_meta) =
       ("needs_attention", `Bool needs_attention);
       ("attention_reason", Json_util.string_opt_to_json attention_reason);
       ("next_human_action", Json_util.string_opt_to_json next_human_action);
+      ("approval", approval_state);
       ("execution", execution_summary);
       ("latest_terminal_reason", latest_terminal_reason_json);
       ("latest_next_action", Json_util.string_opt_to_json latest_next_action);
@@ -1246,6 +825,7 @@ let snapshot_json ~(config : Coord.config) ~(meta : keeper_meta) =
   let latest_next_action =
     Option.bind latest_terminal_reason (fun reason -> reason.next_action)
   in
+  let selected_model = selected_model_of_latest_decision latest_decision in
   let attention_fields =
     Keeper_status_bridge.attention_fields_json config meta
   in
@@ -1253,15 +833,6 @@ let snapshot_json ~(config : Coord.config) ~(meta : keeper_meta) =
     match registry_entry with
     | Some entry -> `String (Keeper_state_machine.phase_to_string entry.phase)
     | None -> `Null
-  in
-  let selected_model =
-    Option.bind latest_decision (fun json ->
-        match json_member "telemetry" json with
-        | `Assoc _ as telemetry ->
-            (match json_string_opt_member "selected_model" telemetry with
-             | Some _ as value -> value
-             | None -> json_string_opt_member "model_used" telemetry)
-        | _ -> None)
   in
   let runtime_contract =
     Keeper_runtime_contract.runtime_contract_json ~config meta
@@ -1277,8 +848,7 @@ let snapshot_json ~(config : Coord.config) ~(meta : keeper_meta) =
   in
   let needs_attention =
     assoc_bool_default "needs_attention" ~default:false attention_fields
-    || String.equal disposition "Pause"
-    || String.equal disposition "Alert"
+    || display_disposition_requires_attention disposition
   in
   let attention_reason =
     attention_reason_or_disposition ~needs_attention ~disposition_reason
@@ -1320,7 +890,7 @@ let snapshot_json ~(config : Coord.config) ~(meta : keeper_meta) =
       ("current_task_id", Json_util.string_opt_to_json (Keeper_runtime_contract.current_task_id_opt meta));
       ("goal_id", Json_util.string_opt_to_json (Keeper_runtime_contract.primary_goal_id_opt meta));
       ("goal_ids", `List (List.map (fun goal_id -> `String goal_id) meta.active_goal_ids));
-      ("active_model", `String (Keeper_exec_status.active_model_label_of_meta meta));
+      ("active_model", Json_util.string_opt_to_json selected_model);
       ("selected_model", Json_util.string_opt_to_json selected_model);
       ("runtime_contract", runtime_contract);
       ("runtime_blockers", `Assoc runtime_blocker_fields);

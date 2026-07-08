@@ -1,7 +1,7 @@
 # RFC-0019: Keeper Credential Unification
 
-- **Status**: Draft
-- **Author**: vincent (with Claude Opus 4.7 1M, exploratory session)
+- **Status**: Active (PR #10660 RFC-0008 PR-1 merged 2026-04-26; PR #12304 multi-repo architecture merged 2026-04-30. F-1 invariant + end-to-end provisioning + PR-C `finalize` caller wire-up still in scope.)
+- **Author**: vincent (with Agent-LLM-A Opus 4.7 1M, exploratory session)
 - **Created**: 2026-04-30
 - **Supersedes context for**: `~/me/planning/claude-plans/fancy-prancing-thompson.md` (2026-04-30, retired — built without awareness of #12304)
 - **Related**: RFC-0008 (Credential Provider trait), PR #10660 (RFC-0008 PR-1 merged 2026-04-26), PR #12304 (multi-repo architecture merged 2026-04-30 12:37)
@@ -15,7 +15,7 @@ The user observed a concrete symptom: `gh search prs --owner yousleepwhen --auth
 - **Architecture A** (RFC-0008 PR-1, #10660, 2026-04-26) — keeper-centric, filesystem-bundle SSOT.
 - **Architecture B** (#12304, 2026-04-30 12:37) — credential-record-centric, TOML SSOT.
 
-Architectures A and B share **zero code paths** (verified by exhaustive `rg` cross-references). They have **two different storage SSOTs** (`<base>/.masc/github-identities/<id>/gh/` filesystem vs. `<base>/.masc/config/credentials.toml`). They expose **two different operator UX surfaces** (operator-control plane action handlers vs. dashboard HTTP API). They have **two different conceptual models** of what a "keeper credential" means.
+Architectures A and B share **zero code paths** (verified by exhaustive `rg` cross-references). They have **two different storage SSOTs** (`<base>/.masc/repo-cli-identities/<id>/gh/` filesystem vs. `<base>/.masc/config/credentials.toml`). They expose **two different operator UX surfaces** (operator-control plane action handlers vs. dashboard HTTP API). They have **two different conceptual models** of what a "keeper credential" means.
 
 End-to-end check (research synthesis §5) shows **all five user-facing acceptance criteria FAIL** post-#12304: the merge added repository-level RBAC scaffolding without touching the path that actually fails for the user.
 
@@ -23,7 +23,7 @@ Worse: §7 of the synthesis shows the combined main has **regressed F-1 and F-4*
 
 ## 2. Why two ships in 4 days (process root cause)
 
-Both PRs were committed by jeong-sik (Vincent). RFC-0008 PR-1 was *human-authored* with full RFC discipline (`docs/rfc/RFC-0008-credential-provider.md` + pre-RFC evidence record). #12304 was *agent-co-authored* (`Co-Authored-By: Claude Sonnet 4.6` across 5 commits, ~4,600 LOC) with **zero references** to RFC-0008, `Credential_provider`, `keeper_gh_env`, or `Host_config_provider` in any commit message or any of the changed files.
+Both PRs were committed by jeong-sik (Vincent). RFC-0008 PR-1 was *human-authored* with full RFC discipline (`docs/rfc/RFC-0008-credential-provider.md` + pre-RFC evidence record). #12304 was *agent-co-authored* (`Co-Authored-By: Agent-LLM-A Sonnet 4.6` across 5 commits, ~4,600 LOC) with **zero references** to RFC-0008, `Credential_provider`, `repo_cli_credentials`, or `Host_config_provider` in any commit message or any of the changed files.
 
 The workflow rule (`~/me/instructions/workflow.md:21-31`):
 
@@ -61,7 +61,8 @@ is a Korean-language markdown instruction. It is **not** a hook, **not** a CI ch
 │  Operator UX                                                    │
 │   • Dashboard: credential-settings.ts, keeper-repo-mapping.ts   │
 │   • CLI: scripts/keeper-credential.sh                           │
-│   • MCP tool: masc_keeper_github_identity_login_prepare         │
+│   • No operator action: credential bundles are config/bootstrap │
+│     materialization, not a runtime operator-control surface     │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼
@@ -92,15 +93,15 @@ is a Korean-language markdown instruction. It is **not** a hook, **not** a CI ch
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  Keeper consumption (lib/keeper/keeper_shell_*.ml)              │
-│   • keeper_shell_docker.ml: unchanged at call site              │
-│   • keeper_shell_gh_context.ml: routes per-repo via mapping     │
+│  Agent tool execution consumption                               │
+│   • sandbox credential binding unchanged at call site           │
+│   • per-repo credential context routes via mapping              │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │  Materialization (filesystem; derived, not authoritative)       │
-│   <base>/.masc/github-identities/<credential.id>/gh/            │
+│   <base>/.masc/repo-cli-identities/<credential.id>/gh/            │
 │   ↑ created by materializer hook in §4.4                        │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -141,8 +142,7 @@ let resolve ~config ~identity:keeper_name =
       (* simple case: 1 keeper, 1 credential *)
       bind_from_credential ~config ~keeper_name credential
   | [] ->
-      (* fallback: legacy keeper_types_profile.github_identity path *)
-      legacy_bind ~config ~keeper_name
+      Error (Missing_mapping { keeper_name; path = keeper_repo_mappings_path config })
   | many ->
       (* multi-credential keepers need per-repo resolution; the caller
          supplies repo context separately via resolve_for_repo *)
@@ -155,13 +155,13 @@ val resolve_for_repo
  -> (binding, error) result
 ```
 
-Backward-compat (Acceptance criterion #6): keepers with `profile.github_identity` set keep working through `legacy_bind`. The legacy path emits a deprecation metric so we can ramp-down.
+Strict resolution: keepers with only `profile.repo_cli_identity` no longer dispatch GitHub work through `Host_config_provider.resolve`; they must have a credential-store mapping.
 
 ### 4.3 Identity binding is `f(keeper, repo)`, not `f(keeper)` (P6)
 
-This RFC makes explicit what #12304 implied: a keeper may map to N repositories, and each repository may carry a different credential. The keeper's `op=gh pr create` must therefore know **which repo** it is operating on to select the right credential.
+This RFC makes explicit what #12304 implied: a keeper may map to N repositories, and each repository may carry a different credential. A typed `gh` execution request must therefore know **which repo** it is operating on to select the right credential.
 
-Today the seam is at `keeper_shell_gh_context.ml:resolve_repo_context_for_gh` — it already determines repo context from active task / worktree. RFC-0019 extends this resolver to ALSO return the credential id, then passes it to `resolve_for_repo` instead of the keeper-only `resolve`.
+Today the seam is the repository credential context resolver: it determines repo context from active task / worktree. RFC-0019 extends this resolver to ALSO return the credential id, then passes it to `resolve_for_repo` instead of the keeper-only `resolve`.
 
 ### 4.4 Materializer hook (P7)
 
@@ -183,7 +183,7 @@ let add ~config ~base_path (cred : credential) =
 |---|---|---|
 | `gh_config_dir = Some path AND path is non-empty bundle` | verify `gh auth status`, hash token, populate `token_sha256_prefix` | `Materialized` |
 | `gh_config_dir = Some path AND path is empty/missing` | mkdir, return `Unmaterialized` with operator instructions | `Unmaterialized` |
-| `gh_config_dir = None AND request body has `oauth_method: "device_flow"` | spawn `gh auth login --hostname github.com --git-protocol https --device` in `<base>/.masc/github-identities/<id>/gh/`, capture the device code, return it in HTTP response for operator to type | `Unmaterialized` until operator completes; transitions to `Materialized` on next `verify` |
+| `gh_config_dir = None AND request body has `oauth_method: "device_flow"` | spawn `gh auth login --hostname github.com --git-protocol https --device` in `<base>/.masc/repo-cli-identities/<id>/gh/`, capture the device code, return it in HTTP response for operator to type | `Unmaterialized` until operator completes; transitions to `Materialized` on next `verify` |
 | `gh_config_dir = None AND request body has `oauth_method: "with_token"` AND request body has `token: ...` (stdin / multipart only)` | run `gh auth login --hostname github.com --with-token` against the bundle path; *do not log the token anywhere* (only its sha256_prefix) | `Materialized` |
 
 Existing dashboard form (`credential-settings.ts:250-309`) is extended with a **method selector** ("Web OAuth" / "Token paste") and a **device-flow code display panel**. Per user choice (2026-04-30 plan-mode session): both methods supported, web OAuth default.
@@ -205,14 +205,14 @@ This RFC lays out 4 PRs. Each is independently shippable, each ramps acceptance-
 
 ### PR-A — Bridge resolver (1-2 days; SAFE; non-functional bridge)
 
-**Goal**: make A read B's registry; backward compatible.
+**Goal**: make A read B's registry with strict credential-store ownership.
 
-- `lib/keeper/host_config_provider.ml`: add `Keeper_repo_mapping.credentials_for_keeper` lookup at top of `resolve`; fall back to legacy `keeper_types_profile.github_identity` when mapping is empty.
+- `lib/keeper/host_config_provider.ml`: add `Keeper_repo_mapping.credentials_for_keeper` lookup at top of `resolve`; missing or unreadable mappings fail closed instead of falling back to legacy `keeper_types_profile.repo_cli_identity`.
 - `lib/repo_manager/keeper_repo_mapping.ml`: expose `credentials_for_keeper` helper.
 - `lib/repo_manager/repo_manager_types.{ml,mli}`: add `state : credential_state` and `token_sha256_prefix : string option` fields with conservative defaults (`Unmaterialized`, `None`) so existing TOML files load. Preserve `to_yojson`/`of_yojson` symmetry (per memory `feedback_json-serializer-parser-key-symmetry`).
-- `test/test_credential_provider_bridge.ml` (new): keeper with mapping → reads from `Credential_store`. Keeper without mapping → reads legacy. Both succeed.
+- `test/test_credential_provider_bridge.ml` (new): keeper with mapping → reads from `Credential_store`. Keeper without mapping returns an empty helper result; `Keeper_host_config_provider.resolve` fails closed with an actionable missing-mapping error.
 
-**Acceptance**: legacy keepers unchanged. New keepers with mapping route through `Credential_store`. F-1 still untouched.
+**Acceptance**: unmapped keepers fail closed with an actionable mapping error. Keepers with mapping route through `Credential_store`. F-1 still untouched.
 
 ### PR-B — Materializer + dashboard provisioning (3-5 days; observable; closes user's symptom)
 
@@ -247,21 +247,21 @@ This RFC lays out 4 PRs. Each is independently shippable, each ramps acceptance-
 
 **Goal**: prevent the next #12304-style split-brain.
 
-- `~/me/.claude/hooks/pr-creation.sh` (new): on `gh pr create`, scan `docs/rfc/` and `docs/design/` for keyword overlap with the changed files (e.g. files matching `lib/keeper/`, `lib/repo_manager/`, `*credential*` → check for prior RFCs). Emit `[WARN] this PR touches subsystems with prior RFCs: …` and require either an RFC link in body or `--skip-rfc-check` flag with explicit reason.
+- `~/me/.claude/hooks/rfc-discovery.sh` (new): before external review publication, scan `docs/rfc/` and `docs/design/` for keyword overlap with the changed files (e.g. files matching `lib/keeper/`, `lib/repo_manager/`, `*credential*` → check for prior RFCs). Emit `[WARN] this work touches subsystems with prior RFCs: …` and require either an RFC link in the review notes or `RFC-WAIVED: <reason>`.
 - `~/me/instructions/workflow-pr.md`: add clause "PR touching credential / keeper / repo_manager / operator subsystems MUST cite an RFC in body or include `RFC-WAIVED: <reason>` line".
-- `~/me/CLAUDE.md` `<agent_delegation>`: codify the agent gate from §3.2 P9.
-- `docs/KEEPER-USER-MANUAL.md`: rewrite the "github_identity" section to teach the unified `Credential_store` model. Old `github_identity` field documented as legacy with deprecation date.
+- `~/me/AGENT-LLM-A.md` `<agent_delegation>`: codify the agent gate from §3.2 P9.
+- `docs/KEEPER-USER-MANUAL.md`: rewrite the "repo_cli_identity" section to teach the unified `Credential_store` model. Old `repo_cli_identity` field documented as legacy with deprecation date.
 - `docs/rfc/RFC-0008-credential-provider.md`: add "Status: Superseded by RFC-0019" header; keep file for history.
 
 **Acceptance**: future agent-delegated PRs in this subsystem either cite RFC-0019 or are rejected by hook before reaching review.
 
 ## 6. Migration plan
 
-**No data migration needed for legacy keepers** (`profile.github_identity` set, no `keeper_repo_mapping`). PR-A's `legacy_bind` keeps them on the old path indefinitely. Deprecation date is left to a follow-up RFC; this RFC does not mandate a sunset.
+**Credential mapping is required for keeper GitHub dispatch** (`keeper_repo_mapping` or direct `credential_id`). The old `profile.repo_cli_identity` / root-bundle fallback is removed; unmapped keepers fail closed until an operator adds a mapping.
 
-**For keepers with both** (`profile.github_identity` AND `keeper_repo_mapping`): PR-A's resolver prefers the mapping. PR-D's manual update teaches operators to delete the obsolete `github_identity` field. A linter rule (`scripts/audit-keeper-credential-drift.sh` extended) flags the conflict.
+**For keepers with both** (`profile.repo_cli_identity` AND `keeper_repo_mapping`): PR-A's resolver prefers the mapping. PR-D's manual update teaches operators to delete the obsolete `repo_cli_identity` field. A linter rule (`scripts/audit-keeper-credential-drift.sh` extended) flags the conflict.
 
-**For new keepers** (no `profile.github_identity`): use `Credential_store` + `keeper_repo_mapping` exclusively from PR-A onward.
+**For new keepers** (no `profile.repo_cli_identity`): use `Credential_store` + `keeper_repo_mapping` exclusively from PR-A onward.
 
 ## 7. Process safeguards (the part that prevents this from recurring)
 
@@ -269,36 +269,36 @@ The technical fix in §4-§5 closes the user-facing problem. The process fix in 
 
 ### 7.1 Pre-PR RFC-discovery hook (PR-D)
 
-A bash hook fires on `gh pr create` (or git push for PR-bound branches). It:
+A bash hook fires before external review publication. It:
 
 1. Diffs the working tree against `origin/main`.
 2. Maps changed files to subsystem keywords (`lib/keeper/` → `keeper`; `lib/repo_manager/` → `repo_manager`, `credential`; …).
 3. Greps `docs/rfc/*.md` for those keywords in titles and abstracts.
-4. If any RFC matches AND the PR body does not cite that RFC's number, prints:
+4. If any RFC matches AND the review notes do not cite that RFC's number, prints:
    ```
    ⚠️  This PR touches subsystems with active RFCs:
        - RFC-0008 (Credential Provider) ← matches lib/keeper/credential_provider.{mli,ml}
        - RFC-0019 (Credential Unification) ← matches lib/repo_manager/credential_store.ml
-   PR body must cite at least one RFC number, or include "RFC-WAIVED: <reason>" line.
+   Review notes must cite at least one RFC number, or include "RFC-WAIVED: <reason>" line.
    Override with --skip-rfc-check (logged to audit-events).
    ```
 5. Exits non-zero unless body cites or override flag is present.
 
-### 7.2 Agent delegation gate (PR-D, CLAUDE.md)
+### 7.2 Agent delegation gate (PR-D, AGENT-LLM-A.md)
 
 ```xml
 <agent_delegation>
-  Autonomous coding agents (Claude Sonnet, Codex, autocoder) MUST NOT
+  Autonomous coding agents (Agent-LLM-A Sonnet, Agent-Code, autocoder) MUST NOT
   produce PRs in the following subsystems without a prior human-reviewed RFC:
     - lib/keeper/credential_*
     - lib/repo_manager/
-    - lib/keeper/keeper_gh_*
+    - lib/keeper/keeper remote command_*
     - lib/operator/operator_control.ml (credential action handlers)
     - dashboard/src/components/credential-settings.ts
     - dashboard/src/components/keeper-repo-mapping.ts
   Enforcement (one of):
     (a) Pre-task review: human posts "RFC review LGTM, agent-delegate authorized for <RFC#>" before the agent starts.
-    (b) Hook: if an agent commit author contains "Co-Authored-By: Claude|Codex|Autocoder" AND files touch the above paths AND PR body lacks RFC citation, hook blocks merge.
+    (b) Hook: if an agent commit author contains "Co-Authored-By: Agent-LLM-A|Agent-Code|Autocoder" AND files touch the above paths AND PR body lacks RFC citation, hook blocks merge.
 </agent_delegation>
 ```
 
@@ -310,7 +310,7 @@ A bash hook fires on `gh pr create` (or git push for PR-bound branches). It:
 
 | # | Risk | Mitigation |
 |---|---|---|
-| R1 | Legacy keepers break when `Credential_store` lookup fails | PR-A `legacy_bind` fallback + integration test |
+| R1 | Unmapped legacy keepers fail GitHub dispatch after fallback removal | Missing-mapping error names `keeper_repo_mappings.toml` and the required `[mapping.<keeper>]` entry; operators must migrate keepers to credential-store mappings |
 | R2 | Token-paste path leaks token via error message / log | PR-B test grep stdin/log/metric/audit for `gh[op]_[A-Za-z0-9_]{36+}` regex; assert 0 hits |
 | R3 | Materializer races with operator's manual `gh auth login` outside dashboard | PR-C 2-phase commit + filesystem lock during materialize |
 | R4 | F-1 gate false positive (multi-operator host shares same PAT) | PR-C audit metric distinguishes single- vs multi-operator detection by hash count uniqueness |
@@ -322,9 +322,9 @@ A bash hook fires on `gh pr create` (or git push for PR-bound branches). It:
 ## 9. Open questions / decisions needed before PR-A starts
 
 - **Q1** *(load-bearing)*: When `Credential_store.add` is called with `gh_config_dir = None AND oauth_method = "device_flow"`, who hosts the device-flow subprocess? (a) MASC server fiber, (b) standalone CLI helper, (c) operator's terminal. **Default proposal**: (a) — server fiber spawns short-lived `gh auth login --device`, captures output for HTTP response. Operator types device code in their browser. Trade-off: server now talks to GitHub OAuth. Acceptable since server already proxies many GH calls.
-- **Q2**: Should `state = Unmaterialized` block keeper from `op=gh` or just warn? **Default proposal**: block — return `Error (Unmaterialized_credential ...)` with actionable message. Alternative: serve an idempotent retry that triggers materialization on demand.
-- **Q3**: Manual deprecation cadence for `profile.github_identity` legacy field. **Default proposal**: deprecation warning in PR-D; remove in 6 months (RFC-0023 territory).
-- **Q4**: How does Q5 from research synthesis (§11) — multi-credential keepers — interact with `keeper_alias` git author? **Default proposal**: `git_author_name` / `git_author_email` come from the *resolved credential's* `username` field, not the keeper alias, when `git_identity_mode = "github_identity"`. Existing `keeper_alias` mode is unchanged.
+- **Q2**: Should `state = Unmaterialized` block credentialed typed `gh` execution or just warn? **Default proposal**: block — return `Error (Unmaterialized_credential ...)` with actionable message. Alternative: serve an idempotent retry that triggers materialization on demand.
+- **Q3**: Manual deprecation cadence for `profile.repo_cli_identity` legacy field. **Default proposal**: deprecation warning in PR-D; remove in 6 months (RFC-0023 territory).
+- **Q4**: How does Q5 from research synthesis (§11) — multi-credential keepers — interact with `keeper_alias` git author? **Default proposal**: `git_author_name` / `git_author_email` come from the *resolved credential's* `username` field, not the keeper alias, when `git_identity_mode = "repo_cli_identity"`. Existing `keeper_alias` mode is unchanged.
 - **Q5**: F-1 strictness ramp gate value. **Default proposal**: enable strict mode when `keeper_credential_provider_gate_warned_total / keeper_credential_provider_resolve_total < 0.001` over 14 days, AND no operator-reported false positives, AND fine-grained PAT issuance script exists (RFC-0008 PR-2 prereq).
 
 ## 10. Verification
@@ -351,10 +351,8 @@ MASC_CRED_MATERIALIZER=on dune exec masc-mcp -- serve
 # server returns device code → operator visits github.com/login/device →
 # server completes materialization → toast: "Materialized: credential <id>"
 
-# Now keeper smoke
-keeper_name="anyang-keepers" \
-  dune exec scripts/integration/keeper_pr_create_smoke.exe
-# Expected: PR created, attributed to <username> from credential record.
+# Now run a focused credential-backed keeper smoke.
+# Expected: credential materialization is visible in keeper runtime state.
 ```
 
 **PR-C**:
@@ -374,9 +372,9 @@ GH_TOKEN_OPERATOR=$(gh auth token) \
 git checkout -b test/credential-touch
 echo "// test" >> lib/keeper/credential_provider.ml
 git commit -am "test"
-gh pr create --title "test" --body "no RFC cited"
+./.claude/hooks/rfc-discovery.sh --title "test" --body "no RFC cited"
 # Expected: hook blocks with "RFC-0008 / RFC-0019 references missing".
-gh pr create --title "test" --body "Refs RFC-0019"
+./.claude/hooks/rfc-discovery.sh --title "test" --body "Refs RFC-0019"
 # Expected: hook allows.
 ```
 
@@ -388,7 +386,7 @@ After PR-B is merged + operator completes web OAuth for `anyang-keepers` credent
 - **RFC-0020** (proposed): `In_container_login_provider` (Option B per RFC-0008). Requires fine-grained PAT issuance policy + 2-week soak from RFC-0019 PR-C. Out of scope here.
 - **RFC-0021** (proposed): per-keeper SSH key management (current `ssh_key_path` field is RBAC-only). Out of scope.
 - **RFC-0022** (proposed): GitLab and Local credential types parity with GitHub. RFC-0019 design accommodates the variant but does not test the non-Github paths.
-- **RFC-0023** (proposed): sunset `profile.github_identity` legacy field after 6-month deprecation.
+- **RFC-0023** (proposed): sunset `profile.repo_cli_identity` legacy field after 6-month deprecation.
 
 ## 12. Citations
 

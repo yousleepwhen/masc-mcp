@@ -102,7 +102,7 @@ type keeper_memory_summary =
 type memory_bank_compaction =
   Keeper_memory_policy.memory_bank_compaction = {
   performed : bool;
-  reason : string option;
+  source : Keeper_memory_policy.compaction_source option;
   target_notes : int;
   before_notes : int;
   after_notes : int;
@@ -122,10 +122,7 @@ val short_term_horizon : string
 val mid_term_horizon : string
 val long_term_horizon : string
 val memory_horizon_of_kind_opt : string -> string option
-val memory_horizon_of_kind : string -> string
 val memory_horizon_of_json_opt : Yojson.Safe.t -> string option
-val memory_horizon_of_json : kind:string -> Yojson.Safe.t -> string
-val trim_nonempty : string -> string option
 val split_state_items : string -> string list
 val strip_prefix_ci : prefix:string -> string -> string option
 val find_state_block : string -> string option
@@ -294,15 +291,27 @@ type keeper_memory_row_raw = {
 (** Raw row from [memory_bank.jsonl] with both the original JSON and
     parsed columns kept side by side. *)
 
+type memory_consolidation_summarizer =
+  trace_id:string -> texts:string list -> string option
+(** Optional semantic summarizer for progress-cluster consolidation.
+    Returning [None], an empty string, or a non-meaningful memory string
+    falls back to the deterministic summary. *)
+
 val parse_memory_bank_row : string -> keeper_memory_row_raw option
-(** Parse a single JSONL line; [None] when the row is malformed or
-    missing required fields. *)
+(** Parse a single JSONL line; [None] when the row is malformed,
+    non-current schema, or missing canonical horizon/provenance fields. *)
 
 val row_trace_id : keeper_memory_row_raw -> string
 (** Stable identifier used by trace / dedup paths. *)
 
+val memory_llm_summary_enabled : unit -> bool
+(** Whether opt-in LLM-backed memory consolidation is enabled by
+    [MASC_KEEPER_MEMORY_LLM_SUMMARY]. Defaults to [false]. *)
+
 val consolidate_memory_notes :
-  keeper_memory_row_raw list -> keeper_memory_row_raw list * int
+  ?summarizer:memory_consolidation_summarizer ->
+  keeper_memory_row_raw list ->
+  keeper_memory_row_raw list * int
 (** Merge near-duplicate rows and return [(consolidated, dropped_count)]. *)
 
 (** {1 Compaction} *)
@@ -331,6 +340,7 @@ val write_memory_bank_rows :
 (** Atomically replace the bank file with [rows]. *)
 
 val compact_memory_bank_if_needed :
+  ?summarizer:memory_consolidation_summarizer ->
   Coord.config ->
   Keeper_types.keeper_meta -> memory_bank_compaction
 (** Run a compaction pass for the keeper if the file has crossed the

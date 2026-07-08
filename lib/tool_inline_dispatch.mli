@@ -19,7 +19,7 @@ type context = Tool_inline_dispatch_types.context = {
   clock : float Eio.Time.clock_ty Eio.Resource.t;
   arguments : Yojson.Safe.t;
   mcp_session_id : string option;
-  write_mcp_session_agent : string -> unit;
+  record_mcp_session_agent : string -> unit;
   wait_for_message :
     Session.registry ->
     agent_name:string ->
@@ -34,8 +34,14 @@ type context = Tool_inline_dispatch_types.context = {
     Coord.config -> Mcp_server_eio_governance.mcp_session_record list -> unit;
 }
 
-(** {1 Functions} *)
+(** {1 Dispatch} *)
 
-val safe_exec : string list -> tool_result
+val dispatch : context -> name:string -> Tool_result.result option
 
-val dispatch : context -> name:string -> tool_result option
+module For_testing : sig
+  val discover_tools_json :
+       query:string
+    -> limit:int
+    -> Masc_domain.tool_schema list
+    -> Yojson.Safe.t
+end

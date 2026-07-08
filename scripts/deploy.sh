@@ -19,7 +19,14 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 RELEASE_DIR="$REPO_DIR/releases"
 PROD_PORT=8945
 HEALTH_URL="http://127.0.0.1:$PROD_PORT/health"
-BASE_PATH="${MASC_BASE_PATH:-$HOME}"
+default_base_path() {
+    if [ -n "${MASC_BASE_PATH:-}" ]; then
+        printf '%s\n' "$MASC_BASE_PATH"
+    else
+        printf '%s\n' "$REPO_DIR"
+    fi
+}
+BASE_PATH="$(default_base_path)"
 RUNTIME_ROOT="${BASE_PATH}/.masc"
 PID_FILE="${RUNTIME_ROOT}/masc-prod.pid"
 LOG_DIR="${RUNTIME_ROOT}/logs"
@@ -67,7 +74,7 @@ wait_port_free() {
 if [ "$SKIP_BUILD" = false ]; then
     echo "==> Building MASC MCP..." >&2
     cd "$REPO_DIR"
-    dune build --root "$REPO_DIR" bin/main_eio.exe 2>&1
+    "$REPO_DIR/scripts/dune-local.sh" build bin/main_eio.exe 2>&1
     echo "    Build complete." >&2
 fi
 

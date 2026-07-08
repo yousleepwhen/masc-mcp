@@ -27,33 +27,8 @@ let active_verifications_dir base_path =
   let base_path = project_root_of_base_path base_path in
   Filename.concat (Coord_utils.masc_dir_from_base_path ~base_path) "verifications"
 
-let legacy_verifications_dir base_path =
-  Filename.concat (project_root_of_base_path base_path) "verifications"
-
-let warned_legacy_dirs : (string, unit) Hashtbl.t = Hashtbl.create 8
-let warned_legacy_dirs_mutex = Stdlib.Mutex.create ()
-
-let dir_exists path =
-  try Sys.file_exists path && Sys.is_directory path with
-  | Sys_error _ -> false
-
-let warn_if_legacy_verifications_dir_present ~base_path ~active_dir =
-  let legacy_dir = legacy_verifications_dir base_path in
-  if dir_exists legacy_dir then (
-    Stdlib.Mutex.lock warned_legacy_dirs_mutex;
-    Fun.protect
-      ~finally:(fun () -> Stdlib.Mutex.unlock warned_legacy_dirs_mutex)
-      (fun () ->
-        if not (Hashtbl.mem warned_legacy_dirs legacy_dir) then (
-          Hashtbl.add warned_legacy_dirs legacy_dir ();
-          Log.Task.warn
-            "Ignoring legacy verification directory %s; active store is %s"
-            legacy_dir active_dir)))
-
 let verifications_dir base_path =
-  let dir = active_verifications_dir base_path in
-  warn_if_legacy_verifications_dir_present ~base_path ~active_dir:dir;
-  dir
+  active_verifications_dir base_path
 
 let request_path base_path req_id =
   Filename.concat (verifications_dir base_path) (req_id ^ ".json")
@@ -82,8 +57,23 @@ let verdict_of_yojson = function
              | _ -> "no reason given"
            in
            Ok (`Partial (score, reason))
-       | _ -> Error "unknown or missing verdict")
-  | _ -> Error "verdict must be a JSON object"
+       | other ->
+           let got =
+             match other with
+             | Some j -> Printf.sprintf "got %s" (Json_util.excerpt j)
+             | None -> "field missing"
+           in
+           Error
+             (Printf.sprintf
+                "unknown or missing 'verdict' (expected one of: \
+                 pass | fail | partial; %s)"
+                got))
+  | other ->
+      Error
+        (Printf.sprintf
+           "verdict must be a JSON object, got %s: %s"
+           (Json_util.kind_name other)
+           (Json_util.excerpt other))
 
 let request_status_of_yojson = function
   | `Assoc fields ->
@@ -92,13 +82,38 @@ let request_status_of_yojson = function
        | Some (`String "assigned") ->
            (match List.assoc_opt "verifier" fields with
             | Some (`String agent) -> Ok (`Assigned agent)
-            | _ -> Error "assigned requires 'verifier' field")
+            | other ->
+                let got =
+                  match other with
+                  | Some j -> Printf.sprintf "got %s" (Json_util.excerpt j)
+                  | None -> "field missing"
+                in
+                Error
+                  (Printf.sprintf
+                     "assigned status requires 'verifier' string field \
+                      (%s)"
+                     got))
        | Some (`String "completed") ->
            (match verdict_of_yojson (`Assoc fields) with
             | Ok verdict -> Ok (`Completed verdict)
             | Error err -> Error err)
-       | _ -> Error "unknown request status")
-  | _ -> Error "request status must be a JSON object"
+       | other ->
+           let got =
+             match other with
+             | Some j -> Printf.sprintf "got %s" (Json_util.excerpt j)
+             | None -> "field missing"
+           in
+           Error
+             (Printf.sprintf
+                "unknown 'status' (expected one of: pending | assigned \
+                 | completed; %s)"
+                got))
+  | other ->
+      Error
+        (Printf.sprintf
+           "request status must be a JSON object, got %s: %s"
+           (Json_util.kind_name other)
+           (Json_util.excerpt other))
 
 let request_header_of_yojson = function
   | `Assoc fields ->
@@ -125,17 +140,38 @@ let request_header_of_yojson = function
              | Some f -> f
              | None -> Time_compat.now ()
            in
-           let status =
+           let status_result =
              match List.assoc_opt "status" fields with
-             | Some json -> (
-                 match request_status_of_yojson json with
-                 | Ok s -> s
-                 | Error _ -> `Pending)
-             | None -> `Pending
+             | None -> Ok `Pending
+             | Some json -> request_status_of_yojson json
            in
-           Ok { id; task_id; worker; verifier; created_at; status }
-       | _ -> Error "verification request requires 'id', 'task_id', 'worker' fields")
-  | _ -> Error "verification request must be a JSON object"
+           (match status_result with
+            | Ok status ->
+                Ok { id; task_id; worker; verifier; created_at; status }
+            | Error err ->
+                Error
+                  (Printf.sprintf
+                     "verification request '%s' has invalid 'status' field: \
+                      %s"
+                     id err))
+       | id_opt, task_opt, worker_opt ->
+           let missing =
+             List.filter_map
+               (fun (name, opt) -> if Option.is_none opt then Some name else None)
+               [ "id", id_opt; "task_id", task_opt; "worker", worker_opt ]
+           in
+           Error
+             (Printf.sprintf
+                "verification request missing required string field(s) \
+                 [%s] (object had keys: [%s])"
+                (String.concat ", " missing)
+                (String.concat ", " (List.map fst fields))))
+  | other ->
+      Error
+        (Printf.sprintf
+           "verification request must be a JSON object, got %s: %s"
+           (Json_util.kind_name other)
+           (Json_util.excerpt other))
 
 let load_request_header base_path req_id =
   let path = request_path base_path req_id in

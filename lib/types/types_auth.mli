@@ -58,8 +58,13 @@ val agent_role_to_yojson : agent_role -> Yojson.Safe.t
 (** Serialises as [\`String "worker"] / [\`String "admin"]. *)
 
 val agent_role_of_yojson : Yojson.Safe.t -> (agent_role, string) result
-(** Accepts only [\`String _]; non-string yields
-    [Error "Expected string for agent_role"]. *)
+(** Accepts only [\`String _].  Non-string inputs yield an [Error]
+    string that names both the contract (the set of accepted role
+    strings derived from {!valid_agent_role_strings}) and the
+    canonical {!Json_util.kind_name} of the value actually received
+    (e.g. ["int"] / ["object"] / ["null"]) so operators can
+    distinguish a wrong-type bug from a wrong-shape bug without
+    re-dumping the full payload. *)
 
 val valid_agent_role_strings : string list
 (** [["worker"; "admin"]] — used as the allowed-values set in
@@ -120,11 +125,17 @@ type permission =
   | CanBroadcast
   | CanOpenPortal
   | CanSendPortal
-  | CanCreateWorktree
-  | CanRemoveWorktree
   | CanVote
   | CanAdmin
 [@@deriving show { with_path = false }]
+
+val permission_to_string : permission -> string
+(** Stable wire format for {!permission}.  Returns the same string
+    {!show_permission} does today (PascalCase constructor name) but
+    locks the contract against [@@deriving show] template drift and
+    accidental renames.  Public API/SSE/error output depends on these
+    exact strings — prefer this over [show_permission] at any
+    externally-observable boundary. *)
 
 val permissions_for_role : agent_role -> permission list
 (** [Worker] permissions exclude [CanInit] / [CanReset] / [CanAdmin].

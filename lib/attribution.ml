@@ -4,14 +4,6 @@ type origin = Det | NonDet
 
 let string_of_origin = function Det -> "det" | NonDet -> "nondet"
 
-let origin_of_string = function
-  | "det" -> Ok Det
-  | "nondet" -> Ok NonDet
-  | other ->
-    Error
-      (Printf.sprintf
-         "attribution.origin: expected \"det\" | \"nondet\", got %S" other)
-
 type outcome =
   | Passed
   | Policy_failed of { reason : string }
@@ -60,92 +52,75 @@ let to_yojson (t : t) : Yojson.Safe.t =
       ("outcome", outcome_to_yojson t.outcome);
     ]
 
-(* --- Parsing --- *)
+(* --- Deserialization --- *)
 
-open Result.Syntax
+let outcome_of_yojson (json : Yojson.Safe.t) : (outcome, string) result =
+  match json with
+  | `Assoc fields -> (
+      match List.assoc_opt "kind" fields with
+      | Some (`String "passed") -> Ok Passed
+      | Some (`String "policy_failed") -> (
+          match List.assoc_opt "reason" fields with
+          | Some (`String reason) -> Ok (Policy_failed { reason })
+          | _ -> Error "Policy_failed: missing reason")
+      | Some (`String "transition_blocked") -> (
+          match
+            ( List.assoc_opt "from_state" fields,
+              List.assoc_opt "to_state" fields,
+              List.assoc_opt "reason" fields )
+          with
+          | Some (`String from_state), Some (`String to_state), Some (`String reason) ->
+              Ok (Transition_blocked { from_state; to_state; reason })
+          | _ -> Error "Transition_blocked: missing fields")
+      | Some (`String "partial_pass") -> (
+          match
+            (List.assoc_opt "score" fields, List.assoc_opt "rationale" fields)
+          with
+          | Some (`Float score), Some (`String rationale) ->
+              Ok (Partial_pass { score; rationale })
+          | Some (`Int score), Some (`String rationale) ->
+              Ok (Partial_pass { score = float_of_int score; rationale })
+          | _ -> Error "Partial_pass: missing fields")
+      | _ -> Error "outcome: missing or invalid kind")
+  | _ -> Error "outcome: expected object"
 
-let require_field fields key =
-  match List.assoc_opt key fields with
-  | Some v -> Ok v
-  | None -> Error (Printf.sprintf "attribution: missing field %S" key)
+let of_yojson (json : Yojson.Safe.t) : (t, string) result =
+  match json with
+  | `Assoc fields -> (
+      match
+        ( List.assoc_opt "origin" fields,
+          List.assoc_opt "gate" fields,
+          List.assoc_opt "evidence" fields,
+          List.assoc_opt "outcome" fields )
+      with
+      | ( Some (`String origin_str),
+          Some (`String gate),
+          Some evidence,
+          Some outcome_json ) -> (
+          match origin_str with
+          | "det" -> (
+              match outcome_of_yojson outcome_json with
+              | Ok outcome -> Ok { origin = Det; gate; evidence; outcome }
+              | Error e -> Error e)
+          | "nondet" -> (
+              match outcome_of_yojson outcome_json with
+              | Ok outcome -> Ok { origin = NonDet; gate; evidence; outcome }
+              | Error e -> Error e)
+          | s -> Error ("invalid origin: " ^ s))
+      | _ -> Error "missing required fields")
+  | _ -> Error "expected JSON object"
 
-let require_string fields key =
-  let* v = require_field fields key in
-  match v with
-  | `String s -> Ok s
-  | other ->
-    Error
-      (Printf.sprintf "attribution.%s: expected string, got %s" key
-         (Yojson.Safe.to_string other))
-
-let require_float fields key =
-  let* v = require_field fields key in
-  match v with
-  | `Float f -> Ok f
-  | `Int i -> Ok (float_of_int i)
-  | other ->
-    Error
-      (Printf.sprintf "attribution.%s: expected number, got %s" key
-         (Yojson.Safe.to_string other))
-
-let outcome_of_yojson : Yojson.Safe.t -> (outcome, string) result = function
-  | `Assoc fields ->
-    let* kind = require_string fields "kind" in
-    (match kind with
-     | "passed" -> Ok Passed
-     | "policy_failed" ->
-       let* reason = require_string fields "reason" in
-       Ok (Policy_failed { reason })
-     | "transition_blocked" ->
-       let* from_state = require_string fields "from_state" in
-       let* to_state = require_string fields "to_state" in
-       let* reason = require_string fields "reason" in
-       Ok (Transition_blocked { from_state; to_state; reason })
-     | "partial_pass" ->
-       let* score = require_float fields "score" in
-       let* rationale = require_string fields "rationale" in
-       Ok (Partial_pass { score; rationale })
-     | other ->
-       Error
-         (Printf.sprintf
-            "attribution.outcome.kind: unknown %S (expected passed | \
-             policy_failed | transition_blocked | partial_pass)"
-            other))
-  | json ->
-    Error
-      (Printf.sprintf "attribution.outcome: expected JSON object, got %s"
-         (Yojson.Safe.to_string json))
-
-let of_yojson = function
-  | `Assoc fields ->
-    let* origin_s = require_string fields "origin" in
-    let* origin = origin_of_string origin_s in
-    let* gate = require_string fields "gate" in
-    let evidence =
-      match List.assoc_opt "evidence" fields with
-      | None | Some `Null -> `Null
-      | Some ev -> ev
-    in
-    let* outcome_j = require_field fields "outcome" in
-    let* outcome = outcome_of_yojson outcome_j in
-    Ok { origin; gate; evidence; outcome }
-  | json ->
-    Error
-      (Printf.sprintf "attribution: expected JSON object, got %s"
-         (Yojson.Safe.to_string json))
-
-(* --- Show --- *)
-
-let string_of_outcome_kind = function
-  | Passed -> "passed"
-  | Policy_failed _ -> "policy_failed"
-  | Transition_blocked _ -> "transition_blocked"
-  | Partial_pass _ -> "partial_pass"
+(* --- Debug representation --- *)
 
 let show (t : t) : string =
   Printf.sprintf "Attribution{origin=%s; gate=%s; outcome=%s}"
-    (string_of_origin t.origin) t.gate
-    (string_of_outcome_kind t.outcome)
+    (string_of_origin t.origin)
+    t.gate
+    (match t.outcome with
+     | Passed -> "Passed"
+     | Policy_failed _ -> "Policy_failed{...}"
+     | Transition_blocked _ -> "Transition_blocked{...}"
+     | Partial_pass _ -> "Partial_pass{...}")
 
 (* --- Smart constructors --- *)
 

@@ -1,6 +1,6 @@
 (** Server Dashboard HTTP — keeper-API surface.
 
-    Implements the [/api/dashboard/keeper/<name>/...] family used by the
+    Implements the [/api/v1/keepers/<name>/...] family used by the
     operator dashboard.  Owns the route classifier, request body
     handlers, trajectory merge logic, and checkpoint inventory.  Most
     helpers are exported so the dashboard test suite can exercise the
@@ -12,7 +12,7 @@ module Http = Http_server_eio
 (** {1 Route prefix and suffixes} *)
 
 val keeper_api_prefix : string
-(** [/api/dashboard/keeper] common prefix for every route below. *)
+(** [/api/v1/keepers/] common prefix for every route below. *)
 
 val keeper_suffix_tools : string
 val keeper_suffix_config : string
@@ -21,6 +21,7 @@ val keeper_suffix_shutdown : string
 val keeper_suffix_reset : string
 val keeper_suffix_clear : string
 val keeper_suffix_checkpoints : string
+val keeper_suffix_runtime_trace : string
 val keeper_suffix_directive : string
 
 (** {1 Trajectory merge}
@@ -69,48 +70,17 @@ val handle_keeper_tools_post :
   Httpun.Request.t -> Httpun.Reqd.t -> unit
 (** Handle [POST /tools] (tool-grant edits). *)
 
-(** {1 POST route classifier} *)
+(** {1 POST route classifier}
 
-type keeper_post_route_kind =
-  | Keeper_post_tools
-  | Keeper_post_config
-  | Keeper_post_boot
-  | Keeper_post_shutdown
-  | Keeper_post_reset
-  | Keeper_post_clear
-  | Keeper_post_checkpoints
-  | Keeper_post_directive
-  | Keeper_post_unknown
-(** Sub-route kind for a [POST /api/dashboard/keeper/<name>/...] path. *)
+    keeper_post_route_kind ADT + classifier + path helpers live in
+    Server_dashboard_http_keeper_api_types (intra-library file split,
+    2026-05-16). Re-exported via include below. *)
+include module type of Server_dashboard_http_keeper_api_types
 
-val classify_keeper_post_route : string -> keeper_post_route_kind
-(** Map a request path to its [keeper_post_route_kind]. *)
-
-val keeper_path_ends_with : string -> string -> bool
-(** [keeper_path_ends_with suffix path]: helper used by the classifier. *)
-
-val extract_keeper_name_for_suffix : string -> string -> string
-(** [extract_keeper_name_for_suffix suffix path] returns the keeper name
-    from a path of shape [/api/dashboard/keeper/<name>/<suffix>]. *)
-
-val is_keeper_checkpoints_get_path : string -> bool
-(** [true] for [GET /api/dashboard/keeper/<name>/checkpoints] paths. *)
-
-(** {1 Trajectory preview helpers} *)
-
-val trim_to_opt : string -> string option
-(** Trim and return [None] if empty. *)
-
-val truncate_text : max_chars:int -> string -> string
-(** Truncate [text] to [max_chars] (UTF-8 safe). *)
-
-val latest_preview_of_messages :
-  Agent_sdk.Types.message list -> string option
-(** Latest assistant-text preview suitable for the dashboard list view. *)
-
-val continuity_summary_of_messages :
-  Agent_sdk.Types.message list -> string option
-(** Latest [STATE]-derived continuity summary in the message history. *)
+(** Trajectory preview helpers (trim_to_opt / truncate_text /
+    latest_preview_of_messages / continuity_summary_of_messages)
+    moved to Server_dashboard_http_keeper_api_types — re-exported via
+    [include module type of] above. *)
 
 (** {1 Checkpoint inventory} *)
 
@@ -130,6 +100,16 @@ val oas_checkpoint_summary_json :
 val keeper_checkpoint_inventory_json :
   Coord.config -> string -> [ `Not_found | `OK ] * Yojson.Safe.t
 (** Inventory JSON for [GET /checkpoints]. *)
+
+val keeper_runtime_trace_json :
+  Coord.config ->
+  string ->
+  ?trace_id:string ->
+  ?turn_id:int ->
+  ?limit:int ->
+  unit ->
+  [ `Not_found | `OK ] * Yojson.Safe.t
+(** Runtime manifest + receipt evidence chain for [GET /runtime-trace]. *)
 
 val handle_keeper_checkpoints_post :
   Mcp_server.server_state ->
@@ -181,8 +161,19 @@ val handle_keeper_directive_post :
   'a -> Httpun.Request.t -> Httpun.Reqd.t -> string -> unit
 (** Handle [POST /directive] (operator directive injection). *)
 
+val handle_keeper_bulk_directive_post :
+  Mcp_server.server_state ->
+  'a -> Httpun.Request.t -> Httpun.Reqd.t -> string -> unit
+(** Handle [POST /api/v1/keepers_bulk/directive]. Body:
+    [{"names": [...], "action": "pause"|"resume"|"wakeup"}]. Runs the
+    same per-keeper meta read / persist / dispatch path as
+    [handle_keeper_directive_post], but issues a single cache invalidate
+    for the whole batch. Trades per-keeper observability granularity for
+    bulk performance: a fleet-wide resume is 1 round-trip + 1 rebuild
+    instead of N + N. *)
+
 val handle_keeper_get_subroutes :
   Mcp_server.server_state ->
   Httpun.Request.t -> Httpun.Request.t -> Httpun.Reqd.t -> unit
-(** Dispatch [GET /api/dashboard/keeper/<name>/<sub>] sub-routes
+(** Dispatch [GET /api/v1/keepers/<name>/<sub>] sub-routes
     (status / tools / checkpoints listing / etc.). *)

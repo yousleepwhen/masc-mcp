@@ -18,31 +18,42 @@ type hook_accumulator =
   { mutable meta : Keeper_types.keeper_meta
   ; mutable tool_calls : tool_call_detail list
   ; mutable current_turn : int
-  ; mutable completion_contract : Keeper_tool_disclosure.completion_contract
+  ; mutable completion_contract : Keeper_tool_completion_contract.completion_contract
   ; mutable required_tool_use_seen : bool
   ; mutable keeper_surface_tool_used : bool
   ; mutable discovered : Keeper_discovered_tools.t
   ; mutable tool_overlay : Agent_sdk.Tool_op.t
   ; mutable tool_surface : tool_surface_metrics
   ; mutable requested_tool_names : string list
-  ; mutable receipt_tool_contract_result : string
+  ; mutable requested_tool_names_seen : string list
+  ; mutable receipt_tool_contract_result :
+      Keeper_execution_receipt.tool_contract_result
+  ; mutable contract_violation_retries : int
   }
 
 (** Immutable snapshot of hook outputs after OAS execution completes. *)
 type hook_outputs =
   { out_meta : Keeper_types.keeper_meta
   ; out_tool_calls : tool_call_detail list
-  ; out_completion_contract : Keeper_tool_disclosure.completion_contract
+  ; out_completion_contract : Keeper_tool_completion_contract.completion_contract
   ; out_required_tool_use_seen : bool
   ; out_keeper_surface_tool_used : bool
   ; out_discovered : Keeper_discovered_tools.t
   ; out_tool_overlay : Agent_sdk.Tool_op.t
   ; out_tool_surface : tool_surface_metrics
   ; out_requested_tool_names : string list
-  ; out_receipt_tool_contract_result : string
+  ; out_requested_tool_names_seen : string list
+  ; out_receipt_tool_contract_result :
+      Keeper_execution_receipt.tool_contract_result
+  ; out_contract_violation_retries : int
   }
 
 val freeze : hook_accumulator -> hook_outputs
+
+val merge_requested_tool_names_seen
+  :  seen:string list
+  -> string list
+  -> string list
 
 type tool_search_hit_partition =
   { visible_core_hits : (string * float) list
@@ -50,13 +61,22 @@ type tool_search_hit_partition =
   ; filtered_by_policy : int
   }
 
-val partition_tool_search_hits :
-     core:string list
+val partition_tool_search_hits
+  :  core:string list
   -> core_always:string list
   -> allowed:string list
   -> retrieved:(string * float) list
   -> max_results:int
   -> tool_search_hit_partition
+
+val truncate_tool_surface_names
+  :  max_tools:int
+  -> essential_names:string list
+  -> string list
+  -> string list
+(** Keep essential tools at the front while truncating an already ordered
+    visible tool surface. Essential names are removed from the tail before the
+    budget slice so required/affordance tools cannot be double-counted. *)
 
 (** Agent setup produced by Step 7.
 
@@ -65,11 +85,6 @@ val partition_tool_search_hits :
     at the OAS call site. *)
 type agent_setup =
   { tools : Agent_sdk.Tool.t list
-  (** Release resources owned by the prepared keeper tool bundle.
-      Callers should invoke this once after the turn consumes the setup,
-      on both success and exception paths.  Implementations must be
-      idempotent and should not raise; callers defensively catch and log
-      non-cancellation failures. *)
   ; cleanup : unit -> unit
   ; hooks : Agent_sdk.Hooks.hooks
   ; reducer : Agent_sdk.Context_reducer.t
@@ -81,8 +96,8 @@ type agent_setup =
   ; tool_usage_before : (string * int) list
   ; receipt_turn_count_ref : int option ref
   ; receipt_model_used_ref : string option ref
-  ; receipt_stop_reason_ref : string option ref
-  ; receipt_cascade_observation_ref : Oas_worker.cascade_observation option ref
+  ; receipt_stop_reason_ref : Cascade_runner.stop_reason option ref
+  ; receipt_cascade_observation_ref : Cascade_observation.cascade_observation option ref
   ; receipt_response_text_present_ref : bool ref
   ; reported_tool_names_ref : string list ref
   ; observed_tool_names_ref : string list ref
@@ -91,8 +106,8 @@ type agent_setup =
   ; actual_keeper_tool_names_ref : string list ref
   }
 
-val prepare_agent_setup :
-     config:Coord.config
+val prepare_agent_setup
+  :  config:Coord.config
   -> meta:Keeper_types.keeper_meta
   -> ctx_work:working_context
   -> session:Keeper_types.session_context
@@ -107,7 +122,7 @@ val prepare_agent_setup :
   -> start_turn_count:int
   -> generation:int
   -> max_turns:int
-  -> cascade_name:Keeper_cascade_profile.runtime_name
+  -> cascade_name:Cascade_name.t
   -> is_retry:bool
   -> turn_affordances:string list
   -> required_tool_names:string list
@@ -116,8 +131,11 @@ val prepare_agent_setup :
   -> gemini_mcp_disabled:bool
   -> approval_mode_effective:string option
   -> approval_mode_derived:bool
+  -> ?actionable_signal:bool
   -> ?max_cost_usd:float
   -> trajectory_acc:Trajectory.accumulator option
   -> tool_overlay:Agent_sdk.Tool_op.t ref option
+  -> ?runtime_manifest_context:Keeper_runtime_manifest.turn_context
+  -> ?runtime_manifest_append:(Keeper_runtime_manifest.t -> unit)
   -> unit
   -> (agent_setup, Agent_sdk.Error.sdk_error) result

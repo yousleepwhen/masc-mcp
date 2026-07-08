@@ -6,9 +6,6 @@
 
 include module type of Keeper_config
 
-(** Backward-compatible mkdir_p: delegates to [Keeper_fs.ensure_dir]. *)
-val mkdir_p : string -> unit
-
 (** Resolve the keeper base directory ([.masc/keepers]) for [config],
     creating it if missing. *)
 val keeper_dir_ : Coord.config -> string
@@ -27,13 +24,6 @@ val keeper_metrics_path : Coord.config -> string -> string
 (** Date-split metrics store: [.masc/keepers/<name>/metrics/YYYY-MM/DD.jsonl].
     Cached per keeper name so all callers share the same Eio.Mutex. *)
 val keeper_metrics_store : Coord.config -> string -> Dated_jsonl.t
-
-(** Date-split sparse PR action metrics store:
-    [.masc/keepers/<name>/pr-action-metrics/YYYY-MM/DD.jsonl].  These rows
-    are intentionally kept out of the primary metrics stream so bursts of
-    tool-event action counters cannot evict full context snapshots from
-    fixed-tail dashboard/status readers. *)
-val keeper_pr_action_metrics_store : Coord.config -> string -> Dated_jsonl.t
 
 (** Date-split execution-receipt store:
     [.masc/keepers/<name>/execution-receipts/YYYY-MM/DD.jsonl]. *)

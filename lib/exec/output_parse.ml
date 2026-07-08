@@ -236,9 +236,9 @@ let parse_dune_test output =
            ("skipped", `Int !skipped);
          ])
 
-(* --- gh pr list (tabular) --- *)
+(* --- Repo-hosting PR list (tabular) --- *)
 
-let parse_gh_pr_list output =
+let parse_repo_hosting_pr_list output =
   let lines = String.split_on_char '\n' (String.trim output) in
   match lines with
   | [] -> None
@@ -390,7 +390,7 @@ type parser_kind =
   | Wc_lines
   | Ls_long
   | Dune_test
-  | Gh_pr_list
+  | Repo_hosting_pr_list
   | Pytest
   | Cargo_test
 
@@ -422,13 +422,16 @@ let git_subcommand tokens =
   in
   loop tokens
 
+let command_words_for_parsing cmd =
+  match Masc_exec_shell_words.Shell_words.stages cmd with
+  | Ok [ words ] ->
+      words
+      |> List.map (fun (word : Masc_exec_shell_words.Shell_words.word) -> word.value)
+      |> List.filter (fun s -> s <> "")
+  | Ok [] | Ok (_ :: _ :: _) | Error _ -> []
+
 let classify_for_parsing ~cmd ~_output =
-  let tokens =
-    String.trim cmd
-    |> String.split_on_char ' '
-    |> List.map String.trim
-    |> List.filter (fun s -> s <> "")
-  in
+  let tokens = command_words_for_parsing cmd in
   match tokens with
   | [] -> None
   | bin :: rest ->
@@ -459,7 +462,7 @@ let classify_for_parsing ~cmd ~_output =
           (match rest with
            | "pr" :: rest' ->
                if List.exists (fun t -> t = "list") rest' then
-                 Some Gh_pr_list
+                 Some Repo_hosting_pr_list
                else None
            | _ -> None)
       | "pytest" | "py.test" ->
@@ -477,7 +480,7 @@ let classify_for_parsing ~cmd ~_output =
 let parser_allows_nonzero = function
   | Dune_test | Pytest | Cargo_test -> true
   | Git_status | Git_log_oneline | Git_diff_stat | Wc_lines
-  | Ls_long | Gh_pr_list -> false
+  | Ls_long | Repo_hosting_pr_list -> false
 
 let try_parse ~cmd ~status ~output =
   match classify_for_parsing ~cmd ~_output:output with
@@ -486,7 +489,8 @@ let try_parse ~cmd ~status ~output =
       let may_parse =
         match status with
         | Unix.WEXITED 0 -> true
-        | _ -> parser_allows_nonzero kind
+        | Unix.WEXITED _ | Unix.WSIGNALED _ | Unix.WSTOPPED _ ->
+            parser_allows_nonzero kind
       in
       if not may_parse then None
       else
@@ -497,6 +501,6 @@ let try_parse ~cmd ~status ~output =
         | Wc_lines -> parse_wc_lines output
         | Ls_long -> parse_ls_long output
         | Dune_test -> parse_dune_test output
-        | Gh_pr_list -> parse_gh_pr_list output
+        | Repo_hosting_pr_list -> parse_repo_hosting_pr_list output
         | Pytest -> parse_pytest output
         | Cargo_test -> parse_cargo_test output

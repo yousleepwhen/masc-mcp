@@ -1,4 +1,9 @@
 import { pushTrace } from './keeper-trace-store'
+import { unixishToMs } from '../../lib/format-time'
+import {
+  normalizeTraceProducerContext,
+  type KeeperTraceProducerContextInput,
+} from './keeper-trace-context'
 
 /**
  * RFC-0028 PR-δ producer: cascade-hop → keeper-trace bridge.
@@ -33,7 +38,7 @@ import { pushTrace } from './keeper-trace-store'
  *                discriminator and this surfaces it on the chip.)
  *
  * Why a pure function (not a stateful subscription):
- *   - The owning component (`IdeConversationRailMock`) already has the
+ *   - The owning component (`IdeConversationRail`) already has the
  *     fetched `cascadeEvents` array as a useState value. A pure mapper
  *     called from a `useEffect([cascadeEvents])` is sufficient and
  *     trivially testable.
@@ -52,11 +57,7 @@ export interface CascadeHopProducerInput {
   readonly cascade_name: string
   readonly strategy: string
   readonly cycle: number
-}
-
-function unixishToMs(ts: number): number {
-  if (!Number.isFinite(ts)) return Number.NaN
-  return ts > 1_000_000_000_000 ? ts : ts * 1000
+  readonly context?: KeeperTraceProducerContextInput | null
 }
 
 function dedupKey(event: CascadeHopProducerInput): string {
@@ -86,6 +87,7 @@ export function bridgeCascadeEventsToTrace(
       source: 'cascade-hop',
       hopId: `${event.cascade_name}-${event.cycle}`,
       provider: event.strategy,
+      ...normalizeTraceProducerContext(event.context),
     })
     next.add(key)
   }

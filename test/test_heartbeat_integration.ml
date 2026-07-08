@@ -78,9 +78,9 @@ let test_crash_heartbeat_failure () =
   let reason_str = R.failure_reason_to_string reason in
   R.set_failure_reason ~base_path:bp "hb-crash" (Some reason);
   ignore (R.dispatch_event ~base_path:bp "hb-crash"
-    (KSM.Fiber_terminated { outcome = "heartbeat_failure" }));
+    (KSM.Fiber_terminated { outcome = "heartbeat_failure"; provider_id = None; http_status = None }));
   R.record_crash ~base_path:bp "hb-crash" 1000.0 reason_str;
-  R.record_error ~base_path:bp "hb-crash" reason_str;
+  Masc_mcp.Keeper_registry_error_recording.record ~base_path:bp "hb-crash" reason_str;
   Eio.Promise.resolve reg.done_r (`Crashed reason_str);
   (* Assert: registry state *)
   (match R.get ~base_path:bp "hb-crash" with
@@ -110,9 +110,9 @@ let test_crash_generic_exception () =
   let reason_str = R.failure_reason_to_string fr in
   R.set_failure_reason ~base_path:bp "exn-crash" (Some fr);
   ignore (R.dispatch_event ~base_path:bp "exn-crash"
-    (KSM.Fiber_terminated { outcome = "exception" }));
+    (KSM.Fiber_terminated { outcome = "exception"; provider_id = None; http_status = None }));
   R.record_crash ~base_path:bp "exn-crash" 1001.0 reason_str;
-  R.record_error ~base_path:bp "exn-crash" reason_str;
+  Masc_mcp.Keeper_registry_error_recording.record ~base_path:bp "exn-crash" reason_str;
   Eio.Promise.resolve reg.done_r (`Crashed reason_str);
   match R.get ~base_path:bp "exn-crash" with
   | None -> fail "expected exn-crash"
@@ -133,9 +133,9 @@ let test_crash_fiber_unresolved () =
   let reason_str = R.failure_reason_to_string fr in
   R.set_failure_reason ~base_path:bp "unresolved" (Some fr);
   R.record_crash ~base_path:bp "unresolved" 1002.0 reason_str;
-  R.record_error ~base_path:bp "unresolved" reason_str;
+  Masc_mcp.Keeper_registry_error_recording.record ~base_path:bp "unresolved" reason_str;
   ignore (R.dispatch_event ~base_path:bp "unresolved"
-    (KSM.Fiber_terminated { outcome = "unresolved" }));
+    (KSM.Fiber_terminated { outcome = "unresolved"; provider_id = None; http_status = None }));
   Eio.Promise.resolve reg.done_r (`Crashed reason_str);
   match R.get ~base_path:bp "unresolved" with
   | None -> fail "expected unresolved"
@@ -161,7 +161,7 @@ let test_dead_tombstone_full_lifecycle () =
   (* Crash *)
   Eio.Promise.resolve reg.done_r (`Crashed "test");
   ignore (R.dispatch_event ~base_path:bp "mortal"
-    (KSM.Fiber_terminated { outcome = "test" }));
+    (KSM.Fiber_terminated { outcome = "test"; provider_id = None; http_status = None }));
   (* Simulate budget exhaustion *)
   let max_restarts = Cfg.KeeperSupervisor.max_restarts in
   R.restore_supervisor_state ~base_path:bp "mortal"
@@ -183,7 +183,7 @@ let test_dead_tombstone_full_lifecycle () =
    | None -> fail "expected mortal");
   (* Dead → Crashed blocked *)
   ignore (R.dispatch_event ~base_path:bp "mortal"
-    (KSM.Fiber_terminated { outcome = "test" }));
+    (KSM.Fiber_terminated { outcome = "test"; provider_id = None; http_status = None }));
   (match R.get ~base_path:bp "mortal" with
    | Some e -> check string "still dead after Crashed attempt" "dead"
        (KSM.phase_to_string e.phase)
@@ -207,7 +207,7 @@ let test_self_preservation_suppresses_dominant () =
   let entries = List.map (fun name ->
     let _reg = R.register ~base_path:bp name (make_meta name) in
     ignore (R.dispatch_event ~base_path:bp name
-      (KSM.Fiber_terminated { outcome = "test" }));
+      (KSM.Fiber_terminated { outcome = "test"; provider_id = None; http_status = None }));
     let reason = if String.length name > 4 && String.sub name 3 2 = "hb"
       then Some (R.Heartbeat_consecutive_failures 5)
       else Some (R.Exception "timeout") in
@@ -237,7 +237,7 @@ let test_self_preservation_below_threshold () =
   R.clear ();
   let _reg = R.register ~base_path:bp "lone" (make_meta "lone") in
   ignore (R.dispatch_event ~base_path:bp "lone"
-    (KSM.Fiber_terminated { outcome = "test" }));
+    (KSM.Fiber_terminated { outcome = "test"; provider_id = None; http_status = None }));
   R.set_failure_reason ~base_path:bp "lone"
     (Some (R.Heartbeat_consecutive_failures 3));
   let entry = match R.get ~base_path:bp "lone" with
@@ -252,7 +252,7 @@ let test_self_preservation_min_candidates_not_met () =
   R.clear ();
   let _reg = R.register ~base_path:bp "solo" (make_meta "solo") in
   ignore (R.dispatch_event ~base_path:bp "solo"
-    (KSM.Fiber_terminated { outcome = "test" }));
+    (KSM.Fiber_terminated { outcome = "test"; provider_id = None; http_status = None }));
   R.set_failure_reason ~base_path:bp "solo"
     (Some (R.Heartbeat_consecutive_failures 3));
   let entry = match R.get ~base_path:bp "solo" with
@@ -283,7 +283,7 @@ let test_reconcile_predicate_sweep_owned () =
    | None -> fail "expected r1");
   (* Crashed = sweep-owned *)
   ignore (R.dispatch_event ~base_path:bp "r1"
-    (KSM.Fiber_terminated { outcome = "test" }));
+    (KSM.Fiber_terminated { outcome = "test"; provider_id = None; http_status = None }));
   (match R.get ~base_path:bp "r1" with
    | Some e -> check bool "crashed is sweep-owned" true
        (e.phase = KSM.Crashed)
@@ -351,7 +351,7 @@ let test_restart_state_preservation () =
   let reg1 = R.register ~base_path:bp "restartable" meta in
   Eio.Promise.resolve reg1.done_r (`Crashed "first crash");
   ignore (R.dispatch_event ~base_path:bp "restartable"
-    (KSM.Fiber_terminated { outcome = "first crash" }));
+    (KSM.Fiber_terminated { outcome = "first crash"; provider_id = None; http_status = None }));
   R.record_crash ~base_path:bp "restartable" 100.0 "first crash";
   (* Simulate sweep restart: re-register then restore state *)
   let _reg2 = R.register ~base_path:bp "restartable" meta in
@@ -385,9 +385,9 @@ let test_crash_turn_failures () =
   let reason_str = R.failure_reason_to_string reason in
   R.set_failure_reason ~base_path:bp "turn-crash" (Some reason);
   ignore (R.dispatch_event ~base_path:bp "turn-crash"
-    (KSM.Fiber_terminated { outcome = "turn failure" }));
+    (KSM.Fiber_terminated { outcome = "turn failure"; provider_id = None; http_status = None }));
   R.record_crash ~base_path:bp "turn-crash" 2000.0 reason_str;
-  R.record_error ~base_path:bp "turn-crash" reason_str;
+  Masc_mcp.Keeper_registry_error_recording.record ~base_path:bp "turn-crash" reason_str;
   Eio.Promise.resolve reg.done_r (`Crashed reason_str);
   match R.get ~base_path:bp "turn-crash" with
   | None -> fail "expected turn-crash"
@@ -404,6 +404,60 @@ let test_cohort_key_turn_failures () =
   let key = Sup.cohort_key_of_reason
     (Some (R.Turn_consecutive_failures 10)) in
   check string "turn failure cohort" "turn_failures" key
+
+(** A healthy heartbeat must not erase provider/tool turn failures.
+    Regression for live 2026-05-16 evidence where a cascade_exhausted turn
+    moved Failing -> Running via a keepalive heartbeat before the next real
+    successful turn. *)
+let test_fresh_presence_preserves_turn_failures () =
+  Eio_main.run @@ fun env ->
+  Fs_compat.set_fs (Eio.Stdenv.fs env);
+  Eio.Switch.run @@ fun sw ->
+  R.clear ();
+  let base_path = temp_dir "fresh-presence-turn-failure" in
+  Fun.protect
+    ~finally:(fun () ->
+      R.clear ();
+      cleanup_dir base_path)
+    (fun () ->
+      let config = Masc_mcp.Coord.default_config base_path in
+      let ctx : _ KT.context =
+        {
+          config;
+          agent_name = "operator";
+          sw;
+          clock = Eio.Stdenv.clock env;
+          proc_mgr = None;
+          net = None;
+        }
+      in
+      let meta = make_meta "fresh-presence-turn-failure" in
+      ignore (R.register ~base_path:config.base_path meta.name meta);
+      R.increment_turn_failures ~base_path:config.base_path meta.name;
+      ignore
+        (R.dispatch_event
+           ~base_path:config.base_path
+           meta.name
+           (KSM.Turn_failed { consecutive = 1; max_allowed = 3 }));
+      (match R.get_phase ~base_path:config.base_path meta.name with
+       | Some phase -> check string "phase after turn failure" "failing" (KSM.phase_to_string phase)
+       | None -> fail "expected registered keeper phase");
+      ignore
+        (Masc_mcp.Keeper_heartbeat_loop.sync_keeper_presence
+           ~ctx
+           ~meta_current:meta
+           ~t_presence_start:100.0
+           ~consecutive_failures:(ref 0)
+           ~last_successful_heartbeat_ts:(ref 99.0)
+           ~work_as_hb:(fun () -> true)
+           ~max_silence:(fun () -> 60.0));
+      check int
+        "turn failures preserved"
+        1
+        (R.get_turn_failures ~base_path:config.base_path meta.name);
+      match R.get_phase ~base_path:config.base_path meta.name with
+      | Some phase -> check string "heartbeat alone stays failing" "failing" (KSM.phase_to_string phase)
+      | None -> fail "expected registered keeper phase")
 
 (* ══════════════════════════════════════════════════════════
    8. Direct keepalive path resolves lifecycle promises
@@ -469,13 +523,46 @@ let test_stop_keepalive_resolves_running_entry_immediately () =
        fail ("expected stopped promise, got crashed: " ^ reason)
      | None -> fail "expected manual stop to resolve done_p")
 
+let test_stop_keepalive_force_releases_held_slots () =
+  R.clear ();
+  let keeper_name = "manual-stop-held-slot" in
+  let _reg = R.register ~base_path:bp keeper_name (make_meta keeper_name) in
+  let result =
+    Masc_mcp.Keeper_keepalive.with_keeper_turn_slot_for_test
+      ~keeper_name
+      ~channel:Masc_mcp.Keeper_world_observation.Reactive
+      (fun ~semaphore_wait_ms:_ ->
+         let now = Time_compat.now () in
+         check bool "precondition holder present" true
+           (List.mem keeper_name
+              (List.map fst (Masc_mcp.Keeper_keepalive.turn_slot_holders ~now)));
+         Masc_mcp.Keeper_keepalive.stop_keepalive ~base_path:bp keeper_name;
+         let now_after = Time_compat.now () in
+         check bool "turn holder force released on manual stop" false
+           (List.mem keeper_name
+              (List.map fst
+                 (Masc_mcp.Keeper_keepalive.turn_slot_holders ~now:now_after)));
+         check bool "reactive holder force released on manual stop" false
+           (List.mem keeper_name
+              (List.map fst
+                 (Masc_mcp.Keeper_keepalive.reactive_slot_holders ~now:now_after)));
+         match R.get ~base_path:bp keeper_name with
+         | Some entry ->
+           check string "state stopped" "stopped" (KSM.phase_to_string entry.phase)
+         | None -> fail "expected keeper entry after manual stop")
+  in
+  match result with
+  | Ok () -> ()
+  | Error (`Semaphore_wait_timeout _) ->
+    fail "unexpected semaphore timeout while testing manual stop force-release"
+
 let test_stop_keepalive_preserves_existing_crash_outcome () =
   R.clear ();
   let keeper_name = "crashed-before-stop" in
   let reg = R.register ~base_path:bp keeper_name (make_meta keeper_name) in
   let reason = "already crashed" in
   ignore (R.dispatch_event ~base_path:bp keeper_name
-    (KSM.Fiber_terminated { outcome = "already crashed" }));
+    (KSM.Fiber_terminated { outcome = "already crashed"; provider_id = None; http_status = None }));
   Eio.Promise.resolve reg.done_r (`Crashed reason);
   Masc_mcp.Keeper_keepalive.stop_keepalive keeper_name;
   match R.get ~base_path:bp keeper_name with
@@ -495,7 +582,7 @@ let test_stop_keepalive_preserves_existing_crash_outcome () =
    not a runtime property testable by unit tests. See PR #5560.
    ══════════════════════════════════════════════════════════ *)
 
-module ES = Masc_mcp.Keeper_exec_status
+module ES = Masc_mcp.Keeper_status_runtime
 
 (** Verify pipeline_stage_of_phase covers all 11 phases and produces
     the expected deterministic mapping. No heuristic, no timestamps. *)
@@ -541,7 +628,7 @@ let test_pipeline_stage_unregistered_is_offline () =
    | None -> fail "registered keeper must have a phase");
   (* Crash the keeper and verify phase + stage update *)
   ignore (R.dispatch_event ~base_path:bp "alive"
-    (KSM.Fiber_terminated { outcome = "test" }));
+    (KSM.Fiber_terminated { outcome = "test"; provider_id = None; http_status = None }));
   (match R.get_phase ~base_path:bp "alive" with
    | Some phase ->
      let stage = ES.pipeline_stage_of_phase phase in
@@ -602,12 +689,16 @@ let () =
     "turn_failure", [
       eio_test "turn crash flow" test_crash_turn_failures;
       test_case "cohort key" `Quick test_cohort_key_turn_failures;
+      test_case "fresh presence preserves turn failures" `Quick
+        test_fresh_presence_preserves_turn_failures;
     ];
     "direct_keepalive", [
       test_case "stop resolves done promise" `Quick
         test_direct_start_keepalive_resolves_done_on_stop;
       test_case "manual stop resolves running entry immediately" `Quick
         test_stop_keepalive_resolves_running_entry_immediately;
+      eio_test "manual stop force-releases held turn slots"
+        test_stop_keepalive_force_releases_held_slots;
       test_case "manual stop preserves crashed outcome" `Quick
         test_stop_keepalive_preserves_existing_crash_outcome;
     ];

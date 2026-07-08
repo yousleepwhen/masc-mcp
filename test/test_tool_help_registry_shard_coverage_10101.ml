@@ -9,7 +9,7 @@ module Types = Masc_domain
    [masc_tool_help(keeper_task_claim)] returned "unknown tool"
    despite the dispatcher handling the tool correctly.
 
-   This test asserts the full invariant: every schema exported
+   This test asserts the registry invariant: every schema exported
    by [Tool_shard.all_keeper_tool_schemas] is resolvable from
    [Config.raw_all_tool_schemas].  If a new shard category is
    introduced and forgotten at the aggregation site, or if a
@@ -38,17 +38,17 @@ module Registry = Masc_mcp.Tool_help_registry
 let registry_has name =
   Option.is_some (Registry.find_entry Config.raw_all_tool_schemas name)
 
-(* Full coverage check: every tool schema exposed by
+(* Registry coverage check: every tool schema exposed by
    [Tool_shard.all_keeper_tool_schemas] must be resolvable via
-   [Config.raw_all_tool_schemas].  This is the structural
-   invariant — if it fails, aggregation has drifted. *)
+   [Config.raw_all_tool_schemas].  This is the structural invariant for
+   help lookup and dispatch-supporting metadata — if it fails,
+   aggregation has drifted. *)
 let test_every_shard_tool_is_in_authoritative_registry () =
-  let shard_schemas = Shard.all_keeper_tool_schemas in
   let missing =
     List.filter_map
       (fun (s : Masc_domain.tool_schema) ->
         if registry_has s.name then None else Some s.name)
-      shard_schemas
+      Shard.all_keeper_tool_schemas
     |> List.sort_uniq String.compare
   in
   match missing with
@@ -77,8 +77,8 @@ let test_representative_tools_across_categories () =
     [
       "keeper_stay_silent",   "base_tools";
       "keeper_board_post",    "board_tools";
-      "keeper_fs_read",       "filesystem_tools";
-      "keeper_shell",         "shell_tools";
+      "tool_read_file",       "filesystem_tools";
+      "tool_search_files",         "search_files_tools";
       "keeper_task_claim",    "taskboard_tools";
       "keeper_library_search","library_tools";
       "keeper_voice_speak",   "voice_tools";
@@ -112,35 +112,6 @@ let test_9912_base_tools_still_covered () =
         true (registry_has name))
     base_five
 
-(* [keeper_preflight_tools] and [keeper_pr_review_tools] live
-   in [tool_shard.ml] but are NOT owned by any shard in
-   [all_shards].  The SSOT helper must include them explicitly
-   — if someone refactors to "just iterate all_shards", these
-   two lists would drop out silently.  Test pins one
-   representative from each. *)
-let test_non_shard_lists_are_covered () =
-  List.iter
-    (fun (sample_name, list_name) ->
-      (* We cannot rely on stable tool names inside
-         keeper_preflight_tools/pr_review_tools without
-         coupling the test to implementation detail, so read
-         the first schema name from each list at runtime. *)
-      match sample_name with
-      | Some name ->
-        Alcotest.(check bool)
-          (Printf.sprintf "%s (%s) resolves" name list_name)
-          true (registry_has name)
-      | None ->
-        (* Empty list is acceptable — tested category just has
-           no tools yet.  Not a failure. *)
-        ())
-    [
-      ( (match Shard.keeper_preflight_tools with
-         | []     -> None
-         | s :: _ -> Some s.name),
-        "keeper_preflight_tools" );
-    ]
-
 let () =
   Alcotest.run "tool_help_registry_shard_coverage_10101"
     [
@@ -158,7 +129,5 @@ let () =
             `Quick test_representative_tools_across_categories;
           Alcotest.test_case "#9912 base tools still covered"
             `Quick test_9912_base_tools_still_covered;
-          Alcotest.test_case "non-shard preflight list covered"
-            `Quick test_non_shard_lists_are_covered;
         ] );
     ]

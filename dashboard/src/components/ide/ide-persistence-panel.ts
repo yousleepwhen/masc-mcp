@@ -11,8 +11,17 @@ import { keepers } from '../../store'
 import type { Keeper } from '../../types'
 import { MemoryGraph } from '../common/memory-graph'
 import { PersistenceStatus, type PersistenceState } from '../common/persistence-status'
-
-const REFRESH_MS = 30_000
+import { globalPresenceSnapshot, PRESENCE_DOT, presenceEntries, type KeeperPresenceEntry } from './keeper-presence-store'
+import { cursorOverlaySignal, type KeeperCursor } from './keeper-cursor-overlay'
+import {
+  openIdeContextRouteLink,
+  routeLinksForContext,
+  type IdeContextRouteLink,
+} from './ide-context-lens'
+import { useSignalValue } from './use-signal-value'
+import { DEFAULT_PANEL_REFRESH_MS } from '../../lib/auto-refresh'
+import { IDE_CONTEXT_BADGE_STYLE } from './context-badge-style'
+import { routeLinkLabels } from './ide-context-route-helpers'
 
 type LifecycleState = 'created' | 'active' | 'idle' | 'terminated'
 
@@ -153,12 +162,6 @@ export function buildMemoryGraphModel(
   return { nodes, edges, visibleUsage, totalUsed, totalCap, saturatedCount }
 }
 
-function useSignalValue<T>(signal: { value: T; subscribe: (fn: (value: T) => void) => () => void }): T {
-  const [value, setValue] = useState(signal.value)
-  useEffect(() => signal.subscribe(next => setValue(next)), [signal])
-  return value
-}
-
 function resolveKeeperName(explicit: string | undefined, active: string, rows: readonly Keeper[]): string {
   const fromProp = explicit?.trim()
   if (fromProp) return fromProp
@@ -236,12 +239,25 @@ function LifecycleMini({ state, phase }: { state: LifecycleState; phase: string 
 
 export function IdePersistencePanel({
   keeperName: explicitKeeperName,
-  pollMs = REFRESH_MS,
+  pollMs = DEFAULT_PANEL_REFRESH_MS,
 }: IdePersistencePanelProps) {
   const activeName = useSignalValue(activeKeeperName)
   const keeperRows = useSignalValue(keepers)
   const keeperName = resolveKeeperName(explicitKeeperName, activeName, keeperRows)
   const keeper = findKeeper(keeperRows, keeperName)
+  const presence = useSignalValue(globalPresenceSnapshot)
+  const overlay = useSignalValue(cursorOverlaySignal)
+  const entries: ReadonlyArray<KeeperPresenceEntry> = presenceEntries(presence)
+  const entry = keeperName ? entries.find(e => e.keeper_id === keeperName) : null
+  const statusDot = entry ? PRESENCE_DOT[entry.status] : null
+  const cursor = keeperName ? overlay.cursors.get(keeperName) : undefined
+  const focusLabel = cursor && cursor.file_path && cursor.line >= 1
+    ? `${cursor.file_path.split('/').pop()}:${cursor.line}`
+    : null
+  const routeLinks = persistenceRouteLinks(keeperName, cursor)
+  const focusRouteLink = focusLabel
+    ? routeLinks.find(link => link.label === 'Code') ?? null
+    : null
   const [diagram, setDiagram] = useState<KeeperStateDiagramResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
@@ -309,6 +325,37 @@ export function IdePersistencePanel({
         <span style=${{ color: 'var(--color-accent-fg)', fontSize: 'var(--fs-12)' }}>
           ${keeperName || '—'}
         </span>
+        ${statusDot ? html`
+          <span
+            role="status"
+            aria-label=${`Keeper status: ${statusDot.label}`}
+            style=${{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '2px',
+              fontSize: 'var(--fs-10)',
+              fontWeight: 600,
+              letterSpacing: '0.04em',
+              color: statusDot.color,
+            }}
+          >
+            <span style=${{
+              width: '4px',
+              height: '4px',
+              borderRadius: '50%',
+              background: statusDot.color,
+              display: 'inline-block',
+            }} />
+            ${statusDot.label}
+          </span>
+        ` : null}
+        ${focusLabel ? html`
+          <${PersistenceFocusChip}
+            label=${focusLabel}
+            filePath=${cursor?.file_path}
+            routeLink=${focusRouteLink}
+          />
+        ` : null}
         <span style=${{ marginLeft: 'auto' }}>
           <${PersistenceStatus} status=${persistenceState} lastSaved=${lastSaved} />
         </span>
@@ -322,6 +369,9 @@ export function IdePersistencePanel({
         ? html`
           <div style=${{ display: 'grid', gap: 'var(--sp-2)' }}>
             <${LifecycleMini} state=${lifecycleState} phase=${phase} />
+            <${PersistenceRouteLinks}
+              links=${routeLinks}
+            />
 
             <div
               style=${{
@@ -382,3 +432,75 @@ export function IdePersistencePanel({
     </section>
   `
 }
+
+function PersistenceFocusChip({
+  label,
+  filePath,
+  routeLink,
+}: {
+  readonly label: string
+  readonly filePath: string | undefined
+  readonly routeLink: IdeContextRouteLink | null
+}) {
+  if (!routeLink) {
+    return html`<span class="ide-persistence-focus" title=${filePath}>↗ ${label}</span>`
+  }
+  return html`
+    <button
+      type="button"
+      class="ide-persistence-focus"
+      title=${routeLink.evidence}
+      aria-label=${`Open current persistence focus ${routeLink.evidence}`}
+      onClick=${() => openIdeContextRouteLink(routeLink)}
+    >↗ ${label}</button>
+  `
+}
+
+function persistenceRouteLinks(
+  keeperName: string,
+  cursor: KeeperCursor | undefined,
+): ReadonlyArray<IdeContextRouteLink> {
+  const keeperId = keeperName.trim()
+  return routeLinksForContext({
+    filePath: cursor?.file_path,
+    line: cursor?.line,
+    surface: 'Persistence',
+    label: keeperId ? `${keeperId} current focus` : 'keeper current focus',
+    sourceId: keeperId ? `persistence:${keeperId}` : 'persistence',
+    keeperId,
+    telemetry: Boolean(keeperId),
+    telemetryQuery: keeperId || undefined,
+  })
+}
+
+function PersistenceRouteLinks({
+  links,
+}: {
+  readonly links: ReadonlyArray<IdeContextRouteLink>
+}) {
+  if (links.length === 0) return null
+  const routeLabels = routeLinkLabels(links)
+  return html`
+    <div class="ide-persistence-links" aria-label="Persistence context links">
+      <span
+        class="ide-persistence-context-badge"
+        data-context-route-count=${links.length}
+        title=${`Linked context: ${routeLabels}`}
+        aria-label=${`Persistence map has ${links.length} linked context routes: ${routeLabels}`}
+        style=${IDE_CONTEXT_BADGE_STYLE}
+      >
+        CTX ${links.length}
+      </span>
+      ${links.map(link => html`
+        <button
+          key=${link.id}
+          type="button"
+          title=${link.evidence}
+          aria-label=${`Open ${link.evidence}`}
+          onClick=${() => openIdeContextRouteLink(link)}
+        >${link.label}</button>
+      `)}
+    </div>
+  `
+}
+

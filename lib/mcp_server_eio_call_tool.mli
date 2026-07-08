@@ -1,8 +1,9 @@
 (** Mcp_server_eio_call_tool — [tools/call] handler with
     timeout, read-only retry, runtime-MCP keeper tracing.
 
-    The .ml is 959 lines.  External callers reach exactly
-    six symbols — {!handle_call_tool_eio} (the dispatcher
+    The .ml is intentionally kept behind this interface.  External
+    runtime callers reach six operational symbols — {!handle_call_tool_eio}
+    (the dispatcher
     entry point invoked from
     {!Mcp_server_eio_protocol.handle_request}),
     {!contains_casefold} (re-used by the protocol layer
@@ -11,6 +12,9 @@
     {!record_runtime_mcp_keeper_tool_trace},
     {!runtime_mcp_keeper_log_context_of_entry},
     {!tool_timeout_sec_opt}).
+
+    The {!For_testing} module exposes a narrow pure helper for regression
+    tests only.
 
     Internal helpers stay private at this boundary
     ([log_mcp_exn], [int_of_env_default],
@@ -23,9 +27,9 @@
     [runtime_mcp_masc_root],
     [record_runtime_mcp_trajectory_coverage_gap],
     [record_runtime_mcp_keeper_trajectory],
-    [read_only_retry_limit], [is_retryable_message],
-    [read_only_retry_wait], [call_tool_with_readonly_retry],
-    [coerce_tool_timeout_sec],
+    [read_only_retry_limit], [read_only_retry_wait],
+    [call_tool_with_readonly_retry],
+    timeout policy delegated to [Mcp_server_eio_tool_timeout],
     [resolve_managed_agent_call]).
 
     [tool_profile] is referenced by {!handle_call_tool_eio}
@@ -58,6 +62,18 @@ val quality_from_result :
     On failure classifies [message] (timeout / cancellation
     / generic) and emits a single issue entry with
     [severity], [code], [message], [attempts]. *)
+
+module For_testing : sig
+  val activity_tool_called_payload :
+    tool_name:string ->
+    success:bool ->
+    duration_ms:int ->
+    source:string ->
+    ?error_detail:string ->
+    ?tool_args_preview:string ->
+    Yojson.Safe.t ->
+    Yojson.Safe.t
+end
 
 (** {1 Per-tool timeout} *)
 
@@ -148,7 +164,7 @@ val handle_call_tool_eio :
      Mcp_server.server_state ->
      name:string ->
      arguments:Yojson.Safe.t ->
-     bool * string) ->
+     Tool_result.result) ->
   maybe_emit_resource_notifications:
     (success:bool -> tool_name:string -> 'notify) ->
   broadcast_tools_list_changed:(unit -> unit) ->
@@ -171,7 +187,7 @@ val handle_call_tool_eio :
     [resources/updated] for the resource ids the tool
     invalidated.  [broadcast_tools_list_changed] is fired
     when the call is known to alter the tool catalogue
-    (autoresearch start / stop, etc).
+    (long-running mutations, etc).
 
     The dispatcher applies the per-tool timeout from
     {!tool_timeout_sec_opt}, retries read-only failures

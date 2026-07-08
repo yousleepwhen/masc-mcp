@@ -23,12 +23,7 @@ type t =
   ; task_overlay_pattern : string
   }
 
-let strip_trailing_slashes path =
-  let rec loop i =
-    if i > 0 && path.[i - 1] = '/' then loop (i - 1) else i
-  in
-  let len = loop (String.length path) in
-  if len = String.length path then path else String.sub path 0 len
+let strip_trailing_slashes = Env_config_core.strip_trailing_slashes
 
 let backend_of_profile = function
   | Keeper_types.Local -> Local
@@ -37,6 +32,15 @@ let backend_of_profile = function
 let backend_to_string = function
   | Local -> "local"
   | Docker -> "docker"
+
+let backend_of_config_agent ~(config : Coord.config) ~(agent_name : string) =
+  match
+    Keeper_sandbox_config.sandbox_profile_of_agent
+      ~base_path:config.Coord.base_path
+      ~agent_name
+  with
+  | Keeper_sandbox_config.Local -> Local
+  | Keeper_sandbox_config.Docker -> Docker
 
 let sandbox_id_of_name name =
   "keeper:" ^ Playground_paths.sanitize_keeper_name name
@@ -54,11 +58,18 @@ let host_root_rel_of_profile sandbox_profile name =
     ~backend:(backend_of_profile sandbox_profile)
     name
 
+let host_root_rel_of_config_agent ~config ~agent_name =
+  Keeper_sandbox_config.host_root_rel_of_agent
+    ~base_path:config.Coord.base_path
+    ~agent_name
+
+let host_root_abs_of_config_agent ~config ~agent_name =
+  Keeper_sandbox_config.host_root_abs_of_agent
+    ~base_path:config.Coord.base_path
+    ~agent_name
+
 let host_root_rel_of_meta ~(meta : Keeper_types.keeper_meta) =
   host_root_rel_of_profile meta.sandbox_profile meta.name
-
-let host_root_rel name =
-  Playground_paths.bundle_root name
 
 let host_root_abs_of_backend ~(config : Coord.config) ~(backend : backend) name =
   Filename.concat config.base_path (host_root_rel_of_backend ~backend name)
@@ -67,13 +78,32 @@ let host_root_abs_of_meta ~(config : Coord.config)
     (meta : Keeper_types.keeper_meta) =
   Filename.concat config.base_path (host_root_rel_of_meta ~meta)
 
-let host_root_abs ~(config : Coord.config) name =
-  Filename.concat config.base_path (host_root_rel name)
-
 let container_root name =
-  Filename.concat
-    Env_config_keeper.DockerPlayground.container_playground_root
-    (Playground_paths.sanitize_keeper_name name)
+  Keeper_sandbox_config.container_root_of_agent ~agent_name:name
+
+let host_path_of_visible_path ~config ~agent_name raw_path =
+  if Filename.is_relative raw_path
+  then raw_path
+  else
+    match backend_of_config_agent ~config ~agent_name with
+    | Local -> raw_path
+    | Docker ->
+        let container_prefix = container_root agent_name in
+        if String.equal raw_path container_prefix
+        then host_root_abs_of_config_agent ~config ~agent_name
+        else if String.starts_with ~prefix:(container_prefix ^ "/") raw_path
+        then (
+          let suffix =
+            String.sub
+              raw_path
+              (String.length container_prefix + 1)
+              (String.length raw_path - String.length container_prefix - 1)
+          in
+          Filename.concat
+            (host_root_abs_of_config_agent ~config ~agent_name)
+            suffix)
+        else
+          raw_path
 
 let keeper_visible_root_abs_of_meta ~(config : Coord.config)
     (meta : Keeper_types.keeper_meta) =
@@ -100,14 +130,8 @@ let of_meta ~(config : Coord.config) ~(meta : Keeper_types.keeper_meta) : t =
   ; task_overlay_pattern = "repos/<repo>/.worktrees/<keeper>-<task_id>"
   }
 
-let allowed_root_rel ~(name : string) : string =
-  Playground_paths.bundle_root name
-
 let allowed_root_rel_of_meta ~(meta : Keeper_types.keeper_meta) : string =
   host_root_rel_of_meta ~meta
-
-let allowed_path_roots ~(name : string) : string list =
-  [ allowed_root_rel ~name ]
 
 let allowed_path_roots_of_meta ~(meta : Keeper_types.keeper_meta) : string list =
   [ allowed_root_rel_of_meta ~meta ]

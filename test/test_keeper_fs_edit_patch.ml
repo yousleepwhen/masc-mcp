@@ -1,12 +1,13 @@
-(** Tests for [Keeper_exec_fs.handle_keeper_fs_edit] mode=patch.
+(** Tests for [Agent_tool_filesystem_runtime.handle_file_write] mode=patch.
 
     RFC-0006 Phase A.4 — string-replace edit mode added so the
-    Anthropic Code [Edit] cognate can be wired through OAS dual
+    Provider_a Code [Edit] cognate can be wired through OAS dual
     registration. *)
 
 module Coord = Masc_mcp.Coord
-module Keeper_exec_fs = Masc_mcp.Keeper_exec_fs
+module Agent_tool_filesystem_runtime = Masc_mcp.Agent_tool_filesystem_runtime
 module Keeper_registry = Masc_mcp.Keeper_registry
+module Keeper_tool_alias = Masc_mcp.Keeper_tool_alias
 module Keeper_types = Masc_mcp.Keeper_types
 module Keeper_alerting_path = Masc_mcp.Keeper_alerting_path
 module Fs_compat = Fs_compat
@@ -15,7 +16,7 @@ module Json = Yojson.Safe.Util
 (* ── Helpers ─────────────────────────────────────────────────────── *)
 
 let temp_dir () =
-  let d = Filename.temp_file "keeper_fs_edit_patch_" "" in
+  let d = Filename.temp_file "tool_edit_file_patch_" "" in
   Unix.unlink d;
   Unix.mkdir d 0o755;
   d
@@ -78,6 +79,7 @@ let setup ?(sandbox = Keeper_types.Local) f =
       (Keeper_alerting_path.playground_path_of_keeper meta.name)
   in
   ensure_dir playground;
+  ignore (Keeper_registry.register ~base_path:base meta.name meta);
   f ~config ~meta ~playground
 
 let parse raw = Yojson.Safe.from_string raw
@@ -92,6 +94,28 @@ let parse_error raw =
 let parse_int raw field =
   parse raw |> Json.member field |> Json.to_int_option
 
+let public_fs_edit_call ~public ~config ~(meta : Keeper_types.keeper_meta) args =
+  let args = Keeper_tool_alias.translate_input ~public args in
+  Agent_tool_filesystem_runtime.handle_file_write
+    ~turn_sandbox_factory:None
+    ~config
+    ~keeper_name:meta.name
+    ~args
+
+let seed_single_playground_repo ~config ~(meta : Keeper_types.keeper_meta) playground =
+  let repo = Filename.concat playground "repos/masc-mcp" in
+  ensure_dir (Filename.concat repo ".git");
+  let mapping : Repo_manager_types.keeper_repo_mapping =
+    { keeper_id = meta.name
+    ; repository_ids = [ "masc-mcp" ]
+    ; mapped_credential_id = None
+    }
+  in
+  (match Keeper_repo_mapping.save_mapping ~base_path:config.Coord.base_path mapping with
+   | Ok () -> ()
+   | Error msg -> Alcotest.failf "seed keeper repo mapping: %s" msg);
+  repo
+
 (* ── Tests ───────────────────────────────────────────────────────── *)
 
 let test_patch_unique_match () =
@@ -99,7 +123,7 @@ let test_patch_unique_match () =
   let path = Filename.concat playground "src.ml" in
   Fs_compat.save_file path "let x = 1\nlet y = 2\n";
   let raw =
-    Keeper_exec_fs.handle_keeper_fs_edit ~turn_sandbox_factory:None ~config ~meta
+    Agent_tool_filesystem_runtime.handle_file_write ~turn_sandbox_factory:None ~config ~keeper_name:meta.name
       ~args:
         (`Assoc
           [
@@ -121,7 +145,7 @@ let test_patch_no_match_errors () =
   let path = Filename.concat playground "src.ml" in
   Fs_compat.save_file path "let x = 1\n";
   let raw =
-    Keeper_exec_fs.handle_keeper_fs_edit ~turn_sandbox_factory:None ~config ~meta
+    Agent_tool_filesystem_runtime.handle_file_write ~turn_sandbox_factory:None ~config ~keeper_name:meta.name
       ~args:
         (`Assoc
           [
@@ -151,7 +175,7 @@ let test_patch_multiple_matches_without_replace_all_errors () =
   let path = Filename.concat playground "src.ml" in
   Fs_compat.save_file path "x = 1\nx = 1\nx = 1\n";
   let raw =
-    Keeper_exec_fs.handle_keeper_fs_edit ~turn_sandbox_factory:None ~config ~meta
+    Agent_tool_filesystem_runtime.handle_file_write ~turn_sandbox_factory:None ~config ~keeper_name:meta.name
       ~args:
         (`Assoc
           [
@@ -171,7 +195,7 @@ let test_patch_replace_all () =
   let path = Filename.concat playground "src.ml" in
   Fs_compat.save_file path "x = 1\nx = 1\nx = 1\n";
   let raw =
-    Keeper_exec_fs.handle_keeper_fs_edit ~turn_sandbox_factory:None ~config ~meta
+    Agent_tool_filesystem_runtime.handle_file_write ~turn_sandbox_factory:None ~config ~keeper_name:meta.name
       ~args:
         (`Assoc
           [
@@ -193,7 +217,7 @@ let test_patch_empty_old_string_errors () =
   let path = Filename.concat playground "src.ml" in
   Fs_compat.save_file path "let x = 1\n";
   let raw =
-    Keeper_exec_fs.handle_keeper_fs_edit ~turn_sandbox_factory:None ~config ~meta
+    Agent_tool_filesystem_runtime.handle_file_write ~turn_sandbox_factory:None ~config ~keeper_name:meta.name
       ~args:
         (`Assoc
           [
@@ -211,7 +235,7 @@ let test_patch_missing_file_errors () =
   setup @@ fun ~config ~meta ~playground ->
   let path = Filename.concat playground "ghost.ml" in
   let raw =
-    Keeper_exec_fs.handle_keeper_fs_edit ~turn_sandbox_factory:None ~config ~meta
+    Agent_tool_filesystem_runtime.handle_file_write ~turn_sandbox_factory:None ~config ~keeper_name:meta.name
       ~args:
         (`Assoc
           [
@@ -228,7 +252,7 @@ let test_patch_delete_via_empty_new_string () =
   let path = Filename.concat playground "src.ml" in
   Fs_compat.save_file path "keep me\nDELETE_ME\nkeep me too\n";
   let raw =
-    Keeper_exec_fs.handle_keeper_fs_edit ~turn_sandbox_factory:None ~config ~meta
+    Agent_tool_filesystem_runtime.handle_file_write ~turn_sandbox_factory:None ~config ~keeper_name:meta.name
       ~args:
         (`Assoc
           [
@@ -247,7 +271,7 @@ let test_overwrite_unchanged_by_patch_addition () =
   setup @@ fun ~config ~meta ~playground ->
   let path = Filename.concat playground "new.txt" in
   let raw =
-    Keeper_exec_fs.handle_keeper_fs_edit ~turn_sandbox_factory:None ~config ~meta
+    Agent_tool_filesystem_runtime.handle_file_write ~turn_sandbox_factory:None ~config ~keeper_name:meta.name
       ~args:
         (`Assoc
           [
@@ -259,6 +283,79 @@ let test_overwrite_unchanged_by_patch_addition () =
   Alcotest.(check bool) "ok" true (parse_ok raw);
   Alcotest.(check string) "overwrite wrote bytes"
     "fresh" (Fs_compat.load_file path)
+
+let check_invalid_mode_is_rejected ~label ~mode ~expected_error =
+  setup @@ fun ~config ~meta ~playground ->
+  let path = Filename.concat playground (label ^ ".txt") in
+  let raw =
+    Agent_tool_filesystem_runtime.handle_file_write ~turn_sandbox_factory:None ~config
+      ~keeper_name:meta.name
+      ~args:
+        (`Assoc
+          [
+            ("path", `String path);
+            ("mode", `String mode);
+            ("content", `String "fresh");
+          ])
+  in
+  Alcotest.(check bool) "ok=false" false (parse_ok raw);
+  Alcotest.(check (option string)) (label ^ " rejected")
+    (Some expected_error)
+    (parse_error raw);
+  Alcotest.(check bool) "file not written" false (Fs_compat.file_exists path)
+
+let test_empty_mode_is_rejected () =
+  check_invalid_mode_is_rejected ~label:"empty-mode" ~mode:""
+    ~expected_error:"mode must be one of [overwrite, append, patch], got \"\"."
+
+let test_spaces_only_mode_is_rejected () =
+  check_invalid_mode_is_rejected ~label:"spaces-only-mode" ~mode:"   "
+    ~expected_error:"mode must be one of [overwrite, append, patch], got \"   \"."
+
+let test_tab_only_mode_is_rejected () =
+  check_invalid_mode_is_rejected ~label:"tab-only-mode" ~mode:"\t"
+    ~expected_error:"mode must be one of [overwrite, append, patch], got \"\\t\"."
+
+let test_public_edit_file_maps_top_relative_single_repo_path () =
+  setup @@ fun ~config ~meta ~playground ->
+  let repo = seed_single_playground_repo ~config ~meta playground in
+  let path = Filename.concat repo "lib/src.ml" in
+  ensure_dir (Filename.dirname path);
+  Fs_compat.save_file path "let x = 1\n";
+  let raw =
+    public_fs_edit_call
+      ~public:"EditFile"
+      ~config
+      ~meta
+      (`Assoc
+        [
+          ("file_path", `String "lib/src.ml");
+          ("old_string", `String "let x = 1");
+          ("new_string", `String "let x = 2");
+        ])
+  in
+  Alcotest.(check bool) "ok" true (parse_ok raw);
+  Alcotest.(check string) "file edited through single repo rewrite"
+    "let x = 2\n" (Fs_compat.load_file path)
+
+let test_public_write_file_maps_top_relative_single_repo_path () =
+  setup @@ fun ~config ~meta ~playground ->
+  let repo = seed_single_playground_repo ~config ~meta playground in
+  let path = Filename.concat repo "lib/generated.ml" in
+  let raw =
+    public_fs_edit_call
+      ~public:"WriteFile"
+      ~config
+      ~meta
+      (`Assoc
+        [
+          ("file_path", `String "lib/generated.ml");
+          ("content", `String "let generated = true\n");
+        ])
+  in
+  Alcotest.(check bool) "ok" true (parse_ok raw);
+  Alcotest.(check string) "file written through single repo rewrite"
+    "let generated = true\n" (Fs_compat.load_file path)
 
 let () =
   Alcotest.run "Keeper_fs_edit_patch"
@@ -281,5 +378,15 @@ let () =
             test_patch_delete_via_empty_new_string;
           Alcotest.test_case "overwrite mode regression" `Quick
             test_overwrite_unchanged_by_patch_addition;
+          Alcotest.test_case "empty mode rejected" `Quick
+            test_empty_mode_is_rejected;
+          Alcotest.test_case "spaces-only mode rejected" `Quick
+            test_spaces_only_mode_is_rejected;
+          Alcotest.test_case "tab-only mode rejected" `Quick
+            test_tab_only_mode_is_rejected;
+          Alcotest.test_case "public EditFile maps top-relative single repo path" `Quick
+            test_public_edit_file_maps_top_relative_single_repo_path;
+          Alcotest.test_case "public WriteFile maps top-relative single repo path" `Quick
+            test_public_write_file_maps_top_relative_single_repo_path;
         ] );
     ]

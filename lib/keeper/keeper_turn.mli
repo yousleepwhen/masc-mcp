@@ -20,6 +20,16 @@ val handle_keeper_up : _ Keeper_types.context -> Yojson.Safe.t -> tool_result
     If streaming fails, the function falls back to batch automatically.
 
     @since 2.110.0 *)
+val preflight_keeper_msg :
+  _ Keeper_types.context -> Yojson.Safe.t -> (unit, string) result
+(** Run synchronous validation for [handle_keeper_msg] before an async wrapper
+    accepts the turn for later execution. *)
+
+val keeper_msg_timeout_override : Yojson.Safe.t -> (float option, string) result
+(** Parse the optional [timeout_sec] override used by [masc_keeper_msg]. The
+    value bounds the OAS turn and, for async dispatch, the request result
+    lifecycle exposed via [masc_keeper_msg_result]. *)
+
 val handle_keeper_msg :
   ?on_text_delta:(string -> unit) ->
   _ Keeper_types.context -> Yojson.Safe.t -> tool_result

@@ -38,14 +38,14 @@ module Prom = Masc_mcp.Prometheus
 
 let bucket_count ~keeper ~bucket =
   Prom.metric_value_or_zero
-    Prom.metric_keeper_turn_latency_bucket
+    Masc_mcp.Keeper_metrics.(to_string TurnLatencyBucket)
     ~labels:[ ("keeper", keeper); ("bucket", bucket) ]
     ()
 
 let model_bucket_count ~keeper ~channel ~provider_kind ~model_used
     ~resolved_model_id ~cascade_profile ~bucket =
   Prom.metric_value_or_zero
-    Prom.metric_keeper_turn_latency_by_model_bucket
+    Masc_mcp.Keeper_metrics.(to_string TurnLatencyByModelBucket)
     ~labels:
       [ ("keeper", keeper)
       ; ("channel", channel)
@@ -159,40 +159,22 @@ let test_warn_threshold_reads_env () =
    | Some v -> Unix.putenv "MASC_KEEPER_LONG_TURN_WARN_MS" v
    | None -> Unix.putenv "MASC_KEEPER_LONG_TURN_WARN_MS" "")
 
-let test_provider_kind_of_model_used () =
-  Alcotest.(check string) "claude_code label"
-    "claude_code" (M.provider_kind_of_model_used "claude_code:auto");
-  Alcotest.(check string) "kimi_cli label"
-    "kimi_cli" (M.provider_kind_of_model_used " kimi_cli:kimi-for-coding ");
-  Alcotest.(check string) "direct api prefix stays distinct from cli"
-    "claude" (M.provider_kind_of_model_used "claude:auto");
-  Alcotest.(check string) "unknown prefixed label is not trusted"
-    "unknown" (M.provider_kind_of_model_used "pretend_provider:model");
-  Alcotest.(check string) "custom endpoint label remains bounded"
-    "custom" (M.provider_kind_of_model_used "custom:model@https://example.test/v1");
-  Alcotest.(check string) "unprefixed"
-    "unknown" (M.provider_kind_of_model_used "gpt-5.4");
-  Alcotest.(check string) "empty"
-    "unknown" (M.provider_kind_of_model_used "")
-
 let test_record_by_model_bucket () =
   let keeper = "test-keeper-provider-latency-9933" in
   let before =
     model_bucket_count
       ~keeper
       ~channel:"scheduled_autonomous"
-      ~provider_kind:"claude_code"
-      ~model_used:"claude_code:auto"
-      ~resolved_model_id:"claude-sonnet-4.7"
-      ~cascade_profile:"big_three"
+      ~provider_kind:"runtime"
+      ~model_used:"runtime"
+      ~resolved_model_id:"runtime"
+      ~cascade_profile:"primary"
       ~bucket:"over_1200s"
   in
   M.record_turn_latency_by_model_bucket
     ~keeper
     ~channel:"scheduled_autonomous"
-    ~model_used:"claude_code:auto"
-    ~resolved_model_id:"claude-sonnet-4.7"
-    ~cascade_profile:"big_three"
+    ~cascade_profile:"primary"
     ~latency_ms:1_200_000;
   Alcotest.(check (float 0.0001))
     "by-model over_1200s bucket +1"
@@ -200,10 +182,10 @@ let test_record_by_model_bucket () =
     (model_bucket_count
        ~keeper
        ~channel:"scheduled_autonomous"
-       ~provider_kind:"claude_code"
-       ~model_used:"claude_code:auto"
-       ~resolved_model_id:"claude-sonnet-4.7"
-       ~cascade_profile:"big_three"
+       ~provider_kind:"runtime"
+       ~model_used:"runtime"
+       ~resolved_model_id:"runtime"
+       ~cascade_profile:"primary"
        ~bucket:"over_1200s");
   Alcotest.(check (float 0.0001))
     "different cascade unchanged"
@@ -211,9 +193,9 @@ let test_record_by_model_bucket () =
     (model_bucket_count
        ~keeper
        ~channel:"scheduled_autonomous"
-       ~provider_kind:"claude_code"
-       ~model_used:"claude_code:auto"
-       ~resolved_model_id:"claude-sonnet-4.7"
+       ~provider_kind:"runtime"
+       ~model_used:"runtime"
+       ~resolved_model_id:"runtime"
        ~cascade_profile:"tool_use_strict"
        ~bucket:"over_1200s")
 
@@ -243,8 +225,6 @@ let () =
         ] );
       ( "provider-model",
         [
-          Alcotest.test_case "provider kind from model surface" `Quick
-            test_provider_kind_of_model_used;
           Alcotest.test_case "records by model/cascade bucket" `Quick
             test_record_by_model_bucket;
         ] );

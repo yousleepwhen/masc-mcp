@@ -3,7 +3,7 @@
 #
 # CREDENTIAL BOUNDARY (see issue #9733):
 #   Simply checking who applied a bypass label cannot prove the actor was a
-#   human when agents share the owner's GitHub credentials — the label event
+#   human when agents share the owner's repo CLI credentials — the label event
 #   actor appears identical for both.
 #
 #   Use the credential-separated approval workflow instead:
@@ -30,14 +30,24 @@ fi
 pr_is_draft="${PR_LIVE_IS_DRAFT:-${PR_IS_DRAFT:-false}}"
 pr_title="${PR_TITLE:-}"
 pr_head_ref="${PR_HEAD_REF:-}"
-pr_labels_csv="${PR_LIVE_LABELS:-${PR_LABELS:-}}"
 pr_live_state="${PR_LIVE_STATE:-}"
+if [[ "${PR_LIVE_LABELS+x}" == "x" ]]; then
+  pr_labels_csv="${PR_LIVE_LABELS}"
+  pr_live_labels_lookup=1
+else
+  pr_labels_csv="${PR_LABELS:-}"
+  pr_live_labels_lookup=0
+fi
 
 if [[ -n "${PR_LIVE_IS_DRAFT:-}" ]]; then
   echo "agent draft policy: using live PR draft state ${PR_LIVE_IS_DRAFT}"
 fi
-if [[ -n "${PR_LIVE_LABELS:-}" ]]; then
-  echo "agent draft policy: using live PR labels ${PR_LIVE_LABELS}"
+if [[ "$pr_live_labels_lookup" -eq 1 ]]; then
+  if [[ -n "$PR_LIVE_LABELS" ]]; then
+    echo "agent draft policy: using live PR labels ${PR_LIVE_LABELS}"
+  else
+    echo "agent draft policy: using live PR labels (none)"
+  fi
 fi
 
 lower() {
@@ -62,9 +72,11 @@ esac
 
 csv_has_label() {
   local csv="$1"
+  [[ -n "$csv" ]] || return 1
   local wanted
   wanted="$(lower "$2")"
   local item
+  local -a items=()
   IFS=',' read -r -a items <<<"$csv"
   for item in "${items[@]}"; do
     item="$(lower "$(printf '%s' "$item" | xargs)")"
@@ -98,6 +110,7 @@ if [[ "$looks_agent_authored" -eq 0 ]]; then
 fi
 
 bypass_present=0
+approval_gate_present="$(lower "${PR_HUMAN_APPROVAL_GATE_PRESENT:-false}")"
 IFS=',' read -r -a bypass_labels <<<"$bypass_labels_csv"
 for label in "${bypass_labels[@]}"; do
   label="$(printf '%s' "$label" | xargs)"
@@ -108,8 +121,12 @@ for label in "${bypass_labels[@]}"; do
   fi
   if csv_has_label "$pr_labels_csv" "$label"; then
     bypass_present=1
-    echo "agent draft policy: pass, bypass label present: ${label}"
-    break
+    if [[ "$approval_gate_present" == "true" || "$approval_gate_present" == "1" || "$approval_gate_present" == "yes" ]]; then
+      echo "agent draft policy: pass, bypass label present with environment-gated approval: ${label}"
+      break
+    fi
+    echo "::error title=Agent draft policy violation::agent-like PR '${pr_head_ref}' has bypass label ${label}, but lacks the environment-gated human approval marker."
+    exit 1
   fi
 done
 

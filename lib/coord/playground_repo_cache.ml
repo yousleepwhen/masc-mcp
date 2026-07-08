@@ -15,21 +15,36 @@ let env_float name default =
 let git_meta_timeout_sec = env_float "MASC_KEEPER_GIT_META_TIMEOUT_SEC" 5.0
 
 let git_meta repo_path args =
-  Process_eio.run_argv_with_status ~timeout_sec:git_meta_timeout_sec
+  Masc_exec.Exec_gate.run_argv_with_status ~actor:`Coord_git ~raw_source:("git -C " ^ repo_path ^ " " ^ String.concat " " args) ~summary:"git metadata query" ~timeout_sec:git_meta_timeout_sec
     ("git" :: "-C" :: repo_path :: args)
 
-let cache_update_mu = Stdlib.Mutex.create ()
+let cache_update_eio_mu = Eio.Mutex.create ()
+let cache_update_std_mu = Stdlib.Mutex.create ()
 
+(* Cache writes include Fs_compat I/O, which can yield under Eio.  Use an
+   Eio mutex in fibers so same-domain concurrent updates queue cooperatively;
+   keep a Stdlib fallback for direct non-Eio test/helper calls. *)
 let with_cache_update_lock f =
-  Stdlib.Mutex.lock cache_update_mu;
-  Fun.protect ~finally:(fun () -> Stdlib.Mutex.unlock cache_update_mu) f
+  let with_stdlib_lock () =
+    Stdlib.Mutex.lock cache_update_std_mu;
+    Fun.protect ~finally:(fun () -> Stdlib.Mutex.unlock cache_update_std_mu) f
+  in
+  let inside_eio =
+    try
+      Eio.Fiber.check ();
+      true
+    with Stdlib.Effect.Unhandled _ -> false
+  in
+  if inside_eio
+  then Eio.Mutex.use_rw ~protect:true cache_update_eio_mu f
+  else with_stdlib_lock ()
 
 let is_shallow_repo repo_path =
   try
     match git_meta repo_path [ "rev-parse"; "--is-shallow-repository" ] with
     | Unix.WEXITED 0, output ->
         String.equal "true" (String.trim output)
-    | _ -> false
+    | (Unix.WEXITED _ | Unix.WSIGNALED _ | Unix.WSTOPPED _), _ -> false
   with
   | Eio.Cancel.Cancelled _ as e -> raise e
   | _ -> false
@@ -44,12 +59,12 @@ let update
     let branch =
       match git_meta repo_path [ "rev-parse"; "--abbrev-ref"; "HEAD" ] with
       | Unix.WEXITED 0, output -> String.trim output
-      | _ -> "unknown"
+      | (Unix.WEXITED _ | Unix.WSIGNALED _ | Unix.WSTOPPED _), _ -> "unknown"
     in
     let commit =
       match git_meta repo_path [ "log"; "--oneline"; "-1" ] with
       | Unix.WEXITED 0, output -> String.trim output
-      | _ -> ""
+      | (Unix.WEXITED _ | Unix.WSIGNALED _ | Unix.WSTOPPED _), _ -> ""
     in
     let ts = Printf.sprintf "%.0f" (Unix.gettimeofday ()) in
     let entry =
@@ -71,7 +86,14 @@ let update
           match Yojson.Safe.Util.member "repos" json with
           | `List repos -> repos
           | _ -> []
-        with Sys_error _ | Yojson.Json_error _ -> []
+        with
+        | Eio.Cancel.Cancelled _ as e -> raise e
+        | (Sys_error _ | Yojson.Json_error _) as exn ->
+          Log.Misc.warn
+            "[playground_repo_cache] existing cache read failed at %s: %s"
+            cache_path
+            (Printexc.to_string exn);
+          []
       in
       let updated =
         entry

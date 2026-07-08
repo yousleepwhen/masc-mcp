@@ -1,5 +1,12 @@
 // MASC Dashboard — Core entity types (Agent, Task, Message, Board, Keeper)
 
+// --- Shared options ---
+
+export interface RefreshOptions {
+  force?: boolean
+  light?: boolean
+}
+
 // --- Core entities ---
 
 export interface Agent {
@@ -55,7 +62,6 @@ export interface TaskWorktreeInfo {
 interface TaskExecutionLinks {
   operation_id?: string | null
   session_id?: string | null
-  autoresearch_loop_id?: string | null
 }
 
 interface TaskContract {
@@ -120,6 +126,19 @@ type BoardPostMeta = Record<string, unknown> & {
 export type BoardVoteDirection = 'up' | 'down'
 export type BoardModerationStatus = 'none' | 'flagged' | 'approved' | 'removed' | 'hidden' | 'warned'
 
+export interface BoardContributorQuality {
+  score: number
+  band?: 'low' | 'watch' | 'strong' | 'excellent' | string
+  source?: string
+  completion_rate?: number
+  response_rate?: number
+  board_posts?: number
+  board_comments?: number
+  accountability_score?: number
+  autonomy_level?: string
+  thompson_confidence?: number
+}
+
 export interface BoardActorIdentity {
   kind: 'keeper' | 'agent'
   id: string
@@ -157,6 +176,7 @@ export interface BoardPost {
   hearth_count?: number
   report_count?: number
   moderation_status?: BoardModerationStatus
+  contributor_quality?: BoardContributorQuality | null
   reactions?: BoardReactionSummary[]
 }
 
@@ -289,6 +309,8 @@ export interface InferenceTelemetry {
   reasoning_tokens: number | null
   peak_memory_gb: number | null
   request_latency_ms: number | null
+  ttfrc_ms: number | null
+  prefill_ms: number | null
 }
 
 export interface PromptSegmentTelemetry {
@@ -304,6 +326,10 @@ export interface PromptTelemetry {
   segments: Record<string, PromptSegmentTelemetry>
 }
 
+// Compatibility telemetry for historical OAS timeout-budget payloads.
+// New keeper surfaces must keep the immutable root cause owner-specific
+// (provider timeout, admission/capacity pressure, or turn deadline) instead of
+// reclassifying those causes back into a timeout-budget state.
 export interface TimeoutBudgetTelemetry {
   oas_timeout_sec: number | null
   adaptive_timeout_sec: number | null
@@ -339,7 +365,7 @@ export interface KeeperMetricPoint {
   handoff_new_generation: number | null
   prompt_fingerprint: string | null
   prompt_metrics: PromptTelemetry | null
-  timeout_budget: TimeoutBudgetTelemetry | null
+  provider_timeout_plan: TimeoutBudgetTelemetry | null
   ctx_composition: CtxCompositionTelemetry | null
   input_tokens: number | null
   output_tokens: number | null
@@ -358,26 +384,88 @@ export interface KeeperMetricPoint {
   fallback_reason: string | null
 }
 
-export type KeeperRuntimeBlockerClass =
-  | 'ambiguous_post_commit_timeout'
-  | 'ambiguous_post_commit_failure'
-  | 'autonomous_slot_wait_timeout'
-  | 'admission_queue_wait_timeout'
-  | 'turn_timeout_after_queue_wait'
-  | 'oas_timeout_budget'
-  | 'turn_timeout'
-  | 'completion_contract_violation'
-  | 'cascade_exhausted'
-  | 'no_tool_capable_provider'
-  | 'provider_runtime_error'
-  | 'tool_required_unsatisfied'
-  | 'fiber_unresolved'
-  | 'stale_turn_timeout'
-  | 'stale_termination_storm'
-  | 'heartbeat_failures'
-  | 'turn_failures'
-  | 'exception'
-  | 'stale_fleet_batch'
+export interface ProviderHealth {
+  provider: string
+  model: string
+  status: 'healthy' | 'degraded' | 'unhealthy'
+  ttfrc_ms_ewma: number
+  timeout_count_5m: number
+  prefill_ms_ewma: number
+  last_updated: number
+}
+
+export const KEEPER_RUNTIME_BLOCKER_CLASSES = [
+  'ambiguous_post_commit_timeout',
+  'ambiguous_post_commit_failure',
+  'autonomous_slot_wait_timeout',
+  'admission_queue_wait_timeout',
+  'turn_timeout_after_queue_wait',
+  'turn_timeout',
+  // Emitted by `lib/keeper/keeper_meta_contract.ml:101` (Turn_livelock_blocked)
+  // serialized via `blocker_class_to_string` → `"turn_livelock_blocked"`.
+  // Korean label already exists at `fsm-hub-types.ts:572` — the union
+  // omission caused silent string-fallback narrowing on the wire.
+  'turn_livelock_blocked',
+  'completion_contract_violation',
+  'cascade_exhausted',
+  'no_tool_capable_provider',
+  'provider_runtime_error',
+  'tool_required_unsatisfied',
+  'fiber_unresolved',
+  'stale_turn_timeout',
+  'stale_termination_storm',
+  'heartbeat_failures',
+  'turn_failures',
+  'exception',
+  'stale_fleet_batch',
+  'awaiting_operator',
+  'awaiting_sandbox_egress',
+  'supervisor_paused',
+  'synthetic_stall',
+  'self_imposed_idle',
+  // Emitted by `lib/keeper/keeper_unified_turn_stay_silent.ml:76` when
+  // a keeper produces consecutive silent turns above the configured
+  // threshold. Serialized via
+  // `keeper_meta_contract.ml:147 blocker_class_to_string Stay_silent_loop`.
+  'stay_silent_loop',
+  'sdk_max_turns_exceeded',
+  'sdk_token_budget_exceeded',
+  'sdk_cost_budget_exceeded',
+  'sdk_unrecognized_stop_reason',
+  'sdk_idle_detected',
+  'sdk_tool_retry_exhausted',
+  'sdk_guardrail_violation',
+  'sdk_tripwire_violation',
+  'sdk_exit_condition_met',
+] as const
+
+export type KeeperRuntimeBlockerClass = (typeof KEEPER_RUNTIME_BLOCKER_CLASSES)[number]
+// Wire emit: `lib/keeper/keeper_status_bridge.ml:720` —
+//   `pause_state = if meta.paused then "paused" else "active"`.
+// Closed 2-arm; the previous `| string` catch-all hid the fact that
+// the wire vocabulary is exhaustive and let unmapped values flow
+// silently through narrowing.
+export type KeeperPauseState = 'active' | 'paused'
+
+// Wire emit: `lib/keeper/keeper_status_bridge.ml:721–724` — derived
+// from `runtime_blocker_surface_opt` + `continue_gate`. Closed 3-arm.
+export type KeeperRuntimeBlockerState = 'clear' | 'blocked' | 'continue_gate'
+
+export type StopCauseSource =
+  | 'runtime_blocker_class'
+  | 'terminal_reason_code'
+  | 'stop_reason'
+  | 'error_kind'
+  | 'attention_reason'
+
+export interface StopCause {
+  code: string
+  source: StopCauseSource
+  label: string
+  summary?: string | null
+  severity?: string | null
+  next_action?: string | null
+}
 
 export interface KeeperTrustLatestEvent {
   kind: string
@@ -413,8 +501,10 @@ export interface KeeperTrustExecutionSummary {
   missing_required_tools?: string[] | null
   requested_tools?: string[] | null
   tools_used?: string[] | null
+  unexpected_tools?: string[] | null
   requested_tool_count?: number | null
   tools_used_count?: number | null
+  unexpected_tool_count?: number | null
   provider_attempt_count?: number | null
   provider_fallback_applied?: boolean | null
   provider_selected_model?: string | null
@@ -448,6 +538,24 @@ export interface KeeperTrustSummary {
   latest_causal_event?: KeeperTrustLatestEvent | null
 }
 
+// Dashboard rendering union returned by `deriveLifecycleState`
+// (keeper-store-normalize.ts). The first 8 are dashboard-classified
+// metrics-driven labels; the last 5 are backend FSM phase names that
+// leak through when `isKeeperOffline(keeper)` is true and the body
+// returns `keeperDisplayStatus(keeper)` directly.
+//
+// Pre-honest version of this type was just the first 8; the
+// `keeperDisplayStatus(keeper) as KeeperLifecycleState` cast lied about
+// the runtime shape (`'paused'`, `'crashed'`, `'dead'`, `'zombie'`, and
+// `'unknown'` can leak through). Downstream consumers
+// (`keeperStateTone` in components/common/status-chip.ts) already
+// handle the FSM-name vocabulary, so the right fix is to widen the
+// type to match reality rather than narrow the runtime via a lossy
+// mapping.
+//
+// `PipelineStage` (this file, ~line 709) is the typed backend mirror
+// for a different axis (pipeline_stage_of_phase, 10-value union); these
+// two unions deliberately overlap on the FSM-name tail.
 export type KeeperLifecycleState =
   | 'active'
   | 'compacting'
@@ -457,6 +565,13 @@ export type KeeperLifecycleState =
   | 'offline'
   | 'unbooted'
   | 'stopped'
+  // Backend FSM phase names that leak through deriveLifecycleState's
+  // `isKeeperOffline` branch via keeperDisplayStatus(keeper).
+  | 'paused'
+  | 'crashed'
+  | 'dead'
+  | 'zombie'
+  | 'unknown'
 
 export interface Goal {
   id: string
@@ -545,6 +660,11 @@ export interface KeeperDiagnostic {
 
 export type KeeperConversationRole = 'user' | 'assistant' | 'system' | 'tool' | 'other'
 
+/** Canonical actor name for system-originated entries (backend convention).
+ *  Used when an actor field is null/missing and the entry came from a
+ *  system source rather than a real user/agent. */
+export const SYSTEM_ACTOR_NAME = 'system' as const
+
 export type KeeperConversationSource =
   | 'direct_user'
   | 'direct_assistant'
@@ -611,19 +731,27 @@ export interface KeeperStatusDetail {
   loadedAt: string
 }
 
+// Backend SSOT: `Keeper_status_runtime.pipeline_stage_of_phase`
+// (lib/keeper/keeper_status_runtime.ml:537) deterministic mapping from
+// the 13-state KeeperPhase, post-RFC-0046 (#14707). Emits 10 distinct
+// values; `unknown` is a dashboard-side sentinel for missing data
+// (`asString(row.pipeline_stage) ?? 'unknown'`). Removed legacy
+// `thinking` / `tool_use` (= trajectory content_type, never
+// pipeline_stage) and `scheduled_autonomous` (= turn channel, never
+// pipeline_stage). Added `overflowed` which the backend emits but
+// the type previously rejected.
 export type PipelineStage =
   | 'idle'
-  | 'thinking'
-  | 'tool_use'
   | 'compacting'
   | 'handoff'
-  | 'scheduled_autonomous'
   | 'offline'
   | 'failing'
+  | 'overflowed'
   | 'draining'
   | 'paused'
   | 'crashed'
   | 'restarting'
+  | 'unknown'
 
 // Aggregated metrics computed by the backend over a sliding window.
 // Fields mirror dashboard_http_keeper_detail.ml summary output.
@@ -712,38 +840,6 @@ export interface MetricsWindow {
 
   // -- Tool --
   tool_call_count?: number
-  pr_review_read_tool_call_count?: number
-  pr_review_mutation_tool_call_count?: number
-  pr_review_tool_call_count?: number
-  pr_work_git_tool_call_count?: number
-  pr_work_tool_call_count?: number
-  pr_review_action_attempt_count?: number
-  pr_review_action_success_count?: number
-  pr_review_comment_action_count?: number
-  pr_review_approve_action_count?: number
-  pr_review_request_changes_action_count?: number
-  pr_review_reply_action_count?: number
-  pr_work_action_attempt_count?: number
-  pr_work_action_success_count?: number
-  pr_git_add_action_count?: number
-  pr_git_commit_action_count?: number
-  pr_git_push_action_count?: number
-  pr_create_action_count?: number
-  pr_work_signal_count?: number
-  observed_pr_review_tool_calls?: boolean
-  observed_pr_mutation_tool_calls?: boolean
-  observed_git_tool_calls?: boolean
-  observed_pr_work_tool_calls?: boolean
-  observed_pr_review_work?: boolean
-  observed_pr_mutation_work?: boolean
-  observed_pr_approve_work?: boolean
-  observed_pr_request_changes_work?: boolean
-  observed_pr_reply_work?: boolean
-  observed_pr_create_work?: boolean
-  observed_pr_push_work?: boolean
-  observed_pr_commit_work?: boolean
-  observed_git_work?: boolean
-  observed_pr_work?: boolean
 
   // -- Memory --
   memory_checks?: number
@@ -818,6 +914,7 @@ export interface Keeper {
   last_model_used_label?: string | null
   next_model_hint?: string | null
   cascade_name?: string | null
+  cascade_ref?: CascadeRef | null
   cascade_canonical?: string | null
   selected_cascade_canonical?: string | null
   status: string
@@ -829,9 +926,12 @@ export interface Keeper {
   proactive_enabled?: boolean
   proactive_idle_sec?: number
   proactive_cooldown_sec?: number
+  pause_state?: KeeperPauseState | null
+  runtime_blocker_state?: KeeperRuntimeBlockerState | null
   runtime_blocker_class?: KeeperRuntimeBlockerClass | null
   runtime_blocker_summary?: string | null
   runtime_blocker_continue_gate?: boolean | null
+  stop_cause?: StopCause | null
   needs_attention?: boolean | null
   attention_reason?: string | null
   next_human_action?: string | null
@@ -974,6 +1074,7 @@ export interface Keeper {
   inventory?: string[]
   relationships?: Record<string, string>
   supervisor_diagnostics?: KeeperSupervisorDiagnostics
+  provider_health?: ProviderHealth | null
   outcomes?: KeeperOutcomes
   conditions?: KeeperConditions
 }
@@ -1098,6 +1199,7 @@ interface KeeperConfigExecution {
   verify: boolean
   selected_cascade_name: string
   selected_cascade_canonical: string
+  cascade_ref?: CascadeRef | null
 }
 
 interface KeeperConfigCompaction {
@@ -1112,6 +1214,11 @@ interface KeeperConfigProactive {
   enabled: boolean
   idle_sec: number
   cooldown_sec: number
+}
+
+export interface CascadeRef {
+  group: string
+  item: string | null
 }
 
 export type KeeperFeatureStatus = 'wired' | 'source_only' | 'unwired'
@@ -1189,8 +1296,6 @@ interface KeeperConfigSources {
   override_fields: string[]
   cascade_catalog_source_kind: 'json' | 'toml' | null
   cascade_catalog_source_path: string | null
-  cascade_runtime_json_path: string | null
-  cascade_runtime_json_editable: boolean
 }
 
 interface KeeperConfigMetrics {
@@ -1204,7 +1309,7 @@ interface KeeperConfigMetrics {
   last_input_tokens: number
   last_output_tokens: number
   last_total_tokens: number
-  last_latency_ms: number
+  last_latency_ms: number | null
   last_total_tokens_per_sec: number | null
   last_output_tokens_per_sec: number | null
   compaction_count: number

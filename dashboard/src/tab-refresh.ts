@@ -19,13 +19,8 @@ async function refreshObservatoryPanel(): Promise<void> {
   refreshObservatorySurface()
 }
 
-async function refreshAutoresearchLabSurface(): Promise<void> {
-  const { refreshAutoresearchSurface } = await import('./components/autoresearch')
-  await refreshAutoresearchSurface()
-}
-
 async function refreshHarnessLabSurface(): Promise<void> {
-  const { refreshHarnessSurface } = await import('./components/harness-health')
+  const { refreshHarnessSurface } = await import('./components/harness-health-state')
   await refreshHarnessSurface()
 }
 
@@ -49,6 +44,11 @@ async function refreshDoctorSurface(): Promise<void> {
   await refreshDoctor()
 }
 
+async function refreshSurfaceReadinessSurface(): Promise<void> {
+  const { refreshSurfaceReadiness } = await import('./components/surface-readiness-panel')
+  await refreshSurfaceReadiness()
+}
+
 async function refreshCascadeInspectorSurface(): Promise<void> {
   const { refreshCascadeInspector } = await import('./components/cascade-inspector')
   await refreshCascadeInspector()
@@ -64,13 +64,24 @@ type RefreshTask =
   | 'gitGraph'
   | 'board'
   | 'goals'
-  | 'autoresearch'
   | 'harness'
   | 'toolQuality'
   | 'inspector'
+  | 'surfaceReadiness'
   | 'cascadeInspector'
   | 'operatorSnapshot'
   | 'operatorRoomDigest'
+
+// Monitor data ownership is partitioned by section. Two tiers:
+//   Tier 1 — visible lanes (agents / fleet-health / runtime / observatory)
+//            each declare their own view-aware or static refresh plan.
+//   Tier 2 — hidden diagnostic sections (cascade-config / doctor /
+//            transport-health / feature-health) share an identical light
+//            fallback plan. Their mounted panels own telemetry polling, so
+//            route visits only need to refresh namespace/mission context.
+//   Outliers — `journey` (execution only) and `cognition` keep dedicated
+//            branches above.
+const HIDDEN_DIAGNOSTIC_FALLBACK_PLAN: readonly RefreshTask[] = ['namespaceTruth', 'missionSnapshot']
 
 export function refreshPlanForRoute(routeState: Pick<RouteState, 'tab' | 'params'>): RefreshTask[] {
   switch (routeState.tab) {
@@ -78,16 +89,19 @@ export function refreshPlanForRoute(routeState: Pick<RouteState, 'tab' | 'params
       return ['shell', 'namespaceTruth', 'missionSnapshot', 'execution']
     case 'monitoring':
       if (routeState.params.section === 'observatory') {
-        return ['namespaceTruth', 'execution', 'missionSnapshot', 'observatory', 'activityGraph']
+        const view = routeState.params.view
+        if (view === 'activity' || view === 'graph') return ['namespaceTruth', 'activityGraph']
+        if (view === 'live') return ['namespaceTruth', 'execution', 'missionSnapshot']
+        return ['namespaceTruth', 'observatory']
       }
       if (routeState.params.section === 'journey') {
-        return ['execution', 'missionSnapshot']
+        return ['execution']
       }
-      if (routeState.params.section === 'agents') {
+      if (!routeState.params.section || routeState.params.section === 'agents') {
         return ['namespaceTruth', 'execution', 'missionSnapshot']
       }
       if (routeState.params.section === 'cognition') {
-        return ['namespaceTruth', 'execution', 'missionSnapshot', 'autoresearch']
+        return ['namespaceTruth', 'execution', 'missionSnapshot']
       }
       if (routeState.params.section === 'runtime' && routeState.params.view === 'inspector') {
         return ['cascadeInspector']
@@ -101,10 +115,15 @@ export function refreshPlanForRoute(routeState: Pick<RouteState, 'tab' | 'params
         // Mounted fleet-health panels own telemetry/tool/governance polling.
         return ['namespaceTruth']
       }
-      return ['namespaceTruth', 'missionSnapshot']
+      // Hidden diagnostic sections fall through here. See the
+      // HIDDEN_DIAGNOSTIC_FALLBACK_PLAN definition above for the tier split.
+      return [...HIDDEN_DIAGNOSTIC_FALLBACK_PLAN]
     case 'command':
       if (routeState.params.view === 'inspector') {
         return ['inspector']
+      }
+      if (routeState.params.view === 'surfaces') {
+        return ['surfaceReadiness']
       }
       return ['namespaceTruth', 'operatorSnapshot', 'operatorRoomDigest']
     case 'workspace':
@@ -119,9 +138,6 @@ export function refreshPlanForRoute(routeState: Pick<RouteState, 'tab' | 'params
       }
       return []
     case 'lab':
-      if (routeState.params.section === 'autoresearch') {
-        return ['autoresearch']
-      }
       if (routeState.params.section === 'harness') {
         return ['harness']
       }
@@ -148,7 +164,6 @@ const REFRESHERS: Record<RefreshTask, (routeState: Pick<RouteState, 'tab' | 'par
   gitGraph: () => { void refreshGitGraphSurface() },
   board: () => { void refreshBoard() },
   goals: () => { void refreshGoals() },
-  autoresearch: () => { void refreshAutoresearchLabSurface() },
   harness: () => { void refreshHarnessLabSurface() },
   toolQuality: () => { void refreshToolQualityLabSurface() },
   inspector: () => {
@@ -156,6 +171,7 @@ const REFRESHERS: Record<RefreshTask, (routeState: Pick<RouteState, 'tab' | 'par
     void refreshServerConfigSurface()
     void refreshDoctorSurface()
   },
+  surfaceReadiness: () => { void refreshSurfaceReadinessSurface() },
   cascadeInspector: () => { void refreshCascadeInspectorSurface() },
   operatorSnapshot: () => { void refreshOperatorSnapshot({ force: true }) },
   operatorRoomDigest: () => { void refreshOperatorRoomDigest({ force: true }) },

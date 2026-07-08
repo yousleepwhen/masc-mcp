@@ -5,6 +5,7 @@ import {
   createPost,
   fetchBoard,
   fetchBoardCuration,
+  fetchBoardFlairs,
   fetchBoardHearths,
   fetchBoardKarmaLedger,
   fetchBoardPost,
@@ -286,7 +287,7 @@ describe('normalizeGovernanceJudgment', () => {
       evidence_refs: ['e1', 'e2'],
     })
     expect(result!.judgment_id).toBe('j-1')
-    expect(result!.model_used).toBe('gpt-4')
+    expect(result!.model_used).toBeNull()
     expect(result!.evidence_refs).toEqual(['e1', 'e2'])
   })
 
@@ -425,7 +426,7 @@ describe('normalizeGovernanceJudgeSummary', () => {
     expect(result!.status).toBe('stale_visible')
     expect(result!.degraded_reason).toBe('timeout')
     expect(result!.cached_judgments_visible).toBe(true)
-    expect(result!.model_used).toBe('gpt-4')
+    expect(result!.model_used).toBeNull()
     expect(result!.keeper_name).toBe('janitor')
     expect(result!.last_error).toBeNull()
   })
@@ -455,6 +456,18 @@ describe('fetchBoard', () => {
           has_voted: true,
           report_count: 2,
           moderation_status: 'flagged',
+          contributor_quality: {
+            score: 0.72,
+            band: 'strong',
+            source: 'agent_reputation',
+            completion_rate: 0.8,
+            response_rate: 0.6,
+            board_posts: 3,
+            board_comments: 5,
+            accountability_score: 0.9,
+            autonomy_level: 'elevated',
+            thompson_confidence: 0.7,
+          },
           reactions: [
             {
               emoji: '🔥',
@@ -490,6 +503,18 @@ describe('fetchBoard', () => {
       has_voted: true,
       report_count: 2,
       moderation_status: 'flagged',
+      contributor_quality: {
+        score: 0.72,
+        band: 'strong',
+        source: 'agent_reputation',
+        completion_rate: 0.8,
+        response_rate: 0.6,
+        board_posts: 3,
+        board_comments: 5,
+        accountability_score: 0.9,
+        autonomy_level: 'elevated',
+        thompson_confidence: 0.7,
+      },
       reactions: [
         {
           emoji: '🔥',
@@ -587,6 +612,30 @@ describe('fetchBoardHearths', () => {
       { name: 'research', count: 0 },
     ])
     expect(fetchMock).toHaveBeenCalledWith('/api/v1/board/hearths', expect.any(Object))
+  })
+})
+
+describe('fetchBoardFlairs', () => {
+  it('normalizes the board flair catalog from the server', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({
+        flairs: [
+          { name: 'insight', emoji: '💡', label: 'Insight' },
+          { name: '  ', emoji: 'x', label: 'Ignored' },
+          { name: 'meta' },
+        ],
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(fetchBoardFlairs()).resolves.toEqual([
+      { name: 'insight', emoji: '💡', label: 'Insight' },
+      { name: 'meta', emoji: '', label: 'meta' },
+    ])
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/board/flairs', expect.any(Object))
   })
 })
 

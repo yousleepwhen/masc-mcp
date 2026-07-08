@@ -42,7 +42,7 @@ JSON output for automation:
 ```
 
 Sidecar dispatch 는 `docs/DOCTOR-ARCHITECTURE.md` 의 "Dispatch" 섹션 참조.
-`codex cannot CanAdmin` 같은 auth/bearer mismatch 는 이 문서 범위가 아니며,
+`agent-code cannot CanAdmin` 같은 auth/bearer mismatch 는 이 문서 범위가 아니며,
 `doctor auth` + `docs/LOCAL-DASHBOARD-AUTH-RUNBOOK.md` 를 사용한다.
 
 Typical results:
@@ -91,8 +91,8 @@ Core fields:
 - `sandbox_preflight`: Docker keeper sandbox readiness (`docker` daemon,
   local image presence, required commands, hardening checks). The JSON also
   exposes `hard_mode`, `credential_fallbacks_disabled`, and `git_egress` so
-  operators can confirm whether git/gh traffic is legacy Docker dispatch or
-  hard-mode brokered structured tools.
+  operators can confirm whether repo CLI traffic uses identity dispatch or the
+  container network policy.
 
 Important interpretation:
 
@@ -138,11 +138,11 @@ root to edit.
 - `main_eio.exe --base-path ...`
   - bootstraps `<base-path>/.masc/config` before runtime initialization
 
-### Low-level fallback note
+### Repo Seed Note
 
-`Config_dir_resolver` still has optional repo fallback behavior behind
-`MASC_ALLOW_REPO_CONFIG_FALLBACK=true`, plus home-level compatibility paths.
-Those are implementation details, not the normal operator contract.
+`Config_dir_resolver` may report a checked-in repo `config/` path as a bootstrap
+seed, but it never treats that path as the active config root. It only resolves
+operator config from `MASC_CONFIG_DIR` or `<base-path>/.masc/config`.
 
-If you need to answer “what should I edit right now?”, use `doctor`, not the raw
-fallback chain.
+If you need to answer “what should I edit right now?”, use `doctor`, not a repo
+seed path.

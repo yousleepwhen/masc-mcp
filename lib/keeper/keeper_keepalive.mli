@@ -39,6 +39,16 @@ val keeper_turn_throttle_limit : int
 (** Runtime keeper turn concurrency limit derived from
     [MASC_KEEPER_AUTOBOOT_MAX]. *)
 
+val effective_turn_throttle_limit : int
+(** Effective (possibly capped) throttle limit. When the env override
+    exceeds 2x the TOML baseline, this value is capped to prevent fleet
+    overload (issue #17192). Otherwise equal to {!keeper_turn_throttle_limit}. *)
+
+val keeper_turn_throttle_source : Keeper_turn_slot.throttle_source
+(** Source of {!keeper_turn_throttle_limit}. Re-exported from
+    {!Keeper_turn_slot} so operator surfaces have a single import point.
+    @since issue #17192 *)
+
 val proactive_skip_reason_metric : string
 (** Canonical Prometheus metric name for the proactive-scheduler
     skip-reason counter.  Labels: [("keeper", <name>); ("reason",
@@ -119,7 +129,7 @@ val force_released_marker_count_for_test : unit -> int
 (** Test-only: inject a marker without touching semaphores, so marker-retention
     behavior can be exercised without creating a double-release path. *)
 val add_force_released_marker_for_test :
-  label:string ->
+  label:Keeper_turn_slot.slot_pool ->
   keeper_name:string ->
   acquisition_id:int ->
   marked_at:float ->
@@ -152,7 +162,7 @@ val drop_autonomous_waiter_for_test : int -> unit
     at time [now].  0.0 = no yield needed.  Exposed for unit testing. *)
 val fairness_delay_sec_at : now:float -> keeper_name:string -> float
 
-(** Pure: whether a [Heartbeat_smart] decision should allow the
+(** Pure: whether a [Keeper_heartbeat_smart] decision should allow the
     keepalive cycle (presence/snapshot/board/turn/recurring) to run.
 
     Contract: [Skip_busy] -> [true] (cycle continues; broadcast may be
@@ -161,13 +171,23 @@ val fairness_delay_sec_at : now:float -> keeper_name:string -> float
     keeper starvation bug where [Skip_busy] was mis-used as a
     cycle-skip signal, blocking any keeper with a claimed task from
     ever running a turn. *)
-val smart_heartbeat_cycle_continues : Heartbeat_smart.decision -> bool
+val smart_heartbeat_cycle_continues : Keeper_heartbeat_smart.decision -> bool
 
 (** Pure: post-sleep refinement. Promotes [Skip_idle] to [true] iff the
     sleep ended with [Woken]. Closes the [MissedWakeup] gap in
     KeeperHeartbeat.tla left open by sibling fix #10078. *)
 val cycle_continues_after_wake :
-  Heartbeat_smart.decision -> Keeper_keepalive_signal.sleep_outcome -> bool
+  Keeper_heartbeat_smart.decision -> Keeper_keepalive_signal.sleep_outcome -> bool
+
+val visible_consumer_count : unit -> int
+
+val visibility_gate_decision :
+  visible_consumers:int ->
+  has_pending_signal:bool ->
+  now:float ->
+  last_heartbeat_cycle_ts:float ->
+  Keeper_heartbeat_smart.decision ->
+  Keeper_heartbeat_smart.decision
 
 val status_tick_usage_json : unit -> Yojson.Safe.t
 (** Usage payload for heartbeat/status metrics rows.  Status ticks are not
@@ -186,14 +206,22 @@ val reset_autonomous_completion_for_test : unit -> unit
 val set_after_acquire_flag_hook_for_test :
   (label:string -> keeper_name:string -> unit) option -> unit
 
-(** PR-M (Leak 9): consecutive [oas_timeout_budget] cycle FAILED strikes
-    per keeper. Promoted to [Keeper_fiber_crash] at
-    [oas_timeout_budget_strike_limit]; reset on any successful turn.
+(** PR-M (Leak 9): consecutive [provider_timeout] cycle FAILED strikes
+    per keeper. The heartbeat loop routes the count through
+    [Keeper_failure_policy] instead of treating the limit as keeper death.
+    Reset on any successful turn.
     The in-process CAS map survives within a server lifetime. After
     restart, callers may hydrate the first bump from persisted
-    [Oas_timeout_budget_loop] state so multi-process loops still reach
-    the supervisor gate. *)
-val oas_timeout_budget_strike_limit : int
+    [Provider_timeout_loop] state so multi-process loops still reach
+    the policy gate. *)
+val provider_timeout_strike_limit : int
+
+type provider_timeout_strike_outcome =
+  | Provider_timeout_warn
+  | Provider_timeout_soft_backoff
+
+val classify_provider_timeout_strike :
+  strikes:int -> provider_timeout_strike_outcome
 
 val bump_budget_exhaustion_seeded :
   keeper_name:string -> prior_strikes:int -> int

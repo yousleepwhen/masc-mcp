@@ -18,10 +18,14 @@ let test_of_string_invalid () =
   | Error _ -> ()
   | Ok _ -> fail "expected error for invalid stage"
 
-let test_index_order () =
-  let indices = List.map Task_stage.index Task_stage.all in
-  let sorted = List.sort Int.compare indices in
-  check (list int) "indices are ordered" sorted indices;
+let test_canonical_order () =
+  (* [all] must be in ascending canonical order under [compare].
+     Sorting it should be a no-op. *)
+  let sorted = List.sort Task_stage.compare Task_stage.all in
+  check (list string)
+    "canonical [all] is sorted"
+    (List.map Task_stage.to_string sorted)
+    (List.map Task_stage.to_string Task_stage.all);
   check int "5 stages" 5 (List.length Task_stage.all)
 
 let test_forward_transition () =
@@ -67,10 +71,9 @@ let test_task_with_stage () =
     goal_id = None;
     task_status = Todo; priority = 3; files = [];
     created_at = "2026-01-01T00:00:00Z";
-    worktree = None;
     created_by = None;
     stage = Some Task_stage.Implement;
-    contract = None; handoff_context = None; cycle_count = 0; do_not_reclaim_reason = None;
+    contract = None; handoff_context = None; cycle_count = 0; reclaim_policy = None; do_not_reclaim_reason = None;
   } in
   let json = Types_core.task_to_yojson task in
   match Types_core.task_of_yojson json with
@@ -85,10 +88,9 @@ let test_task_without_stage () =
     goal_id = None;
     task_status = Todo; priority = 3; files = [];
     created_at = "2026-01-01T00:00:00Z";
-    worktree = None;
     created_by = None;
     stage = None;
-    contract = None; handoff_context = None; cycle_count = 0; do_not_reclaim_reason = None;
+    contract = None; handoff_context = None; cycle_count = 0; reclaim_policy = None; do_not_reclaim_reason = None;
   } in
   let json = Types_core.task_to_yojson task in
   match Types_core.task_of_yojson json with
@@ -105,7 +107,7 @@ let () =
       "yojson roundtrip", `Quick, test_yojson_roundtrip;
     ];
     "ordering", [
-      "index order", `Quick, test_index_order;
+      "canonical order", `Quick, test_canonical_order;
       "forward allowed", `Quick, test_forward_transition;
       "same stage idempotent", `Quick, test_same_stage;
       "backward forbidden", `Quick, test_backward_forbidden;

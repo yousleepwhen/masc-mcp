@@ -57,6 +57,79 @@ let make_meta ~name =
   | Ok m -> m
   | Error e -> fail ("meta_of_json failed: " ^ e)
 
+let expected_initial_auto_resume_after_sec () =
+  Keeper_supervisor_types.next_auto_resume_after_sec
+    ~initial_sec:Env_config.KeeperSupervisor.auto_resume_initial_sec
+    ~max_sec:Env_config.KeeperSupervisor.auto_resume_max_sec
+    None
+
+let check_initial_auto_resume label actual =
+  check
+    (option (float 0.1))
+    label
+    (expected_initial_auto_resume_after_sec ())
+    actual
+
+let test_overflow_pause_marks_auto_resumable () =
+  Eio_main.run @@ fun env ->
+  ensure_fs env;
+  Eio.Switch.run @@ fun _sw ->
+  let base_dir = temp_dir () in
+  Fun.protect ~finally:(fun () -> cleanup_dir base_dir) (fun () ->
+    let config = Coord.default_config base_dir in
+    ignore (Coord.init config ~agent_name:(Some "operator"));
+    let meta = make_meta ~name:"overflow-auto-resume-9733" in
+    (match Keeper_types.write_meta ~force:true config meta with
+     | Ok () -> ()
+     | Error e -> fail ("seed failed: " ^ e));
+    ignore (Keeper_registry.register ~base_path:base_dir meta.name meta);
+    let paused =
+      Keeper_turn_cascade_budget.pause_keeper_for_overflow
+        ~config
+        ~meta
+        ~reason:"test-overflow"
+    in
+    check bool "overflow pause returned paused=true" true paused.paused;
+    check_initial_auto_resume
+      "overflow pause gets initial auto_resume_after_sec"
+      paused.auto_resume_after_sec;
+    let persisted =
+      match Keeper_types.read_meta config meta.name with
+      | Ok (Some m) -> m
+      | Ok None -> fail "expected persisted meta"
+      | Error e -> fail ("read_meta failed: " ^ e)
+    in
+    check_initial_auto_resume
+      "persisted overflow pause gets initial auto_resume_after_sec"
+      persisted.auto_resume_after_sec)
+
+let test_sync_pause_auto_resume_flag_sets_backoff () =
+  Eio_main.run @@ fun env ->
+  ensure_fs env;
+  Eio.Switch.run @@ fun _sw ->
+  let base_dir = temp_dir () in
+  Fun.protect ~finally:(fun () -> cleanup_dir base_dir) (fun () ->
+    let config = Coord.default_config base_dir in
+    ignore (Coord.init config ~agent_name:(Some "operator"));
+    let meta = make_meta ~name:"sync-auto-resume-9733" in
+    (match Keeper_types.write_meta ~force:true config meta with
+     | Ok () -> ()
+     | Error e -> fail ("seed failed: " ^ e));
+    ignore (Keeper_registry.register ~base_path:base_dir meta.name meta);
+    match
+      Keeper_turn_cascade_budget.sync_keeper_paused_state_with_resume_policy
+        ~config
+        ~meta
+        ~paused:true
+        ~resume_policy:Keeper_supervisor_pause_policy.Auto_resume_with_backoff
+    with
+    | Error e -> fail ("sync pause failed: " ^ e)
+    | Ok paused ->
+      check bool "sync pause returned paused=true" true paused.paused;
+      check_initial_auto_resume
+        "sync pause gets initial auto_resume_after_sec"
+        paused.auto_resume_after_sec)
+
 (* Race: overflow fiber observed unpaused at version N, decides
    to pause; heartbeat fiber bumps to version N+1 with new
    joined_room_ids; overflow fiber attempts write with stale
@@ -165,14 +238,74 @@ let test_resume_caller_wins_heartbeat_disk_wins () =
       "joined_room_ids = [r1; r3] (disk wins on heartbeat field)"
       ["r1"; "r3"] final.joined_room_ids)
 
+let test_pause_sync_sets_auto_resume_backoff () =
+  Eio_main.run @@ fun env ->
+  ensure_fs env;
+  Eio.Switch.run @@ fun _sw ->
+  let base_dir = temp_dir () in
+  Fun.protect
+    ~finally:(fun () ->
+      Keeper_registry.clear ();
+      cleanup_dir base_dir)
+    (fun () ->
+      let config = Coord.default_config base_dir in
+      ignore (Coord.init config ~agent_name:(Some "operator"));
+      let m0 =
+        let m = make_meta ~name:"auto-resume-pause-152" in
+        { m with paused = false; auto_resume_after_sec = None }
+      in
+      (match Keeper_types.write_meta ~force:true config m0 with
+       | Ok () -> ()
+       | Error e -> fail ("seed failed: " ^ e));
+      ignore (Keeper_registry.register ~base_path:base_dir m0.name m0);
+      let paused =
+        match
+          Keeper_turn_cascade_budget.sync_keeper_paused_state_with_resume_policy
+            ~config
+            ~meta:m0
+            ~paused:true
+            ~resume_policy:Keeper_supervisor_pause_policy.Auto_resume_with_backoff
+        with
+        | Ok paused -> paused
+        | Error e -> fail ("pause sync failed: " ^ e)
+      in
+      check bool "paused" true paused.paused;
+      let pause_delay =
+        match paused.auto_resume_after_sec with
+        | Some sec -> sec
+        | None -> fail "expected auto_resume_after_sec"
+      in
+      check bool "auto resume delay is positive" true (pause_delay > 0.0);
+      let persisted =
+        match Keeper_types.read_meta config m0.name with
+        | Ok (Some m) -> m
+        | Ok None -> fail "persisted meta missing"
+        | Error e -> fail ("persisted read failed: " ^ e)
+      in
+      check bool "persisted paused" true persisted.paused;
+      check bool "persisted auto resume delay" true
+        (persisted.auto_resume_after_sec = paused.auto_resume_after_sec);
+      match Keeper_registry.get ~base_path:base_dir m0.name with
+      | Some entry ->
+        check bool "registry paused" true entry.meta.paused;
+        check bool "registry auto resume delay" true
+          (entry.meta.auto_resume_after_sec = paused.auto_resume_after_sec)
+      | None -> fail "registry entry missing")
+
 let () =
   run "Keeper paused-field CAS retain (#9733)"
     [
       ( "pause-resume-merge",
         [
+          test_case "overflow pause marks auto-resumable" `Quick
+            test_overflow_pause_marks_auto_resumable;
+          test_case "sync pause auto-resume policy sets backoff" `Quick
+            test_sync_pause_auto_resume_flag_sets_backoff;
           test_case "pause: caller wins, heartbeat retained" `Quick
             test_pause_caller_wins_heartbeat_disk_wins;
           test_case "resume: caller wins, heartbeat retained" `Quick
             test_resume_caller_wins_heartbeat_disk_wins;
+          test_case "pause: auto-resume policy persists backoff" `Quick
+            test_pause_sync_sets_auto_resume_backoff;
         ] );
     ]

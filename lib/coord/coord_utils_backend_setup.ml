@@ -111,7 +111,7 @@ let sync_test_base_path_env resolved_path =
   if running_under_test_executable ()
      && not (test_base_path_override_enabled ())
   then
-    match Env_config_core.base_path_opt () with
+    match (Host_config.from_env ()).base_path with
     | Some current when String.equal current resolved_path -> ()
     | _ ->
         Unix.putenv Env_config_core.base_path_env_key resolved_path;
@@ -164,28 +164,41 @@ let resolve_requested_base_path path =
       ignored unless it matches the requested path or the test explicitly opts
       in via [MASC_TEST_ALLOW_BASE_PATH_OVERRIDE]
     - otherwise resolve the requested path to its git root *)
+let resolved_base_path_cache : string option ref = ref None
+
+let cache_resolved_base_path path =
+  resolved_base_path_cache := Some path
+
 let resolve_masc_base_path path =
-  let requested = resolve_requested_base_path path in
-  match Env_config_core.base_path_opt () with
-  | Some explicit
-    when running_under_test_executable ()
-         && not (test_base_path_override_enabled ()) ->
-      log_once_info
-        "Ignoring test MASC_BASE_PATH override=%s for requested path %s"
-        explicit path;
-      requested
-  | Some explicit
-    when running_under_test_executable ()
-         && not (test_base_path_override_enabled ())
-         && not (String.equal explicit requested) ->
-      log_once_info
-        "Ignoring test MASC_BASE_PATH override=%s for requested path %s"
-        explicit path;
-      requested
-  | Some explicit ->
-      log_once_info "MASC base: %s (explicit MASC_BASE_PATH)" explicit;
-      explicit
-  | None -> requested
+  match !resolved_base_path_cache with
+  | Some cached -> cached
+  | None ->
+    let requested = resolve_requested_base_path path in
+    match (Host_config.from_env ()).base_path with
+    | Some explicit
+      when running_under_test_executable ()
+           && not (test_base_path_override_enabled ()) ->
+        log_once_info
+          "Ignoring test MASC_BASE_PATH override=%s for requested path %s"
+          explicit path;
+        requested
+    | Some explicit
+      when running_under_test_executable ()
+           && not (test_base_path_override_enabled ())
+           && not (String.equal explicit requested) ->
+        log_once_info
+          "Ignoring test MASC_BASE_PATH override=%s for requested path %s"
+          explicit path;
+        requested
+    | Some explicit ->
+        log_once_info "MASC base: %s (explicit MASC_BASE_PATH)" explicit;
+        explicit
+    | None when running_under_test_executable () -> requested
+    | None ->
+        Log.Backend.error
+          "MASC_BASE_PATH is not set. Set MASC_BASE_PATH to the project root \
+           containing the .masc/ directory.";
+        exit 1
 
 let resolve_server_default_base_path path = resolve_masc_base_path path
 
@@ -332,15 +345,10 @@ let create_backend cfg =
               Fall back to shared Memory backend for the same base path. *)
            filesystem_fallback
              "No Eio fs context for FileSystem backend;")
-(** Create backend with Eio context. *)
-let create_backend_eio ~sw cfg =
-  let _ = sw in
-  create_backend cfg
-
 (* #10919: per-call Backend init was producing 1745 inits / 2 days
    (~83 inits per server lifetime against an expected 1) plus 3490
    INFO log lines.  Hot callers — [Coord.default_config] from every
-   MCP tool dispatch, [tool_autoresearch_cycle] per cycle iteration,
+   MCP tool dispatch and [keeper_rollover] per rollover
    [keeper_rollover] per rollover — were paying both filesystem
    resolution and a fresh Backend handshake per invocation.
 
@@ -379,7 +387,7 @@ let build_default_config base_path =
   sync_test_base_path_env resolved_path;
   let backend_config = backend_config_for resolved_path in
   (* #10919: this factory is invoked per-tool-dispatch (8 call sites:
-     mcp_server_eio_call_tool, tool_autoresearch, inline_dispatch_coord,
+     mcp_server_eio_call_tool, inline_dispatch_coord,
      keeper_rollover, ...) — 1745 inits / 2 days = 3490 INFO events
      for what is conceptually a static config.  Demote the success
      path to DEBUG; the failure / fallback paths below stay at
@@ -430,6 +438,7 @@ let default_config base_path =
     [on_backend_ready] is called after backend creation, allowing callers
     to initialize dependent systems (e.g., Board) without Coord depending on them. *)
 let default_config_eio ~sw ?(on_backend_ready = fun _backend -> ()) base_path =
+  let _ = sw in
   let resolved_path = resolve_masc_base_path base_path in
   sync_test_base_path_env resolved_path;
   let backend_config = backend_config_for resolved_path in
@@ -438,7 +447,7 @@ let default_config_eio ~sw ?(on_backend_ready = fun _backend -> ()) base_path =
   Log.Backend.debug "MASC Backend: type=%s"
     (Backend_types.show_backend_type backend_config.backend_type);
   let backend =
-    match create_backend_eio ~sw backend_config with
+    match create_backend backend_config with
     | Ok backend ->
         Log.Backend.debug "Backend initialized: %s"
           (match backend with

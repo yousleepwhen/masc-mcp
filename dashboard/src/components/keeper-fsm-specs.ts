@@ -2,6 +2,7 @@
 // Each returns an FsmGraphSpec consumed by CytoscapeFsm.
 
 import type { FsmGraphSpec, FsmNode, FsmEdge } from './common/cytoscape-fsm'
+import { compositePhaseTone, toKsmPhase } from '../lib/keeper-operational-state'
 
 
 // ================================================================
@@ -15,77 +16,99 @@ import type { FsmGraphSpec, FsmNode, FsmEdge } from './common/cytoscape-fsm'
 // sub-FSMs is captured by the invariants panel, not the graph edges.
 
 interface CompositeFsmParams {
-  phase: string            // KSM — Running | Failing | Overflowed | Compacting | HandingOff | Draining | Stable
-  turnPhase: string        // KTC — idle | prompting | executing | compacting | finalizing
+  phase: string            // KSM — offline | running | failing | overflowed | compacting | handing_off | draining | paused | stopped | crashed | restarting | dead | zombie
+  turnPhase: string        // KTC — idle | prompting | routing | executing | compacting | finalizing | exhausted
   decisionStage: string    // KDP — undecided | guard_ok | gate_rejected | tool_policy_selected
   cascadeState: string     // KCL — idle | selecting | trying | done | exhausted
   compactionStage: string  // KMC — accumulating | compacting | done
 }
 
 const KSM_STATES = [
-  'Running', 'Failing', 'Overflowed', 'Compacting', 'HandingOff', 'Draining', 'Stable',
+  'offline', 'running', 'failing', 'overflowed', 'compacting',
+  'handing_off', 'draining', 'paused', 'stopped', 'crashed',
+  'restarting', 'dead', 'zombie',
 ]
-const KTC_STATES = ['idle', 'prompting', 'executing', 'compacting', 'finalizing']
+const KTC_STATES = ['idle', 'prompting', 'routing', 'executing', 'compacting', 'finalizing', 'exhausted']
 const KDP_STATES = ['undecided', 'guard_ok', 'gate_rejected', 'tool_policy_selected']
 const KCL_STATES = ['idle', 'selecting', 'trying', 'done', 'exhausted']
 const KMC_STATES = ['accumulating', 'compacting', 'done']
 
 export const TURN_FSM_STATES = [
   'idle',
-  'phase_gating',
-  'cascade_routing',
-  'awaiting_provider',
-  'streaming',
+  'prompting',
+  'routing',
+  'executing',
+  // UI-side surface for the TLA `awaiting_tool` symbol — the SDK turn
+  // sits here after invoking a tool until the tool result arrives.
+  // `normalizeTurnFsmState` maps the raw `awaiting_tool` backend phase
+  // onto this UI state, and `turnFsmTlaSymbol` translates it back.
   'awaiting_tool_result',
-  'completing',
-  'done',
-  'failed',
-  'cancelled',
+  'compacting',
+  'finalizing',
+  'exhausted',
 ] as const
 
 export type KeeperTurnFsmState = (typeof TURN_FSM_STATES)[number]
 
 const TURN_FSM_TLA_SYMBOLS: Record<KeeperTurnFsmState, string> = {
   idle: 'idle',
-  phase_gating: 'phase_gating',
-  cascade_routing: 'cascade_routing',
-  awaiting_provider: 'awaiting_provider',
-  streaming: 'streaming',
+  prompting: 'prompting',
+  routing: 'routing',
+  executing: 'executing',
   awaiting_tool_result: 'awaiting_tool',
-  completing: 'completing',
-  done: 'done',
-  failed: 'failed',
-  cancelled: 'cancelled',
+  compacting: 'compacting',
+  finalizing: 'finalizing',
+  exhausted: 'exhausted',
 }
 
-const LEGACY_TURN_PHASE_MAP: Record<string, KeeperTurnFsmState> = {
-  idle: 'idle',
-  prompting: 'phase_gating',
-  executing: 'streaming',
-  compacting: 'completing',
-  finalizing: 'completing',
+// Raw backend turn-phase values that should collapse onto a canonical
+// UI state. Currently only the TLA `awaiting_tool` symbol is renamed
+// for the dashboard surface; leave additional aliases here when the
+// backend introduces new raw phases that map onto an existing UI state.
+const TURN_FSM_STATE_ALIASES: Readonly<Record<string, KeeperTurnFsmState>> = {
   awaiting_tool: 'awaiting_tool_result',
 }
 
+// 23 canonical turn_phase transitions. Mirrors the GADT enumeration in
+// `lib/keeper/keeper_registry_types.ml:259-291 module Turn_phase_transition`
+// (RFC-0072 Phase 4b/5). Every constructor on the GADT corresponds to one
+// edge here; adding a new constructor in OCaml must be paired with a new
+// edge in this list, otherwise the dashboard visualization hides a real
+// transition the runtime can take. The previous list omitted the four
+// `* -> exhausted` arms from prompting/routing/compacting/finalizing,
+// surfacing only the `executing -> exhausted` path even though cascade
+// exhaustion can be entered from any non-terminal turn phase.
 const TURN_FSM_EDGES: FsmEdge[] = [
-  { source: 'idle', target: 'phase_gating', label: 'StartTurn' },
-  { source: 'phase_gating', target: 'done', label: 'PhaseGateSkip', type: 'recovery' },
-  { source: 'phase_gating', target: 'cascade_routing', label: 'PhaseGateOk' },
-  { source: 'cascade_routing', target: 'awaiting_provider', label: 'CascadeRouted', type: 'cascade' },
-  { source: 'cascade_routing', target: 'failed', label: 'CascadeUnavailable', type: 'error' },
-  { source: 'awaiting_provider', target: 'streaming', label: 'ProviderResponded' },
-  { source: 'awaiting_provider', target: 'cancelled', label: 'ProviderTimeout', type: 'error' },
-  { source: 'streaming', target: 'awaiting_tool_result', label: 'StreamYieldsTool', type: 'cascade' },
-  { source: 'awaiting_tool_result', target: 'streaming', label: 'ToolReturned', type: 'recovery' },
-  { source: 'streaming', target: 'completing', label: 'StreamComplete' },
-  { source: 'completing', target: 'done', label: 'ContractOk', type: 'recovery' },
-  { source: 'completing', target: 'failed', label: 'ContractViolation', type: 'error' },
-  { source: 'completing', target: 'failed', label: 'ReceiptLost', type: 'error' },
-  { source: 'phase_gating', target: 'cancelled', label: 'HonorStopSignal', type: 'error' },
-  { source: 'cascade_routing', target: 'cancelled', label: 'HonorStopSignal', type: 'error' },
-  { source: 'streaming', target: 'cancelled', label: 'HonorStopSignal', type: 'error' },
-  { source: 'awaiting_tool_result', target: 'cancelled', label: 'HonorStopSignal', type: 'error' },
-  { source: 'completing', target: 'cancelled', label: 'HonorStopSignal', type: 'error' },
+  // From Idle (1): boot dispatch.
+  { source: 'idle', target: 'prompting', label: 'StartTurn' },
+  // From Prompting (4): routing / executing / finalizing / exhausted.
+  { source: 'prompting', target: 'routing', label: 'RouteOk' },
+  { source: 'prompting', target: 'executing', label: 'SkipRouting' },
+  { source: 'prompting', target: 'finalizing', label: 'SkipExecution' },
+  { source: 'prompting', target: 'exhausted', label: 'Exhausted', type: 'error' },
+  // From Routing (3): retry-back / dispatch / exhausted.
+  { source: 'routing', target: 'prompting', label: 'Retry' },
+  { source: 'routing', target: 'executing', label: 'CascadeRouted', type: 'cascade' },
+  { source: 'routing', target: 'exhausted', label: 'Exhausted', type: 'error' },
+  // From Executing (5): retry-back / re-entry / compacting / completion / exhausted.
+  { source: 'executing', target: 'prompting', label: 'Retry' },
+  { source: 'executing', target: 'routing', label: 'Retry' },
+  { source: 'executing', target: 'compacting', label: 'CompactionGate' },
+  { source: 'executing', target: 'finalizing', label: 'Complete' },
+  { source: 'executing', target: 'exhausted', label: 'Exhausted', type: 'error' },
+  // From Compacting (3): retry / completion / exhausted.
+  { source: 'compacting', target: 'prompting', label: 'CompactionRetry' },
+  { source: 'compacting', target: 'finalizing', label: 'CompactionDone', type: 'recovery' },
+  { source: 'compacting', target: 'exhausted', label: 'Exhausted', type: 'error' },
+  // From Finalizing (4): degraded retry across phases / exhausted.
+  { source: 'finalizing', target: 'prompting', label: 'NextTurn' },
+  { source: 'finalizing', target: 'routing', label: 'NextTurnSkip' },
+  { source: 'finalizing', target: 'executing', label: 'NextTurnDirect' },
+  { source: 'finalizing', target: 'exhausted', label: 'Exhausted', type: 'error' },
+  // From Exhausted (3): retry after compaction.
+  { source: 'exhausted', target: 'prompting', label: 'RetryAfterExhausted' },
+  { source: 'exhausted', target: 'routing', label: 'RetryAfterExhausted' },
+  { source: 'exhausted', target: 'executing', label: 'RetryAfterExhausted' },
 ]
 
 function nodeType(stateId: string, activeId: string, tone: 'active' | 'warn' | 'err'): FsmNode['type'] {
@@ -114,15 +137,14 @@ function clusterNodes(
 }
 
 export function buildCompositeFsmSpec(params: CompositeFsmParams): FsmGraphSpec {
-  const ksmTone: 'active' | 'warn' | 'err' =
-    params.phase === 'Failing'
-      ? 'err'
-      : params.phase === 'Overflowed'
-        || params.phase === 'Compacting'
-        || params.phase === 'HandingOff'
-        || params.phase === 'Draining'
-        ? 'warn'
-        : 'active'
+  // RFC-0135 PR-11: phase tone derivation moved to SSOT
+  // (`compositePhaseTone` in `lib/keeper-operational-state.ts`). Same 6
+  // warn-phase literals were copy-pasted between this builder and
+  // `fsm-hub-invariant-analysis.ts` (N-of-M anti-pattern). Unknown wire
+  // values fall back to 'active' to match the previous fall-through
+  // semantics of the inline OR chain.
+  const ksmPhase = toKsmPhase(params.phase)
+  const ksmTone: 'active' | 'warn' | 'err' = ksmPhase === null ? 'active' : compositePhaseTone(ksmPhase)
   const nodes: FsmNode[] = [
     ...clusterNodes('KSM', 'KSM · keeper lifecycle', KSM_STATES, params.phase, ksmTone),
     ...clusterNodes('KTC', 'KTC · turn cycle', KTC_STATES, params.turnPhase, 'active'),
@@ -155,7 +177,7 @@ export function buildCompactionSpec(
   const tone: 'active' | 'warn' | 'err' =
     activeStage === 'compacting'
       ? 'warn'
-      : normalizedPhase === 'Overflowed' || normalizedPhase === 'Failing'
+      : normalizedPhase === 'overflowed' || normalizedPhase === 'failing'
         ? 'err'
         : 'active'
 
@@ -180,10 +202,12 @@ export function normalizeTurnFsmState(turnPhase: string | null | undefined): Kee
   if (!turnPhase) return null
   const normalized = turnPhase.trim().toLowerCase()
   if (!normalized) return null
+  const aliased = TURN_FSM_STATE_ALIASES[normalized]
+  if (aliased) return aliased
   if ((TURN_FSM_STATES as readonly string[]).includes(normalized)) {
     return normalized as KeeperTurnFsmState
   }
-  return LEGACY_TURN_PHASE_MAP[normalized] ?? null
+  return null
 }
 
 export function turnFsmTlaSymbol(state: KeeperTurnFsmState): string {
@@ -192,19 +216,13 @@ export function turnFsmTlaSymbol(state: KeeperTurnFsmState): string {
 
 function turnNodeType(state: KeeperTurnFsmState, activeState: KeeperTurnFsmState | null): FsmNode['type'] {
   if (state === activeState) {
-    if (state === 'failed') return 'err'
-    if (state === 'cancelled') return 'warn'
-    if (state === 'done') return 'ok'
+    if (state === 'exhausted') return 'err'
     return 'active'
   }
 
   switch (state) {
-    case 'done':
-      return 'ok'
-    case 'failed':
+    case 'exhausted':
       return 'err'
-    case 'cancelled':
-      return 'warn'
     default:
       return 'state'
   }

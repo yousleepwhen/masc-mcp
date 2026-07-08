@@ -27,34 +27,34 @@ Keeper는 OAS(OCaml Agent SDK) 위에 구축된다. OAS가 제공하는 핵심 �
 | `Event_bus.t` | 에이전트 간 이벤트 발행/구독 | `oas_events.ml`을 통해 broadcast, heartbeat, board 이벤트 전달 |
 
 <!-- BEGIN GENERATED: oas-pin-manual -->
-OAS pin metadata is generated from `scripts/oas-agent-sdk-pin.sh`. Current dependency floor: `agent_sdk >= 0.190.26`, runtime pin: `main@0cfb68c620ccd385f16fd6344b2cb003077c73c3`, declared base version: `v0.190.26`. 최신성 검증이 필요할 때는 문서에 적힌 숫자보다 `dune-project`와 pin script를 우선 truth source로 본다.
+OAS pin metadata is generated from `scripts/oas-agent-sdk-pin.sh`. Current dependency floor: `agent_sdk >= 0.200.6`, runtime pin: `main@b70bfc56dffe90f87105a4eb54d4c56bd8967e96`, declared base version: `v0.200.6`. 최신성 검증이 필요할 때는 문서에 적힌 숫자보다 `dune-project`와 pin script를 우선 truth source로 본다.
 <!-- END GENERATED: oas-pin-manual -->
 
 #### 1.1.1 OAS transport 환경 변수 (keeper 운영자용)
 
-OAS 0.159.0부터 비대화형 CLI transport(`transport_claude_code`, `transport_codex_cli`, `transport_gemini_cli`)가 `build_args` 시점에 다음 환경 변수를 읽어 플래그를 덧붙인다. 미설정 → 기존 argv 동일 (no-op). keeper 프로세스를 띄우는 systemd/launchd/service 파일에 export하면 masc 코드 변경 없이 per-deployment 튜닝이 가능하다.
+OAS 0.159.0부터 비대화형 CLI transport(`transport_cli-tool-d`, `transport_cli-tool-a`, `transport_cli-tool-b`)가 `build_args` 시점에 다음 환경 변수를 읽어 플래그를 덧붙인다. 미설정 → 기존 argv 동일 (no-op). keeper 프로세스를 띄우는 systemd/launchd/service 파일에 export하면 masc 코드 변경 없이 per-deployment 튜닝이 가능하다.
 
 | Env var | 적용 CLI | 효과 |
 |---|---|---|
-| `OAS_CLAUDE_STRICT_MCP=1` | Claude Code | `--strict-mcp-config` — ambient MCP 서버 전부 무시 |
-| `OAS_CLAUDE_MCP_CONFIG=<file\|json>` | Claude Code | `--mcp-config <v>` fallback (programmatic config이 없을 때만) |
-| `OAS_CLAUDE_DISALLOWED_TOOLS=Bash,Write` | Claude Code | 쉼표 분리된 각 항목마다 `--disallowedTools` |
-| `OAS_CODEX_CONFIG=mcp_servers={},sandbox_mode=read-only` | Codex CLI | 각각 `-c k=v`로 분해. Codex는 이게 유일한 MCP/hook 차단 경로 |
-| `OAS_CODEX_SANDBOX=read-only\|workspace-write\|danger-full-access` | Codex CLI | `-s <v>` |
-| `OAS_CODEX_PROFILE=<name>` | Codex CLI | `-p <name>` (`~/.codex/config.toml`의 profile) |
-| `OAS_CODEX_SKIP_GIT=1` | Codex CLI | `--skip-git-repo-check` |
-| `OAS_GEMINI_NO_MCP=1` | Gemini CLI | sentinel whitelist(`__oas_no_mcp__`)로 MCP 전부 OFF |
-| `OAS_GEMINI_ALLOWED_MCP=a,b` | Gemini CLI | per-서버 whitelist |
-| `OAS_GEMINI_APPROVAL_MODE=default\|auto_edit\|yolo\|plan` | Gemini CLI | `--approval-mode <v>`, set 되면 `config.yolo` 무시 |
-| `OAS_GEMINI_EXTENSIONS=a,b` | Gemini CLI | 각 항목마다 `-e` |
+| `OAS_CLI_TOOL_A_STRICT_MCP=1` | CLI-Tool-A | `--strict-mcp-config` — ambient MCP 서버 전부 무시 |
+| `OAS_CLI_TOOL_A_MCP_CONFIG=<file\|json>` | CLI-Tool-A | `--mcp-config <v>` fallback (programmatic config이 없을 때만) |
+| `OAS_CLI_TOOL_A_DISALLOWED_TOOLS=Execute,WriteFile` | CLI-Tool-A | 쉼표 분리된 각 항목마다 `--disallowedTools` |
+| `OAS_CLI_TOOL_B_CONFIG=mcp_servers={},sandbox_mode=read-only` | CLI-Tool-B | 각각 `-c k=v`로 분해. Agent-Code는 이게 유일한 MCP/hook 차단 경로 |
+| `OAS_CLI_TOOL_B_SANDBOX=read-only\|workspace-write\|danger-full-access` | CLI-Tool-B | `-s <v>` |
+| `OAS_CLI_TOOL_B_PROFILE=<name>` | CLI-Tool-B | `-p <name>` (`~/.agent-code/config.toml`의 profile) |
+| `OAS_CLI_TOOL_B_SKIP_GIT=1` | CLI-Tool-B | `--skip-git-repo-check` |
+| `OAS_CLI_TOOL_C_NO_MCP=1` | CLI-Tool-C | sentinel whitelist(`__oas_no_mcp__`)로 MCP 전부 OFF |
+| `OAS_CLI_TOOL_C_ALLOWED_MCP=a,b` | CLI-Tool-C | per-서버 whitelist |
+| `OAS_CLI_TOOL_C_APPROVAL_MODE=default\|auto_edit\|yolo\|plan` | CLI-Tool-C | `--approval-mode <v>`, set 되면 `config.yolo` 무시 |
+| `OAS_CLI_TOOL_C_EXTENSIONS=a,b` | CLI-Tool-C | 각 항목마다 `-e` |
 
 운영 참고:
-- Claude Code의 LSP / hooks / auto-memory / CLAUDE.md auto-discovery는 그대로 유지됨. `--bare`는 채택하지 않음(keeper가 코드 편집 시 필요한 보조).
-- Gemini CLI는 hook 런타임 off 플래그가 없다. hook 제어가 필요하면 `gemini hooks <cmd>` subcommand로 keeper 기동 전에 비활성화한다.
-- "empty string = disable all" 구분이 필요한 MCP whitelist만 `OAS_GEMINI_NO_MCP` 불 env로 분리되어 있음(`Unix.putenv`로는 진짜 unset이 불가한 제약 반영).
-- `OAS_GEMINI_NO_MCP=1`인데 `OAS_GEMINI_APPROVAL_MODE`가 비어 있으면 keeper 런타임은 `plan`을 기본 적용한다. MCP를 숨긴 상태에서 Gemini CLI built-in mutating tool이 `--yolo`로 실행되는 것을 막기 위한 보수적 기본값이다. 명시적으로 `yolo`/`auto_edit`가 필요하면 `OAS_GEMINI_APPROVAL_MODE`를 설정한다.
+- CLI-Tool-A의 LSP / hooks / auto-memory / AGENT-LLM-A.md auto-discovery는 그대로 유지됨. `--bare`는 채택하지 않음(keeper가 코드 편집 시 필요한 보조).
+- CLI-Tool-C는 hook 런타임 off 플래그가 없다. hook 제어가 필요하면 `provider-f hooks <cmd>` subcommand로 keeper 기동 전에 비활성화한다.
+- "empty string = disable all" 구분이 필요한 MCP whitelist만 `OAS_CLI_TOOL_C_NO_MCP` 불 env로 분리되어 있음(`Unix.putenv`로는 진짜 unset이 불가한 제약 반영).
+- `OAS_CLI_TOOL_C_NO_MCP=1`인데 `OAS_CLI_TOOL_C_APPROVAL_MODE`가 비어 있으면 keeper 런타임은 `plan`을 기본 적용한다. MCP를 숨긴 상태에서 CLI-Tool-C built-in mutating tool이 `--yolo`로 실행되는 것을 막기 위한 보수적 기본값이다. 명시적으로 `yolo`/`auto_edit`가 필요하면 `OAS_CLI_TOOL_C_APPROVAL_MODE`를 설정한다.
 
-**선언적 설정 (권장)**: process env 대신 `config/keepers/<name>.toml`의 `[keeper.oas_env]` 테이블에 적어두면 턴 시작 시 `Unix.putenv`로 자동 적용된다. 4개 built-in keeper는 `OAS_CLAUDE_STRICT_MCP=1` + `OAS_GEMINI_NO_MCP=1` + `OAS_GEMINI_APPROVAL_MODE=plan` + `OAS_CODEX_CONFIG=mcp_servers={}` 기본값이 이미 들어있다. 예시:
+**선언적 설정 (권장)**: process env 대신 `config/keepers/<name>.toml`의 `[keeper.oas_env]` 테이블에 적어두면 턴 시작 시 `Unix.putenv`로 자동 적용된다. 4개 built-in keeper는 `OAS_CLI_TOOL_A_STRICT_MCP=1` + `OAS_CLI_TOOL_C_NO_MCP=1` + `OAS_CLI_TOOL_C_APPROVAL_MODE=plan` + `OAS_CLI_TOOL_B_CONFIG=mcp_servers={}` 기본값이 이미 들어있다. 예시:
 
 ```toml
 [keeper]
@@ -62,14 +62,15 @@ persona_name = "analyst"
 # ...
 
 [keeper.oas_env]
-OAS_CLAUDE_STRICT_MCP = "1"
-OAS_GEMINI_NO_MCP = "1"
-OAS_GEMINI_APPROVAL_MODE = "plan"
-# Codex는 -c TOML override로만 제어 가능
-OAS_CODEX_CONFIG = "mcp_servers={},sandbox_mode=read-only"
+OAS_CLI_TOOL_A_STRICT_MCP = "1"
+OAS_CLI_TOOL_C_NO_MCP = "1"
+OAS_CLI_TOOL_C_APPROVAL_MODE = "plan"
+# Agent-Code는 -c TOML override로만 제어 가능
+OAS_CLI_TOOL_B_CONFIG = "mcp_servers={},sandbox_mode=read-only"
+MASC_KEEPER_OAS_UNIFIED_MAX_TOKENS = 8192
 ```
 
-키는 반드시 `^OAS_(CLAUDE|CODEX|GEMINI)_.+` 패턴에 맞아야 한다. 그 외 키(`PATH`, `LD_PRELOAD`, 임의 변수 등)는 silently 드롭되어 ambient env 주입을 차단한다. bool 값은 `true`→`"1"`, `false`→`"0"`으로 자동 변환된다.
+키는 반드시 `^OAS_(AGENT-LLM-A|AGENT-CODE|PROVIDER-F)_.+` 또는 `^MASC_KEEPER_OAS_.+` 패턴에 맞아야 한다. `MASC_KEEPER_OAS_UNIFIED_MAX_TOKENS`는 해당 keeper turn의 `max_tokens` fallback에도 반영된다. 그 외 키(`PATH`, `LD_PRELOAD`, 임의 변수 등)는 silently 드롭되어 ambient env 주입을 차단한다. bool 값은 `true`→`"1"`, `false`→`"0"`으로 자동 변환된다.
 
 ### 1.2 MASC --- 조정 레이어
 
@@ -158,7 +159,7 @@ stateDiagram-v2
     }
 ```
 
-**상태 결정 로직** (코드 근거: `keeper_exec_status.ml:keeper_surface_status`):
+**상태 결정 로직** (코드 근거: `keeper_status_runtime.ml:keeper_surface_status`):
 
 | 상태 | 조건 |
 |------|------|
@@ -279,8 +280,8 @@ spawn 시 인자로 직접 설정하는 필드.
 | `verify` | bool | `false` | 저비용 모델로 action 검증 | `masc_keeper_up`의 `verify` 인자 |
 | `sandbox_profile` | string | `local` | 실행 샌드박스 프로필 (`local`, `docker`). 기본 모드의 `docker` 프로필은 git/gh 명령에 대해서만 런타임에 network+credential 마운트를 올릴 수 있다. hard mode에서는 `docker`만 허용된다. | `masc_keeper_up`의 `sandbox_profile` 인자 |
 | `network_mode` | string | `inherit` 또는 `none` | 샌드박스 네트워크 정책. `docker`는 기본 `none` (기본 모드의 git/gh dispatch만 `inherit`으로 승격). hard mode에서는 `none`만 허용된다. | `masc_keeper_up`의 `network_mode` 인자 |
-| `github_identity` | string | 없음 | keeper에 바인딩된 GitHub CLI identity 이름. `.masc/github-identities/<identity>/gh` bundle을 사용한다. | `keeper.toml` 선언 |
-| `git_identity_mode` | string | `keeper_alias` | git author를 keeper alias로 유지할지, GitHub identity 기반 author로 결합할지 결정 | `keeper.toml` 선언 |
+| `repo_cli_identity` | string | 없음 | keeper에 바인딩된 repo CLI identity 이름. `.masc/repo-cli-identities/<identity>/gh` bundle을 사용한다. | `keeper.toml` 선언 |
+| `git_identity_mode` | string | `keeper_alias` | git author를 keeper alias로 유지할지, repo CLI identity 기반 author로 결합할지 결정 | `keeper.toml` 선언 |
 | `active_goal_ids` | string[] | 없음 | 설정 시 `keeper_task_claim`이 goal-linked task만 claim. scoped pool에 현재 capability로 claim 가능한 task가 없으면 claim을 멈춘다. auto-repair keeper-purpose goal만 전체 claimable task fallback 허용 | `keeper.toml` 선언 |
 
 ### 3.1.1 Sandbox Core V1 사용법
@@ -293,23 +294,34 @@ spawn 시 인자로 직접 설정하는 필드.
   "goal": "Review incoming issues and prepare safe changes",
   "sandbox_profile": "docker",
   "network_mode": "none",
-  "tool_access": { "kind": "preset", "preset": "coding" }
+  "tool_access": { "kind": "preset", "preset": "delivery" }
 }
 ```
 
 의미:
 
 - keeper shell write는 자기 sandbox 안에서만 허용된다. 현재 local/docker backend의 디스크 구현은 `.masc/playground/<keeper>/`이지만 keeper-facing 경로는 `.` / `mind` / `repos`이다.
-- `sandbox_profile=docker`는 keeper identity 전체에 적용된다. `keeper_bash`뿐 아니라 `keeper_fs_read`, `keeper_fs_edit`, `keeper_shell`의 read/write/git/gh 흐름도 Docker로 라우팅된다. 기본은 read-only rootfs, tmpfs `/tmp`, `cap-drop=ALL`, `no-new-privileges`, `pids-limit`, memory limit, private sandbox mount, network=`none`이다.
+- `sandbox_profile=docker`는 keeper identity 전체에 적용된다. `tool_execute`, `tool_read_file`, `tool_edit_file`, `tool_write_file`, `tool_search_files`의 sandboxed read/write 흐름이 Docker로 라우팅된다. 기본은 read-only rootfs, tmpfs `/tmp`, `cap-drop=ALL`, `no-new-privileges`, `pids-limit`, memory limit, private sandbox mount, network=`none`이다.
 - Docker 내부에서 더 자유로운 부트스트랩/설치가 필요하면 `MASC_KEEPER_SANDBOX_RELAX_FS=true`로 rootfs writable + executable `/tmp` 조합을 켤 수 있다. 이 경우에도 host mount 범위, `cap-drop=ALL`, `no-new-privileges`, pids/memory limit은 유지된다. hard mode에서는 이 완화가 거부된다.
-- 기본 모드의 git/gh dispatch: `sandbox_profile=docker`에서 network가 필요한 `git`/`gh` 계열 명령(`keeper_bash`, `keeper_shell op=gh`, `keeper_shell op=git_clone`)은 한 명령 단위로 network=bridge + read-only credential mount 경로를 사용할 수 있다. `github_identity`가 바인딩된 keeper는 `.masc/github-identities/<identity>/gh`만 사용하고, bundle이 없으면 fail-closed 된다. 바인딩이 없는 keeper는 `.masc/github-identities/root/gh` root bundle만 fallback으로 사용한다. root bundle도 없으면 fail-closed 된다. operator host `~/.config/gh`, `~/.gitconfig`, `~/.ssh`, `GH_TOKEN`, `GITHUB_TOKEN`, `SSH_AUTH_SOCK`, keychain probe는 keeper credential 경로가 아니다. 그 외 명령은 계속 network=none의 hardened container 또는 turn-scoped `docker exec` runtime으로 실행된다. Docker 라우트 응답에는 `via: "docker"`가 들어오고, git credential dispatch가 켜진 경우 `git_creds_enabled: true`도 함께 들어온다. 비활성화하려면 `MASC_KEEPER_SANDBOX_GIT_DISPATCH=false`.
-- hard mode: `MASC_KEEPER_SANDBOX_HARD_MODE=true`는 `sandbox_profile=docker`, `network_mode=none`, selected GitHub identity bundle을 강제한다. Keeper별 `github_identity`가 없으면 root bundle을 사용하고, root bundle도 없으면 startup/validation에서 fail-closed 된다. Docker container는 `git`/`gh` 때문에 bridge/host network로 승격되지 않고, ambient operator credential도 비활성화된다. `keeper_bash`에서 raw `gh ...`는 구조화 오류로 막히며, `keeper_shell op=gh`와 `keeper_shell op=git_clone`만 host-side broker가 selected bundle의 `GH_CONFIG_DIR=$base_path/.masc/github-identities/<identity-or-root>/gh`로 검증 후 실행한다. hard mode 라우트 응답은 `via: "brokered"`를 노출한다.
+- 기본 모드의 git/gh dispatch: `sandbox_profile=docker`에서 network가 필요한 `git`/`gh` 계열 명령은 `Execute`의 typed `executable`/`argv` 경로로 실행된다. `repo_cli_identity`가 바인딩된 keeper는 `.masc/repo-cli-identities/<identity>/gh`만 사용하고, bundle이 없으면 fail-closed 된다. 바인딩이 없는 keeper는 `.masc/repo-cli-identities/root/gh` root bundle만 fallback으로 사용한다. root bundle도 없으면 fail-closed 된다. operator host `~/.config/gh`, `~/.gitconfig`, `~/.ssh`, `GH_TOKEN`, `GITHUB_TOKEN`, `SSH_AUTH_SOCK`, keychain probe는 keeper credential 경로가 아니다. 그 외 명령은 계속 network=none의 hardened container 또는 turn-scoped `docker exec` runtime으로 실행된다. Docker 라우트 응답에는 `via: "docker"`가 들어오고, git credential dispatch가 켜진 경우 `git_creds_enabled: true`도 함께 들어온다. 비활성화하려면 `MASC_KEEPER_SANDBOX_GIT_DISPATCH=false`.
+- hard mode: `MASC_KEEPER_SANDBOX_HARD_MODE=true`는 `sandbox_profile=docker`, `network_mode=none`, selected repo CLI identity bundle을 강제한다. Keeper별 `repo_cli_identity`가 없으면 root bundle을 사용하고, root bundle도 없으면 startup/validation에서 fail-closed 된다. Docker container는 `git`/`gh` 때문에 bridge/host network로 승격되지 않고, ambient operator credential도 비활성화된다. hard mode 라우트 응답은 `via: "brokered"`를 노출한다.
 - hard mode runtime preflight는 Docker `SecurityOptions`에서 `rootless`와 `userns`를 모두 요구한다. 현재 Docker Desktop/rootful daemon처럼 둘 중 하나라도 없으면 `doctor`와 keeper startup에서 fail-closed 된다.
 - 기본 sandbox 이미지는 `masc-keeper-sandbox:local`이다. Docker keeper를 올리기 전에 `scripts/build-keeper-sandbox-image.sh`를 실행해 이미지를 만들고, smoke 검증은 `scripts/keeper-sandbox-smoke.sh`를 사용한다.
 - keeper Docker 컨테이너에는 `masc.mcp.component=keeper-sandbox`와 base path hash 라벨이 붙는다. 새 컨테이너 시작 전 같은 base path 범위의 오래된 MASC keeper 컨테이너만 best-effort로 정리한다. 조정값은 `MASC_KEEPER_SANDBOX_CLEANUP_ENABLED`, `MASC_KEEPER_SANDBOX_CLEANUP_STALE_AFTER_SEC`, `MASC_KEEPER_SANDBOX_CLEANUP_INTERVAL_SEC`이다.
-### 3.1.2 GitHub identity 운영 절차
 
-`github_identity`는 현재 대시보드의 일반 설정 화면에서 수정하는 필드가 아니라 active config root의 `keeper.toml` overlay가 SSOT다. 대시보드에서 찾지 못하면 먼저 active config root를 확인하고 파일을 수정한다.
+#### Docker profile vs one-shot/managed 실행
+
+Docker 사용 여부와 컨테이너 유지 방식은 서로 다른 결정이다.
+
+- `sandbox_profile`은 keeper config/meta에서 정해지는 boot-time policy다. `sandbox_profile=docker` keeper는 sandboxed tool 실행 시 Docker 경로를 사용한다. 이 값은 keeper LLM turn 자체를 Docker 안에서 돌린다는 뜻은 아니다.
+- 실제 컨테이너 route는 tool call 시점에 정해진다. `tool_execute`, `tool_search_files`, `tool_read_file`, `tool_edit_file`, `tool_write_file`처럼 sandboxed execution 또는 brokered GitHub access가 필요한 tool만 Docker/brokered 실행 경로를 탄다. board/task/goal 같은 control-plane tool은 서버 내부 상태 변경이라 컨테이너를 띄우지 않는다.
+- managed container가 없으면 sandboxed tool call은 one-shot Docker container를 만들고 명령 종료 후 사라진다. 그래서 `docker ps`에 계속 보이는 컨테이너가 없어도 Docker가 사용 중일 수 있다.
+- `masc_keeper_sandbox_start`로 visible managed container를 미리 띄우면 이후 sandboxed tool call은 그 container/runtime에 붙을 수 있다. 디버깅, 연속 shell 작업, container 상태 관찰이 필요할 때 쓰는 운영 모드다.
+- `masc_keeper_sandbox_status`에서 `sandbox_profile=docker`, `effective_mode=oneshot_or_managed_inherit`, `container_count=0`이면 "Docker keeper지만 현재 prewarmed container는 없고, sandboxed tool call 때 one-shot Docker를 쓴다"는 뜻이다.
+
+### 3.1.2 repo CLI identity 운영 절차
+
+`repo_cli_identity`는 현재 대시보드의 일반 설정 화면에서 수정하는 필드가 아니라 active config root의 `keeper.toml` overlay가 SSOT다. 대시보드에서 찾지 못하면 먼저 active config root를 확인하고 파일을 수정한다.
 
 ```bash
 masc-mcp doctor config --base-path /path/to/base --json | jq -r '.active_config_root'
@@ -318,35 +330,35 @@ masc-mcp doctor config --base-path /path/to/base --json | jq -r '.active_config_
 Keeper가 사용할 identity bundle은 base path 아래에 있어야 한다. 예를 들어 `anyang-keepers`를 쓸 때:
 
 ```bash
-GH_CONFIG_DIR=/path/to/base/.masc/github-identities/anyang-keepers/gh \
-  gh auth status --hostname github.com
+test -s /path/to/base/.masc/repo-cli-identities/anyang-keepers/gh/hosts.yml
 ```
 
-bundle이 없으면 같은 `GH_CONFIG_DIR`로 login한다.
+bundle이 없으면 같은 `GH_CONFIG_DIR`로 login한다. 이 login은 bundle을 생성하기 위한
+operator confirmation 절차이며, readiness/preflight는 GitHub CLI status probe를
+게이트로 삼지 않는다.
 
 ```bash
-mkdir -p /path/to/base/.masc/github-identities/anyang-keepers/gh
-GH_CONFIG_DIR=/path/to/base/.masc/github-identities/anyang-keepers/gh \
+mkdir -p /path/to/base/.masc/repo-cli-identities/anyang-keepers/gh
+GH_CONFIG_DIR=/path/to/base/.masc/repo-cli-identities/anyang-keepers/gh \
   gh auth login --hostname github.com --git-protocol https --web
 ```
 
 각 keeper의 `<active_config_root>/keepers/<keeper>.toml`에 다음을 둔다.
 
 ```toml
-github_identity = "anyang-keepers"
-git_identity_mode = "github_identity"
+repo_cli_identity = "anyang-keepers"
+git_identity_mode = "repo_cli_identity"
 ```
 
 확인 순서:
 
 ```bash
-rg -n 'github_identity|git_identity_mode' <active_config_root>/keepers
-GH_CONFIG_DIR=/path/to/base/.masc/github-identities/anyang-keepers/gh \
-  gh auth status --hostname github.com
+rg -n 'repo_cli_identity|git_identity_mode' <active_config_root>/keepers
+test -s /path/to/base/.masc/repo-cli-identities/anyang-keepers/gh/hosts.yml
 masc-mcp doctor config --base-path /path/to/base --json
 ```
 
-Docker keeper의 실제 사용 여부는 keeper가 `keeper_shell op=gh`, `keeper_shell op=git_clone`, 또는 git/gh 계열 `keeper_bash`를 호출할 때 확정된다. 이 경로는 operator host의 `~/.config/gh`, `GH_TOKEN`, `GITHUB_TOKEN`, SSH agent, keychain으로 fallback하지 않는다. selected bundle이 없으면 fail-closed 된다.
+Docker keeper의 실제 사용 여부는 keeper가 sandboxed tool 또는 git/gh 계열 `Execute`를 호출할 때 확정된다. 이 경로는 operator host의 `~/.config/gh`, `GH_TOKEN`, `GITHUB_TOKEN`, SSH agent, keychain으로 fallback하지 않는다. selected bundle이 없으면 fail-closed 된다. token 만료/폐기는 별도 preflight probe가 아니라 첫 scoped git/gh 작업의 실패로 드러난다.
 
 hard mode 예시:
 
@@ -355,8 +367,8 @@ hard mode 예시:
 persona_name = "analyst"
 sandbox_profile = "docker"
 network_mode = "none"
-github_identity = "anyang-keepers"
-git_identity_mode = "github_identity"
+repo_cli_identity = "anyang-keepers"
+git_identity_mode = "repo_cli_identity"
 ```
 
 ```bash
@@ -373,33 +385,36 @@ guardrail:
 - path traversal / symlink escape는 차단된다.
 - `sandbox_profile=local`은 `network_mode=none`을 허용하지 않는다. `none`은 `sandbox_profile=docker`와 함께 써야 한다.
 
-### 3.1.2 Legendary Bash 도구 표면
+### 3.1.2 Execute 도구 표면
 
-`keeper_bash` 및 형제 도구(`keeper_bash_output`, `keeper_bash_kill`)는
-claude-code BashTool / BashOutput / KillShell 시맨틱을 OCaml + Eio로
-체화한 Legendary Bash 구현이다. 운영자 flag 매트릭스와 flip 절차는
-[`LEGENDARY-BASH-RUNBOOK.md`](./LEGENDARY-BASH-RUNBOOK.md) 단일 문서가
+`Execute`는 agent-llm-a-code typed execution 시맨틱 중 현재 남은 foreground
+typed 실행 surface를 OCaml + Eio로 체화한 구현이다.
+운영자 flag 매트릭스와 flip 절차는
+[`EXECUTE-RUNBOOK.md`](./EXECUTE-RUNBOOK.md) 단일 문서가
 SSOT다. 여기서는 keeper 운영자 입장에서 알아야 할 호출 규약만 짧게
 정리한다.
 
-#### `keeper_bash`
+#### `Execute`
 
-한 번 호출에 **하나의 명령**만 실행한다. `&&` / `||` / `;` 체이닝,
-리다이렉트(`>`, `>>`), command substitution, background operator는 사전
-gate에서 거부된다. 파이프라인은 active preset/validator가 모든 segment를
-허용하는 경우에만 통과할 수 있다. 필요한 경우 호출을 나눠 발행하고,
-검색/파일/히스토리는 `keeper_shell`의 구조화 op를 우선 사용한다.
+`Execute`는 typed-only다. 단일 프로세스는 `executable`/`argv`,
+파이프라인은 `pipeline` 배열로 표현한다. `argv` 안의
+`|`, `>`, `&&`, `$()` 같은 문자는 shell syntax가 아니라 데이터다.
+실제 파이프는 `pipeline`으로만 표현한다. 필요한 경우 호출을
+나눠 발행하고, 검색/파일/히스토리는 `SearchFiles`/`ReadFile`을 우선
+사용한다.
 
-`keeper_shell op=bash`는 더 이상 명령을 실행하지 않는 legacy/deprecated
-경로다. 실제 명령 실행은 `Bash`/`keeper_bash`가 담당하고, Legendary Bash
-gate와 write/sandbox 정책도 그 경로에만 적용된다.
+`tool_search_files op=bash`는 지원하지 않는다. 실제 명령 실행은
+`Execute`가 담당하고, Execute gate와 write/sandbox
+정책도 그 경로에만 적용된다.
 
 | 필드 | 기본값 | 의미 |
 | --- | --- | --- |
-| `cmd` | 필수 | 실행할 단일 명령. 예: `dune build`, `rg foo lib/`. |
+| `executable` | 단일 실행 시 필수 | allowlist된 실행 파일 이름. 예: `rg`, `git`, `opam`. |
+| `argv` | `[]` | `executable`에 그대로 전달되는 인자 배열. |
+| `pipeline` | 파이프라인 실행 시 필수 | 각 stage가 `executable`/`argv`를 갖는 명시적 Shell IR 파이프라인. |
+| `env` | `{}` | typed 환경 변수 바인딩. 키는 `[A-Za-z0-9_]+`, 값은 string. |
 | `cwd` | keeper playground | 허용된 경로 내에서만 지정 가능. `repos/X` 같은 상대 경로가 자동 해석된다. |
-| `timeout_sec` | 30 (최대 180) | 초 단위 타임아웃. `run_in_background=true`에서 `0`이면 무한. |
-| `run_in_background` | false | `true`이면 즉시 `background_task_id`와 함께 반환, 실제 실행은 백그라운드에서 계속된다. |
+| `timeout_sec` | 30 (최대 180) | foreground typed 실행의 초 단위 타임아웃. |
 
 응답 JSON에는 `status` / `stdout` / `stderr` 외에, 운영자 flag가 켜져
 있을 때만 다음 추가 필드가 포함된다. 세부 시맨틱은 RUNBOOK 참조.
@@ -409,40 +424,13 @@ gate와 write/sandbox 정책도 그 경로에만 적용된다.
 - `verifiable_markers` — `MASC_BASH_VERIFIABLE_MARKERS`가 기본 on.
   `Test_pass {count}`, `Build_ok`, `Lint_clean` 등 verifier cascade가
   regex scraping 없이 소비할 수 있는 타입 마커.
-- `promoted` / `background_task_id` / `partial_output` —
-  `MASC_BASH_AUTO_BG=true` 상태에서 foreground 실행이 blocking budget
-  (`MASC_BLOCKING_BUDGET_MS`, 기본 15 000 ms)을 넘으면 자동으로 bg로
-  승격되어 삽입된다. 기본은 opt-in, flip 전 `AUTO_BG_OBSERVE` observer가
-  prod 데이터를 먼저 누적한다.
-
-#### 백그라운드 작업 생명주기
-
-`run_in_background=true`로 시작한 작업은 `keeper_bash_output`으로
-증분 폴링하고 `keeper_bash_kill`로 종료한다.
-
-`keeper_bash_output` 응답:
-
-- `stdout_since` / `stderr_since`에 누적 오프셋이 들어온다. 다음 폴링
-  호출에서 그 값을 다시 전달해 중복 읽기를 방지한다.
-- `closed=true`이면 프로세스가 종료된 뒤다. `exit`과 함께 고정된 최종
-  `semantic_exit`을 확인할 수 있다.
-- 현재 구현은 stderr를 stdout으로 병합하므로 stderr 측 커서는 대개 비어
-  있다.
-
-`keeper_bash_kill`:
-
-- 기본 SIGTERM → grace 2.0 s → SIGKILL 순서로 tree-kill한다. 프로세스
-  그룹 전체 (`-pgid`)를 대상으로 하므로 자식 fiber까지 함께 종료된다.
-- 이미 종료된 task에 대해서도 idempotent하게 안전하다.
-- `grace_sec`은 최대 30 초까지 조정 가능하다.
 
 #### 관찰 & 롤아웃
 
-dark-launch observer 두 개 (`MASC_BASH_AST_SHADOW_LOG`,
-`MASC_BASH_AUTO_BG_OBSERVE`)는 **기본 off**이며, operator가 flip 전
-prod 증거를 수집할 때 켠다. 로그 라인 포맷과 grep recipe, flip
-기준은 [`LEGENDARY-BASH-RUNBOOK.md`](./LEGENDARY-BASH-RUNBOOK.md)
-단일 문서를 따른다. env flag 전체 표는
+live observer는 shell gate counter와 semantic marker 계열만 남는다.
+로그 라인 포맷과 grep recipe, flip 기준은
+[`EXECUTE-RUNBOOK.md`](./EXECUTE-RUNBOOK.md) 단일 문서를
+따른다. env flag 전체 표는
 [`ENV-CONTRACT.md §4`](./ENV-CONTRACT.md)에 정의되어 있다.
 
 ### 3.2 페르소나 로드 필드 (Profile-Loaded)
@@ -491,8 +479,8 @@ prod 증거를 수집할 때 켠다. 로그 라인 포맷과 grep recipe, flip
 
 | 필드 | 결정 로직 | 코드 위치 |
 |------|----------|----------|
-| **Active Model** | `last_model_used` 우선, 없으면 `cascade_name`의 첫 모델 fallback | `keeper_exec_status.ml:active_model_of_meta` |
-| **Next Model Hint** | `config/cascade.json`에서 해석한 cascade 목록에서 현재 active_model과 다른 첫 모델. 없으면 현재 모델 또는 `None` | `keeper_exec_status.ml:next_model_hint_of_meta` |
+| **Active Model** | `last_model_used` 우선, 없으면 `cascade_name`의 첫 모델 fallback | `keeper_status_runtime.ml:active_model_of_meta` |
+| **Next Model Hint** | `config/cascade.toml`에서 해석한 cascade 목록에서 현재 active_model과 다른 첫 모델. 없으면 현재 모델 또는 `None` | `keeper_status_runtime.ml:next_model_hint_of_meta` |
 | **Skill (Primary/Secondary)** | 마지막 메트릭 항목의 `skill_primary`, `skill_secondary` 필드 | `keeper_status.ml:last_skill_route` |
 
 ---
@@ -531,7 +519,7 @@ Memory compaction 시 어떤 정보를 우선 보존할지는 통합 정책(`kee
 
 ### 4.3 모델 해석
 
-Keeper 모델 선택은 profile.json 인자가 아니라 `cascade_name`으로 결정된다. 기본 keeper는 `keeper_unified` cascade를 사용하고, 실제 모델 목록은 저장소의 고정 경로 `config/cascade.json`이 아니라 resolved config root 기준의 `<resolved-config-root>/cascade.json`에서 해석된다.
+Keeper 모델 선택은 profile.json 인자가 아니라 `cascade_name`으로 결정된다. 기본 keeper는 `routes.keeper_turn` 대상 cascade를 사용하고, 실제 모델 목록은 저장소의 고정 경로 `config/cascade.toml`이 아니라 resolved config root 기준의 `<resolved-config-root>/cascade.toml`에서 해석된다.
 
 ### 4.4 작성 예시
 
@@ -615,7 +603,7 @@ masc_keeper_create_from_persona(persona_name: "sangsu")
 flowchart TD
     A[last_model_used 확인] -->|있으면| Z[Active Model 결정]
     A -->|없으면| B[cascade_name 해석]
-    B --> C[resolved config root/cascade.json 첫 모델]
+    B --> C[resolved config root/cascade.toml 첫 모델]
     C --> Z
 
     style Z fill:#e8f5e9
@@ -625,12 +613,12 @@ flowchart TD
 
 Next Model Hint는 handoff 시 successor에게 추천할 모델이다.
 
-1. resolved config root의 `cascade.json`에서 `cascade_name`의 모델 목록을 읽는다
+1. resolved config root의 `cascade.toml`에서 `cascade_name`의 모델 목록을 읽는다
 2. 현재 `active_model`과 다른 첫 번째 모델을 고른다
 3. 다른 모델이 없으면 현재 모델을 반환한다
 4. cascade가 비어 있으면 `None`
 
-코드 근거: `keeper_exec_status.ml:next_model_hint_of_meta`
+코드 근거: `keeper_status_runtime.ml:next_model_hint_of_meta`
 
 ### 5.3 사용 가능한 모델 형식
 
@@ -638,17 +626,17 @@ Next Model Hint는 handoff 시 successor에게 추천할 모델이다.
 
 | Provider | 예시 | API |
 |----------|------|-----|
-| `glm` | `glm:glm-4.7-flash` | Z.ai ChatCompletions |
-| `claude` | `claude:sonnet` | Anthropic Messages API |
-| `gemini` | `gemini:pro` | Google AI API |
+| `provider-k` | `provider-k:provider-k-4.7-flash` | Z.ai ChatCompletions |
+| `agent-llm-a` | `agent-llm-a:sonnet` | Provider-A Messages API |
+| `provider-f` | `provider-f:pro` | Google AI API |
 | `openrouter` | `openrouter:meta-llama/llama-3` | OpenRouter API |
-| `custom` | `custom:model@http://host:port` | OpenAI 호환 엔드포인트 |
+| `custom` | `custom:model@http://host:port` | Provider-D 호환 엔드포인트 |
 
 ### 5.4 모델 변경 시 주의사항
 
 - keeper는 per-call `models` override나 persisted `active_model` pinning을 지원하지 않는다
-- handoff 시 cross-model 정규화가 자동 적용된다: Llama는 Tool 메시지 변환, Claude는 alternating 규칙 적용
-- cascade fallback은 resolved config root의 `cascade.json`에 있는 해당 cascade 순서대로 시도한다
+- handoff 시 cross-model 정규화가 자동 적용된다: Llama는 Tool 메시지 변환, Agent-LLM-A는 alternating 규칙 적용
+- cascade fallback은 resolved config root의 `cascade.toml`에 있는 해당 cascade 순서대로 시도한다
 
 ---
 
@@ -808,7 +796,7 @@ flowchart TD
 |------|----------|
 | 의도한 모델이 사용 안 됨 | `active_model` vs `last_model_used` 비교 |
 | cascade가 fallback으로 넘어감 | MODEL provider 연결 상태 확인 (API key, 서버 상태 등) |
-| `active_model`이 빈 문자열 | resolved config root의 `cascade.json`에서 `keeper_unified` 설정 확인 |
+| `active_model`이 빈 문자열 | resolved config root의 `cascade.toml`에서 `routes.keeper_turn` 대상 확인 |
 
 **Cascade 디버깅**:
 ```
@@ -894,8 +882,8 @@ materialize될 수 있지만, 정식 edit surface는 `profile.json`과 `keeper.t
 [`docs/KEEPER-FILE-MODEL.md` §2 Keeper Declaration](./KEEPER-FILE-MODEL.md#2-keeper-declaration)을 참조한다. 요약:
 
 - **Canonical minimal**: `[keeper]` 테이블에 `persona_name`만. 나머지는 persona 기본값에서 해석.
-- **Overlay fields**: `goal`, `tool_preset`, `tool_also_allow`, `cascade_name`, `sandbox_profile`, `network_mode`, `github_identity`, `git_identity_mode`, `active_goal_ids` 등 배치별 override 전용.
-- **Allowed value sets**: `tool_preset ∈ {minimal, social, messaging, coding, research, delivery, full}`, `sandbox_profile ∈ {local, docker}`, `network_mode ∈ {none, inherit}`, `git_identity_mode ∈ {keeper_alias, github_identity}`, `social_model ∈ {bdi_speech_v1, magentic_ledger_v1}`, `cascade_name`은 `cascade.json`에 `<name>_models` 키로 존재해야 함.
+- **Overlay fields**: `goal`, `tool_preset`, `tool_also_allow`, `cascade_name`, `sandbox_profile`, `network_mode`, `repo_cli_identity`, `git_identity_mode`, `active_goal_ids` 등 배치별 override 전용.
+- **Allowed value sets**: `tool_preset ∈ {minimal, social, messaging, research, delivery, full}`, `sandbox_profile ∈ {local, docker}`, `network_mode ∈ {none, inherit}`, `git_identity_mode ∈ {keeper_alias, repo_cli_identity}`, `social_model ∈ {bdi_speech_v1, magentic_ledger_v1}`, `cascade_name`은 `cascade.toml`에 `<name>_models` 키로 존재해야 함.
 - **Removed / hard-rejected**: `also_allow` (top-level TOML alias), `models`, `allowed_models`, `active_model`, `presence_keepalive*`, `trigger_mode`, `initiative_*`, `policy_mode`, `policy_shell_mode`. 로드 시 에러로 실패한다.
 - **Unknown keys**: canonical/removed 둘 다 아닌 key는 **boot 시 warning** 후 무시된다 (`keeper TOML <path> has unknown keys: ...`). 과거에 `legacy_scope`/`scope_kind` 같은 dead config가 축적된 적이 있으므로 warning을 발견하면 정리한다.
 
@@ -934,7 +922,7 @@ dir-local 실행에서 shared keeper 상태가 보이지 않는 것은 정상이
 
 ### 8.4 모델 실행
 
-모델 선택은 resolved config root의 `cascade.json`이 유일한 권위다. Keeper 설정에 모델 필드를 직접 지정하지 않는다. `cascade_name` (기본 `"keeper_unified"`)이 cascade를 지정하고 `Oas_model_resolve`가 실행 모델을 결정한다.
+모델 선택은 resolved config root의 `cascade.toml`이 유일한 권위다. Keeper 설정에 모델 필드를 직접 지정하지 않는다. `cascade_name` (기본 `routes.keeper_turn` 대상)이 cascade를 지정하고 `Cascade_runtime`가 실행 모델을 결정한다.
 
 ---
 
@@ -945,7 +933,7 @@ dir-local 실행에서 shared keeper 상태가 보이지 않는 것은 정상이
 | [CONFIG-DOCTOR.md](./CONFIG-DOCTOR.md) | active config/init 진단 |
 | [GLOSSARY.md](./GLOSSARY.md) | 용어 정의 |
 | [QUICK-START.md](./QUICK-START.md) | repo coordination 시작 경로 |
-| [COMMAND-PLANE-RUNBOOK.md](./COMMAND-PLANE-RUNBOOK.md) | historical compatibility lane |
-| [MERGED-ARCHITECTURE-SSOT.md](./MERGED-ARCHITECTURE-SSOT.md) | 아키텍처 SSOT |
-| [LEGENDARY-BASH-RUNBOOK.md](./LEGENDARY-BASH-RUNBOOK.md) | `keeper_bash` flag matrix + dark-launch observer 절차 |
-| [ENV-CONTRACT.md](./ENV-CONTRACT.md) | 환경변수 reload class + Legendary Bash §4 |
+| [COMMAND-PLANE-RUNBOOK.md](./COMMAND-PLANE-RUNBOOK.md) | retired command-plane reference |
+| [SPEC-INDEX.md](./spec/SPEC-INDEX.md) + [01-system-overview.md](./spec/01-system-overview.md) | 아키텍처 SSOT |
+| [EXECUTE-RUNBOOK.md](./EXECUTE-RUNBOOK.md) | Execute flag matrix + dark-launch observer 절차 |
+| [ENV-CONTRACT.md](./ENV-CONTRACT.md) | 환경변수 reload class + Execute §4 |

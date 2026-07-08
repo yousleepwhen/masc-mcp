@@ -69,14 +69,14 @@ graph LR
 |------|----------|--------|
 | Types | `keeper_types.ml`, `keeper_types_profile.ml`, `keeper_types_support.ml` | 3 |
 | Config | `keeper_config.ml`, `keeper_toml_loader.ml` | 2 |
-| Context | `keeper_context_core.ml`, `keeper_exec_context.ml`, `keeper_checkpoint_store.ml` | 3 |
+| Context | `keeper_context_core.ml`, `keeper_context_runtime.ml`, `keeper_checkpoint_store.ml` | 3 |
 | Memory | `keeper_memory*.ml` (bank, policy, recall) | 4 |
 | Prompt / Skill | `keeper_prompt.ml`, `keeper_unified_prompt.ml`, `keeper_skill_routing.ml` | 3 |
 | Turn Execution | `keeper_agent_run.ml`, `keeper_unified_turn.ml`, `keeper_tools_oas.ml`, `keeper_hooks_oas.ml`, `keeper_extend_turns.ml` | 5 |
 | Decision | `keeper_deliberation.ml` | 1 |
 | Supervision | `keeper_supervisor.ml`, `keeper_keepalive.ml`, `keeper_world_observation.ml` | 3 |
 | MCP Surface | `keeper_turn.ml`, `keeper_status.ml`, `keeper_persona.ml`, `keeper_schema.ml` | 4 |
-| Alerting / Metrics | `keeper_alerting*.ml`, `keeper_exec_status*.ml`, `keeper_status_detail.ml` | 6+ |
+| Alerting / Metrics | `keeper_alerting*.ml`, `keeper_status_runtime*.ml`, `keeper_status_detail.ml` | 6+ |
 
 ---
 
@@ -191,9 +191,9 @@ stateDiagram-v2
 1. **Observe**: `keeper_world_observation.observe`로 room 상태, 멘션, board 이벤트, idle 시간, 경제 압력 등을 수집
 2. **BuildPrompt**: `keeper_unified_prompt.build_prompt`로 keeper identity + observation을 단일 (system_prompt, user_message) 쌍으로 조립
 3. **AgentRun**: `keeper_agent_run.run_turn`이 OAS `Agent.run`에 위임. tools + hooks + context_reducer + memory 전달
-4. **ToolExecution**: Agent가 tool을 호출하면 `keeper_tools_oas`가 `keeper_exec_tools.execute_keeper_tool_call`로 디스패치
+4. **ToolExecution**: Agent가 tool을 호출하면 `keeper_tools_oas`가 `agent_tool_dispatch_runtime.execute_keeper_tool_call`로 디스패치
 5. **UpdateMetrics**: `keeper_unified_turn.update_metrics_from_result`가 turn count, token 사용량, cost 등을 keeper_meta에 반영하고 `observation.idle_seconds`를 `masc_keeper_idle_seconds{keeper_name}` Prometheus gauge로 노출
-6. **PostTurnLifecycle**: `keeper_post_turn.apply_post_turn_lifecycle`가 compaction, handoff rollover, continuity summary를 single-writer로 처리
+6. **PostTurnLifecycle**: `keeper_post_turn.apply_post_turn_lifecycle_with_resilience_handles`가 compaction, handoff rollover, continuity summary를 single-writer로 처리
 7. **Checkpoint / Compact / Handoff**: checkpoint 저장 후 gate에 따라 compaction 또는 handoff rollover를 실행
 8. **MemoryWrite**: `keeper_agent_run` tail에서 memory bank note append와 episodic flush를 수행. hebbian은 task lifecycle에서만 기록
 
@@ -274,7 +274,7 @@ Triage -> BudgetCheck -> (ModelDeliberation | DeterministicBaseline) -> Execute 
 2. `load_context_from_checkpoint`로 세션/컨텍스트 복원
 3. `build_keeper_system_prompt` + `build_turn_prompt` callback으로 프롬프트 구성
 4. `make_tools` (keeper tool bridge) + `make_hooks` (safety gates) 생성
-5. `Oas_worker.run_named` -> OAS `Agent.run` loop (tool calls -> hooks -> response)
+5. `Keeper_turn_driver.run_named` -> OAS `Agent.run` loop (tool calls -> hooks -> response)
 6. `persist_message` (assistant 응답 영속화)
 7. 결과 반환: `run_result { response_text, model_used, turn_count, tool_calls_made, usage, tools_used }`
 
@@ -282,7 +282,7 @@ Triage -> BudgetCheck -> (ModelDeliberation | DeterministicBaseline) -> Execute 
 
 1. `keeper_keepalive` heartbeat tick
 2. `world_observation.observe` -> 세계 상태 수집
-3. `unified_turn.run_unified_turn` -> `build_prompt` + `run_turn`
+3. `unified_turn.run_keeper_cycle` -> `build_prompt` + `run_turn`
 4. `update_metrics_from_result` -> keeper_meta 갱신
 5. `write_meta` -> 메타데이터 영속화
 
@@ -332,7 +332,7 @@ Profile별 종류당 보존 상한:
 
 ### 6.5 OAS Memory Bridge
 
-`run_turn`에서 `Memory_oas_bridge.create_memory`로 institution / procedures / memory bank / episodes 계층을 seed한다. 턴 후 영속화는 분리된다: memory bank는 `append_memory_notes_from_reply`, episode는 `store_episode_from_snapshot` + `flush_incremental`, hebbian은 별도의 task lifecycle에서 기록된다.
+`run_turn`은 `Memory_oas_bridge.create_memory`로 filesystem-first JSONL `long_term_backend`가 연결된 OAS `Memory.t`를 만든다. Institution / procedural / world memory는 imperative seed가 아니라 `load_*_text` hook-first prompt injection으로 읽고, 턴 후에는 memory bank가 `append_memory_notes_from_reply`, episode/procedure가 `store_episode_from_snapshot` + `flush_incremental`, hebbian이 별도 task lifecycle에서 기록된다.
 
 ---
 
@@ -389,14 +389,14 @@ OAS Agent.run의 hook lifecycle에 keeper 동작을 주입:
 | Destructive pattern | `rm -rf`, `drop table`, `force push` 등 위험 패턴 감지 시 거부 |
 | Autonomy filter | autonomy_level에 따라 허용 tool 목록 필터링 |
 
-Destructive check 대상 도구: `keeper_bash`, `keeper_fs_edit`, `keeper_edit`, `keeper_github`
+Destructive check 대상 도구: `tool_execute`, `tool_edit_file`, `keeper_edit`
 
 ### 8.2 Autonomy Level Tool Gating
 
 | Level | 허용 도구 |
 |-------|----------|
 | `l3_guided` | board ops + read-only shell + code navigation |
-| `l4_autonomous` | l3 + `keeper_bash` + `keeper_fs_edit` + `keeper_edit` |
+| `l4_autonomous` | l3 + `tool_execute` + `tool_edit_file` + `keeper_edit` |
 | `l5_independent` | 제한 없음 (AllowAll) |
 
 ---
@@ -547,7 +547,7 @@ Keeper turn에서 어떤 "skill" 경로를 사용할지 결정:
 
 ### INV-KEEPER-012: destructive pattern screening
 
-`keeper_hooks_oas`가 `keeper_bash`, `keeper_fs_edit`, `keeper_edit`, `keeper_github` 도구에 대해 `rm -rf`, `drop table`, `force push` 등 위험 패턴을 검사한다. 감지 시 tool call을 거부한다.
+`keeper_hooks_oas`가 `tool_execute`, `tool_edit_file`, `keeper_edit` 도구에 대해 `rm -rf`, `drop table`, `force push` 등 위험 패턴을 검사한다. 감지 시 tool call을 거부한다.
 
 ---
 
@@ -559,7 +559,7 @@ Keeper turn에서 어떤 "skill" 경로를 사용할지 결정:
 
 ### 15.2 keeper_types.ml include chain
 
-`keeper_types.ml`이 `include Keeper_types_profile`과 `include Keeper_types_support`를 연쇄적으로 포함하여, 실제 타입 정의가 3개 파일에 분산된다. 순환 의존 회피를 위한 구조이지만 가독성이 낮다.
+`keeper_types.ml`이 `include Keeper_types_profile`과 `include Keeper_types_support`를 연쇄적으로 포함하여, 실제 타입 정의가 3개 파일에 분산된다. 공개 `keeper_types.mli`는 JSONL/history-source/metrics/API-key/alert-path/rotation/delete-action/trace-path/memory/progress/decision-log support helper를 `Keeper_types_support` 소유로 돌렸지만, 구현 include chain 자체는 남아 있어 가독성이 낮다.
 
 ### 15.3 keeper_memory 계층의 include chain
 
@@ -575,7 +575,7 @@ Keeper turn에서 어떤 "skill" 경로를 사용할지 결정:
 
 ### 15.6 OAS Memory Bridge 부분 통합
 
-MASC 자체 memory 4개(memory_stream, institution, procedural, context_manager)가 OAS Memory.t(3-tier: Scratchpad/Working/Long_term)와 별도로 운영된다. `long_term_backend` callback 연결이 미완.
+MASC memory bank / institution / procedural memory는 아직 MASC가 소유하지만, OAS `Memory.t` 5-tier와의 경계는 `memory_oas_bridge.ml`에 있다. `long_term_backend` callback은 filesystem JSONL로 연결됐고, 남은 경계 이슈는 keeper context/checkpoint nativeization과 raw marker leakage다.
 
 ---
 
@@ -585,7 +585,7 @@ MASC 자체 memory 4개(memory_stream, institution, procedural, context_manager)
 |------|------|
 | Keeper Types | `lib/keeper/keeper_types.ml` |
 | Context Core | `lib/keeper/keeper_context_core.ml` (구 `keeper_working_context.ml` 흡수) |
-| Execution Context | `lib/keeper/keeper_exec_context.ml` |
+| Execution Context | `lib/keeper/keeper_context_runtime.ml` |
 | Agent Run | `lib/keeper/keeper_agent_run.ml` |
 | Unified Turn | `lib/keeper/keeper_unified_turn.ml` |
 | Deliberation | `lib/keeper/keeper_deliberation.ml` |

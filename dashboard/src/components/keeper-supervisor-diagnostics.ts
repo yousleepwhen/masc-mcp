@@ -5,15 +5,17 @@
 import { html } from 'htm/preact'
 import { formatPct, formatPct1 } from '../lib/format-number'
 import { signal } from '@preact/signals'
-import { formatTimeAgo } from '../lib/format-time'
+import { formatTimeAgo, SECONDS_PER_MINUTE, SECONDS_PER_HOUR } from '../lib/format-time'
+import { MISSING_DATA_DASH } from '../lib/format-string'
 import { FilterChips } from './common/filter-chips'
 import { PanelCard } from './common/panel-card'
 import { ProgressBar } from './common/progress-bar'
+import { failureReasonLabel } from './fsm-hub-types'
 import {
   groupCrashCohorts,
   filterCrashLog,
   CRASH_CATEGORY_KEYS,
-  type CrashCategory,
+  type SupervisorCrashCategory,
 } from './keeper-supervisor-helpers'
 import type { Keeper, KeeperSupervisorCrashLogEntry } from '../types'
 
@@ -21,7 +23,7 @@ function MutedLabel({ children }: { children: unknown }) {
   return html`<span class="text-xs text-[var(--color-fg-muted)]">${children}</span>`
 }
 
-type CrashFilterKey = 'all' | CrashCategory
+type CrashFilterKey = 'all' | SupervisorCrashCategory
 
 // Module-level signals (per-keeper instance ok — panel only renders for active keeper).
 const crashCategoryFilter = signal<CrashFilterKey>('all')
@@ -42,7 +44,7 @@ function registryStateBadge(state: string | null) {
   return html`<span class="inline-flex items-center py-0.5 px-2 rounded-[var(--r-1)] text-3xs font-semibold ${c.bg} ${c.text}">${state}</span>`
 }
 
-const COHORT_COLORS: Record<CrashCategory, string> = {
+const COHORT_COLORS: Record<SupervisorCrashCategory, string> = {
   heartbeat: 'var(--amber-bright)',
   turn: 'var(--color-status-err)',
   fiber: 'var(--stalled-fg)',
@@ -96,7 +98,7 @@ function SpEventsPanel({ sp_events }: { sp_events?: unknown[] }) {
         ${entries.map((e) => html`
           <div class="flex items-center justify-between py-1 px-2 rounded-[var(--r-1)] text-2xs bg-[var(--purple-12)]">
             <span class="font-mono text-[var(--color-fg-muted)]">${formatTimeAgo(e.ts ?? 0)}</span>
-            <span class="text-[var(--stalled-fg)]">${e.suppressed_count ?? 0}/${e.total ?? 0} 억제 (${e.dominant_cohort ?? '--'})</span>
+            <span class="text-[var(--stalled-fg)]">${e.suppressed_count ?? 0}/${e.total ?? 0} 억제 (${e.dominant_cohort ?? MISSING_DATA_DASH})</span>
           </div>
         `)}
       </div>
@@ -144,13 +146,13 @@ export function SupervisorDiagnosticsPanel({ keeper }: { keeper: Keeper }) {
         ${typeof dead_eta_sec === 'number' && dead_eta_sec > 0 && dead_since == null ? html`
           <div class="flex items-center justify-between">
             <${MutedLabel}>종료 예상</${MutedLabel}>
-            <span class="text-2xs font-mono" style="color: ${budgetPct >= 50 ? 'var(--amber-bright)' : 'var(--color-fg-primary)'}">${dead_eta_sec >= 3600 ? (dead_eta_sec / 3600).toFixed(1) + 'h' : (dead_eta_sec / 60).toFixed(0) + 'm'} 후</span>
+            <span class="text-2xs font-mono" style="color: ${budgetPct >= 50 ? 'var(--amber-bright)' : 'var(--color-fg-primary)'}">${dead_eta_sec >= SECONDS_PER_HOUR ? (dead_eta_sec / SECONDS_PER_HOUR).toFixed(1) + 'h' : (dead_eta_sec / SECONDS_PER_MINUTE).toFixed(0) + 'm'} 후</span>
           </div>
         ` : null}
         ${last_failure_reason ? html`
           <div class="flex items-center justify-between">
             <${MutedLabel}>마지막 실패 원인</${MutedLabel}>
-            <span class="text-2xs font-mono text-[var(--rose-light)]">${last_failure_reason}</span>
+            <span class="text-2xs font-mono text-[var(--rose-light)]" title=${last_failure_reason}>${failureReasonLabel(last_failure_reason)}</span>
           </div>
         ` : null}
         ${dead_since ? html`

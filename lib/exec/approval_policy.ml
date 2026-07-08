@@ -11,7 +11,15 @@ type t = {
 
 (* Scan the cap list for a Destructive git op.  Returned first because
    it short-circuits the policy — the approval UI cannot "yes" its way
-   past this one. *)
+   past this one.
+
+   [@@warning "-4"] (on the function below): the [_ :: rest] arm is a
+   find-first scan that *intentionally* skips every non-matching
+   capability — including future [Capability.t] ctors and future
+   [Git_op.t] ctors that are not [Destructive]. Forcing an explicit
+   enumeration over both nested variants adds friction with no safety
+   gain (the answer is always "skip and keep scanning"). RFC-0071
+   §3.4.1 — nested find-first scan exemption, not a closed-sum dispatch. *)
 let find_destructive_git (caps : Capability.t list) : Git_op.t option =
   let rec scan = function
     | [] -> None
@@ -23,15 +31,21 @@ let find_destructive_git (caps : Capability.t list) : Git_op.t option =
     | _ :: rest -> scan rest
   in
   scan caps
+[@@warning "-4"]
 
-(* Scan for a Write_path that escapes the worktree.  Returned next
+(* Scan for a Write_path that escapes the workspace.  Returned next
    because write-outside is the "is this supposed to touch the host?"
-   smell. *)
+   smell.
+
+   [@@warning "-4"] (on the function below): same find-first-scan
+   rationale as [find_destructive_git] — the [_ :: rest] arm
+   intentionally skips every non-escaping capability, future ctors
+   included. RFC-0071 §3.4.1 nested find-first scan exemption. *)
 let find_write_escape (caps : Capability.t list) : Path_scope.t option =
   let escapes (ps : Path_scope.t) : bool =
     match Path_scope.scope ps with
-    | Outside_worktree _ | Absolute_unknown _ -> true
-    | Inside_worktree _ | Inside_sandbox _ -> false
+    | Outside_workspace _ | Absolute_unknown _ -> true
+    | Inside_workspace _ | Inside_sandbox _ -> false
   in
   let rec scan = function
     | [] -> None
@@ -43,10 +57,11 @@ let find_write_escape (caps : Capability.t list) : Path_scope.t option =
     | _ :: rest -> scan rest
   in
   scan caps
+[@@warning "-4"]
 
-(* Highest bin risk observed in the full cap tree. *)
-let max_risk (caps : Capability.t list) : Bin.risk_class =
-  let bump (acc : Bin.risk_class) (r : Bin.risk_class) : Bin.risk_class =
+(* Highest program risk observed in the full cap tree. *)
+let max_risk (caps : Capability.t list) : Exec_program.risk_class =
+  let bump (acc : Exec_program.risk_class) (r : Exec_program.risk_class) : Exec_program.risk_class =
     match acc, r with
     | `Privileged, _ | _, `Privileged -> `Privileged
     | `Audited, _ | _, `Audited -> `Audited
@@ -54,11 +69,11 @@ let max_risk (caps : Capability.t list) : Bin.risk_class =
   in
   let rec scan acc = function
     | [] -> acc
-    | Capability.Exec_bin (b, _) :: rest ->
-      scan (bump acc (Bin.risk_class b)) rest
+    | Capability.Exec_program (b, _) :: rest ->
+      scan (bump acc (Exec_program.risk_class b)) rest
     | Capability.Git _ :: rest ->
       (* git is Audited by vocabulary; already classified through
-         Bin above for the Exec_bin fallback path.  Kept explicit
+         Exec_program above for the Exec_program fallback path.  Kept explicit
          here so a future refactor of Git_op doesn't lose the risk
          contribution. *)
       scan (bump acc `Audited) rest
@@ -85,7 +100,7 @@ let trust_dispatch ~trust_level ~caps ~policy ~bin ~simple : Verdict.t =
   | Approval_config.Auto_safe -> Verdict.Allow (Verdict.trust ~caps simple)
   | Approval_config.Suggest ->
     let token : Verdict.confirm_token =
-      { risk_class = Bin.risk_class simple.Shell_ir.bin; ttl_sec = 60.0 }
+      { risk_class = Exec_program.risk_class simple.Shell_ir.bin; ttl_sec = 60.0 }
     in
     Verdict.Suggest_confirm (Verdict.trust ~caps simple, token)
   | Approval_config.Observe -> Verdict.Allow (Verdict.trust ~caps simple)

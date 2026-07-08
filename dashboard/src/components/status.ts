@@ -1,15 +1,36 @@
-// MASC Dashboard — Status Surface (Phase 2+4: fleet-health + runtime unified)
-// Read-only observability surfaces: journey, agents, runtime, fleet-health,
-// plus hidden diagnostic observatory/memory-subsystems routes.
+// MASC Dashboard — Status Surface
+// Monitor is keeper-fleet first. Tool, cascade/runtime, evidence, and
+// hidden diagnostic/deep-link routes remain routeable through this dispatcher.
 
 import { html } from 'htm/preact'
 import { lazy, Suspense } from 'preact/compat'
 import { route } from '../router'
+import { sectionItemsForTab } from '../config/navigation'
 import { LoadingState } from './common/feedback-state'
 
 export type StatusSection =
-  | 'observatory' | 'journey' | 'agents' | 'runtime' | 'goal-loop' | 'fleet-health'
-  | 'memory-subsystems' | 'cognition'
+  | 'observatory' | 'journey' | 'agents' | 'runtime' | 'cascade-config'
+  | 'fleet-health' | 'doctor' | 'transport-health'
+  | 'feature-health'
+  | 'cognition'
+
+function monitorSectionItem(section: string | undefined) {
+  if (!section) return undefined
+  return sectionItemsForTab('monitoring').find(item => item.params.section === section)
+}
+
+function isStatusSection(section: string | undefined): section is StatusSection {
+  return monitorSectionItem(section) !== undefined
+}
+
+export function isMonitorLane(section: StatusSection): boolean {
+  const item = monitorSectionItem(section)
+  return item !== undefined && item.hidden !== true
+}
+
+export function isHiddenDiagnostic(section: StatusSection): boolean {
+  return !isMonitorLane(section)
+}
 
 const LazyAgentsUnified = lazy(async () => ({
   default: (await import('./agents-unified')).AgentsUnified,
@@ -17,23 +38,29 @@ const LazyAgentsUnified = lazy(async () => ({
 const LazyRuntimePanel = lazy(async () => ({
   default: (await import('./runtime-panel')).RuntimePanel,
 }))
-const LazyMemorySubsystems = lazy(async () => ({
-  default: (await import('./memory-subsystems')).MemorySubsystems,
+const LazyCascadeConfigPanel = lazy(async () => ({
+  default: (await import('./cascade-config-panel')).CascadeConfigPanel,
 }))
 const LazyFleetHealthPanel = lazy(async () => ({
   default: (await import('./fleet-health-panel')).FleetHealthPanel,
 }))
-const LazyGoalLoopPanel = lazy(async () => ({
-  default: (await import('./goal-loop-panel')).GoalLoopPanel,
+const LazyDoctorPanel = lazy(async () => ({
+  default: (await import('./doctor-panel')).DoctorPanel,
+}))
+const LazyTransportHealthPanel = lazy(async () => ({
+  default: (await import('./transport-health')).TransportHealthPanel,
+}))
+const LazyFeatureHealth = lazy(async () => ({
+  default: (await import('./feature-health')).FeatureHealth,
 }))
 const LazyObservatory = lazy(async () => ({
   default: (await import('./observatory/observatory')).Observatory,
 }))
-const LazyJourneyPanel = lazy(async () => ({
-  default: (await import('./journey-panel')).JourneyPanel,
-}))
 const LazyCognitionPlane = lazy(async () => ({
   default: (await import('./cognition-plane')).CognitionPlane,
+}))
+const LazyJourneyPanel = lazy(async () => ({
+  default: (await import('./journey-panel')).JourneyPanel,
 }))
 
 function sectionFallback(label: string) {
@@ -41,24 +68,7 @@ function sectionFallback(label: string) {
 }
 
 export function sectionLabel(section: StatusSection): string {
-  switch (section) {
-    case 'observatory':
-      return 'Observatory'
-    case 'journey':
-      return 'Journey'
-    case 'runtime':
-      return 'Runtime'
-    case 'goal-loop':
-      return 'GOAL LOOP'
-    case 'fleet-health':
-      return 'Fleet Health'
-    case 'memory-subsystems':
-      return 'Memory Subsystems'
-    case 'cognition':
-      return 'Cognition'
-    case 'agents':
-      return 'Agents'
-  }
+  return monitorSectionItem(section)?.label ?? section
 }
 
 function renderSection(section: StatusSection) {
@@ -69,12 +79,16 @@ function renderSection(section: StatusSection) {
       return html`<${LazyJourneyPanel} />`
     case 'runtime':
       return html`<${LazyRuntimePanel} />`
-    case 'goal-loop':
-      return html`<${LazyGoalLoopPanel} />`
+    case 'cascade-config':
+      return html`<${LazyCascadeConfigPanel} />`
     case 'fleet-health':
       return html`<${LazyFleetHealthPanel} />`
-    case 'memory-subsystems':
-      return html`<${LazyMemorySubsystems} />`
+    case 'doctor':
+      return html`<${LazyDoctorPanel} />`
+    case 'transport-health':
+      return html`<${LazyTransportHealthPanel} />`
+    case 'feature-health':
+      return html`<${LazyFeatureHealth} />`
     case 'cognition':
       return html`<${LazyCognitionPlane} />`
     case 'agents':
@@ -82,19 +96,13 @@ function renderSection(section: StatusSection) {
   }
 }
 
+export function normalizeStatusSection(section: string | undefined): StatusSection {
+  if (isStatusSection(section)) return section
+  return 'agents'
+}
+
 function currentSection(): StatusSection {
-  const section = route.value.params.section
-  if (
-    section === 'observatory'
-    || section === 'journey'
-    || section === 'runtime'
-    || section === 'goal-loop'
-    || section === 'fleet-health'
-    || section === 'memory-subsystems'
-    || section === 'cognition'
-    || section === 'agents'
-  ) return section
-  return 'journey'
+  return normalizeStatusSection(route.value.params.section)
 }
 
 export function Status() {

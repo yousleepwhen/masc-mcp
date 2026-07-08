@@ -4,7 +4,8 @@
     Implements 5 tools ([masc_library_list], [masc_library_read],
     [masc_library_add], [masc_library_promote],
     [masc_library_search]) backed by Markdown documents under
-    {!library_root} ([\$HOME/me/docs/library]) with YAML
+    {!library_root} ([MASC_BASE_PATH/docs/library], then the host
+    runtime fallback) with YAML
     frontmatter ([title], [source], [confidence], [author],
     [created], [tags], [verified_by]).
 
@@ -71,11 +72,7 @@ val string_contains : sub:string -> string -> bool
     lowercase both inputs when case-insensitive matching is
     required (see {!handle_read} / {!handle_search}). *)
 
-(** {1 Tool result + context} *)
-
-type tool_result = bool * string
-(** [(success, message)] return shape used by every dispatch
-    handler. *)
+(** {1 Context} *)
 
 type context = {
   agent_name : string;
@@ -86,9 +83,9 @@ type context = {
 (** {1 Path resolution} *)
 
 val library_root : unit -> string
-(** [library_root ()] is [\$HOME/me/docs/library] with [\$HOME]
-    falling back to ["/tmp"] when unset.  Read every call —
-    env mutation between calls takes effect. *)
+(** [library_root ()] is [MASC_BASE_PATH/docs/library] when
+    [MASC_BASE_PATH] is set, otherwise the host-config agent runtime root.
+    Read every call — env mutation between calls takes effect. *)
 
 val candidates_dir : unit -> string
 (** [candidates_dir ()] is [{library_root}/candidates].
@@ -97,19 +94,21 @@ val candidates_dir : unit -> string
 
 (** {1 Direct handlers} *)
 
-val handle_read : 'ctx -> Yojson.Safe.t -> tool_result
-(** [handle_read _ctx args] handles [masc_library_read].
+val handle_read : tool_name:string -> start_time:float -> 'ctx -> Yojson.Safe.t -> Tool_result.result
+(** [handle_read ~tool_name ~start_time _ctx args] handles [masc_library_read].
     Required arg: [topic] (string, partial-match against
-    Markdown filename).  Returns [(false, _)] when [topic] is
-    missing or no document matches; otherwise [(true,
-    "## <basename>\n\n<content>")]. *)
+    Markdown filename).
+    Failure classes: [Workflow_rejection] when [topic] is missing or
+    no document matches; [Runtime_failure] when read I/O fails;
+    [Ok] with ["## <basename>\n\n<content>"] in [data.text]. *)
 
-val handle_search : 'ctx -> Yojson.Safe.t -> tool_result
-(** [handle_search _ctx args] handles [masc_library_search].
+val handle_search : tool_name:string -> start_time:float -> 'ctx -> Yojson.Safe.t -> Tool_result.result
+(** [handle_search ~tool_name ~start_time _ctx args] handles [masc_library_search].
     Required arg: [query] (string, lowercase substring matched
-    against document content).  Returns a Markdown bullet list
-    when matches exist, or a plain ["No documents matching
-    '<query>'"] message when empty. *)
+    against document content).
+    Failure classes: [Workflow_rejection] when [query] is missing.
+    [Ok] always carries a Markdown bullet list or "No documents
+    matching ..." in [data.text]. *)
 
 (** {1 Dispatch} *)
 
@@ -117,7 +116,7 @@ val dispatch :
   context ->
   name:string ->
   args:Yojson.Safe.t ->
-  tool_result option
+  Tool_result.result option
 (** [dispatch ctx ~name ~args] routes by tool name to the
     private handlers ([handle_list], [handle_add],
     [handle_promote]) plus {!handle_read} / {!handle_search}.

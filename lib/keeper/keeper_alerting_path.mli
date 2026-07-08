@@ -1,11 +1,36 @@
 (** Keeper alerting — path safety, sandbox bundle paths, and tool
     output projection helpers. *)
 
+(** Typed path-rejection variant.  Phase 1 replacement for the prior
+    string-only error path. *)
+type keeper_path_rejection =
+  | Path_required
+  | Absolute_path_rejected of { raw : string }
+  | Outside_project_root of { raw : string }
+  | Allowed_paths_normalized_empty of { count : int }
+  | Outside_sandbox of { raw : string }
+  | Not_found_relative of { raw : string }
+  | Ambiguous_relative_read_path of { raw : string; candidate_count : int }
+
+(** LLM-facing opaque message derived from the rejection variant. *)
+val rejection_to_user_message : keeper_path_rejection -> string
+
+(** Stable lowercase prefix token for [rejection_to_user_message]. *)
+val rejection_message_prefix : keeper_path_rejection -> string
+
+(** Parse only the typed rejection tag from a user-facing rejection
+    message. Payload fields are intentionally left empty / zero because
+    the parser is for classification, not message reconstruction. *)
+val parse_rejection_prefix : string -> keeper_path_rejection option
+
+(** Operator-facing telemetry — increments the path-rejection counter
+    with a [kind] label derived from the constructor. *)
+val rejection_to_telemetry : keeper_path_rejection -> unit
+
 (** Project a [Coord.config] to its project root by stripping the
     trailing [.masc] base-path component when present. *)
 val project_root_of_config : Coord.config -> string
 
-val starts_with : prefix:string -> string -> bool
 
 (** Re-export of [Env_config_core.strip_trailing_slashes]. *)
 val strip_trailing_slashes : string -> string
@@ -54,7 +79,7 @@ val find_suffix_matches_under_root :
 val maybe_resolve_missing_relative_read_path :
   roots:string list ->
   raw_path:string ->
-  (string option, string) result
+  (string option, keeper_path_rejection) result
 
 (** [true] iff a missing-leaf read is allowed (parent exists,
     multi-component, no trailing slash). *)
@@ -78,21 +103,13 @@ val playground_root_of_allowed : string list -> string option
 
 val raw_looks_like_playground_subdir : string -> bool
 
-(** Format a sandbox-boundary rejection that teaches the LLM why
-    the path was rejected (resolved candidate + boundary rule). *)
-val format_path_rejection :
-  raw:string ->
-  resolved:string ->
-  allowed_norms:string list ->
-  string
-
 (** Resolve a write target path under [allowed_paths] within the
     project root. *)
 val resolve_keeper_target_path :
   config:Coord.config ->
   allowed_paths:string list ->
   raw_path:string ->
-  (string, string) result
+  (string, keeper_path_rejection) result
 
 (** {1 Playground / sandbox path SSOT re-exports} *)
 
@@ -110,9 +127,6 @@ val playground_repos_path : string -> string
 
 (** Re-export of [Playground_paths.bundle_paths]. *)
 val playground_bundle_paths : string -> string list
-
-(** Sandbox host root path for [name]. *)
-val sandbox_path_of_keeper : string -> string
 
 (** Sandbox host root path for [meta]. *)
 val sandbox_path_of_meta : meta:Keeper_types.keeper_meta -> string
@@ -153,7 +167,7 @@ val resolve_keeper_read_path :
   config:Coord.config ->
   allowed_paths:string list ->
   raw_path:string ->
-  (string, string) result
+  (string, keeper_path_rejection) result
 
 (** Project a [Unix.process_status] to a JSON object via
     [Masc_exec.Exit_code.of_process_status] — kind/code/signal +

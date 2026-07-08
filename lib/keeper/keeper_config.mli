@@ -7,28 +7,32 @@
 
 (** {1 Core Constants} *)
 
-(** Default cascade name for keeper turns. Resolved from [routes.keeper_turn];
-    all keeper code must reference this constant instead of using a profile
-    string literal.
-    @since v2.128.0 *)
-val default_cascade_name : string
+(** Default cascade name for keeper turns. Resolved each call against
+    the live [Cascade_catalog_runtime] snapshot so the answer reflects
+    the currently-installed catalog rather than module-init state. Falls
+    back to [Cascade_routes.cascade_name_for_use Keeper_turn] when the
+    snapshot is not yet available (early boot).
+    @since v2.128.0
+    @since RFC-0066 Phase 1: changed from a string value to a thunk
+    (issue #14624). *)
+val default_cascade_name : unit -> string
 
 (** Cascade name for recovery turns (Failing phase). In the two-profile
     catalog this resolves to the canonical keeper cascade.
     @since Core Triad *)
-val local_recovery_cascade_name : string
+val phase_recovery_cascade_name : string
 
 (** Cascade name for buffer operations (Compacting, HandingOff). In the
     two-profile catalog this resolves to the canonical keeper cascade.
     @since Core Triad *)
-val local_only_cascade_name : string
+val phase_buffer_cascade_name : string
 
 (** Cascade names that are selected by keeper phase-routing rather than by
     keeper-assignable profile choice. *)
 val phase_routing_cascade_names : string list
 
 (** Cascade name for turns that must use a tool-capable provider lane. *)
-val tool_use_strict_cascade_name : string
+val tool_required_cascade_name : string
 
 (** Minimum context window (tokens) for any keeper turn. *)
 val min_keeper_context_tokens : int
@@ -59,6 +63,7 @@ val approval_queue_stale_max_wait_sec : float
 val default_room_signal_prompt_enabled : bool
 val default_goal_horizon_max_chars : int
 val default_drift_max_clauses : int
+val legacy_provider_filter_name : string
 
 (** Maximum bytes of personality text included in the rendered keeper prompt.
     Drives [normalize_self_model_text] when called from prompt rendering.
@@ -77,6 +82,12 @@ val bool_of_env_default : string -> default:bool -> bool
 
 (** Parse a boolean env var, returning [None] when unset or unrecognized. *)
 val bool_of_env_opt : string -> bool option
+
+(** Parse a raw string as a boolean.
+    Recognizes 1/true/yes/y/on and 0/false/no/n/off (case-insensitive).
+    Returns [None] for other values. Shared parsing logic for
+    [bool_of_env_default] and [bool_of_env_opt]. *)
+val bool_of_string : string -> bool option
 
 (** Parse an integer env var with default and clamping. *)
 val int_of_env_default : string -> default:int -> min_v:int -> max_v:int -> int
@@ -176,6 +187,33 @@ val normalize_compaction_message_gate : int -> int
 val normalize_compaction_token_gate : int -> int
 val normalize_continuity_compaction_cooldown_sec : int -> int
 
+(** Default number of recent tool results to keep verbatim during
+    OAS context compaction.  Preserves prior hardcoded [keep_recent:2]
+    behavior in [Keeper_compact_policy]. *)
+val default_keep_recent_tool_results : int
+
+(** Default message-count floor for the tool-heavy compaction gate.
+    Wired into [decide_compaction] by PR-B.  Operator override (PR-C):
+    [MASC_KEEPER_TOOL_HEAVY_MSG_THRESHOLD] (valid range [1, 10_000];
+    out-of-range warns and falls back to 40, mirroring
+    [Keeper_compact_policy.emergency_compact_ratio_threshold]). *)
+val default_tool_heavy_msg_threshold : int
+
+(** Default context-ratio floor for the tool-heavy compaction gate.
+    Wired into [decide_compaction] by PR-B.  Operator override (PR-C):
+    [MASC_KEEPER_TOOL_HEAVY_RATIO_FLOOR] (valid range [0.0, 1.0);
+    out-of-range or non-finite values warn and fall back to 0.15). *)
+val default_tool_heavy_ratio_floor : float
+
+(** Hard upper bound for operator-supplied
+    [keep_recent_tool_results] (typo guard). *)
+val keep_recent_tool_results_max : int
+
+(** Clamp [keep_recent_tool_results] to [[0, keep_recent_tool_results_max]].
+    Out-of-range values fall back to {!default_keep_recent_tool_results}
+    with a [Log.Keeper.warn] including [keeper_name] when supplied. *)
+val normalize_keep_recent_tool_results : ?keeper_name:string -> int -> int
+
 val normalize_proactive_idle_sec : int -> int
 val normalize_proactive_cooldown_sec : int -> int
 
@@ -202,6 +240,9 @@ val keeper_proactive_task_cooldown_divisor : unit -> int
 val keeper_proactive_task_min_cooldown_sec : unit -> int
 
 val keeper_batch_limit : unit -> int
+val keeper_board_debounce_window_sec : unit -> float
+(** Time window (seconds) to coalesce board signals into a single keeper turn.
+    Env: [MASC_KEEPER_BOARD_DEBOUNCE_SEC], default [2.0], range [0.0..30.0]. *)
 val keeper_tool_cost_max_usd : unit -> float option
 val keeper_max_tools_per_turn : unit -> int
 val keeper_retry_max_tools_per_turn : unit -> int
@@ -225,7 +266,7 @@ val keeper_tool_search_top_k : unit -> int
 
 val keeper_status_fast_default : unit -> bool
 
-val keeper_llama_slots : unit -> int
+val keeper_slot_pool_size : unit -> int
 
 (** Compute a deterministic slot_id for a keeper name.
     Returns [None] when slot pinning is disabled. *)

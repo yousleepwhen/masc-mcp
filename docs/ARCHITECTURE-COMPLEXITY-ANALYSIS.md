@@ -51,11 +51,11 @@ Modules that deliver real value in daily operation.
 | Module | Lines | Role | Necessity |
 |--------|-------|------|-----------|
 | tool_operator | 856 | dispatch/assign/rebalance | High |
-| tool_command_plane* | ~960 | command-plane truth layer | High |
+| retired command-plane tools | removed | former command-plane truth layer | Removed |
 | tool_keeper | 624 | persistent agent runtime | High |
 | tool_perpetual | 643 | autonomous agent loops | Medium |
 | tool_plan | 186 | planning context | High |
-| tool_worktree | 40 | git isolation | High |
+| repo isolation helpers | 40 | git isolation | High |
 | tool_board/misc | ~770 | bulletin board | Medium |
 | tool_auth | 122 | token auth | Medium |
 | tool_cost | ~100 | cost tracking | Low |
@@ -69,7 +69,7 @@ Useful but not core to coordination.
 
 | Module | Lines | Role | Status |
 |--------|-------|------|--------|
-| tool_team_session | **4412** | Team session spawning | Active, too large |
+| tool_team_session | 0 | Team session spawning | Retired and removed |
 | tool_mdal | 1092 | Metric-Driven Agent Loop | Active |
 | tool_llama | 1052 | llama.cpp runtime mgmt | Active |
 | tool_voice | ~200 | TTS/voice | OFF by default |
@@ -89,9 +89,8 @@ Not related to core coordination. Candidates for separation or removal.
 | tool_trpg | **1934** | TRPG simulation | Separate package |
 | tool_protocol_game_view | **1674** | Protocol game view | Separate package |
 | tool_risc | **1070** | Role sampling campaigns | Experimental residue |
-| tool_autoresearch | **889** | Auto research loop | Experimental residue |
 | tool_experiment | **898** | Sandbox | Experimental residue |
-| tool_code | ~200 | Code read/search | Utility |
+| retired_file_tool | ~200 | Code read/search | Utility |
 | tool_tempo | ~200 | Tempo/rhythm | Experimental |
 | tool_relay | ~200 | Relay | Experimental |
 | tool_handover | ~200 | Handover | Experimental |
@@ -171,12 +170,11 @@ types (leaf) <- parse <- spawn <- handlers <- tool_team_session (entry)
 ### Phase 2: Separation (separate PRs)
 
 - [ ] TRPG + protocol_game_view -> `masc-games` library (3600+ lines)
-- [ ] risc + autoresearch + experiment -> `masc-experiments` (2700+ lines)
+- [ ] risc + experiment -> `masc-experiments`
 - [ ] dune optional library separation
 
 ### Phase 3: Structural improvements (separate PRs)
 
-- [ ] tool_team_session split (4412 lines -> 5 files)
 - [ ] Mode/profile system: core (5) / standard (17) / full (72) dispatchers
 - [ ] Environment variables -> config file consolidation
 

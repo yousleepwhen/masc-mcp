@@ -35,21 +35,22 @@ let tool_features =
       id = "filesystem_tools";
       label = "Filesystem tools";
       required_tools = [
-        "keeper_fs_read";
-        "keeper_fs_edit";
+        "tool_read_file";
+        "tool_edit_file";
+        "tool_write_file";
       ];
       next_action =
         "Run sandboxed filesystem read/edit probes and inspect failures for sandbox-path drift.";
     };
     {
-      id = "shell_tools";
-      label = "Shell tools";
+      id = "search_files_tools";
+      label = "SearchFiles tools";
       required_tools = [
-        "keeper_shell";
-        "keeper_bash";
+        "tool_search_files";
+        "tool_execute";
       ];
       next_action =
-        "Run read-only and execution shell probes under the keeper sandbox policy.";
+        "Run SearchFiles and Execute probes under the keeper sandbox policy.";
     };
     {
       id = "library_tools";
@@ -68,7 +69,16 @@ let tool_features =
         "masc_web_search";
       ];
       next_action =
-        "Run a current-information keeper search and verify successful masc_web_search evidence.";
+        "Run a current-information keeper search, then fetch a selected result with masc_web_fetch and verify both tools succeed.";
+    };
+    {
+      id = "web_fetch_tools";
+      label = "Web fetch tools";
+      required_tools = [
+        "masc_web_fetch";
+      ];
+      next_action =
+        "Run a web page fetch and verify successful masc_web_fetch evidence.";
     };
     {
       id = "taskboard_tools";
@@ -102,56 +112,8 @@ let tool_features =
         "masc_goal_upsert";
         "masc_goal_transition";
         "masc_goal_verify";
-        "masc_coordination_fsm_snapshot";
       ];
       next_action =
         "Run a goal lifecycle and prove list/upsert/transition/verify paths.";
-    };
-    {
-      id = "coding_tools";
-      label = "Coding and worktree tools";
-      required_tools = [
-        "masc_worktree_create";
-        "masc_worktree_list";
-        "masc_code_search";
-        "masc_code_symbols";
-        "masc_code_read";
-        "masc_code_write";
-        "masc_code_edit";
-        "masc_code_git";
-        "masc_code_shell";
-      ];
-      next_action =
-        "Run a bounded keeper coding task and repair weak worktree/code-write/code-shell paths.";
-    };
-    {
-      id = "pr_review_tools";
-      label = "PR and review tools";
-      required_tools = [
-        "keeper_pr_list";
-        "keeper_pr_status";
-        "keeper_pr_create";
-        "keeper_pr_review_read";
-        "keeper_pr_review_comment";
-        "keeper_pr_review_reply";
-        "keeper_preflight_check";
-      ];
-      next_action =
-        "Exercise PR creation/status/review read-comment-reply with keeper credentials.";
-    };
-    {
-      id = "autoresearch_tools";
-      label = "Autoresearch tools";
-      required_tools = [
-        "masc_autoresearch_start";
-        "masc_autoresearch_status";
-        "masc_autoresearch_cycle";
-        "masc_autoresearch_inject";
-        "masc_autoresearch_record_finding";
-        "masc_autoresearch_search_findings";
-        "masc_autoresearch_stop";
-      ];
-      next_action =
-        "Run an autoresearch loop and prove start/status/cycle/finding/stop paths.";
     };
   ]

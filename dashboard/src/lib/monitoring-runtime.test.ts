@@ -137,4 +137,109 @@ describe('summarizeKeeperMonitoring', () => {
     expect(summary.band.key).toBe('attention')
     expect(summary.hint).toBe('turn timed out after queue wait')
   })
+
+  // RFC-0135 PR-12 — stale-vs-live blocker via composite SSOT.
+  describe('composite stale-blocker conditioning', () => {
+    const keeper = {
+      name: 'keeper-stale',
+      status: 'idle',
+      phase: 'Running',
+      last_heartbeat: new Date().toISOString(),
+      runtime_blocker_class: 'turn_timeout',
+      runtime_blocker_summary: 'turn timed out after queue wait',
+    } as Keeper
+
+    it('without composite ⇒ blocker treated as live (attention)', () => {
+      const summary = summarizeKeeperMonitoring(keeper)
+      expect(summary.band.key).toBe('attention')
+    })
+
+    it('composite says execution_current=false ⇒ blocker demoted, band=active', () => {
+      const compositeStaleByExecutionCurrent = {
+        keeper: 'keeper-stale',
+        runtime_attention: {
+          execution_current: false,
+          stale_execution_receipt: false,
+          blocked: false,
+          needs_attention: false,
+        },
+      } as unknown as Parameters<typeof summarizeKeeperMonitoring>[1] extends infer C ? C : never
+      const summary = summarizeKeeperMonitoring(keeper, compositeStaleByExecutionCurrent)
+      expect(summary.band.key).toBe('active')
+    })
+
+    it('composite says stale_execution_receipt=true ⇒ blocker demoted, band=active', () => {
+      const compositeStaleByReceipt = {
+        keeper: 'keeper-stale',
+        runtime_attention: {
+          execution_current: true,
+          stale_execution_receipt: true,
+          blocked: false,
+          needs_attention: false,
+        },
+      } as unknown as Parameters<typeof summarizeKeeperMonitoring>[1] extends infer C ? C : never
+      const summary = summarizeKeeperMonitoring(keeper, compositeStaleByReceipt)
+      expect(summary.band.key).toBe('active')
+    })
+
+    it('composite with live execution ⇒ blocker stays attention', () => {
+      const compositeLive = {
+        keeper: 'keeper-stale',
+        runtime_attention: {
+          execution_current: true,
+          stale_execution_receipt: false,
+          blocked: false,
+          needs_attention: false,
+        },
+      } as unknown as Parameters<typeof summarizeKeeperMonitoring>[1] extends infer C ? C : never
+      const summary = summarizeKeeperMonitoring(keeper, compositeLive)
+      expect(summary.band.key).toBe('attention')
+    })
+  })
+
+  it('routes heartbeat/context/social attention through the runtime projection', () => {
+    const summary = summarizeKeeperMonitoring({
+      name: 'keeper-organism',
+      status: 'idle',
+      phase: 'Running',
+      last_heartbeat: '1970-01-01T00:00:00Z',
+      context_ratio: 0.99,
+      social_model_recognized: false,
+    } as Keeper)
+
+    expect(summary.band.key).toBe('attention')
+    expect(summary.hint).toBe('오래 응답이 없어 실제 상태 확인이 필요합니다.')
+  })
+
+  it('routes current tool-contract attention through the runtime projection', () => {
+    const compositeToolAttention = {
+      keeper: 'keeper-tool',
+      phase: 'running',
+      turn_phase: 'idle',
+      decision: { stage: 'idle' },
+      cascade: { state: 'idle' },
+      compaction: { stage: 'idle' },
+      circuit_breaker: { state: 'closed' },
+      is_live: false,
+      execution: {
+        tool_contract_result: 'missing_required_tool_use',
+      },
+      runtime_attention: {
+        blocked: false,
+        needs_attention: false,
+        execution_current: true,
+        stale_execution_receipt: false,
+      },
+    } as unknown as Parameters<typeof summarizeKeeperMonitoring>[1] extends infer C ? C : never
+    const summary = summarizeKeeperMonitoring({
+      name: 'keeper-tool',
+      status: 'idle',
+      phase: 'Running',
+      last_heartbeat: new Date().toISOString(),
+      keepalive_running: true,
+    } as Keeper, compositeToolAttention)
+
+    expect(summary.band.key).toBe('attention')
+    expect(summary.hint).toBe('도구 계약 결과가 missing_required_tool_use입니다.')
+  })
 })

@@ -100,11 +100,11 @@ describe('normalizeKeepers lifecycle metrics', () => {
             latency_ms: 120,
             generation: 3,
             channel: 'turn',
-            model_used: 'glm-5',
+            model_used: 'provider-k-5',
             cost_usd: 0.12,
             compacted: false,
             handoff_performed: true,
-            handoff_to_model: 'glm-5',
+            handoff_to_model: 'provider-k-5',
             handoff_new_generation: 4,
           },
         ],
@@ -116,7 +116,7 @@ describe('normalizeKeepers lifecycle metrics', () => {
     expect(metric).toMatchObject({
       is_handoff: true,
       is_compaction: false,
-      handoff_to_model: 'glm-5',
+      handoff_to_model: null,
       handoff_new_generation: 4,
     })
     expect(deriveLifecycleState(keeper!)).toBe('handoff-imminent')
@@ -153,7 +153,7 @@ describe('normalizeKeepers lifecycle metrics', () => {
     const metric = keeper!.metrics_series![0]
     expect(metric).toMatchObject({
       is_handoff: true,
-      handoff_to_model: 'llama:test-balanced',
+      handoff_to_model: null,
       handoff_new_generation: 6,
     })
     expect(deriveLifecycleState(keeper!)).toBe('handoff-imminent')
@@ -234,7 +234,7 @@ describe('normalizeKeepers lifecycle metrics', () => {
             latency_ms: 110,
             generation: 2,
             channel: 'turn',
-            model_used: 'glm-5',
+            model_used: 'provider-k-5',
             cost_usd: 0.03,
             compacted: false,
             prompt_fingerprint: 'prompt-fp-001',
@@ -318,7 +318,7 @@ describe('normalizeKeepers lifecycle metrics', () => {
         name: 'trust-keeper',
         status: 'active',
         trust: {
-          disposition: 'Pause',
+          disposition: 'Blocked',
           disposition_reason: 'approval_waiting',
           needs_attention: true,
           attention_reason: 'approval_pending',
@@ -351,7 +351,7 @@ describe('normalizeKeepers lifecycle metrics', () => {
     ])
 
     expect(keeper?.trust).toMatchObject({
-      disposition: 'Pause',
+      disposition: 'Blocked',
       disposition_reason: 'approval_waiting',
       needs_attention: true,
       attention_reason: 'approval_pending',
@@ -375,7 +375,7 @@ describe('normalizeKeepers lifecycle metrics', () => {
     })
   })
 
-  it('preserves stopped-reaction fields in trust summary', () => {
+  it('preserves owner-specific stopped-reaction fields in trust summary', () => {
     const [keeper] = normalizeKeepers([
       {
         name: 'blocked-keeper',
@@ -383,17 +383,17 @@ describe('normalizeKeepers lifecycle metrics', () => {
         trust: {
           disposition: 'Alert',
           operator_disposition: 'pause_runtime',
-          operator_disposition_reason: 'timeout_budget_exhausted',
+          operator_disposition_reason: 'turn_timeout',
           needs_attention: true,
-          attention_reason: 'timeout_budget_exhausted',
+          attention_reason: 'turn_timeout',
           latest_terminal_reason: {
-            code: 'timeout_budget_exhausted',
+            code: 'turn_timeout',
             source: 'execution_receipt',
             severity: 'bad',
-            summary: 'Turn budget exhausted after 15 turns',
-            next_action: 'inspect_timeout_budget',
+            summary: 'Turn execution exceeded the keeper turn deadline',
+            next_action: 'inspect_runtime_blocker',
           },
-          latest_next_action: 'inspect_timeout_budget',
+          latest_next_action: 'inspect_runtime_blocker',
         },
       },
     ])
@@ -401,17 +401,48 @@ describe('normalizeKeepers lifecycle metrics', () => {
     expect(keeper?.trust).toMatchObject({
       disposition: 'Alert',
       operator_disposition: 'pause_runtime',
-      operator_disposition_reason: 'timeout_budget_exhausted',
+      operator_disposition_reason: 'turn_timeout',
       needs_attention: true,
-      attention_reason: 'timeout_budget_exhausted',
+      attention_reason: 'turn_timeout',
       latest_terminal_reason: {
-        code: 'timeout_budget_exhausted',
+        code: 'turn_timeout',
         source: 'execution_receipt',
         severity: 'bad',
-        summary: 'Turn budget exhausted after 15 turns',
-        next_action: 'inspect_timeout_budget',
+        summary: 'Turn execution exceeded the keeper turn deadline',
+        next_action: 'inspect_runtime_blocker',
       },
-      latest_next_action: 'inspect_timeout_budget',
+      latest_next_action: 'inspect_runtime_blocker',
+    })
+    expect(keeper?.stop_cause).toMatchObject({
+      code: 'turn_timeout',
+      source: 'terminal_reason_code',
+      summary: 'Turn execution exceeded the keeper turn deadline',
+      next_action: 'inspect_runtime_blocker',
+    })
+  })
+
+  it('prefers runtime blocker as the normalized stop cause for keeper detail', () => {
+    const [keeper] = normalizeKeepers([
+      {
+        name: 'blocked-keeper',
+        status: 'active',
+        runtime_blocker_class: 'turn_timeout',
+        runtime_blocker_summary: 'turn has not made progress',
+        trust: {
+          latest_terminal_reason: {
+            code: 'api_error_timeout',
+            source: 'execution_receipt',
+            severity: 'bad',
+            summary: 'provider timed out',
+          },
+        },
+      },
+    ])
+
+    expect(keeper?.stop_cause).toMatchObject({
+      code: 'turn_timeout',
+      source: 'runtime_blocker_class',
+      summary: 'turn has not made progress',
     })
   })
 
@@ -434,7 +465,7 @@ describe('normalizeKeepers lifecycle metrics', () => {
         name: 'runtime-trust-keeper',
         status: 'active',
         runtime_trust: {
-          disposition: 'Pause',
+          disposition: 'Blocked',
           operator_disposition: 'pause_human',
           operator_disposition_reason: 'required_tool_use_unsatisfied',
           needs_attention: true,
@@ -447,8 +478,11 @@ describe('normalizeKeepers lifecycle metrics', () => {
             tool_contract_result: 'violated',
             required_tools: ['masc_board_post'],
             missing_required_tools: ['masc_board_post'],
+            unexpected_tools: ['keeper_board_list'],
+            unexpected_tool_count: 1,
             provider_attempt_count: 2,
             provider_fallback_applied: true,
+            provider_selected_model: 'provider:runtime-lane',
           },
           latest_terminal_reason: {
             code: 'required_tool_use_unsatisfied',
@@ -463,7 +497,7 @@ describe('normalizeKeepers lifecycle metrics', () => {
     ])
 
     expect(keeper?.trust).toMatchObject({
-      disposition: 'Pause',
+      disposition: 'Blocked',
       operator_disposition: 'pause_human',
       operator_disposition_reason: 'required_tool_use_unsatisfied',
       needs_attention: true,
@@ -476,8 +510,11 @@ describe('normalizeKeepers lifecycle metrics', () => {
         tool_contract_result: 'violated',
         required_tools: ['masc_board_post'],
         missing_required_tools: ['masc_board_post'],
+        unexpected_tools: ['keeper_board_list'],
+        unexpected_tool_count: 1,
         provider_attempt_count: 2,
         provider_fallback_applied: true,
+        provider_selected_model: 'provider:runtime-lane',
       },
       latest_terminal_reason: {
         code: 'required_tool_use_unsatisfied',
@@ -488,18 +525,18 @@ describe('normalizeKeepers lifecycle metrics', () => {
     })
   })
 
-  it('preserves runtime cascade identity and metric provider observations', () => {
+  it('preserves cascade lane evidence while redacting model/provider identity', () => {
     const [keeper] = normalizeKeepers([
       {
         name: 'cascade-keeper',
         status: 'active',
         cascade_name: 'oas-keeper_unified',
-        selected_cascade_canonical: 'big_three',
-        primary_model: 'openai:gpt-5.4',
+        selected_cascade_canonical: 'primary',
+        primary_model: 'provider-d:gpt-5.4',
         active_model: 'gpt-5.4',
-        active_model_label: 'openai:gpt-5.4',
+        active_model_label: 'provider-d:gpt-5.4',
         last_model_used: 'gpt-5.4',
-        last_model_used_label: 'openai:gpt-5.4',
+        last_model_used_label: 'provider-d:gpt-5.4',
         metrics_series: [
           {
             ts_unix: 10,
@@ -509,10 +546,10 @@ describe('normalizeKeepers lifecycle metrics', () => {
             latency_ms: 100,
             generation: 1,
             channel: 'turn',
-            model_used: 'anthropic:claude-sonnet-4-6',
+            model_used: 'provider-a:model-a-sonnet',
             cascade: {
-              cascade_name: 'big_three',
-              selected_model: 'anthropic:claude-sonnet-4-6',
+              cascade_name: 'primary',
+              selected_model: 'provider-a:model-a-sonnet',
               attempt_count: 2,
               outcome: 'passed_to_next_model',
               strategy: 'round_robin',
@@ -520,8 +557,8 @@ describe('normalizeKeepers lifecycle metrics', () => {
               fallback_hops: 1,
               fallback_events: [
                 {
-                  from_model_id: 'openai:gpt-5.4',
-                  to_model_id: 'anthropic:claude-sonnet-4-6',
+                  from_model_id: 'provider-d:gpt-5.4',
+                  to_model_id: 'provider-a:model-a-sonnet',
                   reason: 'turn_timeout',
                 },
               ],
@@ -533,24 +570,27 @@ describe('normalizeKeepers lifecycle metrics', () => {
 
     expect(keeper).toMatchObject({
       cascade_name: 'oas-keeper_unified',
-      cascade_canonical: 'big_three',
-      selected_cascade_canonical: 'big_three',
-      primary_model: 'openai:gpt-5.4',
-      active_model_label: 'openai:gpt-5.4',
-      last_model_used_label: 'openai:gpt-5.4',
+      cascade_canonical: 'primary',
+      selected_cascade_canonical: 'primary',
+      active_model_label: null,
+      last_model_used_label: null,
     })
+    expect(keeper?.primary_model).toBeUndefined()
+    expect(keeper?.active_model).toBeUndefined()
+    expect(keeper?.last_model_used).toBeUndefined()
     expect(keeper?.metrics_series?.[0]).toMatchObject({
-      cascade_name: 'big_three',
-      cascade_selected_model: 'anthropic:claude-sonnet-4-6',
+      cascade_name: 'primary',
+      cascade_selected_model: null,
       cascade_attempt_count: 2,
       cascade_outcome: 'passed_to_next_model',
       cascade_strategy: 'round_robin',
       fallback_applied: true,
       fallback_hops: 1,
-      fallback_from: 'openai:gpt-5.4',
-      fallback_to: 'anthropic:claude-sonnet-4-6',
+      fallback_from: null,
+      fallback_to: null,
       fallback_reason: 'turn_timeout',
     })
+    expect(keeper?.metrics_series?.[0]?.model_used).toBe('')
   })
 
   it('normalizes ctx composition telemetry from keeper metric points', () => {
@@ -567,7 +607,7 @@ describe('normalizeKeepers lifecycle metrics', () => {
             latency_ms: 95,
             generation: 2,
             channel: 'turn',
-            model_used: 'glm-5',
+            model_used: 'provider-k-5',
             cost_usd: 0.04,
             compacted: false,
             ctx_composition: {
@@ -617,7 +657,7 @@ describe('normalizeKeepers lifecycle metrics', () => {
             latency_ms: 2000,
             generation: 2,
             channel: 'turn',
-            model_used: 'glm-5',
+            model_used: 'provider-k-5',
             cost_usd: 0.05,
             compacted: false,
             usage: {
@@ -659,7 +699,7 @@ describe('normalizeKeepers lifecycle metrics', () => {
             context_max: 1000,
             generation: 2,
             channel: 'turn',
-            model_used: 'glm-5',
+            model_used: 'provider-k-5',
             cost_usd: 0.05,
             usage: {
               input_tokens: 120,
@@ -689,6 +729,8 @@ describe('normalizeKeepers lifecycle metrics', () => {
         status: 'idle',
         paused: true,
         keepalive_running: true,
+        pause_state: 'paused',
+        runtime_blocker_state: 'continue_gate',
         runtime_blocker_class: 'ambiguous_post_commit_timeout',
         runtime_blocker_summary:
           'Mutating tools [keeper_fs_edit] committed before the turn timed out.',
@@ -710,14 +752,16 @@ describe('normalizeKeepers lifecycle metrics', () => {
     expect(keeper).toMatchObject({
       paused: true,
       keepalive_running: true,
+      pause_state: 'paused',
+      runtime_blocker_state: 'continue_gate',
       runtime_blocker_class: 'ambiguous_post_commit_timeout',
       runtime_blocker_summary:
         'Mutating tools [keeper_fs_edit] committed before the turn timed out.',
       runtime_blocker_continue_gate: true,
-      social_model: 'bdi_speech_v1',
-      configured_social_model: 'experimental_v99',
+      social_model: null,
+      configured_social_model: null,
       social_model_recognized: false,
-      social_model_fallback: 'bdi_speech_v1',
+      social_model_fallback: null,
       last_blocker: 'missing social headers',
       last_speech_act: 'defer',
       last_need: '현재 대화 맥락',
@@ -842,18 +886,18 @@ describe('normalizeKeeperTrustTerminalReason — exported helper', () => {
 
   it('returns a full terminal reason when code is present', () => {
     const result = normalizeKeeperTrustTerminalReason({
-      code: 'timeout_budget_exhausted',
+      code: 'turn_timeout',
       source: 'execution_receipt',
       severity: 'bad',
-      summary: 'keeper timed out before completing the turn',
-      next_action: 'adjust_timeout_budget',
+      summary: 'keeper exceeded the turn deadline',
+      next_action: 'inspect_runtime_blocker',
     })
     expect(result).toEqual({
-      code: 'timeout_budget_exhausted',
+      code: 'turn_timeout',
       source: 'execution_receipt',
       severity: 'bad',
-      summary: 'keeper timed out before completing the turn',
-      next_action: 'adjust_timeout_budget',
+      summary: 'keeper exceeded the turn deadline',
+      next_action: 'inspect_runtime_blocker',
     })
   })
 

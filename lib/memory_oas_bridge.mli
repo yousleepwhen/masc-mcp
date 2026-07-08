@@ -13,8 +13,8 @@
       {!load_episodes_text} / {!load_procedures_text} /
       {!load_institution_text}.
 
-    The .ml is 825 lines with many internal helpers
-    (file-stamp caching, episode / procedure dedup,
+    The .ml has many internal helpers
+    (file-stamp caching, episode dedup,
     metadata accessors, error-kind normalisation, stress
     metric emission).  External callers reach 14 dotted
     symbols; everything else stays private at this
@@ -44,6 +44,22 @@ val create_memory :
     {!Time_compat.now}.  Filesystem-first: no PG, no
     network. *)
 
+type created_memory =
+  { created_memory : Agent_sdk.Memory.t
+  ; created_memory_long_term_backend : Agent_sdk.Memory.long_term_backend
+  }
+
+val create_memory_with_backend :
+  agent_name:string ->
+  ?base_dir:string ->
+  ?session_id:string ->
+  unit ->
+  created_memory
+(** Creates an [Agent_sdk.Memory.t] and returns the exact long-term
+    backend installed into it.  Keeper turn hot paths use this when
+    hooks also need to read long-term world memory through the same
+    backend. *)
+
 (** {1 OAS / MASC episode round-trip} *)
 
 val oas_procedure_of_masc :
@@ -61,14 +77,16 @@ val store_episode_from_snapshot :
   memory:Agent_sdk.Memory.t ->
   keeper_name:string ->
   turn:int ->
+  ?oas_turn_count:int ->
   trace_id:string ->
   Keeper_memory_policy.keeper_state_snapshot ->
   unit
 (** Captures a successful keeper turn into the OAS memory
     store: serialises the [goal] / [progress] /
     [done_summary] tuple from the snapshot, attaches
-    [keeper_name] / [turn] / [trace_id] metadata, and
-    writes via [Agent_sdk.Memory.store_episode]. *)
+    [keeper_name] / keeper [turn] / [trace_id] metadata, optionally
+    preserves the per-call OAS turn count, and writes via
+    [Agent_sdk.Memory.store_episode]. *)
 
 (** Typed wrapper for failed-turn error-kind labels. JSON/status/metric
     surfaces continue to render the stable string label. *)
@@ -81,6 +99,7 @@ val store_failed_turn_episode :
   memory:Agent_sdk.Memory.t ->
   keeper_name:string ->
   turn:int ->
+  ?oas_turn_count:int ->
   trace_id:string ->
   error_kind:error_kind ->
   error_message:string ->
@@ -141,10 +160,8 @@ val flush_episodes :
 val flush_procedures :
   memory:Agent_sdk.Memory.t -> agent_name:string -> int
 (** Drains every procedure held in [memory] that has
-    changed since the last flush.  Dedup happens by
-    [Procedural_memory.procedure.id] keeping the entry
-    with the latest [last_applied] timestamp.  Returns the
-    number of rows written. *)
+    changed since the last flush.  Returns the number of
+    rows written. *)
 
 val flush_incremental :
   memory:Agent_sdk.Memory.t -> agent_name:string -> int * int
@@ -198,7 +215,7 @@ val render_lesson_prompt_context :
     via {!Agent_sdk.Lesson_memory.retrieve_lessons} and renders
     them through {!Agent_sdk.Lesson_memory.render_prompt_context}
     for prompt injection.  Returns [None] when no lesson
-    matches; the caller ([tool_autoresearch_cycle.ml])
+    matches; callers
     branches on the [option] to decide whether to attach
     the block. *)
 
@@ -217,7 +234,9 @@ val timeout_error_kinds : error_kind list
     {!stress_kind_for_error_kind} mapper treats as
     timeout-class.  Pinned because
     [test/test_agent_stress_timeout_wire_10341.ml] asserts
-    its length to keep the catalogue from drifting. *)
+    its length to keep the catalogue from drifting. Legacy timeout-budget
+    wire labels are intentionally not listed; callers should emit
+    owner-specific timeout kinds such as [provider_timeout]. *)
 
 val stress_kind_for_error_kind :
   error_kind -> Agent_stress.stress_kind option

@@ -1,7 +1,9 @@
 import { signal } from '@preact/signals'
+import { fetchIdeRegions, type IdeCodeRegion } from '../../api/ide'
+import { isRecord, asNullableString, isPositiveSafeInteger } from '../common/normalize'
 
 export interface CodeDocumentSource {
-  readonly file_path: string
+  readonly file_path: string | null
   readonly language: string
   readonly content: string
 }
@@ -21,11 +23,17 @@ export interface CodeDocumentStore {
   readonly document: () => CodeDocumentSnapshot
   readonly lines: () => ReadonlyArray<CodeDocumentLine>
   readonly line: (lineNumber: number) => CodeDocumentLine | null
+  readonly regions: () => ReadonlyArray<IdeCodeRegion>
+  readonly regionsLoading: () => boolean
+  readonly loadRegions: (
+    filePath: string,
+    opts?: { keeper?: string; repoId?: string | null; signal?: AbortSignal },
+  ) => Promise<void>
   readonly subscribe: (listener: () => void) => () => void
 }
 
 const EMPTY_DOCUMENT: CodeDocumentSnapshot = {
-  file_path: '(no file)',
+  file_path: null,
   language: 'text',
   content: '',
   lines: [],
@@ -38,12 +46,28 @@ export function createCodeDocumentStore(
   const maxLines = normalizeMaxLines(opts.maxLines)
   const initial = normalizeSource(initialSource, maxLines) ?? EMPTY_DOCUMENT
   const snapshot = signal<CodeDocumentSnapshot>(initial)
+  const regionsSignal = signal<ReadonlyArray<IdeCodeRegion>>([])
+  const regionsLoadingSignal = signal<boolean>(false)
 
   const load = (source: unknown): boolean => {
     const next = normalizeSource(source, maxLines)
     if (!next) return false
     snapshot.value = next
     return true
+  }
+
+  const loadRegions = async (
+    filePath: string,
+    opts?: { keeper?: string; repoId?: string | null; signal?: AbortSignal },
+  ): Promise<void> => {
+    regionsLoadingSignal.value = true
+    try {
+      const fetched = await fetchIdeRegions(filePath, opts ?? {})
+      if (opts?.signal?.aborted) return
+      regionsSignal.value = fetched
+    } finally {
+      regionsLoadingSignal.value = false
+    }
   }
 
   const subscribe = (listener: () => void): (() => void) => {
@@ -62,14 +86,17 @@ export function createCodeDocumentStore(
     document: () => snapshot.value,
     lines: () => snapshot.value.lines,
     line: lineNumber => snapshot.value.lines[lineNumber - 1] ?? null,
+    regions: () => regionsSignal.value,
+    regionsLoading: () => regionsLoadingSignal.value,
+    loadRegions,
     subscribe,
   }
 }
 
 function normalizeSource(source: unknown, maxLines: number): CodeDocumentSnapshot | null {
   if (!isRecord(source)) return null
-  const filePath = normalizeNonEmptyString(source.file_path)
-  const language = normalizeNonEmptyString(source.language)
+  const filePath = asNullableString(source.file_path)
+  const language = asNullableString(source.language)
   if (!filePath || !language || typeof source.content !== 'string') return null
 
   const content = source.content.replace(/\r\n?/g, '\n')
@@ -105,14 +132,7 @@ function parseLines(content: string, maxLines: number): ReadonlyArray<CodeDocume
 }
 
 function normalizeMaxLines(value: number | undefined): number {
-  if (typeof value === 'number' && Number.isSafeInteger(value) && value > 0) return value
+  if (isPositiveSafeInteger(value)) return value
   return 5_000
 }
 
-function normalizeNonEmptyString(value: unknown): string | null {
-  return typeof value === 'string' && value.trim() !== '' ? value.trim() : null
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}

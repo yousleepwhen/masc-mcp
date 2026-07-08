@@ -1,12 +1,21 @@
 (** Tests for Tool_metrics — per-tool timing and success/failure metrics *)
 
 module M = Masc_mcp.Tool_metrics
-module R = Masc_mcp.Tool_result
+module R = Tool_result
 
 let setup () = M.clear ()
 
-let make_result ~name ~success ~duration_ms =
-  { R.success; data = `Null; legacy_message = ""; tool_name = name; duration_ms }
+let make_result ~name ~success ~duration_ms : R.result =
+  if success
+  then Ok { R.tool_name = name; data = `Null; duration_ms }
+  else
+    Error
+      { R.class_ = Runtime_failure
+      ; message = ""
+      ; data = `Null
+      ; tool_name = name
+      ; duration_ms
+      }
 
 let test_record_and_stats () =
   setup ();

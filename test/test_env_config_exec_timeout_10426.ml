@@ -25,18 +25,14 @@ let cases =
     E.Preflight, 10.0;
     E.Repo_readiness, 10.0;
     E.Sandbox, 10.0;
-    E.Pr_review, 15.0;
-    E.Pr_review_post, 30.0;
     E.Dispatch, 120.0;
     E.Memory_audit, 3.0;
     E.Alerting, 20.0;
-    E.Gh_shared, 10.0;
+    E.Gh_quick_query, 10.0;
     E.Status_detail, 5.0;
     E.Turn_sandbox, 2.0;
     E.Turn_up, 15.0;
     E.Git_meta, 10.0;
-    E.Autoresearch_git_meta, 10.0;
-    E.Autoresearch_git_mutation, 30.0;
     E.Shell_probe, 2.0;
     (* #13081 — added with the refactor; each preserves the literal
        its call site previously held inline.  See module .mli. *)
@@ -47,13 +43,11 @@ let cases =
     E.Build_identity, 5.0;
     E.Voice, 60.0;
     E.Coord_identity, 5.0;
-    E.Dashboard, 3.0;
     E.Http_routes, 15.0;
     (* #13081 follow-up — added to fix reviewer-identified budget regressions:
        repo_git.ml was 300s but was mapped to Unknown "misc" (30s fallback);
-       task_sandbox.ml was 30s but was mapped to Turn_sandbox (2s). *)
+       sandbox.ml was 30s but was mapped to Turn_sandbox (2s). *)
     E.Repo_manager_git, 300.0;
-    E.Task_sandbox_git, 30.0;
     E.Test, 30.0;
   ]
 
@@ -134,12 +128,9 @@ let test_env_var_name_shape () =
   check string "Shell env var name"
     "MASC_EXEC_TIMEOUT_SHELL_SEC"
     (E.per_caller_env_var ~caller:E.Shell);
-  check string "Pr_review env var name"
-    "MASC_EXEC_TIMEOUT_PR_REVIEW_SEC"
-    (E.per_caller_env_var ~caller:E.Pr_review);
-  check string "Autoresearch git mutation env var name"
-    "MASC_EXEC_TIMEOUT_AUTORESEARCH_GIT_MUTATION_SEC"
-    (E.per_caller_env_var ~caller:E.Autoresearch_git_mutation);
+  check string "Gh_quick_query env var name"
+    "MASC_EXEC_TIMEOUT_GH_QUICK_QUERY_SEC"
+    (E.per_caller_env_var ~caller:E.Gh_quick_query);
   check string "Unknown env var name lowercases"
     "MASC_EXEC_TIMEOUT_FUTURE_X_SEC"
     (E.per_caller_env_var ~caller:(E.Unknown "future-x"))

@@ -15,7 +15,7 @@ module Char = Stdlib.Char
 module Int = Stdlib.Int
 module Float = Stdlib.Float
 
-module StringMap = Map.Make (String)
+module StringMap = Set_util.StringMap
 
 (** Per-tool timing metrics *)
 
@@ -39,7 +39,7 @@ type accumulator = {
   durations : float list;  (* newest first *)
 }
 
-(** [metrics] is updated from the tool_dispatch post-hook which runs on
+(** [metrics] is updated from the tool dispatch observer which runs on
     whichever fiber executed the tool.  Concurrent tool calls would
     otherwise race on the StringMap ref swap and on the accumulator
     update.  Stdlib.Mutex because HTTP stats endpoints may run on a
@@ -53,19 +53,24 @@ let with_lock f =
     ~finally:(fun () -> Stdlib.Mutex.unlock metrics_mu)
     f
 
-let record (result : Tool_result.t) =
+let record (result : Tool_result.result) =
+  let tool_name, duration_ms, is_success =
+    match result with
+    | Ok ok -> ok.tool_name, ok.duration_ms, true
+    | Error err -> err.tool_name, err.duration_ms, false
+  in
   with_lock (fun () ->
-    let acc = match StringMap.find_opt result.tool_name !metrics with
+    let acc = match StringMap.find_opt tool_name !metrics with
       | Some a -> a
       | None -> { successes = 0; failures = 0; durations = [] }
     in
     let acc =
-      if result.success
+      if is_success
       then { acc with successes = acc.successes + 1 }
       else { acc with failures = acc.failures + 1 }
     in
-    let acc = { acc with durations = result.duration_ms :: acc.durations } in
-    metrics := StringMap.add result.tool_name acc !metrics)
+    let acc = { acc with durations = duration_ms :: acc.durations } in
+    metrics := StringMap.add tool_name acc !metrics)
 
 let percentile sorted_arr p =
   let n = Array.length sorted_arr in
@@ -123,7 +128,10 @@ let all_to_json () =
 
 let clear () = with_lock (fun () -> metrics := StringMap.empty)
 
+(* Metrics are recorded only for handled dispatches. Other outcomes are
+   counted by the dispatch telemetry path. *)
 let install () =
-  Tool_dispatch.register_post_hook (fun result ->
-    record result;
-    result)
+  Tool_dispatch.register_dispatch_observer (fun outcome result ->
+    match outcome, result with
+    | Dispatch_outcome.Handled, Some r -> record r
+    | _ -> ())

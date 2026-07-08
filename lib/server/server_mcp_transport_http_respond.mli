@@ -34,46 +34,6 @@ val json_headers :
     this module so a future "rebrand the json content type" change
     must touch one site. *)
 
-val respond_mcp_auth_error :
-  ?extra_headers:(string * string) list ->
-  deps:Server_mcp_transport_http_types.deps ->
-  Httpun.Request.t ->
-  Httpun.Reqd.t ->
-  session_id:string ->
-  protocol_version:string ->
-  string ->
-  unit
-(** [respond_mcp_auth_error ?extra_headers ~deps request reqd
-    ~session_id ~protocol_version msg] writes a JSON-RPC 2.0 error
-    response with code [-32001] and HTTP status [401 Unauthorized].
-
-    The response always carries [www-authenticate: Bearer]; this is
-    pinned because the MCP client SDKs key off the literal challenge
-    string when deciding whether to re-prompt for a token.  A future
-    "support digest auth" change must extend the contract explicitly.
-
-    [extra_headers] are prepended (operator-visible HTTP headers),
-    {!json_headers} append.  The function never raises. *)
-
-val respond_mcp_internal_error :
-  ?extra_headers:(string * string) list ->
-  deps:Server_mcp_transport_http_types.deps ->
-  Httpun.Request.t ->
-  Httpun.Reqd.t ->
-  session_id:string ->
-  protocol_version:string ->
-  string ->
-  unit
-(** [respond_mcp_internal_error ?extra_headers ~deps request reqd
-    ~session_id ~protocol_version msg] writes a JSON-RPC 2.0 error
-    response with code [-32603] (the standard "Internal error" slot)
-    and HTTP status [500 Internal Server Error].
-
-    Used as the catch-all for runtime failures the transport cannot
-    classify more precisely.  The wording of [msg] is operator-visible
-    in JSON bodies — callers should keep it stable across builds so
-    grep alerts remain valid. *)
-
 val respond_not_ready :
   deps:Server_mcp_transport_http_types.deps ->
   Httpun.Request.t ->
@@ -97,7 +57,7 @@ val respond_sse_rate_limited :
   origin:string ->
   session_id:string ->
   protocol_version:string ->
-  reason:string ->
+  reason:Sse_reject_reason.t ->
   retry_after_s:float ->
   Httpun.Reqd.t ->
   unit
@@ -124,10 +84,56 @@ val respond_sse_rate_limited :
     [sse_connection_rate_limited]; dashboards / log greps depend on
     the exact spelling. *)
 
-val mcp_internal_error_json : ?id:Yojson.Safe.t -> string -> Yojson.Safe.t
-(** [mcp_internal_error_json ?id msg] returns a JSON-RPC 2.0 error
-    object with code [-32603] (matching {!respond_mcp_internal_error})
-    suitable for embedding in an SSE batch frame or a multi-response
-    array.  When [id] is omitted, the field is set to [`Null] (per
-    JSON-RPC 2.0 §5.1 — error responses must echo back the request id
-    or [null] when it cannot be parsed). *)
+val error_body :
+  ?id:Yojson.Safe.t ->
+  ?data:Yojson.Safe.t ->
+  code:Mcp_error_code.t ->
+  string ->
+  Yojson.Safe.t
+(** [error_body ?id ?data ~code msg] builds a JSON-RPC 2.0 error
+    object suitable for either a stand-alone response body or
+    embedding in an SSE batch / multi-response array. Splitting it
+    out makes the wire shape diffable and testable without
+    instantiating an [Httpun.Reqd.t].
+
+    Defaults: [id = `Null] (per JSON-RPC 2.0 §5.1), no [data] field.
+
+    Used internally by {!respond_mcp_error}; exposed here for callers
+    that build SSE batch frames with any {!Mcp_error_code.t}. *)
+
+val respond_mcp_error :
+  ?extra_headers:(string * string) list ->
+  ?data:Yojson.Safe.t ->
+  ?id:Yojson.Safe.t ->
+  deps:Server_mcp_transport_http_types.deps ->
+  Httpun.Request.t ->
+  Httpun.Reqd.t ->
+  session_id:string ->
+  protocol_version:string ->
+  code:Mcp_error_code.t ->
+  string ->
+  unit
+(** [respond_mcp_error ?extra_headers ?data ?id ~deps request reqd
+    ~session_id ~protocol_version ~code msg] writes a single JSON-RPC
+    2.0 error response derived from a typed {!Mcp_error_code.t}. This
+    is the {b RFC-0098 SSOT} for transport-boundary error envelopes;
+    new call sites SHOULD use this in preference to the per-code
+    factories below.
+
+    Wire shape: [{"jsonrpc":"2.0","id":<id|null>,"error":{
+      "code":Mcp_error_code.to_wire_code code,
+      "message":msg,
+      "data":<data when supplied>}}]
+
+    HTTP status comes from {!Mcp_error_code.to_http_status}; the
+    transport cannot drift from envelope semantics. Per-code header
+    fixups apply automatically:
+
+    - [Auth_error] adds [www-authenticate: Bearer] (pinned for MCP
+      client SDKs that key off the literal challenge string).
+    - [Not_ready] adds [retry-after: 2] (pinned for startup probes).
+    - [Backpressure_shed] adds [retry-after: 1].
+
+    [extra_headers] are prepended; {!json_headers} append.  The
+    function never raises; response writes go through the module's
+    guarded response helper. *)

@@ -3,7 +3,7 @@
 
 import { html } from 'htm/preact'
 import { signal } from '@preact/signals'
-import { authHeaders, post } from '../api/core'
+import { del, post } from '../api/core'
 import {
   discoverRepositories,
   fetchRepositoriesList,
@@ -13,7 +13,7 @@ import {
 import { createAsyncResource } from '../lib/async-state'
 import { LoadingState, ErrorState } from './common/feedback-state'
 import { showToast } from './common/toast'
-import { Plus, GitBranch, AlertCircle, PauseCircle, CheckCircle2, Search } from 'lucide-preact'
+import { Plus, GitBranch, AlertCircle, PauseCircle, CheckCircle2, HelpCircle, Search } from 'lucide-preact'
 
 export type { Repository, RepoStatus } from '../api/repositories'
 export {
@@ -52,14 +52,7 @@ export async function syncRepository(id: string): Promise<void> {
 
 export async function deleteRepository(id: string): Promise<void> {
   try {
-    const res = await fetch(`/api/v1/repositories/${encodeURIComponent(id)}`, {
-      method: 'DELETE',
-      headers: authHeaders(),
-    })
-    if (!res.ok) {
-      const text = await res.text().catch(() => '삭제 실패')
-      throw new Error(text || '삭제 실패')
-    }
+    await del(`/api/v1/repositories/${encodeURIComponent(id)}`)
     showToast('저장소 삭제 완료', 'success')
     await fetchRepositories()
     if (selectedRepoId.value === id) {
@@ -112,18 +105,24 @@ function StatusIcon({ status }: { status: RepoStatus }) {
       return html`<${PauseCircle} size=${14} class="text-[var(--color-status-warn)]" aria-hidden="true" />`
     case 'error':
       return html`<${AlertCircle} size=${14} class="text-[var(--color-status-err)]" aria-hidden="true" />`
+    case 'unknown':
+      // Explicit unknown state surfaces malformed/missing wire data instead
+      // of silently coercing it to 'active' (anti-pattern §2 escape).
+      return html`<${HelpCircle} size=${14} class="text-[var(--color-fg-muted)]" aria-hidden="true" />`
   }
 }
 
 function StatusLabel({ status }: { status: RepoStatus }) {
-  const label = status === 'active' ? '활성' : status === 'paused' ? '일시정지' : '오류'
-  const colorClass =
-    status === 'active'
-      ? 'text-[var(--color-status-ok)]'
-      : status === 'paused'
-        ? 'text-[var(--color-status-warn)]'
-        : 'text-[var(--color-status-err)]'
-  return html`<span class="text-2xs font-medium ${colorClass}">${label}</span>`
+  switch (status) {
+    case 'active':
+      return html`<span class="text-2xs font-medium text-[var(--color-status-ok)]">활성</span>`
+    case 'paused':
+      return html`<span class="text-2xs font-medium text-[var(--color-status-warn)]">일시정지</span>`
+    case 'error':
+      return html`<span class="text-2xs font-medium text-[var(--color-status-err)]">오류</span>`
+    case 'unknown':
+      return html`<span class="text-2xs font-medium text-[var(--color-fg-muted)]">알 수 없음</span>`
+  }
 }
 
 // ── Component ────────────────────────────────────────────

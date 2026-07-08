@@ -12,12 +12,12 @@
 
     The counter is maintained by explicit [try_acquire] / release
     pairs at the cascade call site.  No timeout, no queueing, no
-    blocking — if no slot is free, [try_acquire] returns [None] and
-    the strategy's capacity filter will have already skipped this
+    blocking — if no permit is free, [try_acquire] returns [Full]
+    and the strategy's capacity filter will have already skipped this
     endpoint in its ordering.  Defense-in-depth: both the filter and
     the acquire check the same counter, so a race between filter and
-    acquire simply yields a [None] that the cascade treats as
-    [Slot_full] and tries the next candidate.
+    acquire simply yields a [Full] that the cascade treats as typed
+    capacity backpressure before trying the next candidate.
 
     @since 0.9.6 *)
 
@@ -33,7 +33,8 @@ val register : url:string -> max_concurrent:int -> unit
 
     Typical callers:
     - module init parses [MASC_CLIENT_CAPACITY]
-    - [auto_register_for_candidates] auto-registers ollama URLs *)
+    - [Keeper_turn_driver] registers HTTP-probe-capable candidates
+      gated on provider-kind probe capability *)
 
 val registered_urls : unit -> string list
 (** Snapshot of currently-registered URLs.  Test helper. *)
@@ -56,29 +57,7 @@ val snapshot : unit -> (string * Cascade_throttle.capacity_info) list
 val unregister_all : unit -> unit
 (** Remove every registration.  Test helper. *)
 
-(** {1 Auto-registration} *)
-
-val auto_register_for_candidates :
-  base_urls:string list ->
-  unit
-(** For each base URL that looks like an ollama HTTP endpoint
-    (heuristic: host/port contains [:11434]) and is not yet
-    registered, register it with the default ollama concurrency
-    (env [MASC_OLLAMA_MAX_CONCURRENT], fallback [1]).
-
-    Idempotent.  Safe to call on every cascade attempt; already-
-    registered URLs are left alone. *)
-
-val auto_register_ollama_with_override :
-  base_urls:string list ->
-  max_concurrent:int ->
-  unit
-(** Like {!auto_register_for_candidates} but with an explicit
-    [max_concurrent] that overrides the env default.  Used by the
-    per-cascade [<name>_ollama_max_concurrent] field.
-
-    Idempotent and only touches URLs that look like ollama and are
-    not already registered. *)
+(** {1 CLI sentinel auto-registration} *)
 
 val auto_register_cli_for_candidates :
   capacity_keys:string list ->
@@ -88,9 +67,9 @@ val auto_register_cli_for_candidates :
     register it with the default CLI concurrency
     (env [MASC_CLI_MAX_CONCURRENT], fallback [1]).
 
-    Idempotent.  CLI providers (Claude_code / Gemini_cli / Codex_cli)
+    Idempotent.  CLI providers (Cli_tool_d / Cli_tool_b / Cli_tool_a)
     have an empty [base_url] so the cascade caller derives a
-    sentinel like [cli:claude_code] for capacity key purposes;
+    sentinel like [cli:cli_tool_d] for capacity key purposes;
     registering that sentinel here gives the strategy a uniform
     [signal_ctx.capacity] view across HTTP and CLI providers.
 
@@ -127,21 +106,24 @@ type release = unit -> unit
 (** Idempotent release thunk.  Calling it twice is safe; the second
     call is a no-op. *)
 
-val try_acquire : string -> release option
-(** Non-blocking acquire.  Returns [Some release] when a slot was
-    obtained and the caller is now responsible for calling [release]
-    exactly once (via [Fun.protect], [Eio.Switch.on_release], or
-    explicit control flow).  Returns [None] when:
-    - [url] is not registered → unlimited, no counter maintained
-      (caller should treat [None] as "no client cap, go ahead");
-    - [url] is registered and [process_available = 0] → slot full,
-      caller should treat [None] as [Slot_full] and try another
-      candidate.
+type acquire_result =
+  | Acquired of release
+  | Full of { retry_after_s : float option }
+  | Unregistered
+(** Result of a non-blocking acquire.
 
-    Disambiguate these two [None] cases via {!capacity}: if
-    [capacity url = None] the URL is unregistered; otherwise it is
-    full. *)
+    - [Acquired release] — slot obtained; caller must call [release]
+      exactly once.
+    - [Full { retry_after_s }] — [url] is registered but all slots are
+      in use.  [retry_after_s] hints when the caller should retry.
+    - [Unregistered] — [url] has no declared capacity; caller should
+      treat this as "no client cap, go ahead". *)
+
+val try_acquire : string -> acquire_result
+(** Non-blocking acquire.  See {!acquire_result} for outcome semantics.
+
+    @since 0.9.6 *)
 
 val is_registered : string -> bool
 (** [is_registered url] is [true] iff [url] has a declared capacity.
-    Convenience for the caller's [try_acquire] disambiguation. *)
+    Convenience for disambiguating [Unregistered] from [Full]. *)

@@ -17,7 +17,7 @@ code_refs:
 
 ## 1. Problem Statement
 
-여러 AI 에이전트(Claude Code, Gemini CLI, Codex CLI, 로컬 LLM 등)가 동일 코드베이스에서 동시에 작업할 때, 다음 문제가 발생한다:
+여러 AI 에이전트(CLI-Tool-A, CLI-Tool-C, CLI-Tool-B, 로컬 LLM 등)가 동일 코드베이스에서 동시에 작업할 때, 다음 문제가 발생한다:
 
 1. **충돌**: 두 에이전트가 같은 파일을 동시에 수정하면 git conflict가 발생하고, 한쪽 작업이 소실된다.
 2. **중복**: 동일한 CI 실패를 여러 에이전트가 독립적으로 수정 시도하면, 중복 PR이 생성된다.
@@ -35,7 +35,7 @@ MASC가 명시적으로 **하지 않는 것**:
 |----------|------|
 | Production multi-tenant SaaS | 단일 머신, localhost-trust 모델. 인증/격리/과금 미구현. |
 | 범용 오케스트레이션 프레임워크 (Temporal/Airflow 대체) | 대상은 AI 에이전트 협업에 한정. DAG 스케줄링, 재시도 정책, 워커 풀 관리는 범위 밖. |
-| 모델 추론 서버 | LLM 호출은 Cascade를 통해 외부 서버(llama-server, GLM Cloud)로 위임. 자체 GPU 추론 없음. |
+| 모델 추론 서버 | LLM 호출은 Cascade를 통해 외부 서버(llama-server, Provider-K Cloud)로 위임. 자체 GPU 추론 없음. |
 | OAS Agent SDK 대체 | MASC는 OAS에 의존한다. Agent 생명주기(run, checkpoint, context reduction)는 OAS 책임. MASC는 coordination layer. |
 | 범용 채팅/메시징 시스템 | Broadcast와 Board는 에이전트 간 조율 목적. 사람 간 커뮤니케이션 도구가 아님. |
 
@@ -46,7 +46,7 @@ MASC가 명시적으로 **하지 않는 것**:
 │                  Single Machine                  │
 │                                                  │
 │  ┌──────────┐    ┌──────────┐    ┌──────────┐   │
-│  │ Claude   │    │ Gemini   │    │ Codex    │   │
+│  │ Agent-LLM-A   │    │ Provider-F   │    │ Agent-Code    │   │
 │  │ Code     │    │ CLI      │    │ CLI      │   │
 │  └────┬─────┘    └────┬─────┘    └────┬─────┘   │
 │       │ MCP           │ MCP           │ MCP      │
@@ -88,7 +88,7 @@ MASC가 명시적으로 **하지 않는 것**:
 | gRPC | grpc-direct (h2-eio) | Agent-to-Agent 통신. proto 정의: `proto/`. |
 | GraphQL | HTTP client | Neo4j 접근은 Railway GraphQL API 경유. |
 | AI | agent_sdk (OAS) | Agent.run, Context_reducer, Swarm engine. |
-| Inference | Cascade | llama (local) -> GLM Cloud (fallback) -> skip. |
+| Inference | Cascade | llama (local) -> Provider-K Cloud (fallback) -> skip. |
 | Build | dune 3.13+ | `dune-project` 기반. opam package: `masc_mcp`. |
 | Coverage | bisect_ppx | `BISECT_FILE` 환경변수 필수. |
 | Dashboard | Preact + HTM + Vite | TypeScript SPA. `dashboard/` 소스, `assets/dashboard/` 빌드 산출물. |
@@ -119,7 +119,7 @@ MASC는 단일 public library(`masc_mcp`)로 구성된다. `lib/` 아래 기능�
 | Executable | Public Name | Entry Point | 역할 |
 |------------|-------------|-------------|------|
 | `main_eio` | `masc-mcp` | `bin/main_eio.ml` | HTTP 서버. 기본 진입점. httpun-eio(HTTP/1.1) 또는 h2-eio(HTTP/2). Dashboard 서빙, SSE, MCP JSON-RPC, gRPC, REST API. |
-| `main_stdio_eio` | `masc-mcp-stdio` | `bin/main_stdio_eio.ml` | Stdio 기반 MCP 서버. Claude Code `--mcp` 모드 연동. |
+| `main_stdio_eio` | `masc-mcp-stdio` | `bin/main_stdio_eio.ml` | Stdio 기반 MCP 서버. CLI-Tool-A `--mcp` 모드 연동. |
 | `masc_cost` | `masc-cost` | `bin/masc_cost.ml` | Token 사용량 집계, 비용 계산 CLI. |
 | `masc_compaction_audit` | `masc-compaction-audit` | `bin/masc_compaction_audit.ml` | Compaction audit CLI. `.masc/data/harness-compact/` JSONL 검사. |
 | `masc_tui` | `masc-tui` | `bin/masc_tui.ml` | Terminal UI. Keeper 목록, 상태, 연결 인터페이스. |
@@ -131,7 +131,6 @@ MASC는 단일 public library(`masc_mcp`)로 구성된다. `lib/` 아래 기능�
 | Executable | Entry Point | 역할 |
 |------------|-------------|------|
 | `public_tool_manifest` | `bin/public_tool_manifest.ml` | Tool manifest 생성 |
-| `cascade_materialize` | `bin/cascade_materialize.ml` | `cascade.toml` → `cascade.json` materializer |
 | `trace_to_tla` | `bin/trace_to_tla.ml` | TLA+ trace converter (JSONL → TraceData.tla) |
 
 ## 7. Canonical Front Door and Internal Supporting Substrates
@@ -152,7 +151,7 @@ MASC의 현재 canonical front door는 3가지다.
 
 - **대상**: keeper lifecycle, long-running execution, OAS-backed autonomy
 - **핵심 도구**: `masc_keeper_up`, `masc_keeper_msg`, `masc_keeper_status`, `masc_keeper_down`
-- **설명**: keeper는 OAS `Agent.run` 기반으로 실행되며, historical compatibility lane과 독립적으로 동작한다.
+- **설명**: keeper는 OAS `Agent.run` 기반으로 실행되며, retired orchestration surfaces와 독립적으로 동작한다.
 
 ### 7.3 Dashboard and Operator Read Visibility
 
@@ -163,7 +162,7 @@ MASC의 현재 canonical front door는 3가지다.
 - **핵심 surface**: `/api/v1/dashboard/*`, `/api/v1/operator*`, `/api/v1/activity/*`
 - **설명**: write-heavy orchestration을 새 front door로 약속하지 않고, 운영자가 현재 runtime truth를 읽고 제한된 개입을 하는 surface다.
 
-Historical compatibility lane(team-session / command-plane HTTP)은 migration context로만 남아 있으며, supported front door로 취급하지 않는다.
+Retired team-session / command-plane HTTP surfaces는 migration context로만 남아 있으며, supported front door로 취급하지 않는다.
 
 ## 8. External Integrations
 
@@ -175,8 +174,8 @@ Historical compatibility lane(team-session / command-plane HTTP)은 migration co
 | Langfuse | Cloud API | HTTP | LLM 호출 tracing, cost attribution | 선택적 활성화. |
 | GraphQL API | Railway (`second-brain-graphql-production.up.railway.app`) | HTTP | Agent 정보 로드, collaboration edge 기록 | `$GRAPHQL_API_KEY` 인증. Query cost limit 2000. |
 | Cloudflare Tunnel | `masc.crying.pictures` | HTTP -> HTTPS | 원격 dashboard 접근 | Origin HTTP/1.1. Cloudflare가 HTTP/2 변환. |
-| local runtime | configured local endpoint | OpenAI-compatible API | 로컬 LLM 추론 (Cascade 1순위) | OAS discovery endpoint. |
-| GLM Cloud | ZAI API | HTTP | Cloud LLM 추론 (Cascade 2순위) | `sb glm-text` 경로. |
+| local runtime | configured local endpoint | Provider-D-compatible API | 로컬 LLM 추론 (Cascade 1순위) | OAS discovery endpoint. |
+| Provider-K Cloud | ZAI API | HTTP | Cloud LLM 추론 (Cascade 2순위) | `sb provider-k-text` 경로. |
 
 ## 9. Invariants (System-Level)
 

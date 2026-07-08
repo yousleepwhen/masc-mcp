@@ -15,8 +15,18 @@ type turn_prompt_context =
   ; prompt_metrics : Keeper_agent_prompt_metrics.prompt_metrics
   ; history_messages : Agent_sdk.Types.message list
   ; estimated_input_tokens : int
-  ; ctx_work : Keeper_exec_context.working_context
+  ; ctx_work : Keeper_context_runtime.working_context
   }
+
+val sanitize_user_message : string -> string
+(** Remove role/jailbreak prefixes from a turn user message before it is
+    appended to the OAS context. *)
+
+val render_recent_failure_context :
+  Keeper_failure_circuit_breaker.failure_signature list -> string
+(** Render a bounded, non-authoritative dynamic-context block from the
+    keeper's recent tool failure signatures. Returns [""] when there is no
+    recent failure memory. *)
 
 val build_turn_context
   :  ctx:Keeper_run_context.run_context

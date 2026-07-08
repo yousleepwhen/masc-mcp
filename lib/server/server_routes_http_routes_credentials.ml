@@ -107,8 +107,9 @@ let credential_of_json (json : Yojson.Safe.t) :
   | _ -> Error "expected JSON object body"
 
 let default_github_gh_config_dir ~base_path ~credential_id =
+  (* RFC-0121: layout SSOT via [Config_dir_resolver]. *)
   Filename.concat
-    (Filename.concat base_path ".masc/github-identities")
+    (Config_dir_resolver.repo_cli_identities_dir ~base_path)
     (Filename.concat credential_id "gh")
 
 let apply_base_path_defaults ~base_path
@@ -152,9 +153,9 @@ let add_routes router =
          let base_path = state.Mcp_server.room_config.base_path in
          match Credential_store.load_all ~base_path with
          | Error msg ->
-             Http.Response.json ~status:`Internal_server_error ~request:req
-               (Yojson.Safe.to_string
-                  (`Assoc [ ("ok", `Bool false); ("error", `String msg) ]))
+             Http.Response.json_value ~status:`Internal_server_error
+               ~request:req
+               (`Assoc [ ("ok", `Bool false); ("error", `String msg) ])
                reqd
          | Ok credentials ->
              let credentials =
@@ -172,9 +173,7 @@ let add_routes router =
                    ("total", `Int (List.length credentials));
                  ]
              in
-             Http.Response.json ~compress:true ~request:req
-               (Yojson.Safe.to_string json)
-               reqd
+             Http.Response.json_value ~compress:true ~request:req json reqd
        ) request reqd)
   |> Http.Router.prefix_get "/api/v1/credentials/" (fun request reqd ->
        with_public_read (fun state req reqd ->
@@ -182,31 +181,27 @@ let add_routes router =
          let path = Http.Request.path request in
          match extract_path_param ~prefix:"/api/v1/credentials/" path with
          | None | Some "" ->
-             Http.Response.json ~status:`Bad_request ~request:req
-               (Yojson.Safe.to_string
-                  (`Assoc
-                    [ ("ok", `Bool false); ("error", `String "missing credential id") ]))
+             Http.Response.json_value ~status:`Bad_request ~request:req
+               (`Assoc
+                  [ ("ok", `Bool false); ("error", `String "missing credential id") ])
                reqd
          | Some id -> (
              match Credential_store.find ~base_path id with
              | Error msg ->
-                 Http.Response.json ~status:`Not_found ~request:req
-                   (Yojson.Safe.to_string
-                      (`Assoc [ ("ok", `Bool false); ("error", `String msg) ]))
+                 Http.Response.json_value ~status:`Not_found ~request:req
+                   (`Assoc [ ("ok", `Bool false); ("error", `String msg) ])
                    reqd
              | Ok credential ->
-                 Http.Response.json ~request:req
-                   (Yojson.Safe.to_string (credential_json credential))
-                   reqd)
+                 Http.Response.json_value ~request:req
+                   (credential_json credential) reqd)
        ) request reqd)
   |> Http.Router.post "/api/v1/credentials" (fun request reqd ->
        with_token_permission_auth ~permission:Masc_domain.CanAdmin
          (fun state _agent_name req reqd ->
            Http.Request.read_body_async reqd (fun body_str ->
              let response status message =
-               Http.Response.json ~status ~request:req
-                 (Yojson.Safe.to_string
-                    (`Assoc [ ("ok", `Bool false); ("error", `String message) ]))
+               Http.Response.json_value ~status ~request:req
+                 (`Assoc [ ("ok", `Bool false); ("error", `String message) ])
                  reqd
              in
              match Yojson.Safe.from_string body_str with
@@ -255,7 +250,7 @@ let add_routes router =
                          "credential id must be a non-empty filename \
                           fragment without slashes or directory traversal"
                      else
-                       (* GitHub credentials are rooted under the active
+                       (* Repo CLI credentials are rooted under the active
                           server base_path when the operator leaves
                           GH_CONFIG_DIR blank.  This keeps both web and
                           with-token login flows on the same
@@ -280,10 +275,8 @@ let add_routes router =
                                 with
                                 | Error msg -> response `Bad_request msg
                                 | Ok cred ->
-                                    Http.Response.json ~request:req
-                                      (Yojson.Safe.to_string
-                                         (credential_json cred))
-                                      reqd)
+                                    Http.Response.json_value ~request:req
+                                      (credential_json cred) reqd)
                             | "with_token" -> (
                                 match token_opt with
                                 | None ->
@@ -354,11 +347,9 @@ let add_routes router =
                                             | Error msg ->
                                                 response `Bad_request msg
                                             | Ok cred ->
-                                                Http.Response.json
+                                                Http.Response.json_value
                                                   ~request:req
-                                                  (Yojson.Safe.to_string
-                                                     (credential_json
-                                                        cred))
+                                                  (credential_json cred)
                                                   reqd))))
                             | other ->
                                 response `Bad_request
@@ -367,29 +358,28 @@ let add_routes router =
                                       \"web\" or \"with_token\""
                                      other))))))
          request reqd)
-  |> Http.Router.add ~path:("PREFIX:/api/v1/credentials/")
-       ~methods:[`DELETE]
-       ~handler:(fun request reqd ->
+  |> Http.Router.prefix_delete "/api/v1/credentials/" (fun request reqd ->
          with_token_permission_auth ~permission:Masc_domain.CanAdmin
            (fun state _agent_name req reqd ->
              let base_path = state.Mcp_server.room_config.base_path in
              let path = Http.Request.path request in
              match extract_path_param ~prefix:"/api/v1/credentials/" path with
              | None | Some "" ->
-                 Http.Response.json ~status:`Bad_request ~request:req
-                   (Yojson.Safe.to_string
-                      (`Assoc
-                        [ ("ok", `Bool false); ("error", `String "missing credential id") ]))
+                 Http.Response.json_value ~status:`Bad_request ~request:req
+                   (`Assoc
+                      [
+                        ("ok", `Bool false);
+                        ("error", `String "missing credential id");
+                      ])
                    reqd
              | Some id -> (
                  match Credential_store.remove ~base_path id with
                  | Error msg ->
-                     Http.Response.json ~status:`Bad_request ~request:req
-                       (Yojson.Safe.to_string
-                          (`Assoc [ ("ok", `Bool false); ("error", `String msg) ]))
+                     Http.Response.json_value ~status:`Bad_request ~request:req
+                       (`Assoc [ ("ok", `Bool false); ("error", `String msg) ])
                        reqd
                  | Ok () ->
-                     Http.Response.json ~request:req
-                       (Yojson.Safe.to_string (`Assoc [ ("ok", `Bool true) ]))
+                     Http.Response.json_value ~request:req
+                       (`Assoc [ ("ok", `Bool true) ])
                        reqd)
            ) request reqd)

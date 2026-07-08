@@ -4,10 +4,10 @@
     and risk contracts without schema drift. *)
 
 open Alcotest
-module RC = Agent_sdk.Risk_contract
-module Proof = Agent_sdk.Cdal_proof
-module EM = Agent_sdk.Execution_mode
-module RK = Agent_sdk.Risk_class
+module RC = Masc_mcp_cdal_runtime.Risk_contract
+module Proof = Masc_mcp_cdal_runtime.Cdal_proof
+module EM = Masc_mcp_cdal_runtime.Execution_mode
+module RK = Masc_mcp_cdal_runtime.Risk_class
 
 (* Inline fixtures — avoids CWD issues in CI where dune runs tests
    from _build/default/test/ rather than the repo root. Canonical
@@ -17,7 +17,7 @@ let risk_contract_v1_json = {|{
   "runtime_constraints": {
     "requested_execution_mode": "draft",
     "risk_class": "medium",
-    "allowed_mutations": ["keeper_fs_edit", "keeper_write"],
+    "allowed_mutations": ["tool_edit_file"],
     "review_requirement": null
   },
   "eval_criteria": {
@@ -37,12 +37,12 @@ let cdal_proof_v1_json = {|{
   "mode_decision_source": "risk_class_downgrade",
   "risk_class": "high",
   "provider_snapshot": {
-    "provider_name": "glm",
-    "model_id": "glm-4-plus",
+    "provider_name": "provider_k",
+    "model_id": "provider_k-4-plus",
     "api_version": null
   },
   "capability_snapshot": {
-    "tools": ["keeper_read", "keeper_fs_edit", "keeper_bash"],
+    "tools": ["keeper_read", "tool_edit_file", "tool_execute"],
     "mcp_servers": [],
     "max_turns": 3,
     "max_tokens": null,
@@ -69,13 +69,18 @@ let test_risk_contract_fixture () =
     check string "risk_class" "medium"
       (RK.to_string rc.runtime_constraints.risk_class);
     check (list string) "allowed_mutations"
-      ["keeper_fs_edit"; "keeper_write"]
+      ["tool_edit_file"]
       rc.runtime_constraints.allowed_mutations;
     check bool "review_requirement is None"
       true (Option.is_none rc.runtime_constraints.review_requirement);
-    (* eval_criteria is opaque JSON — just verify it roundtrips *)
+    (* eval_criteria is typed (RFC-0109 Phase A). The fixture shape doesn't
+       match a typed variant, so it decodes to [Criteria.Free]. Project back
+       to JSON to walk the legacy fixture fields. *)
+    let criteria_json =
+      Masc_mcp_cdal_runtime.Risk_contract.eval_criteria_to_yojson rc.eval_criteria
+    in
     let contract_id_opt =
-      Yojson.Safe.Util.(member "contract_id" rc.eval_criteria |> to_string_option)
+      Yojson.Safe.Util.(member "contract_id" criteria_json |> to_string_option)
     in
     check (option string) "eval_criteria.contract_id"
       (Some "dc-fixture-001") contract_id_opt
@@ -98,8 +103,8 @@ let test_cdal_proof_fixture () =
     check string "mode_decision_source" "risk_class_downgrade"
       proof.mode_decision_source;
     check string "risk_class" "high" (RK.to_string proof.risk_class);
-    check string "provider" "glm" proof.provider_snapshot.provider_name;
-    check string "model_id" "glm-4-plus" proof.provider_snapshot.model_id;
+    check string "provider" "provider_k" proof.provider_snapshot.provider_name;
+    check string "model_id" "provider_k-4-plus" proof.provider_snapshot.model_id;
     check int "tool_trace_refs count" 1 (List.length proof.tool_trace_refs);
     check bool "result_status is Completed" true
       (proof.result_status = Proof.Completed)

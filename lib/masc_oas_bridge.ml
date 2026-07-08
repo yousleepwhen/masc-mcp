@@ -10,13 +10,19 @@
     [caller] (#10094) is a free-form identifier ("auto_responder",
     "tool_deep_review", ...) that flows into the timeout label so
     operators can distinguish fantasy budgets from intentional ones
-    when both fire timeouts in the same session.  Defaults to
-    "unknown" so legacy callers still compile; new code should
+    when both fire timeouts in the same session.  Callers must
     pass [~caller] explicitly or use {!run_with_caller}, which
     accepts a typed caller and pulls the configured budget from
     [Env_config_oas_bridge]. *)
-let run_safe ?(caller = "unknown") ~timeout_s fn =
-  if not (Float.is_finite timeout_s) || Float.compare timeout_s 0.0 <= 0 then
+let min_timeout_s = 0.0
+let routine_cancel_inner_substring = "Eio__core__Fiber.Not_first"
+
+let is_routine_fast_cancel ~bucket ~inner_str =
+  String.equal bucket "fast"
+  && String_util.contains_substring inner_str routine_cancel_inner_substring
+
+let run_safe ~caller ~timeout_s fn =
+  if not (Float.is_finite timeout_s) || Float.compare timeout_s min_timeout_s <= 0 then
     invalid_arg
       (Printf.sprintf
          "Masc_oas_bridge.run_safe: timeout_s must be positive and finite \
@@ -40,7 +46,14 @@ let run_safe ?(caller = "unknown") ~timeout_s fn =
   let do_timeout fn =
     match clock_opt with
     | Some clock -> Eio.Time.with_timeout_exn clock timeout_s fn
-    | None -> fn ()
+    | None ->
+      (* #18476: defensive — server bootstrap always provides a clock,
+         but if reached without one, the timeout is unenforceable. *)
+      Log.Misc.warn
+        "masc_oas_bridge.run_safe: no Eio clock available, running \
+         without timeout enforcement (caller=%s, budget=%.1fs)"
+        caller timeout_s;
+      fn ()
   in
   try
     do_timeout fn
@@ -51,15 +64,29 @@ let run_safe ?(caller = "unknown") ~timeout_s fn =
        lines alone collapsed all 27 [auto_responder] 60s-timeouts
        and the 1 [tool_deep_review] 180s-timeout into the same
        "after N.Ns" string. *)
+    let wall = elapsed () in
     Prometheus.inc_counter
       Prometheus.metric_oas_bridge_timeout
       ~labels:[
         ("caller", caller);
         ("timeout_s", Printf.sprintf "%.1f" timeout_s);
       ] ();
-    Log.Misc.warn
-      "masc_oas_bridge: OAS execution timed out after %.1fs (caller=%s)"
-      timeout_s caller;
+    (* #18476: wall-clock overshoot detection. Eio cancel propagation
+       through the cascade runner's nested Switch layers can take
+       significant time after the budget fires.  Log the overshoot
+       ratio so operators can distinguish "timeout fired at 45s" from
+       "timeout fired but cleanup took 121s". *)
+    let overshoot_ratio = wall /. timeout_s in
+    if overshoot_ratio > 2.0 then
+      Log.Misc.warn
+        "masc_oas_bridge: timeout overshoot — budget=%.1fs wall=%.1fs \
+         (ratio=%.1fx, caller=%s). Cancel propagation through cascade \
+         runner Switch hierarchy is delayed."
+        timeout_s wall overshoot_ratio caller
+    else
+      Log.Misc.warn
+        "masc_oas_bridge: OAS execution timed out after %.1fs (caller=%s, wall=%.1fs)"
+        timeout_s caller wall;
     Error (Agent_sdk.Error.Api (Timeout { message = Printf.sprintf "Execution timed out after %.1fs" timeout_s }))
   | Eio.Cancel.Cancelled inner_exn as exn ->
     (* Mirror of #10942 (keeper_llm_bridge) for masc_oas_bridge: same opaque
@@ -89,21 +116,32 @@ let run_safe ?(caller = "unknown") ~timeout_s fn =
         ("caller", caller);
         ("bucket", bucket);
       ] ();
-    Log.Misc.warn
-      "masc_oas_bridge: OAS execution cancelled caller=%s wall=%.1fs bucket=%s inner=%s (re-raising)"
-      caller wall bucket inner_str;
+    if is_routine_fast_cancel ~bucket ~inner_str then
+      Log.Misc.info
+        "masc_oas_bridge: OAS execution cancelled caller=%s wall=%.1fs bucket=%s inner=%s (re-raising)"
+        caller wall bucket inner_str
+    else
+      Log.Misc.warn
+        "masc_oas_bridge: OAS execution cancelled caller=%s wall=%.1fs bucket=%s inner=%s (re-raising)"
+        caller wall bucket inner_str;
     Printexc.raise_with_backtrace exn bt
   | exn ->
     let bt = Printexc.get_backtrace () in
     Log.Misc.error "masc_oas_bridge: OAS execution error (caller=%s): %s\n%s"
       caller (Printexc.to_string exn) bt;
-    Error (Agent_sdk.Error.Internal (Printexc.to_string exn))
+    (* RFC-0159 Phase A: emit typed [Internal_bridge_exception] so the
+       classifier can route bridge-boundary failures off the
+       [Reason_internal_error] catch-all. *)
+    Error
+      (Cascade_error_classify.sdk_error_of_masc_internal_error
+         (Cascade_error_classify.Internal_bridge_exception
+            { caller; exn_repr = Printexc.to_string exn }))
 
 (** [run_with_caller ~caller fn] — single entry point that resolves
     the per-caller timeout from [Env_config_oas_bridge] and labels
     the resulting Prometheus counter.  Replaces the seven hardcoded
     [run_safe ~timeout_s:N.N] literals scattered across the lib
-    tree.  The original tuned values for autoresearch / deep_review
+    tree.  The original tuned values for persona authoring / deep_review
     / anti_rationalization are preserved as per-caller defaults;
     the two fantasy 60s budgets ([auto_responder],
     [dashboard_provider_runs]) are raised to the global default

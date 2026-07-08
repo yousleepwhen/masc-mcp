@@ -5,7 +5,9 @@
 > and the `record_pre_dispatch_terminal_observation` receipt path
 > after Step 0a wired `keeper_turn_id` into every silent skip site.
 
-## Sequence
+## Autonomous cycle sequence
+
+This is the heartbeat-scheduled path. The supervisor launches a keepalive fiber that loops until `fiber_stop` is set.
 
 ```mermaid
 sequenceDiagram
@@ -45,6 +47,148 @@ sequenceDiagram
         end
     end
 ```
+
+## Keepalive autonomous cycle flow
+
+The scheduling loop that sits above the lifecycle phase FSM. Presence, snapshot, event intake, world observation, admission, and dispatch run in order until the fiber is stopped.
+
+```mermaid
+flowchart TD
+    A[Supervisor launches keepalive fiber] --> B[run_heartbeat_loop]
+    B --> C{fiber_stop?}
+    C -- yes --> Z[exit; supervisor dispatches Stop_requested/Drain_complete]
+    C -- no --> D[fair_yield + read changed keeper meta]
+    D --> E[repair identity drift and sync registry meta]
+    E --> F{smart heartbeat gate}
+    F -- Skip_idle and no wake/signal --> B
+    F -- Emit/Skip_busy/woken --> G[sync room presence / heartbeat_ok or heartbeat_failed]
+    G --> H{consecutive heartbeat failures over threshold?}
+    H -- yes --> X[set failure reason; raise Keeper_fiber_crash]
+    H -- no --> I[expire approval queue; maybe write heartbeat snapshot]
+    I --> J[collect board events and event queue stimuli]
+    J --> K[world observation + scheduling decision]
+    K --> L{should_run_turn?}
+    L -- no --> M[record skip reasons / backpressure / cursor updates]
+    L -- yes --> N[FD/disk/admission gates]
+    N -- blocked --> M
+    N -- admitted --> O[with_keeper_turn_slot]
+    O --> P[Keeper_unified_turn.run_keeper_cycle]
+    P --> Q[OAS-backed keeper turn path]
+    Q --> R[refresh work-as-heartbeat; recurring dispatch; stage timing]
+    M --> R
+    R --> B
+    X --> Y[Supervisor records crash, lifecycle Crashed, recovery sweep may restart]
+```
+
+## Direct keeper message turn
+
+This path bypasses the heartbeat scheduling loop entirely. `masc_keeper_msg` family calls enter through `Keeper_turn.handle_keeper_msg`, run preflight, and then call `Keeper_agent_run.run_turn` directly. The same OAS/cascade/tool/context engine is used internally.
+
+```mermaid
+flowchart TD
+    A[keeper_msg args] --> B[preflight_keeper_msg]
+    B --> C{name/message/direct_reply valid? keeper exists?}
+    C -- no --> X[typed error JSON]
+    C -- yes --> D[resolve cascade name from live catalog]
+    D --> E[resilience/API-key/local endpoint preflight]
+    E --> F[build prompt callback]
+    F --> G[dynamic context: recovery snapshot, long-term memory, skills, worktree changes, telemetry, turn instructions, required tools]
+    G --> H[Keeper_agent_run.run_turn]
+    H --> I[prepare_run_context: inference params, session dir, checkpoint, base prompt, pre-dispatch compaction]
+    I --> J[build_turn_context: sanitize user, memory/temporal context, append user]
+    J --> K[prepare_agent_setup: tool surface, hooks, reducer, memory hooks]
+    K --> L[Keeper_turn_driver.run_named]
+    L --> M[OAS Agent/Pipeline loop]
+    M --> N[post-run contracts, state snapshot, checkpoint, memory write, receipt]
+    N --> O[metrics snapshot + lifecycle/broadcast + keepalive wake + response JSON]
+```
+
+## Unified turn swimlane
+
+The two admission paths converge on the same execution engine. The diagram below places supervisor, heartbeat, direct message, and the shared `run_turn` + receipt path in a single sequence so the boundary between scheduling and dispatch is explicit.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant S as Supervisor
+    participant H as Heartbeat loop
+    participant D as Direct msg handler
+    participant P as Phase / Preflight gate
+    participant C as Cascade Router
+    participant R as run_turn
+    participant T as Tool / Provider
+    participant E as Receipt
+
+    rect rgb(240,240,240)
+        Note over S,H: Autonomous path
+        S->>H: launch keepalive fiber
+        H->>H: world observation + should_run_turn?
+        alt turn denied
+            H->>P: record skip reason
+            P-->>E: record_pre_dispatch_terminal_observation outcome=skipped
+            E-->>H: cursor update
+        else turn admitted
+            H->>P: FD / disk / admission gates
+            alt gate blocks
+                P-->>E: record_pre_dispatch_terminal_observation outcome=error
+                E-->>H: backpressure
+            else gate admits
+                P->>C: select_cascade
+                alt cascade unavailable
+                    C-->>E: record_pre_dispatch_terminal_observation outcome=error
+                    E-->>H: Error
+                else cascade ok
+                    C->>R: Keeper_agent_run.run_turn
+                end
+            end
+        end
+    end
+
+    rect rgb(245,245,245)
+        Note over S,D: Direct path
+        S->>D: masc_keeper_msg
+        D->>D: preflight (name/message/keeper exists?)
+        alt preflight fails
+            D-->>D: typed error JSON
+        else preflight ok
+            D->>C: resolve cascade from live catalog
+            C->>R: Keeper_agent_run.run_turn (bypass phase gate)
+        end
+    end
+
+    rect rgb(250,250,250)
+        Note over R,E: Common execution + receipt
+        R->>T: stream tokens + tool calls
+        T-->>R: results
+        alt stop_reason / done
+            R->>E: append receipt outcome=done
+        else contract violation
+            R->>E: append receipt outcome=failed
+        else cancelled
+            R->>E: append receipt outcome=cancelled
+        end
+        E-->>H: wake keepalive
+        E-->>D: response JSON
+    end
+```
+
+**Invariant**: Both paths set `oas_dispatch_mode = Single_provider_agent_run` on the keeper-managed cascade engine. The keeper hot path never delegates provider fallback to an OAS internal cascade. This is enforced at runtime by `Keeper_cascade_engine.guard_keeper_hot_path` and pinned in `test/test_keeper_cascade_engine_guard.ml`.
+
+## Autonomous vs Direct comparison
+
+| Dimension | Autonomous cycle | Direct keeper message turn |
+|---|---|---|
+| Trigger | Heartbeat tick / scheduling decision | `masc_keeper_msg` direct request |
+| Scheduling | `run_heartbeat_loop` admits turn after world observation | Immediate preflight then dispatch |
+| Entry point | `Keeper_unified_turn.run_keeper_cycle` | `Keeper_turn.handle_keeper_msg` |
+| Phase gate | Yes — skipped if phase blocks turn | No — direct turn is phase-agnostic but still checks keeper existence |
+| Cascade selection | Same `cascade.toml` based resolution | Same `cascade.toml` based resolution |
+| OAS dispatch mode | `Single_provider_agent_run` (enforced) | `Single_provider_agent_run` (enforced) |
+| Tool surface | Same `compute_tool_surface` + OAS hooks | Same `compute_tool_surface` + OAS hooks |
+| Receipt | Same `Keeper_execution_receipt` append | Same `Keeper_execution_receipt` append |
+| Lifecycle wake | Returns into keepalive loop | Wakes keepalive so next cycle picks up state change |
+
+Both paths share `Keeper_agent_run.run_turn` as the common execution engine. The difference is strictly in admission: heartbeat-scheduled vs request-triggered.
 
 ## State machine
 
@@ -116,7 +260,7 @@ correlator the receipt does.
 ## Tooling
 
 - **`bin/masc-trace <base-path> <keeper> <turn_id>`** (#11168) — reads
-  `~/.masc/keepers/<keeper>/execution-receipts/*.jsonl` and prints every
+  `<base-path>/.masc/keepers/<keeper>/execution-receipts/*.jsonl` and prints every
   row that matches the turn id.  First source the receipt path already
   populates; subsequent stacks widen to `tool_calls/` and `system_log_*`.
 
@@ -126,7 +270,7 @@ correlator the receipt does.
   fall-back is no longer the first signal an operator sees.
 
 - **`Cascade_catalog_validator.codex_with_bound_actor_only_issue`** (#11164)
-  — boot-time warn for cascades that include `codex_cli` without a
+  — boot-time warn for cascades that include `cli-tool-a` without a
   bound-actor-tolerant fallback.  Surfaces the misconfiguration once
   instead of paying per-turn `no_tool_capable_provider` events.
 
@@ -140,6 +284,9 @@ correlator the receipt does.
   `docs/keeper-fsm-graph.dot`.
 
 ## Open work
+
+> OAS hardening checklist #6 — Direct vs autonomous turn docs refresh — completed by adding the Unified turn swimlane and the `oas_dispatch_mode` invariant note.
+> Checklist #18 — OAS internal cascade regression guard test — completed in `test/test_keeper_cascade_engine_guard.ml`.
 
 | Plan step | Adds | Status |
 |---|---|---|
@@ -155,6 +302,21 @@ correlator the receipt does.
 | Step 7 | TLA+ spec mirroring this diagram | merged (#11190, #11198, #11199, #11225) |
 | Step 6b-1 | `Keeper_contract_classifier.classify_actionable_signal` helper (additive) | merged (#11217) |
 | Step 6b-2 | Replace `String_util.contains_substring_ci` heuristic at `keeper_agent_run.ml:2285-2298` with the typed helper (RISKY — turn-accept distribution change, needs dual-emit window) | pending |
+
+## External comparison
+
+MASC sits in a different product category from general-purpose agent SDKs. Keeping the positioning explicit prevents design decisions from drifting toward runner-centric or workspace-centric assumptions that do not fit an operator-governed control plane.
+
+| Product family | Center of gravity | Turn model | Cascade ownership | Memory model | Operator surface |
+|---|---|---|---|---|---|
+| Agent-LLM-A Agent SDK | Runner / session | `Agent.run` loop with tool callbacks | OAS internal cascade | Session-scoped context + optional memory | Weak — run-level events only |
+| Provider-D Agents SDK | Runner / session | `Runner.run` pipeline with handoffs | OAS internal cascade | Thread + vector store | Weak — run-level traces |
+| Google ADK | Runner / agent graph | Event-loop with stateful agents | Model routing per agent | Session memory + artifacts | Medium — deployment + evaluation |
+| OpenClaw | Workspace / orchestrator | Plan-execute with tool registry | Workspace-level fallback | Long-term memory bank + compression | Strong — workspace governance |
+| Hermes | Workspace / skills | Skill-based execution graph | Provider fallback per skill | Context files + skill memory | Medium — provider + skill management |
+| **MASC** | **Supervisor / cascade** | Heartbeat-scheduled autonomous cycle + direct `masc_keeper_msg` | **MASC-owned** `Keeper_cascade_engine` selects single-provider OAS runs | Three-layer: OAS checkpoint, MASC receipt/snapshot, memory hooks | **Strong** — registry phase, FSM, runtime manifest, receipt, lens, audit ring |
+
+**Design implication**: When a feature request sounds like "add session memory" or "enable automatic provider fallback", the first question is which layer owns it. Session memory belongs to the OAS checkpoint layer. Automatic provider fallback belongs to the OAS cascade layer. MASC adds value by supervising, governing, and receipting those layers, not by reimplementing them.
 
 ## References
 

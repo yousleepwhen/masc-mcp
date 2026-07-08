@@ -14,8 +14,7 @@
       search, comment_vote, reaction, profile, hearth_list,
       curation_read, delete),
     - the {b truncated-markdown detector}
-      ({!detect_truncated_markdown} +
-      {!detect_truncated_markdown_with_reason}) used by
+      ({!detect_truncated_markdown_with_reason}) used by
       the post-create path to flag chat-suffix paste
       accidents,
     - the {b sort-order parser} ({!parse_sort_order})
@@ -24,7 +23,7 @@
     Internal helpers stay private at this boundary
     ([board_list_cache] type + the cache cell, the
     [cached_board_list] adapter, [strip_state_blocks_text],
-    [tool_result] type alias, [format_ttl_remaining],
+    [format_ttl_remaining],
     [agent_lookup_hook] atomic ref,
     [resolve_board_post_kind], [format_post] /
     [format_post_compact] / [format_comment] /
@@ -66,11 +65,6 @@ val detect_truncated_markdown_with_reason :
     reason in the response when a paste appears
     truncated. *)
 
-val detect_truncated_markdown : string -> bool
-(** Boolean form — true iff
-    {!detect_truncated_markdown_with_reason} returns a
-    [Some]. *)
-
 (** {1 Sort order} *)
 
 type sort_order = Board_dispatch.sort_order =
@@ -85,8 +79,7 @@ type sort_order = Board_dispatch.sort_order =
 
 val parse_sort_order : string -> (sort_order, string) Result.t
 (** Delegates to
-    {!Board_dispatch.sort_order_of_string_opt} (canonical
-    + documented aliases [new] / [active] / [comments]).
+    {!Board_dispatch.sort_order_of_string_opt} for canonical sort names.
     Error message lists
     {!Board_dispatch.valid_sort_order_strings} so adding
     a constructor automatically updates the user-facing
@@ -152,13 +145,17 @@ val tools : Masc_domain.tool_schema list
 
 (** {1 Tool dispatcher} *)
 
-val handle_tool : string -> Yojson.Safe.t -> Tool_result.t
+val handle_tool : string -> Yojson.Safe.t -> Tool_result.result
+(** RFC-0189 PR-1b.4 — [handle_tool] returns typed [Tool_result.result]
+    end-to-end. Legacy [Tool_result.result] projection lives at the
+    {!Tool_dispatch.handler} registration boundary inside {!register},
+    so external callers (MCP transport) see no behavior change. *)
 (** Routes [name] to the matching internal handler.
     Mutation tools (post / comment / vote / delete /
     cleanup) automatically invoke
     {!invalidate_board_list_cache} on completion so the
     next [masc_board_list] reads fresh data.  Returns a
-    {!Tool_result.t} carrying success flag, structured
+    {!Tool_result.result} carrying success flag, structured
     payload, tool name, and elapsed duration. *)
 
 (** {1 Registry installation} *)

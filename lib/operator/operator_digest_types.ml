@@ -43,8 +43,6 @@ type recommended_action = {
 }
 
 let stalled_session_threshold_sec = Env_config.InternalTimers.stalled_session_threshold_sec
-let planned_worker_turn_grace_sec = 180.0
-let room_digest_session_limit = 10
 
 let severity_rank = function
   | Sev_critical -> 3
@@ -138,7 +136,7 @@ let summary_of_attention_items (items : attention_item list) =
       ("count", `Int (List.length sorted));
       ("bad_count", `Int bad_count);
       ("warn_count", `Int warn_count);
-      ("top_item", option_to_json attention_item_to_yojson top_item);
+      ("top_item", Json_util.option_to_yojson attention_item_to_yojson top_item);
       ("provenance", `String "derived");
       ("authoritative", `Bool false);
     ]
@@ -170,23 +168,18 @@ let summary_of_recommendations ~actor (items : recommended_action list) =
     [
       ("count", `Int (List.length sorted));
       ( "top_action",
-        option_to_json (recommended_action_to_yojson ~actor) top_item );
+        Json_util.option_to_yojson (recommended_action_to_yojson ~actor) top_item );
       ("provenance", `String "fallback");
       ("authoritative", `Bool false);
     ]
 
-(** [is_root_alias v] is true when [v] matches the canonical "root" target
-    type or its backward-compat aliases "namespace"/"room". *)
-let is_root_alias value =
-  String.equal value "root"
-  || String.equal value "namespace"
-  || String.equal value "room"
+(** [is_root_target_type v] is true when [v] matches the canonical "root" target type. *)
+let is_root_target_type value = String.equal value "root"
 
 let normalize_digest_target_type value =
   match value with
   | Some raw ->
       let normalized = String.trim raw |> String.lowercase_ascii in
-      if is_root_alias normalized then Ok "root"
+      if is_root_target_type normalized then Ok "root"
       else Error "target_type must be root"
   | None -> Ok "root"
-

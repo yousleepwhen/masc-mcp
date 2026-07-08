@@ -17,6 +17,7 @@ import { Surf } from './surf'
 import type { KeeperConversationEntry } from '../types'
 import { shellAuthSummary } from '../store'
 import { keeperDirectChatAccess } from '../lib/keeper-chat-access'
+import { errorToString } from '../lib/format-string'
 
 export interface ChatMessage {
   role: 'user' | 'assistant'
@@ -68,7 +69,7 @@ export function isKeeperTextContentEvent(
   event: KeeperChatStreamEvent,
 ): event is KeeperChatStreamEvent & { delta: string } {
   return (
-    (event.type === 'TEXT_MESSAGE_CONTENT' || event.type === 'TEXT_DELTA')
+    event.type === 'TEXT_MESSAGE_CONTENT'
     && typeof event.delta === 'string'
     && event.delta.length > 0
   )
@@ -171,7 +172,7 @@ export function KeeperChatPanel({ name }: { name: string }) {
         // Surface via chatError so the operator distinguishes "no
         // history yet" from "load failed" in the UI.
         if (stale) return
-        const msg = err instanceof Error ? err.message : String(err)
+        const msg = errorToString(err)
         chatError.value = `이전 대화 불러오기 실패: ${msg}`
       })
     return () => { stale = true }
@@ -257,7 +258,7 @@ export function KeeperChatPanel({ name }: { name: string }) {
           onDraftChange=${(value: string) => { chatInput.value = value }}
           onSend=${() => {
             if (chatAccess.blocked) {
-              showToast(chatAccess.message ?? '직접 통신 권한이 없습니다.', 'error')
+              showToast(chatAccess.message, 'error')
               return
             }
             void sendChat(name)

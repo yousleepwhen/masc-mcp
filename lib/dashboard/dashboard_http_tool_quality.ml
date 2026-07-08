@@ -22,7 +22,6 @@ let normalize_failure_text (text : string) : string =
       ("ambiguous_relative_read_path:", "ambiguous_relative_read_path");
       ("cwd_not_directory:", "cwd_not_directory");
       ("path blocked:", "path_blocked");
-      ("path syntax blocked:", "path_syntax_blocked");
       ("query looks like it may contain secrets", "query_secret_like");
       ("web search rate limit exceeded", "web_search_rate_limit");
       ("all web search providers failed", "web_search_provider_failure");
@@ -73,32 +72,76 @@ let classify_failure_output (output : string) : string =
     in
     match Yojson.Safe.from_string json_str with
     | j ->
-      (match Safe_ops.json_string_opt "error" j |> Option.map String.trim with
-       | Some "command_blocked_readonly" ->
-         let category =
-           Safe_ops.json_string_opt "category" j |> Option.value ~default:"unknown"
-         in
-         Printf.sprintf "command_blocked_readonly:%s" category
-       | Some error when error <> "" -> normalize_failure_text error
+      let semantic_status =
+        Safe_ops.json_string_opt "semantic_status" j |> Option.map String.trim
+      in
+      let failure_class =
+        Safe_ops.json_string_opt "failure_class" j |> Option.map String.trim
+      in
+      let diagnosis = Yojson.Safe.Util.member "diagnosis" j in
+      let diagnosis_rule =
+        Safe_ops.json_string_opt "rule_id" diagnosis |> Option.map String.trim
+      in
+      let fallback_category () =
+        match Safe_ops.json_string_opt "error" j |> Option.map String.trim with
+        | Some "command_blocked_readonly" ->
+          (* The block payload normally carries a [category] string
+             naming which readonly policy rule fired (e.g. "write",
+             "exec", "network").  Dashboard groups on the full key
+             [command_blocked_readonly:<category>], so a bare "unknown"
+             tells the operator the rule fired but hides which policy
+             class.  Use a structured marker so the operator can grep
+             the source events and find the producer that omitted the
+             field. *)
+          let category =
+            Safe_ops.json_string_opt "category" j
+            |> Option.value ~default:"<missing category field>"
+          in
+          Printf.sprintf "command_blocked_readonly:%s" category
+        | Some error when error <> "" -> normalize_failure_text error
+        | _ ->
+          (match Safe_ops.json_string_opt "message" j |> Option.map String.trim with
+           | Some message when message <> "" -> normalize_failure_text message
+           | _ ->
+             classify_process_status j |> Option.value ~default:"unknown_error")
+      in
+      (match Safe_ops.json_string_opt "shape_block" j |> Option.map String.trim with
+       | Some shape when shape <> "" -> "shape_block:" ^ shape
        | _ ->
-         match Safe_ops.json_string_opt "message" j |> Option.map String.trim with
-         | Some message when message <> "" -> normalize_failure_text message
-         | _ ->
-           classify_process_status j
-           |> Option.value ~default:"unknown_error")
+         (match diagnosis_rule with
+          | Some rule when rule <> "" -> normalize_failure_text rule
+          | _ ->
+            (match failure_class, semantic_status with
+             | Some "workflow_rejection", Some "blocked" -> "workflow_rejection:blocked"
+             | _, Some (("timeout" | "runtime_error" | "partial") as status) ->
+               "semantic_status:" ^ status
+             | _ -> fallback_category ())))
     | exception Yojson.Json_error _ -> "parse_error"
 
 let bucket_key record field ~default =
   Safe_ops.json_string_opt field record |> Option.value ~default
 
+let cascade_bucket_key record =
+  match Safe_ops.json_string_opt "cascade_profile" record with
+  | Some value when String.trim value <> "" -> value
+  | _ ->
+    let runtime_contract = Yojson.Safe.Util.member "runtime_contract" record in
+    (match Safe_ops.json_string_opt "cascade_profile" runtime_contract with
+     | Some value when String.trim value <> "" -> value
+     | _ -> "runtime")
+
+(* Split the two failure modes that previously collapsed to the
+   bare "unknown" bucket so a non-zero count on either tells the
+   operator a distinct producer fix: missing/non-bool field vs
+   non-object record envelope. *)
 let thinking_mode_of_record record =
   match record with
   | `Assoc fields ->
     (match List.assoc_opt "thinking_enabled" fields with
      | Some (`Bool true) -> "enabled"
      | Some (`Bool false) -> "disabled"
-     | _ -> "unknown")
-  | _ -> "unknown"
+     | _ -> "<missing thinking_enabled field>")
+  | _ -> "<non-object record envelope>"
 
 let bool_field_opt record field =
   match record with
@@ -137,8 +180,8 @@ let hour_key_of_record record =
      | Some (`Int i) -> hour_of_unix (Float.of_int i)
      | Some (`String s) when String.length s >= 13 -> String.sub s 0 13
      | Some (`String s) -> s
-     | _ -> "unknown")
-  | _ -> "unknown"
+     | _ -> "<missing or non-numeric ts field>")
+  | _ -> "<non-object record envelope>"
 
 let update_rate_table table key ok =
   let key = if String.trim key = "" then "unknown" else key in
@@ -196,6 +239,7 @@ let empty_summary ~window_hours ~n ~sampling_mode =
     ; ("success_rate", `Float 0.0)
     ; ("by_tool", `List [])
     ; ("by_keeper", `List [])
+    ; ("by_cascade", `List [])
     ; ("by_model", `List [])
     ; ("by_lane", `List [])
     ; ("by_thinking_mode", `List [])
@@ -231,6 +275,9 @@ let aggregate ?(n = 5000) ?window_hours () : Yojson.Safe.t =
     Hashtbl.create 16
   in
   (* model/lane/thinking/tool_choice -> (calls, successes) *)
+  let cascade_stats : (string, int ref * int ref) Hashtbl.t =
+    Hashtbl.create 16
+  in
   let model_stats : (string, int ref * int ref) Hashtbl.t =
     Hashtbl.create 16
   in
@@ -250,13 +297,20 @@ let aggregate ?(n = 5000) ?window_hours () : Yojson.Safe.t =
   let failure_cats : (string, int ref) Hashtbl.t = Hashtbl.create 32 in
   List.iter (fun record ->
     incr total;
+    (* [tool] and [keeper] become bucket keys in the dashboard
+       histogram.  A bare "unknown" bucket appears in the same column
+       as a legitimate tool named "unknown", so the operator cannot
+       tell "the tool field was missing from N records" apart from
+       "tool 'unknown' was invoked N times".  Use structured markers
+       so a non-zero bucket on either is a producer-side fix
+       signal. *)
     let tool =
       Safe_ops.json_string_opt "tool" record
-      |> Option.value ~default:"unknown"
+      |> Option.value ~default:"<missing tool field>"
     in
     let keeper =
       Safe_ops.json_string_opt "keeper" record
-      |> Option.value ~default:"unknown"
+      |> Option.value ~default:"<missing keeper field>"
     in
     let ok = tool_success_of_record record in
     let semantic_outcome = semantic_outcome_of_record record ~ok in
@@ -322,6 +376,7 @@ let aggregate ?(n = 5000) ?window_hours () : Yojson.Safe.t =
         Hashtbl.replace keeper_stats keeper v; v
     in
     incr kc; if ok then incr ks;
+    update_rate_table cascade_stats (cascade_bucket_key record) ok;
     update_rate_table model_stats (bucket_key record "model" ~default:"unknown") ok;
     update_rate_table lane_stats (bucket_key record "lane" ~default:"unknown") ok;
     update_rate_table thinking_mode_stats (thinking_mode_of_record record) ok;
@@ -392,6 +447,7 @@ let aggregate ?(n = 5000) ?window_hours () : Yojson.Safe.t =
   let by_keeper =
     render_rate_table ~field:"name" keeper_stats
   in
+  let by_cascade = render_rate_table ~field:"name" cascade_stats in
   let by_model = render_rate_table ~field:"name" model_stats in
   let by_lane = render_rate_table ~field:"name" lane_stats in
   let by_thinking_mode =
@@ -447,6 +503,7 @@ let aggregate ?(n = 5000) ?window_hours () : Yojson.Safe.t =
     ("success_rate", `Float (Float.round (rate *. 100.0) /. 100.0));
     ("by_tool", `List by_tool);
     ("by_keeper", `List by_keeper);
+    ("by_cascade", `List by_cascade);
     ("by_model", `List by_model);
     ("by_lane", `List by_lane);
     ("by_thinking_mode", `List by_thinking_mode);

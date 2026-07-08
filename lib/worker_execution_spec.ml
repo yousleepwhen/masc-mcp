@@ -14,15 +14,15 @@ type t = {
   timeout_sec : int;
 }
 
-let option_to_yojson to_json = function
-  | Some value -> to_json value
-  | None -> `Null
-
 let required_trimmed_string field = function
   | `String value ->
       let trimmed = String.trim value in
       if trimmed = "" then Error (field ^ " must not be empty") else Ok trimmed
-  | _ -> Error (field ^ " must be a string")
+  | `Null -> Error (Printf.sprintf "%s is required (got null)" field)
+  | other ->
+      Error
+        (Printf.sprintf "%s must be a string, got %s: %s" field
+           (Json_util.kind_name other) (Json_util.excerpt other))
 
 let option_string json =
   match json with
@@ -71,12 +71,12 @@ let to_yojson (spec : t) =
       ("base_path", `String spec.base_path);
       ("worker_name", `String spec.worker_name);
       ("model_label", `String spec.model_label);
-      ("working_dir", option_to_yojson (fun s -> `String s) spec.working_dir);
+      ("working_dir", Json_util.option_to_yojson (fun s -> `String s) spec.working_dir);
       ("runtime_backend", Worker_execution_backend.to_yojson spec.runtime_backend);
-      ("thinking_enabled", option_to_yojson (fun v -> `Bool v) spec.thinking_enabled);
-      ("worker_run_id", option_to_yojson (fun s -> `String s) spec.worker_run_id);
-      ("role", option_to_yojson (fun s -> `String s) spec.role);
-      ("selection_note", option_to_yojson (fun s -> `String s) spec.selection_note);
+      ("thinking_enabled", Json_util.option_to_yojson (fun v -> `Bool v) spec.thinking_enabled);
+      ("worker_run_id", Json_util.option_to_yojson (fun s -> `String s) spec.worker_run_id);
+      ("role", Json_util.option_to_yojson (fun s -> `String s) spec.role);
+      ("selection_note", Json_util.option_to_yojson (fun s -> `String s) spec.selection_note);
       ("prompt", `String spec.prompt);
       ("timeout_sec", `Int spec.timeout_sec);
     ]
@@ -124,5 +124,16 @@ let of_yojson (json : Yojson.Safe.t) =
        with
        | Yojson.Json_error msg -> Error ("worker execution spec JSON error: " ^ msg)
        | Type_error (msg, _) -> Error ("worker execution spec type error: " ^ msg)
-       | Failure msg -> Error msg)
-  | _ -> Error "worker execution spec must be a JSON object"
+       (* Context-label the bare Failure so the operator reading the log
+          can tell a worker-spec parse failure apart from any other
+          [failwith] / [int_of_string] failure that bubbles up from
+          downstream helpers. *)
+       | Failure msg ->
+           Error
+             (Printf.sprintf
+                "worker execution spec: parse step raised Failure (%s)"
+                msg))
+  | other ->
+      Error
+        (Printf.sprintf "worker execution spec must be a JSON object, got %s: %s"
+           (Json_util.kind_name other) (Json_util.excerpt other))

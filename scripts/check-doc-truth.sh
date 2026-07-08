@@ -66,19 +66,25 @@ extract_single() {
 scripts/check-version-truth.sh
 
 package_version="$(extract_single '^> Current package version: v\([^ ]*\).*$' ROADMAP.md)"
+roadmap_published_release="$(extract_single '^> Latest published GitHub release: v\([^ ]*\).*$' ROADMAP.md)"
 product_package_version="$(extract_single '^> Current package version: v\([^ ]*\).*$' docs/PRODUCT-OPERATING-PLAN.md)"
-product_latest_release="$(extract_single '^> Latest release: v\([^ ]*\).*$' docs/PRODUCT-OPERATING-PLAN.md)"
+product_changelog_entry="$(extract_single '^> Latest changelog entry: v\([^ ]*\).*$' docs/PRODUCT-OPERATING-PLAN.md)"
+product_published_release="$(extract_single '^> Latest published GitHub release: v\([^ ]*\).*$' docs/PRODUCT-OPERATING-PLAN.md)"
 spec_baseline="$(extract_single '^> Snapshot baseline: `dune-project` version `\([^`]*\)`$' docs/spec/SPEC-INDEX.md)"
 changelog_latest_release="$(sed -n 's/^## \[\([0-9][^]]*\)\].*/\1/p' CHANGELOG.md | head -n1)"
 
 [[ -n "$product_package_version" ]] || fail "missing current package version in docs/PRODUCT-OPERATING-PLAN.md"
-[[ -n "$product_latest_release" ]] || fail "missing latest release in docs/PRODUCT-OPERATING-PLAN.md"
+[[ -n "$product_changelog_entry" ]] || fail "missing latest changelog entry in docs/PRODUCT-OPERATING-PLAN.md"
+[[ -n "$roadmap_published_release" ]] || fail "missing latest published GitHub release in ROADMAP.md"
+[[ -n "$product_published_release" ]] || fail "missing latest published GitHub release in docs/PRODUCT-OPERATING-PLAN.md"
 [[ -n "$spec_baseline" ]] || fail "missing snapshot baseline in docs/spec/SPEC-INDEX.md"
 
 [[ "$package_version" == "$product_package_version" ]] || \
   fail "ROADMAP current package version ($package_version) != PRODUCT-OPERATING-PLAN current package version ($product_package_version)"
-[[ "$product_latest_release" == "$changelog_latest_release" ]] || \
-  fail "PRODUCT-OPERATING-PLAN latest release ($product_latest_release) != CHANGELOG latest release ($changelog_latest_release)"
+[[ "$product_changelog_entry" == "$changelog_latest_release" ]] || \
+  fail "PRODUCT-OPERATING-PLAN latest changelog entry ($product_changelog_entry) != CHANGELOG latest release ($changelog_latest_release)"
+[[ "$product_published_release" == "$roadmap_published_release" ]] || \
+  fail "PRODUCT-OPERATING-PLAN latest published release ($product_published_release) != ROADMAP latest published release ($roadmap_published_release)"
 [[ "$spec_baseline" == "$package_version" ]] || \
   fail "SPEC-INDEX snapshot baseline ($spec_baseline) != current package version ($package_version)"
 
@@ -90,7 +96,7 @@ require_not_contains docs/TUI-GUIDE.md './start-masc-mcp.sh --tui'
 require_contains docs/QUICK-START.md '"method":"initialize"'
 require_contains docs/QUICK-START.md 'Mcp-Session-Id: ${SESSION_ID}'
 require_contains docs/QUICK-START.md 'masc_join(agent_name="codex")'
-require_contains docs/QUICK-START.md '명시적인 `MASC_BASE_PATH`가 없으면 `HOME`을 implicit base path로 사용한다.'
+require_contains docs/QUICK-START.md '운영 기준은 항상 `<base-path>/.masc`다.'
 require_contains docs/QUICK-START.md 'scripts/release-evidence.sh _build/default/bin/main_eio.exe .release-evidence/local-release-evidence.md'
 
 require_contains README.md 'docs/RELEASE-EVIDENCE.md'
@@ -103,7 +109,7 @@ require_not_contains README.md 'dashboard#monitoring/sessions'
 require_not_contains README.md 'dashboard#command/intervene'
 
 require_contains docs/PRODUCT-OPERATING-PLAN.md 'Release evidence and local proof'
-require_contains docs/PRODUCT-OPERATING-PLAN.md 'Retired compatibility lanes and research material remain in-tree for history'
+require_contains docs/PRODUCT-OPERATING-PLAN.md 'Retired surfaces and proposal-only research material are deletion targets'
 
 require_contains docs/DASHBOARD-INTEGRATION.md '- `monitoring`'
 require_contains docs/DASHBOARD-INTEGRATION.md '- `connectors`'
@@ -115,16 +121,16 @@ require_not_contains docs/DASHBOARD-INTEGRATION.md '- `intervene`: mutating oper
 require_contains docs/spec/A-existing-doc-index.md '`docs/RELEASE-EVIDENCE.md` | Canonical'
 require_not_contains docs/spec/A-existing-doc-index.md '`docs/COMMAND-PLANE-RUNBOOK.md` | Canonical'
 
-require_contains docs/spec/SPEC-INDEX.md 'Historical compatibility lane과 internal orchestration reference는 migration context로만 남긴다.'
+require_contains docs/spec/SPEC-INDEX.md 'Retired orchestration surfaces and internal references remain only as migration context.'
 require_contains docs/spec/SPEC-INDEX.md '`06-command-plane.md` | Command Plane v2 | Internal command-plane reference and migration context | Historical |'
 require_not_contains docs/spec/SPEC-INDEX.md 'Keeper 자율 에이전트, Command Plane 오케스트레이션을 제공하며'
 
-require_contains docs/spec/06-command-plane.md '| Status | Historical Reference |'
-require_contains docs/spec/06-command-plane.md '현재 supported front door가 아닌 internal/historical reference subsystem'
+require_contains docs/spec/06-command-plane.md '| Status | Retired Historical Reference |'
+require_contains docs/spec/06-command-plane.md '삭제된 subsystem의 historical reference'
 
 require_contains docs/spec/01-system-overview.md 'MASC의 현재 canonical front door는 3가지다.'
 require_contains docs/spec/01-system-overview.md '### 7.3 Dashboard and Operator Read Visibility'
-require_contains docs/spec/01-system-overview.md 'Historical compatibility lane(team-session / command-plane HTTP)은 migration context로만 남아 있으며, supported front door로 취급하지 않는다.'
+require_contains docs/spec/01-system-overview.md 'Retired team-session / command-plane HTTP surfaces는 migration context로만 남아 있으며, supported front door로 취급하지 않는다.'
 
 require_contains docs/spec/09-server-transport.md 'GET /api/v1/activity/events'
 require_contains docs/spec/09-server-transport.md '`MASC_USE_H2` | `auto`'
@@ -135,7 +141,7 @@ require_not_contains docs/spec/09-server-transport.md '| Room | `/api/v1/room/*`
 require_not_contains docs/spec/09-server-transport.md '| Command Plane (R) |'
 
 require_contains docs/spec/10-dashboard.md '| `/api/v1/keepers/:name/config` | POST | Keeper config 수정 (PATCH semantic) |'
-require_contains docs/spec/10-dashboard.md 'command-plane.ts         -- Historical compatibility types'
+require_contains docs/spec/10-dashboard.md 'command-plane.ts         -- Retired command-plane type snapshots'
 require_contains docs/spec/10-dashboard.md '#monitoring?section=journey'
 require_contains docs/spec/10-dashboard.md '#command?section=operations'
 require_contains docs/spec/10-dashboard.md '#connectors?section=connector-status'

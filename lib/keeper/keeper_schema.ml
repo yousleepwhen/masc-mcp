@@ -9,7 +9,7 @@ module Persona_contract = Keeper_persona_authoring_contract
     -> Keeper_schema), so the test in [test_types.ml :: tool_preset_ssot]
     asserts these two lists stay in sync. *)
 let tool_preset_enum_strings =
-  [ "minimal"; "social"; "messaging"; "dispatch"; "coding"; "research"; "delivery"; "full" ]
+  [ "minimal"; "social"; "messaging"; "dispatch"; "research"; "delivery"; "full" ]
 
 (** Issue #8467: canonical strings for [Keeper_types_profile.sandbox_profile],
     [network_mode], . Same cycle constraint as
@@ -311,6 +311,10 @@ let keeper_schemas : tool_schema list = [
           ("type", `String "string");
           ("description", `String "Optional: long-term goal horizon (default: goal).");
         ]);
+        ("cascade_name", `Assoc [
+          ("type", `String "string");
+          ("description", `String "Optional: keeper-assignable cascade profile. Replaces legacy models/allowed_models/active_model inputs.");
+        ]);
         ("instructions", `Assoc [
           ("type", `String "string");
           ("description", `String "Optional: additional system instructions (kept across compaction/handoff).");
@@ -392,7 +396,7 @@ let keeper_schemas : tool_schema list = [
         ("sandbox_profile", `Assoc [
           ("type", `String "string");
           ("enum", `List (List.map (fun s -> `String s) sandbox_profile_enum_strings));
-          ("description", `String "Filesystem/process sandbox profile. 'local' runs on the host process with filesystem scoped to the keeper playground. 'docker' runs keeper_bash in an ephemeral hardened Docker container; the internal git/gh dispatcher upgrades network+credential mounts per-command.");
+          ("description", `String "Filesystem/process sandbox profile. 'local' runs on the host process with filesystem scoped to the keeper playground. 'docker' runs shell commands in an ephemeral hardened Docker container; the internal git/gh dispatcher upgrades network+credential mounts per-command.");
         ]);
         ("network_mode", `Assoc [
           ("type", `String "string");
@@ -573,7 +577,7 @@ let keeper_schemas : tool_schema list = [
         ]);
         ("timeout_sec", `Assoc [
           ("type", `String "number");
-          ("description", `String "Optional: overall cascade timeout (sec) for this keeper message call");
+          ("description", `String "Optional: overall timeout (sec) for this async keeper message request and its cascade turn");
         ]);
         ("required_tools", `Assoc [
           ("type", `String "array");

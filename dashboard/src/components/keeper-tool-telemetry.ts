@@ -6,14 +6,14 @@ import { html } from 'htm/preact'
 import { useEffect, useState } from 'preact/hooks'
 import { fetchKeeperToolStats } from '../api/dashboard'
 import type { ToolStat, HourlyBucket, ToolStatsResponse, TelemetryFreshnessMetadata } from '../api/dashboard'
-import { toolCategory, formatDuration, durationColor, normalizeToolName } from './tool-call-shared'
-import { formatCost } from '../lib/format-number'
+import { toolCategory, durationColor, normalizeToolName } from './tool-call-shared'
+import { formatCost, formatMsCompact } from '../lib/format-number'
 import { useManagedAsyncResource } from '../lib/use-managed-async-resource'
 import { TextInput } from './common/input'
 import { SectionCap } from './common/section-cap'
 import { PanelCard } from './common/panel-card'
 import { ProgressBar } from './common/progress-bar'
-import { sourceHealthClass, freshnessText } from './common/source-health'
+import { coverageGapDisplay, sourceHealthClass, freshnessText } from './common/source-health'
 import { StatusChip } from './common/status-chip'
 
 // ── Types ─────────────────────────────────────────────
@@ -26,9 +26,10 @@ interface TelemetryState extends TelemetryFreshnessMetadata {
 }
 
 function FreshnessLine({ data }: { data: TelemetryFreshnessMetadata }) {
+  const gap = coverageGapDisplay(data)
   return html`
     <div class="text-3xs text-[var(--color-fg-disabled)]">
-      <span class="font-mono">${data.source ?? 'trajectory_tool_call'}</span>
+      <span class="font-mono">${data.source ?? '(unknown source)'}</span>
       <span class="mx-1" aria-hidden="true">·</span>
       <span class="font-mono ${sourceHealthClass(data.health)}">${data.health ?? 'unknown'}</span>
       <span class="mx-1" aria-hidden="true">·</span>
@@ -36,6 +37,12 @@ function FreshnessLine({ data }: { data: TelemetryFreshnessMetadata }) {
       ${typeof data.entry_count === 'number' ? html`
         <span class="mx-1" aria-hidden="true">·</span>
         <span>${data.entry_count.toLocaleString()} rows</span>
+      ` : null}
+      ${gap ? html`
+        <div class="mt-1 font-mono text-[var(--color-status-warn)]">${gap.summary}</div>
+        ${gap.details.length > 0 ? html`
+          <div class="mt-0.5 break-all font-mono text-[var(--color-fg-muted)]">${gap.details.join(' · ')}</div>
+        ` : null}
       ` : null}
     </div>
   `
@@ -171,6 +178,8 @@ export function KeeperToolTelemetry({ keeperName }: KeeperToolTelemetryProps) {
         stale_reason: data.stale_reason,
         entry_count: data.entry_count,
         exists: data.exists,
+        coverage_gaps: data.coverage_gaps,
+        coverage_gap_count: data.coverage_gap_count,
         tools: data.tools,
         timeline: data.timeline,
         totalEntries: data.total_entries,
@@ -292,7 +301,7 @@ export function KeeperToolTelemetry({ keeperName }: KeeperToolTelemetryProps) {
               </div>
               <span class="w-8 text-right text-2xs font-mono text-[var(--color-fg-muted)]">${stat.call_count}</span>
               <span class="w-14 text-right text-3xs font-mono ${durationColor(stat.avg_duration_ms)}">
-                ${formatDuration(stat.avg_duration_ms)}
+                ${formatMsCompact(stat.avg_duration_ms)}
               </span>
             </div>
           `
@@ -323,8 +332,8 @@ export function KeeperToolTelemetry({ keeperName }: KeeperToolTelemetryProps) {
             <div class="flex items-center justify-between py-1 px-2 rounded-[var(--r-1)] bg-[var(--color-bg-surface)]">
               <span class="text-2xs font-mono text-[var(--color-fg-muted)]">${normalizeToolName(stat.name)}</span>
               <div class="flex items-center gap-3">
-                <span class="text-3xs text-[var(--color-fg-disabled)]">avg ${formatDuration(stat.avg_duration_ms)}</span>
-                <span class="text-2xs font-mono font-medium ${durationColor(stat.p95_duration_ms)}">p95 ${formatDuration(stat.p95_duration_ms)}</span>
+                <span class="text-3xs text-[var(--color-fg-disabled)]">avg ${formatMsCompact(stat.avg_duration_ms)}</span>
+                <span class="text-2xs font-mono font-medium ${durationColor(stat.p95_duration_ms)}">p95 ${formatMsCompact(stat.p95_duration_ms)}</span>
               </div>
             </div>
           `)}
