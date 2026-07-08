@@ -14,10 +14,7 @@ open Coord_backlog
 open Coord_identity
 
 let clear_reclaim_decision (task : Masc_domain.task) =
-  match task.reclaim_policy with
-  | Some Masc_domain.Block_reclaim -> task
-  | Some Masc_domain.Allow_reclaim | None ->
-    { task with reclaim_policy = None; do_not_reclaim_reason = None }
+  { task with reclaim_policy = None; do_not_reclaim_reason = None }
 ;;
 
 (** Preempt Claimed-only tasks owned by [agent_name] back to Todo.
