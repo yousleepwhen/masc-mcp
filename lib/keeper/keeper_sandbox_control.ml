@@ -382,6 +382,13 @@ let filesystem_playground_repo_names playground_abs =
     with
     | Sys_error _ -> []
 
+let has_playground_repos ~(config : Coord.config) ~(meta : keeper_meta) =
+  let playground_abs =
+    Keeper_sandbox.host_root_abs_of_meta ~config meta
+    |> normalize_path
+  in
+  filesystem_playground_repo_names playground_abs <> []
+
 let playground_repos_json ~(config : Coord.config) ~(meta : keeper_meta) =
   let playground_abs =
     Keeper_sandbox.host_root_abs_of_meta ~config meta

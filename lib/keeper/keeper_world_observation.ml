@@ -297,6 +297,27 @@ let read_backlog_counts ~allowed_tool_names ~(config : Coord.config)
       | None ->
           Coord_task_schedule.required_tools_allowed required_tools
     in
+    (* Tools that mutate code or run shell commands inside a repo
+       clone.  A keeper whose sandbox has no repos cannot safely claim
+       a task that requires any of these. *)
+    let repo_requiring_tools =
+      [
+        "masc_code_write";
+        "masc_code_edit";
+        "masc_code_delete";
+        "masc_code_shell";
+        "masc_code_git";
+      ]
+    in
+    let task_requires_repo task =
+      Coord_task_schedule.task_required_tools task
+      |> List.exists (fun t ->
+             List.exists (String.equal t) repo_requiring_tools)
+    in
+    let has_repos = Keeper_sandbox_control.has_playground_repos ~config ~meta in
+    let repo_capable task =
+      not (task_requires_repo task) || has_repos
+    in
     let claimable =
       List.length
         (List.filter
@@ -304,7 +325,8 @@ let read_backlog_counts ~allowed_tool_names ~(config : Coord.config)
              Coord_task_schedule.task_is_claim_pool_candidate task
              && claim_scope_filter task
              && required_tools_allowed
-                  (Coord_task_schedule.task_required_tools task))
+                  (Coord_task_schedule.task_required_tools task)
+             && repo_capable task)
            unclaimed_tasks)
     in
     let failed =
