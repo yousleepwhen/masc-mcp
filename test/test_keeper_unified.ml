@@ -470,6 +470,48 @@ let test_observe_splits_absolute_and_claimable_backlog () =
       check int "absolute todo backlog" 2 obs.unclaimed_task_count;
       check int "matched claimable backlog" 1 obs.claimable_task_count)
 
+(* [#26487] A keeper whose sandbox has no repo checkouts must not see
+   repo-requiring tasks as claimable, even when the required tool itself
+   is allowed.  Creating a repo checkout under the keeper playground must
+   restore claimability — this is the capability gate that stops the
+   30-second autonomous hot loop over unexecutable backlog items. *)
+let test_observe_repo_capability_gates_claimable_backlog () =
+  let base_dir = temp_dir () in
+  Fun.protect
+    ~finally:(fun () -> cleanup_dir base_dir)
+    (fun () ->
+      Unix.putenv "MASC_BASE_PATH" base_dir;
+      let config = Masc_mcp.Coord.default_config base_dir in
+      ignore (Masc_mcp.Coord.init config ~agent_name:(Some "observer"));
+      ignore
+        (Masc_mcp.Coord.add_task config ~title:"Plain task" ~priority:1
+           ~description:"");
+      ignore
+        (Masc_mcp.Coord.add_task config ~title:"Repo task" ~priority:1
+           ~description:""
+           ~contract:(contract_requiring_tools [ "masc_code_write" ]));
+      let tools = Some [ "keeper_task_claim"; "masc_code_write" ] in
+      (* Sandbox with no repos: the repo-requiring task is filtered out of
+         the claimable count even though its tool is allowed. *)
+      let obs_without_repos =
+        WO.observe ~allowed_tool_names:tools
+          ~pending_board_events:(Some []) ~config ~meta:minimal_meta
+      in
+      check int "absolute todo backlog" 2 obs_without_repos.unclaimed_task_count;
+      check int "no repos: repo task not claimable" 1
+        obs_without_repos.claimable_task_count;
+      (* Materialise a repo checkout inside the keeper playground. *)
+      let host_root =
+        Masc_mcp.Keeper_sandbox.host_root_abs_of_meta ~config minimal_meta
+      in
+      unix_mkdir_p (Filename.concat host_root "repos/sample/.git");
+      let obs_with_repos =
+        WO.observe ~allowed_tool_names:tools
+          ~pending_board_events:(Some []) ~config ~meta:minimal_meta
+      in
+      check int "with repos: repo task claimable" 2
+        obs_with_repos.claimable_task_count)
+
 let test_observe_claimable_backlog_respects_active_goal_ids () =
   let base_dir = temp_dir () in
   Fun.protect
@@ -7889,6 +7931,7 @@ let () =
             test_legacy_board_comment_stimulus_becomes_pending_board_event;
           test_case "splits absolute and claimable backlog" `Quick
             test_observe_splits_absolute_and_claimable_backlog;
+            test_observe_repo_capability_gates_claimable_backlog;
           test_case "claimable backlog respects active goals" `Quick
             test_observe_claimable_backlog_respects_active_goal_ids;
           test_case "claimable backlog mirrors auto-goal fallback" `Quick
