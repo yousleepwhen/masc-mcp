@@ -64,13 +64,35 @@ let active_goal_ids_have_eligible_claim_task
             latest_verification_status
             task)
 
+(* Tools that mutate code or run shell commands inside a repo clone.
+   A keeper whose sandbox has no repos cannot safely claim a task that
+   requires any of these. *)
+let repo_requiring_tools =
+  [
+    "masc_code_write";
+    "masc_code_edit";
+    "masc_code_delete";
+    "masc_code_shell";
+    "masc_code_git";
+  ]
+
+let task_requires_repo (task : Masc_domain.task) =
+  Coord_task_schedule.task_required_tools task
+  |> List.exists (fun t -> List.exists (String.equal t) repo_requiring_tools)
+
 let resolve_claim_goal_scope ?agent_tool_names
     ?(allow_empty_goal_scope_fallback = false) ~(config : Coord.config)
     ~(meta : keeper_meta) () =
+  let has_repos = Keeper_sandbox_control.has_playground_repos ~config ~meta in
+  let repo_capable task = not (task_requires_repo task) || has_repos in
+  let with_repo_guard base_filter task =
+    base_filter task && repo_capable task
+  in
   match meta.active_goal_ids with
   | [] ->
       {
-        task_filter = (fun (_task : Masc_domain.task) -> true);
+        task_filter =
+          with_repo_guard (fun (_task : Masc_domain.task) -> true);
         mode = "all_tasks";
         effective_goal_ids = [];
         fallback_reason = None;
@@ -89,7 +111,8 @@ let resolve_claim_goal_scope ?agent_tool_names
             active_goal_ids_are_auto_keeper_goals config ~meta goal_ids
           in
           {
-            task_filter = (fun (_task : Masc_domain.task) -> true);
+            task_filter =
+              with_repo_guard (fun (_task : Masc_domain.task) -> true);
             mode =
               (if is_auto_goal then "auto_goal_fallback_all_tasks"
                else "empty_goal_scope_fallback_all_tasks");
@@ -103,14 +126,14 @@ let resolve_claim_goal_scope ?agent_tool_names
           }
         else
           {
-            task_filter = scoped_filter;
+            task_filter = with_repo_guard scoped_filter;
             mode = "active_goal_ids";
             effective_goal_ids = goal_ids;
             fallback_reason = None;
           }
       else
         {
-          task_filter = scoped_filter;
+          task_filter = with_repo_guard scoped_filter;
           mode = "active_goal_ids";
           effective_goal_ids = goal_ids;
           fallback_reason = None;

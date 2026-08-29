@@ -45,6 +45,12 @@ val cleanup_stale :
   unit ->
   Keeper_sandbox_runtime.cleanup_result
 
+val has_playground_repos :
+  config:Coord.config -> meta:keeper_meta -> bool
+(** Returns [true] when the keeper playground has at least one repo
+    clone with a [.git] directory. Used to gate claimable-task
+    counting so keepers without repos do not claim code-work tasks. *)
+
 val playground_repos_json :
   config:Coord.config ->
   meta:keeper_meta ->
